@@ -1,0 +1,10 @@
+target/
+.superpowers/
+.claude/worktrees/
+agent.*
+*.profraw
+/cc_config*
+/.cc_config*
+/..cc_config*
+.idea/
+~$*.docx
