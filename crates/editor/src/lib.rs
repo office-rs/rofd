@@ -1,7 +1,9 @@
 //! rofd-editor - OFD annotation editor (selection, commands, undo/redo).
 
+pub mod commands;
 pub mod cursor;
 pub mod editor;
+pub mod payload_util;
 pub mod selection;
 pub mod steps;
 

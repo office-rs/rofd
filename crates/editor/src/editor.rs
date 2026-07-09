@@ -51,7 +51,6 @@ impl Editor {
     /// "after" state, and push it onto the history. Used by the command methods
     /// (create/delete/move/...) starting in Task 5; the unit tests here exercise
     /// it directly.
-    #[allow(dead_code)]  // real callers arrive in Task 5 (create_annotation et al.)
     pub(crate) fn execute_transaction(&mut self, txn: Transaction) {
         for step in &txn.steps {
             step.apply(&mut self.document.annotations);
