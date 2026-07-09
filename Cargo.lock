@@ -1207,6 +1207,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rofd-editor"
+version = "0.1.0"
+dependencies = [
+ "rofd-dom",
+ "uuid",
+]
+
+[[package]]
 name = "rofd-io"
 version = "0.1.0"
 dependencies = [
