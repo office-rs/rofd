@@ -1,5 +1,7 @@
 //! rofd-component - EditorComponent facade. The sole integration entry point.
 
 pub mod event;
+pub mod render_target;
 
 pub use event::*;
+pub use render_target::RenderTarget;
