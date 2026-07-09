@@ -55,11 +55,21 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
         }
         doc.pages.push(page);
     }
-    // Resources: Font.xml entries
+    // Resources: Font.xml entries (+ font bytes via FontFile)
     for e in &entries {
         if e.name.ends_with("/Res/Font.xml") {
             let xml = String::from_utf8_lossy(&e.bytes).into_owned();
-            resource::parse_font_res(&xml, &mut doc.resources)?;
+            let font_dir = e.name.rsplit_once('/').map(|(d, _)| d).unwrap_or(""); // .../Res
+            for (id, fref, font_file) in resource::parse_font_res(&xml)? {
+                doc.resources.fonts.insert(id.clone(), fref);
+                if let Some(rel) = font_file {
+                    // FontFile is relative to the Res dir.
+                    let font_path = if font_dir.is_empty() { rel } else { format!("{font_dir}/{rel}") };
+                    if let Some(fe) = entries.iter().find(|x| x.name == font_path) {
+                        doc.resources.font_data.insert(id, fe.bytes.clone());
+                    }
+                }
+            }
         }
     }
     // Annotations: per-page Annotation.xml; map each entry to its page by index.

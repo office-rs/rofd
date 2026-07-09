@@ -55,6 +55,12 @@ const FONT_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <ofd:Font ID="F1" FontName="NotoSans"/>
 </ofd:Res>"#;
 
+#[allow(dead_code)]
+const FONT_XML_WITH_FILE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Res xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Font ID="F1" FontName="NotoSans" FontFile="Font_1.ttf"/>
+</ofd:Res>"#;
+
 /// Build a minimal but valid-shaped .ofd ZIP in memory.
 pub fn build_minimal_ofd() -> Vec<u8> {
     let cursor = std::io::Cursor::new(Vec::new());
@@ -67,6 +73,27 @@ pub fn build_minimal_ofd() -> Vec<u8> {
         ("Doc_0/Pages/Page_0/Page.xml", PAGE_XML),
         ("Doc_0/Pages/Page_0/Annotation.xml", ANNOTATION_XML),
         ("Doc_0/Res/Font.xml", FONT_XML),
+    ] {
+        zip.start_file(name, opts).unwrap();
+        zip.write_all(body.as_bytes()).unwrap();
+    }
+    zip.finish().unwrap().into_inner()
+}
+
+/// Like build_minimal_ofd but Font.xml references FontFile="Font_1.ttf" with dummy bytes.
+#[allow(dead_code)]
+pub fn build_minimal_ofd_with_font() -> Vec<u8> {
+    let cursor = std::io::Cursor::new(Vec::new());
+    let mut zip = ZipWriter::new(cursor);
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for (name, body) in [
+        ("OFD.xml", OFD_XML),
+        ("Doc_0/Document.xml", DOCUMENT_XML),
+        ("Doc_0/Pages/Page_0/Page.xml", PAGE_XML),
+        ("Doc_0/Pages/Page_0/Annotation.xml", ANNOTATION_XML),
+        ("Doc_0/Res/Font.xml", FONT_XML_WITH_FILE),
+        ("Doc_0/Res/Font_1.ttf", ""),  // dummy font bytes (real font not needed for io parse test)
     ] {
         zip.start_file(name, opts).unwrap();
         zip.write_all(body.as_bytes()).unwrap();

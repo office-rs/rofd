@@ -89,3 +89,10 @@ fn parse_stores_textcode_text() {
     let rofd_dom::PageObject::Text(t) = &body.objects[0] else { panic!("expected text") };
     assert_eq!(t.codes[0].text, "Hello");
 }
+
+#[test]
+fn parse_loads_font_data_from_fontfile() {
+    let bytes = fixtures::build_minimal_ofd_with_font();
+    let report = rofd_io::parse_ofd(&bytes).unwrap();
+    assert!(report.document.resources.font_data.contains_key(&rofd_dom::FontId::new("F1")));
+}
