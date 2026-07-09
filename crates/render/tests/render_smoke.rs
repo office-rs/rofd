@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use rofd_render::{build_annotation_scene, build_body_scene, FontStore};
+use rofd_render::{build_annotation_scene, build_body_scene, FontStore, PageSceneCache, RenderEngine, Viewport};
 
 #[path = "../../io/tests/fixtures/fixtures.rs"]
 mod fixtures;
@@ -42,4 +42,21 @@ fn annotation_scene_builds_for_fixture() {
     let anns = report.document.annotations.for_page(&page.id);
     let _scene = build_annotation_scene(anns, &report.document.resources, &fonts);
     // No panic; overlay built.
+}
+
+#[test]
+fn composite_builds_paper_on_desk_scene() {
+    let bytes = fixtures::build_minimal_ofd();
+    let report = rofd_io::parse_ofd(&bytes).unwrap();
+    let font_bytes = Arc::new(include_bytes!("fixtures/fonts/TestFont.ttf").to_vec());
+    let engine = RenderEngine::new(font_bytes);
+    let mut cache = PageSceneCache::new();
+    let vp = Viewport {
+        scroll: (0.0, 0.0),
+        zoom: 1.0,
+        size: (800.0, 600.0),
+        page_gap: 20.0,
+    };
+    let scene = engine.composite(&report.document, &vp, &mut cache);
+    let _ = scene.encoding(); // built without panic
 }
