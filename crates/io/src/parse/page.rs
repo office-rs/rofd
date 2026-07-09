@@ -64,7 +64,7 @@ pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result
                         let body = pending_text_body.take().unwrap_or_default();
                         // v1: glyph_ids left empty (no Glyph attr in common subset); deltas derived from DeltaX string
                         let deltas = parse_delta_x(pending_text_delta.as_deref(), body.chars().count());
-                        t.codes.push(TextCode { glyph_ids: vec![], deltas });
+                        t.codes.push(TextCode { glyph_ids: vec![], deltas, text: body });
                     }
                     pending_text_delta = None;
                     in_text_code = false;
