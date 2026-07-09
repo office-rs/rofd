@@ -1,4 +1,4 @@
-use rofd_dom::OfdDocument;
+use rofd_dom::{AnnotationId, OfdDocument};
 
 use crate::cursor::TextCursor;
 use crate::selection::AnnotationSelection;
@@ -46,6 +46,27 @@ impl Editor {
     pub fn text_cursor(&self) -> Option<&TextCursor> { self.text_cursor.as_ref() }
     pub fn can_undo(&self) -> bool { self.history.can_undo() }
     pub fn can_redo(&self) -> bool { self.history.can_redo() }
+
+    /// Select a single annotation by id.
+    pub fn select(&mut self, id: AnnotationId) {
+        self.selection = AnnotationSelection::Single(id);
+    }
+    /// Replace the current selection wholesale.
+    pub fn set_selection(&mut self, sel: AnnotationSelection) {
+        self.selection = sel;
+    }
+    /// Clear the selection.
+    pub fn clear_selection(&mut self) {
+        self.selection = AnnotationSelection::None;
+    }
+    /// Position the text cursor at `offset` within `annotation`.
+    pub fn set_cursor(&mut self, annotation: AnnotationId, offset: usize) {
+        self.text_cursor = Some(TextCursor { annotation, offset, preferred_x: None });
+    }
+    /// Clear the text cursor.
+    pub fn clear_cursor(&mut self) {
+        self.text_cursor = None;
+    }
 
     /// Apply a Transaction: run its steps forward, set selection/cursor to the
     /// "after" state, and push it onto the history. Used by the command methods
