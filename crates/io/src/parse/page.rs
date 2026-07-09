@@ -24,6 +24,7 @@ pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result
     let mut current_text: Option<TextObject> = None;
     let mut pending_text_delta: Option<String> = None;
     let mut pending_text_body: Option<String> = None;
+    let mut in_text_code = false;
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => match e.name().local_name().as_ref() {
@@ -55,6 +56,7 @@ pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result
                     }
                 }
                 b"TextCode" => {
+                    in_text_code = true;
                     pending_text_delta = attr(&e, "DeltaX");
                     pending_text_body = None;
                 }
@@ -85,12 +87,15 @@ pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result
                 _ => {}
             },
             Ok(Event::Text(t)) => {
-                if current_text.is_some() && pending_text_delta.is_some() {
-                    pending_text_body = Some(t.unescape().map(|c| c.into_owned()).unwrap_or_default());
-                } else if let Some(l) = current_layer.as_mut() {
-                    // AbbreviatedData text for the last PathObject
-                    if let Some(PageObject::Path(p)) = l.objects.last_mut() {
-                        p.data = parse_abbreviated(&t.unescape().map(|c| c.into_owned()).unwrap_or_default());
+                let s = t.unescape().map(|c| c.into_owned()).unwrap_or_default();
+                if in_text_code {
+                    pending_text_body = Some(s);
+                } else if !s.is_empty() {
+                    if let Some(l) = current_layer.as_mut() {
+                        // AbbreviatedData text for the last PathObject
+                        if let Some(PageObject::Path(p)) = l.objects.last_mut() {
+                            p.data = parse_abbreviated(&s);
+                        }
                     }
                 }
             }
@@ -103,6 +108,7 @@ pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result
                         t.codes.push(TextCode { glyph_ids: vec![], deltas });
                     }
                     pending_text_delta = None;
+                    in_text_code = false;
                 }
                 b"TextObject" => {
                     if let (Some(t), Some(l)) = (current_text.take(), current_layer.as_mut()) {
@@ -163,4 +169,53 @@ fn parse_color(s: String) -> Option<Color> {
 
 fn attr(e: &BytesStart, name: &str) -> Option<String> {
     e.attributes().flatten().find(|a| a.key.as_ref() == name.as_bytes()).map(|a| String::from_utf8_lossy(&a.value).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rofd_dom::{DocMeta, LayerType, PageObject, Rect};
+
+    #[test]
+    fn textcode_without_deltax_captures_body() {
+        // TextCode WITHOUT DeltaX - body text must still be captured, not
+        // misrouted to the (nonexistent) last PathObject.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016" ID="P0">
+  <ofd:Content>
+    <ofd:Layer Type="Body">
+      <ofd:TextObject ID="t1" Boundary="0 0 100 20" Font="f1" Size="14">
+        <ofd:TextCode X="0" Y="14">Hi</ofd:TextCode>
+      </ofd:TextObject>
+    </ofd:Layer>
+  </ofd:Content>
+</ofd:Page>"#;
+        let page = parse_page(
+            PageId::new("P0"),
+            xml,
+            &DocHeader {
+                page_area: Some(Rect { x: 0.0, y: 0.0, w: 210.0, h: 297.0 }),
+                pages: vec![],
+                meta: DocMeta::default(),
+            },
+        )
+        .expect("page parses");
+        let body = page
+            .layers
+            .iter()
+            .find(|l| l.layer_type == LayerType::Body)
+            .expect("body layer exists");
+        let text = body
+            .objects
+            .iter()
+            .find_map(|o| match o {
+                PageObject::Text(t) => Some(t),
+                _ => None,
+            })
+            .expect("text object exists");
+        // "Hi" has 2 glyphs; deltas vec length tracks glyph count. Under the
+        // old DeltaX-gated routing the body was dropped, leaving codes empty.
+        assert_eq!(text.codes.len(), 1, "one TextCode captured");
+        assert_eq!(text.codes[0].deltas.len(), 2, "2 glyphs for 'Hi'");
+    }
 }

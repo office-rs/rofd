@@ -9,7 +9,7 @@ pub fn parse_abbreviated(s: &str) -> PathData {
         let op = toks[i];
         i += 1;
         let f = |idx: usize| -> (f64, usize) {
-            let v = toks[idx].parse::<f64>().unwrap_or(0.0);
+            let v = toks.get(idx).and_then(|t| t.parse().ok()).unwrap_or(0.0);
             (v, idx + 1)
         };
         match op {
