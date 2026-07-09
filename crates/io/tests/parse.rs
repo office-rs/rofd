@@ -79,3 +79,20 @@ fn parse_populates_doc_meta_from_doc_info() {
     assert_eq!(meta.author.as_deref(), Some("tester"), "Author should be populated from DocInfo");
     assert_eq!(meta.doc_id.as_deref(), Some("doc-001"), "DocID should be populated from DocInfo");
 }
+
+#[test]
+fn parse_stores_textcode_text() {
+    let bytes = fixtures::build_minimal_ofd();
+    let report = rofd_io::parse_ofd(&bytes).unwrap();
+    let page = &report.document.pages[0];
+    let body = page.layers.iter().find(|l| l.layer_type == LayerType::Body).unwrap();
+    let rofd_dom::PageObject::Text(t) = &body.objects[0] else { panic!("expected text") };
+    assert_eq!(t.codes[0].text, "Hello");
+}
+
+#[test]
+fn parse_loads_font_data_from_fontfile() {
+    let bytes = fixtures::build_minimal_ofd_with_font();
+    let report = rofd_io::parse_ofd(&bytes).unwrap();
+    assert!(report.document.resources.font_data.contains_key(&rofd_dom::FontId::new("F1")));
+}

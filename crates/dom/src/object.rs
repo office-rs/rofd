@@ -25,8 +25,11 @@ pub enum NoteIcon {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct TextCode {
     pub glyph_ids: Vec<u32>,
-    /// Per-glyph (dx, dy) deltas. Length == glyph_ids.len().
+    /// Per-glyph (dx, dy) deltas. Length == glyph_ids.len() (or text char count when glyph_ids empty).
     pub deltas: Vec<(f32, f32)>,
+    /// The TextCode element's text content (e.g. "Hello"). v1: glyph_ids may be empty;
+    /// renderers shape this string to obtain glyph IDs.
+    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -107,5 +110,11 @@ mod tests {
             data: PathData::default(),
         });
         assert!(matches!(p, PageObject::Path(_)));
+    }
+
+    #[test]
+    fn textcode_carries_text() {
+        let tc = TextCode { glyph_ids: vec![], deltas: vec![], text: "Hello".into() };
+        assert_eq!(tc.text, "Hello");
     }
 }

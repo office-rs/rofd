@@ -1,0 +1,16 @@
+[package]
+name = "rofd-render"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rofd-dom = { workspace = true }
+vello = { workspace = true }
+parley = { workspace = true }
+peniko = { workspace = true }
+kurbo = { workspace = true }
+image = { workspace = true }
+
+[dev-dependencies]
+rofd-io = { workspace = true }
+zip = { workspace = true }
