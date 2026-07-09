@@ -90,6 +90,7 @@ impl EditorComponent {
                 self.viewport.size = (*width, *height);
                 EventOutcome { needs_repaint: true }
             }
+            ViewEvent::KeyDown { key, modifiers } => self.handle_key(key, modifiers),
             _ => EventOutcome { needs_repaint: false },
         }
     }
@@ -103,8 +104,91 @@ impl EditorComponent {
         }
     }
 
-    // Called by later tasks (annotation create/delete/move/resize, save shortcut).
-    #[allow(dead_code)]
+    fn handle_key(&mut self, key: &crate::event::Key, modifiers: &crate::event::Modifiers) -> EventOutcome {
+        use crate::event::Key;
+        // Ctrl+Z: undo
+        if modifiers.control && !modifiers.shift && matches!(key, Key::Char('z') | Key::Char('Z')) {
+            if self.editor.undo() { self.after_annotation_change(); return EventOutcome { needs_repaint: true }; }
+            return EventOutcome { needs_repaint: false };
+        }
+        // Ctrl+Y or Ctrl+Shift+Z: redo
+        if (modifiers.control && matches!(key, Key::Char('y') | Key::Char('Y')))
+            || (modifiers.control && modifiers.shift && matches!(key, Key::Char('z') | Key::Char('Z')))
+        {
+            if self.editor.redo() { self.after_annotation_change(); return EventOutcome { needs_repaint: true }; }
+            return EventOutcome { needs_repaint: false };
+        }
+        // Ctrl+S: save request
+        if modifiers.control && matches!(key, Key::Char('s') | Key::Char('S')) {
+            self.fire_save_request();
+            return EventOutcome { needs_repaint: false };
+        }
+        // Delete/Backspace: delete selected (when no text cursor)
+        if matches!(key, Key::Delete | Key::Backspace)
+            && self.editor.text_cursor().is_none()
+            && !matches!(self.editor.selection(), rofd_editor::AnnotationSelection::None)
+        {
+            self.editor.delete_selected();
+            self.after_annotation_change();
+            self.fire_selection_change();
+            return EventOutcome { needs_repaint: true };
+        }
+        // Text editing (if text cursor set)
+        if let Some(cursor) = self.editor.text_cursor().cloned() {
+            match key {
+                Key::Char(c) => {
+                    let s = c.to_string();
+                    let new_off = cursor.offset + s.chars().count();
+                    self.editor.insert_text(&cursor.annotation, cursor.offset, &s);
+                    self.editor.set_cursor(cursor.annotation.clone(), new_off);
+                    self.after_annotation_change();
+                    self.fire_cursor_change();
+                    return EventOutcome { needs_repaint: true };
+                }
+                Key::Backspace => {
+                    if cursor.offset > 0 {
+                        self.editor.delete_text(&cursor.annotation, cursor.offset - 1, 1);
+                        self.editor.set_cursor(cursor.annotation.clone(), cursor.offset - 1);
+                        self.after_annotation_change();
+                        self.fire_cursor_change();
+                        return EventOutcome { needs_repaint: true };
+                    }
+                }
+                Key::Delete => {
+                    self.editor.delete_text(&cursor.annotation, cursor.offset, 1);
+                    self.after_annotation_change();
+                    return EventOutcome { needs_repaint: true };
+                }
+                Key::ArrowLeft => {
+                    if cursor.offset > 0 {
+                        self.editor.set_cursor(cursor.annotation.clone(), cursor.offset - 1);
+                        self.fire_cursor_change();
+                        return EventOutcome { needs_repaint: true };
+                    }
+                }
+                Key::ArrowRight => {
+                    self.editor.set_cursor(cursor.annotation.clone(), cursor.offset + 1);
+                    self.fire_cursor_change();
+                    return EventOutcome { needs_repaint: true };
+                }
+                Key::Escape => {
+                    self.editor.clear_cursor();
+                    self.editor.clear_selection();
+                    self.fire_cursor_change();
+                    self.fire_selection_change();
+                    return EventOutcome { needs_repaint: true };
+                }
+                _ => {}
+            }
+        } else if matches!(key, Key::Escape) {
+            self.editor.clear_selection();
+            self.fire_selection_change();
+            return EventOutcome { needs_repaint: true };
+        }
+        EventOutcome { needs_repaint: false }
+    }
+
+    // Called by annotation-mutating commands (text editing, undo/redo, delete).
     fn after_annotation_change(&mut self) {
         self.modified = true;
         let pages: Vec<rofd_dom::PageId> = self.editor.document().pages.iter().map(|p| p.id.clone()).collect();
@@ -120,8 +204,7 @@ impl EditorComponent {
         if let Some(cb) = &self.callbacks.on_cursor_change { cb(self.editor.text_cursor()); }
     }
 
-    // Called by later tasks (Ctrl+S / save shortcut).
-    #[allow(dead_code)]
+    // Called by Ctrl+S / save shortcut.
     fn fire_save_request(&self) {
         if let Some(cb) = &self.callbacks.on_save_request { cb(); }
     }
@@ -194,7 +277,7 @@ mod tests {
         assert_eq!(rt.drawn, 1);
     }
 
-    use crate::event::ViewEvent;
+    use crate::event::{ViewEvent, Key, Modifiers};
     use rofd_dom::{AnnotationKind, AnnotationPayload, Color, NoteIcon, PageId, Rect};
     use std::sync::Mutex;
 
@@ -248,5 +331,54 @@ mod tests {
         // Scroll doesn't change annotations -> no on_change. But it does need_repaint.
         c.handle_event(&ViewEvent::Scroll { dx: 1.0, dy: 0.0 });
         assert!(!*fired.lock().unwrap(), "scroll does not fire on_change");
+    }
+
+    #[test]
+    fn undo_redo_via_keydown() {
+        let mut c = component_with_note();
+        // undo the create_annotation (done via direct editor call in setup)
+        let outcome = c.handle_event(&ViewEvent::KeyDown { key: Key::Char('z'), modifiers: Modifiers { control: true, ..Default::default() } });
+        assert!(outcome.needs_repaint);
+        assert!(!c.can_undo(), "undo consumed the create");
+        // redo
+        let outcome = c.handle_event(&ViewEvent::KeyDown { key: Key::Char('y'), modifiers: Modifiers { control: true, ..Default::default() } });
+        assert!(outcome.needs_repaint);
+        assert!(c.can_undo(), "redo restored it");
+    }
+
+    #[test]
+    fn ctrl_s_fires_save_request() {
+        let fired = Arc::new(Mutex::new(false));
+        let f = fired.clone();
+        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        c.on_save_request(move || { *f.lock().unwrap() = true; });
+        c.handle_event(&ViewEvent::KeyDown { key: Key::Char('s'), modifiers: Modifiers { control: true, ..Default::default() } });
+        assert!(*fired.lock().unwrap());
+    }
+
+    #[test]
+    fn char_key_inserts_text_when_cursor_set() {
+        let mut c = component_with_note();
+        // Select the note (which sets cursor to end via PointerDown on the annotation).
+        // For test setup, directly set cursor.
+        let id = c.editor.selection().clone();
+        if let rofd_editor::AnnotationSelection::Single(id) = id {
+            c.editor.set_cursor(id.clone(), 2); // "hi" has 2 chars; cursor at end
+        }
+        c.handle_event(&ViewEvent::KeyDown { key: Key::Char('!'), modifiers: Modifiers::default() });
+        // The note's content should now be "hi!"
+        let sel = c.editor.selection().clone();
+        if let rofd_editor::AnnotationSelection::Single(id) = sel {
+            let ann = c.editor.document().annotations.find(&id).unwrap();
+            assert!(matches!(&ann.payload, rofd_dom::AnnotationPayload::Note { content, .. } if content == "hi!"));
+        } else { panic!("expected single selection"); }
+    }
+
+    #[test]
+    fn escape_clears_selection() {
+        let mut c = component_with_note();
+        assert!(!matches!(c.editor.selection(), rofd_editor::AnnotationSelection::None));
+        c.handle_event(&ViewEvent::KeyDown { key: Key::Escape, modifiers: Modifiers::default() });
+        assert!(matches!(c.editor.selection(), rofd_editor::AnnotationSelection::None));
     }
 }
