@@ -1,1 +1,6 @@
-pub mod history;  // Task 3 adds step_trait + annotation_steps; Task 4 adds transaction + real history
+pub mod annotation_steps;
+pub mod history;  // still the Task 2 stub until Task 4
+pub mod step_trait;
+
+pub use annotation_steps::{DeleteAnnotationStep, InsertAnnotationStep, ReplaceAnnotationStep};
+pub use step_trait::Step;
