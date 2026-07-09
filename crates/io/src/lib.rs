@@ -12,3 +12,4 @@ pub use error::{LoadReport, OfdError, OfdWarning, ResourceKind};
 pub use package::{EntryKind, PackageHandle, PkgEntry};
 pub use parse::parse_ofd;
 pub use save::save_ofd;
+pub use serialize::package::write_ofd;

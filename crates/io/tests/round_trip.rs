@@ -1,0 +1,44 @@
+#[path = "fixtures/fixtures.rs"]
+mod fixtures;
+
+#[test]
+fn write_ofd_round_trips_through_parse() {
+    let original = fixtures::build_minimal_ofd();
+    let report = rofd_io::parse_ofd(&original).unwrap();
+    // Full write from model (no package).
+    let written = rofd_io::write_ofd(&report.document).unwrap();
+    let reparsed = rofd_io::parse_ofd(&written).unwrap();
+    assert_eq!(reparsed.document.pages.len(), 1);
+    assert_eq!(reparsed.document.pages[0].id, rofd_dom::PageId::new("P0"));
+}
+
+#[test]
+fn load_annotate_save_preserves_body_and_keeps_annotation() {
+    let original = fixtures::build_minimal_ofd();
+    let report = rofd_io::parse_ofd(&original).unwrap();
+    // Mutate annotations (simulate editor): add a reply note to page 0.
+    let mut doc = report.document.clone();
+    use rofd_dom::*;
+    doc.annotations.by_page.entry(PageId::new("P0")).or_default().push(Annotation {
+        id: AnnotationId::new(),
+        kind: AnnotationKind::Note,
+        page: PageId::new("P0"),
+        creator: "李四".into(),
+        created: 1_700_000_001_000,
+        modified: 1_700_000_001_000,
+        reply_to: None,
+        payload: AnnotationPayload::Note {
+            rect: Rect { x: 10.0, y: 10.0, w: 40.0, h: 20.0 },
+            color: Color::Rgb(255, 200, 0),
+            content: "reply".into(),
+            icon: NoteIcon::Note,
+        },
+    });
+    let saved = rofd_io::save_ofd(&doc, &report.package).unwrap();
+    let reparsed = rofd_io::parse_ofd(&saved).unwrap();
+    // Body preserved (one page, unchanged objects).
+    assert_eq!(reparsed.document.pages.len(), 1);
+    // Annotation round-trips.
+    let anns = reparsed.document.annotations.for_page(&PageId::new("P0"));
+    assert!(anns.iter().any(|a| matches!(a.kind, AnnotationKind::Note)), "added note survived");
+}
