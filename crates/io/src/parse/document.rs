@@ -4,6 +4,7 @@ use quick_xml::Reader;
 use rofd_dom::{DocMeta, PageId, Rect};
 
 use crate::error::OfdError;
+use crate::parse::attr;
 
 pub struct PageRef {
     pub id: PageId,
@@ -47,8 +48,4 @@ fn parse_rect(e: &BytesStart) -> Rect {
         w: attr(e, "w").and_then(|s| s.parse().ok()).unwrap_or(0.0),
         h: attr(e, "h").and_then(|s| s.parse().ok()).unwrap_or(0.0),
     }
-}
-
-fn attr(e: &BytesStart, name: &str) -> Option<String> {
-    e.attributes().flatten().find(|a| a.key.as_ref() == name.as_bytes()).map(|a| String::from_utf8_lossy(&a.value).into_owned())
 }

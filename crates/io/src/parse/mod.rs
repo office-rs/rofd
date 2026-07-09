@@ -1,14 +1,22 @@
+pub mod annotation;
 pub mod document;
 pub mod ofd_xml;
 pub mod page;
+pub mod resource;
 
 use std::sync::Arc;
+
+use quick_xml::events::BytesStart;
 
 use rofd_dom::OfdDocument;
 
 use crate::error::{LoadReport, OfdError, OfdWarning};
 use crate::package::{EntryKind, PackageHandle, PkgEntry};
 use crate::zip_util::read_all_entries;
+
+pub fn attr(e: &BytesStart, name: &str) -> Option<String> {
+    e.attributes().flatten().find(|a| a.key.as_ref() == name.as_bytes()).map(|a| String::from_utf8_lossy(&a.value).into_owned())
+}
 
 pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
     let raw = read_all_entries(bytes)?;
@@ -35,6 +43,31 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
             warnings.push(OfdWarning::MissingFeature { feature: "Template".into(), entry: page_path.clone() });
         }
         doc.pages.push(page);
+    }
+    // Resources: Font.xml entries
+    for e in &entries {
+        if e.name.ends_with("/Res/Font.xml") {
+            let xml = String::from_utf8_lossy(&e.bytes).into_owned();
+            resource::parse_font_res(&xml, &mut doc.resources)?;
+        }
+    }
+    // Annotations: per-page Annotation.xml; map each entry to its page by index.
+    for e in &entries {
+        if e.name.ends_with("/Annotation.xml") {
+            let page_idx = e
+                .name
+                .split('/')
+                .find_map(|seg| seg.strip_prefix("Page_").and_then(|n| n.parse::<usize>().ok()));
+            if let Some(idx) = page_idx {
+                if let Some(page) = doc.pages.get(idx) {
+                    let xml = String::from_utf8_lossy(&e.bytes).into_owned();
+                    let anns = annotation::parse_annotation_xml(&xml, &page.id)?;
+                    if !anns.is_empty() {
+                        doc.annotations.by_page.entry(page.id.clone()).or_default().extend(anns);
+                    }
+                }
+            }
+        }
     }
     let package = PackageHandle { entries };
     Ok(LoadReport::new(doc, package, warnings))

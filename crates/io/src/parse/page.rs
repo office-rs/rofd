@@ -8,6 +8,7 @@ use rofd_dom::{
 
 use crate::abbreviated::parse_abbreviated;
 use crate::error::OfdError;
+use crate::parse::attr;
 use crate::parse::document::DocHeader;
 
 pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result<Page, OfdError> {
@@ -165,10 +166,6 @@ fn parse_color(s: String) -> Option<Color> {
         3 => Some(Color::Rgb(n[0], n[1], n[2])),
         _ => None, // non-RGB (CMYK/gray) -> skipped, render substitutes; v1 common subset
     }
-}
-
-fn attr(e: &BytesStart, name: &str) -> Option<String> {
-    e.attributes().flatten().find(|a| a.key.as_ref() == name.as_bytes()).map(|a| String::from_utf8_lossy(&a.value).into_owned())
 }
 
 #[cfg(test)]
