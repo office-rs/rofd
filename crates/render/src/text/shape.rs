@@ -65,23 +65,29 @@ pub(crate) fn register_font(fcx: &mut FontContext, font: &FontData) -> Option<St
 
 /// Shape `text` at `size` using `family_name` as the default family.
 ///
-/// If `family_name` is `None` (font registration failed), Parley
-/// falls back to its default (`sans-serif`); this should not happen
-/// for valid document fonts.
+/// If `family_name` is `None` (font registration failed - no document or
+/// default font is available), return an empty `Vec<ShapedGlyph>`: with no
+/// registered font, there are no glyphs to emit. We MUST NOT fall back to
+/// Parley's default (system) fonts - that would silently render text with a
+/// wrong font, violating the document-fonts decision. An empty result makes
+/// the failure visible (text is absent) rather than silently wrong.
 pub(crate) fn shape_with_family(
     fcx: &mut FontContext,
     text: &str,
     size: f64,
     family_name: Option<&str>,
 ) -> Vec<ShapedGlyph> {
+    let family_name = match family_name {
+        Some(name) => name,
+        // No registered font available -> no glyphs (not a system-font fallback).
+        None => return Vec::new(),
+    };
     let mut lcx: LayoutContext = LayoutContext::new();
     let mut builder = lcx.ranged_builder(fcx, text, 1.0, false);
     builder.push_default(StyleProperty::FontSize(size as f32));
     builder.push_default(StyleProperty::FontWeight(FontWeight::NORMAL));
     builder.push_default(StyleProperty::FontStyle(ParleyFontStyle::Normal));
-    if let Some(name) = family_name {
-        builder.push_default(StyleProperty::FontFamily(FontFamily::named(name)));
-    }
+    builder.push_default(StyleProperty::FontFamily(FontFamily::named(family_name)));
     // Disable ligatures: liga=0 (keeps 1:1 char<->glyph for delta alignment).
     let liga_off = [FontFeature::new(Tag::from_bytes(*b"liga"), 0)];
     builder.push_default(StyleProperty::FontFeatures(liga_off.as_slice().into()));
@@ -154,5 +160,23 @@ mod tests {
             "shaping is deterministic for the same font + text"
         );
         assert_eq!(glyphs_a.len(), 2, "2 glyphs for 'Hi'");
+    }
+
+    #[test]
+    fn shape_garbage_font_returns_no_glyphs_not_system_fonts() {
+        // Regression: when font registration fails (family None), shape_text
+        // MUST return an empty Vec instead of silently shaping with Parley's
+        // default system fonts. Garbage bytes are not a valid font, so
+        // register_font returns None -> shape_with_family short-circuits to
+        // Vec::new(). On the old code this returned 5 system-font glyphs for
+        // "Hello"; with the fix it returns none.
+        let garbage_blob = peniko::Blob::new(Arc::new(b"not a font".to_vec()));
+        let garbage_font = FontData::new(garbage_blob, 0);
+        let glyphs = shape_text("Hello", &garbage_font, 12.0);
+        assert!(
+            glyphs.is_empty(),
+            "garbage font -> no glyphs (not system-font fallback); got {} glyphs",
+            glyphs.len()
+        );
     }
 }
