@@ -4,8 +4,11 @@ pub mod abbreviated;
 pub mod error;
 pub mod package;
 pub mod parse;
+pub mod save;
+pub mod serialize;
 pub mod zip_util;
 
 pub use error::{LoadReport, OfdError, OfdWarning, ResourceKind};
 pub use package::{EntryKind, PackageHandle, PkgEntry};
 pub use parse::parse_ofd;
+pub use save::save_ofd;
