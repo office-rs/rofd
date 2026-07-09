@@ -5,7 +5,7 @@ members = ["crates/dom", "crates/io"]
 [workspace.dependencies]
 rofd-dom = { path = "crates/dom" }
 rofd-io = { path = "crates/io" }
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 quick-xml = "0.36"
