@@ -10,3 +10,7 @@ parley = { workspace = true }
 peniko = { workspace = true }
 kurbo = { workspace = true }
 image = { workspace = true }
+
+[dev-dependencies]
+rofd-io = { workspace = true }
+zip = { workspace = true }

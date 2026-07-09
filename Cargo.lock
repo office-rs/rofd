@@ -1225,7 +1225,9 @@ dependencies = [
  "parley",
  "peniko",
  "rofd-dom",
+ "rofd-io",
  "vello",
+ "zip",
 ]
 
 [[package]]
