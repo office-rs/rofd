@@ -59,6 +59,31 @@ impl AnnotationModel {
     pub fn for_page(&self, page: &PageId) -> &[Annotation] {
         self.by_page.get(page).map(Vec::as_slice).unwrap_or(&[])
     }
+
+    /// Find an annotation by id (searches all pages).
+    pub fn find(&self, id: &AnnotationId) -> Option<&Annotation> {
+        self.by_page.values().flatten().find(|a| &a.id == id)
+    }
+
+    /// Find an annotation mutably by id.
+    pub fn find_mut(&mut self, id: &AnnotationId) -> Option<&mut Annotation> {
+        self.by_page.values_mut().flatten().find(|a| &a.id == id)
+    }
+
+    /// Insert an annotation onto its page (ann.page determines the page).
+    pub fn insert(&mut self, ann: Annotation) {
+        self.by_page.entry(ann.page.clone()).or_default().push(ann);
+    }
+
+    /// Remove an annotation by id. Returns the removed annotation, or None if not found.
+    pub fn remove(&mut self, id: &AnnotationId) -> Option<Annotation> {
+        for anns in self.by_page.values_mut() {
+            if let Some(pos) = anns.iter().position(|a| &a.id == id) {
+                return Some(anns.remove(pos));
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]
@@ -195,5 +220,65 @@ mod tests {
             AnnotationKind::Watermark,
         );
         assert_round_trips(&ann);
+    }
+
+    fn sample_ann(id: &str, page: &str) -> Annotation {
+        Annotation {
+            id: AnnotationId(uuid::Uuid::parse_str(id).unwrap()),
+            kind: AnnotationKind::Note,
+            page: PageId::new(page),
+            creator: "tester".into(),
+            created: 0, modified: 0, reply_to: None,
+            payload: AnnotationPayload::Note {
+                rect: Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 },
+                color: Color::Rgb(0, 0, 0),
+                content: "hi".into(),
+                icon: NoteIcon::Note,
+            },
+        }
+    }
+
+    #[test]
+    fn find_returns_annotation_by_id() {
+        let mut m = AnnotationModel::default();
+        let ann = sample_ann("00000000-0000-0000-0000-000000000001", "P0");
+        m.insert(ann.clone());
+        assert_eq!(m.find(&ann.id).map(|a| a.id.0), Some(ann.id.0));
+    }
+
+    #[test]
+    fn find_mut_allows_in_place_edit() {
+        let mut m = AnnotationModel::default();
+        let ann = sample_ann("00000000-0000-0000-0000-000000000002", "P0");
+        m.insert(ann.clone());
+        if let Some(a) = m.find_mut(&ann.id) {
+            a.creator = "changed".into();
+        }
+        assert_eq!(m.find(&ann.id).unwrap().creator, "changed");
+    }
+
+    #[test]
+    fn insert_places_on_correct_page() {
+        let mut m = AnnotationModel::default();
+        let ann = sample_ann("00000000-0000-0000-0000-000000000003", "P5");
+        m.insert(ann);
+        assert_eq!(m.by_page.get(&PageId::new("P5")).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn remove_returns_and_deletes() {
+        let mut m = AnnotationModel::default();
+        let ann = sample_ann("00000000-0000-0000-0000-000000000004", "P0");
+        m.insert(ann.clone());
+        let removed = m.remove(&ann.id);
+        assert_eq!(removed.map(|a| a.id.0), Some(ann.id.0));
+        assert!(m.find(&ann.id).is_none());
+    }
+
+    #[test]
+    fn remove_missing_returns_none() {
+        let mut m = AnnotationModel::default();
+        let id = AnnotationId::new();
+        assert!(m.remove(&id).is_none());
     }
 }

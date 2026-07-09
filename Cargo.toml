@@ -1,11 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/dom", "crates/io", "crates/render"]
+members = ["crates/dom", "crates/io", "crates/render", "crates/editor"]
 
 [workspace.dependencies]
 rofd-dom = { path = "crates/dom" }
 rofd-io = { path = "crates/io" }
 rofd-render = { path = "crates/render" }
+rofd-editor = { path = "crates/editor" }
 serde = { version = "1", features = ["derive", "rc"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
