@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use rofd_render::{build_body_scene, FontStore};
+use rofd_render::{build_annotation_scene, build_body_scene, FontStore};
 
 #[path = "../../io/tests/fixtures/fixtures.rs"]
 mod fixtures;
@@ -30,4 +30,16 @@ fn body_scene_builds_for_fixture_page() {
     // encoded for the path + text objects). We do not assert on vello internals
     // beyond this - the gate is "builds without panic".
     let _ = scene.encoding();
+}
+
+#[test]
+fn annotation_scene_builds_for_fixture() {
+    let bytes = fixtures::build_minimal_ofd();
+    let report = rofd_io::parse_ofd(&bytes).unwrap();
+    let font_bytes = Arc::new(include_bytes!("fixtures/fonts/TestFont.ttf").to_vec());
+    let fonts = FontStore::from_resources(&report.document.resources, font_bytes);
+    let page = &report.document.pages[0];
+    let anns = report.document.annotations.for_page(&page.id);
+    let _scene = build_annotation_scene(anns, &report.document.resources, &fonts);
+    // No panic; overlay built.
 }
