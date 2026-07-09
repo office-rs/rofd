@@ -2,4 +2,4 @@
 
 pub mod text;
 
-pub use text::FontStore;
+pub use text::{shape_text, FontStore, ShapedGlyph};

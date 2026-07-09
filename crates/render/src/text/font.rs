@@ -1,8 +1,12 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use peniko::FontData;
 use rofd_dom::{FontId, Resources};
+
+use super::shape::{register_font, shape_with_family, ShapedGlyph};
 
 /// Holds document fonts (from `Resources.font_data`) + a default fallback font,
 /// resolved to `peniko::FontData` for Vello `draw_glyphs`.
@@ -11,23 +15,57 @@ use rofd_dom::{FontId, Resources};
 /// `linebender_resource_handle`); `Scene::draw_glyphs` takes `&FontData`.
 /// `Blob::new` wraps an `Arc<dyn AsRef<[u8]> + Send + Sync>` - an `Arc<Vec<u8>>`
 /// coerces without copying the font bytes.
+///
+/// In addition to the `FontData` handles (for Vello), the store also owns a
+/// `parley::FontContext` (font database for shaping) with every document font +
+/// the default font registered. [`Self::shape`] reuses this single `FontContext`
+/// across calls (preferred over [`shape_text`](super::shape_text), which creates
+/// a fresh one per call).
+///
+/// The `FontContext` is shared via `Rc<RefCell<...>>` because Parley's
+/// `ranged_builder` requires `&mut FontContext` while `shape` exposes `&self`.
+/// `Rc<RefCell>` is single-threaded; the render crate builds scenes
+/// single-threaded.
 #[derive(Clone)]
 pub struct FontStore {
     fonts: HashMap<FontId, FontData>,
     default: Option<FontData>,
+    /// Shared Parley font database (all document + default fonts registered).
+    font_cx: Rc<RefCell<parley::FontContext>>,
+    /// Registered family name per document font id (for `shape`).
+    families: HashMap<FontId, String>,
+    /// Registered family name for the default font.
+    default_family: Option<String>,
 }
 
 impl FontStore {
     /// Build from document resources + a default font (raw bytes).
     pub fn from_resources(res: &Resources, default_bytes: Arc<Vec<u8>>) -> Self {
         let mut fonts = HashMap::new();
+        let mut families = HashMap::new();
+        let mut font_cx = parley::FontContext::new();
+
         for (id, bytes) in &res.font_data {
             if let Some(font) = make_font(bytes.clone()) {
+                if let Some(family) = register_font(&mut font_cx, &font) {
+                    families.insert(id.clone(), family);
+                }
                 fonts.insert(id.clone(), font);
             }
         }
+
         let default = make_font(default_bytes);
-        Self { fonts, default }
+        let default_family = default
+            .as_ref()
+            .and_then(|font| register_font(&mut font_cx, font));
+
+        Self {
+            fonts,
+            default,
+            font_cx: Rc::new(RefCell::new(font_cx)),
+            families,
+            default_family,
+        }
     }
 
     /// Resolve a document font by id. `None` if the id has no font bytes.
@@ -43,6 +81,24 @@ impl FontStore {
     /// Resolve a font by id, falling back to the default.
     pub fn resolve_or_default(&self, id: &FontId) -> Option<&FontData> {
         self.fonts.get(id).or(self.default.as_ref())
+    }
+
+    /// Shape `text` with the document font for `font_id` (falling back to the
+    /// default font's family if `font_id` is unknown), at `size`.
+    ///
+    /// Reuses the store's shared `FontContext` (registered in
+    /// [`Self::from_resources`]). Ligatures OFF (1:1 char<->glyph).
+    ///
+    /// Returns glyph IDs + the shaper's natural positions. The body scene
+    /// ignores x/y and uses document deltas; annotation text uses x/y.
+    pub fn shape(&self, font_id: &FontId, text: &str, size: f64) -> Vec<ShapedGlyph> {
+        let family = self
+            .families
+            .get(font_id)
+            .map(String::as_str)
+            .or(self.default_family.as_deref());
+        let mut fcx = self.font_cx.borrow_mut();
+        shape_with_family(&mut fcx, text, size, family)
     }
 }
 
@@ -78,6 +134,38 @@ mod tests {
         assert!(
             store.resolve(&FontId::new("missing")).is_none(),
             "no document font for unknown id"
+        );
+    }
+
+    #[test]
+    fn font_store_shape_hello_with_document_font() {
+        let font_bytes =
+            include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        let mut res = Resources::default();
+        res.font_data
+            .insert(FontId::new("F1"), Arc::new(font_bytes.to_vec()));
+        let store = FontStore::from_resources(&res, Arc::new(font_bytes.to_vec()));
+
+        let glyphs = store.shape(&FontId::new("F1"), "Hello", 12.0);
+        assert_eq!(glyphs.len(), 5, "5 glyphs for 5 chars (ligatures off)");
+        assert!(
+            glyphs.iter().all(|g| g.glyph_id != 0),
+            "all glyphs have valid ids"
+        );
+    }
+
+    #[test]
+    fn font_store_shape_falls_back_to_default_family() {
+        // An unknown font id should still shape using the default font's family.
+        let font_bytes =
+            include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        let store = FontStore::from_resources(&Resources::default(), Arc::new(font_bytes.to_vec()));
+
+        let glyphs = store.shape(&FontId::new("missing"), "Hi", 16.0);
+        assert_eq!(glyphs.len(), 2, "2 glyphs for 'Hi' via default font");
+        assert!(
+            glyphs.iter().all(|g| g.glyph_id != 0),
+            "all glyphs have valid ids"
         );
     }
 }
