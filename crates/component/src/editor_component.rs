@@ -49,6 +49,36 @@ impl EditorComponent {
     pub fn is_modified(&self) -> bool { self.modified }
     pub fn set_clock(&mut self, author: String, ts: i64) { self.editor.set_clock(author, ts); }
 
+    // Command pass-throughs. The host calls these for programmatic annotation
+    // manipulation; handle_event is for keyboard/mouse. Both paths go through
+    // after_annotation_change -> cache invalidate + on_change.
+    pub fn create_annotation(
+        &mut self, kind: rofd_dom::AnnotationKind, page: rofd_dom::PageId,
+        payload: rofd_dom::AnnotationPayload,
+    ) -> rofd_dom::AnnotationId {
+        let id = self.editor.create_annotation(kind, page, payload);
+        self.after_annotation_change();
+        self.fire_selection_change();
+        id
+    }
+
+    pub fn delete_annotation(&mut self, id: &rofd_dom::AnnotationId) {
+        self.editor.delete_annotation(id);
+        self.after_annotation_change();
+        self.fire_selection_change();
+        self.fire_cursor_change();
+    }
+
+    pub fn move_annotation(&mut self, id: &rofd_dom::AnnotationId, dx: f64, dy: f64) {
+        self.editor.move_annotation(id, dx, dy);
+        self.after_annotation_change();
+    }
+
+    pub fn resize_annotation(&mut self, id: &rofd_dom::AnnotationId, new_rect: rofd_dom::Rect) {
+        self.editor.resize_annotation(id, new_rect);
+        self.after_annotation_change();
+    }
+
     pub fn render(&mut self, target: &mut dyn RenderTarget) {
         let scene = self.render.composite(self.editor.document(), &self.viewport, &mut self.cache);
         target.draw_scene(&scene);
