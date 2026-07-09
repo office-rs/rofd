@@ -10,6 +10,7 @@ use crate::abbreviated::parse_abbreviated;
 use crate::error::OfdError;
 use crate::parse::attr;
 use crate::parse::document::DocHeader;
+use crate::parse::parse_rect;
 
 pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result<Page, OfdError> {
     let mut reader = Reader::from_str(page_xml);
@@ -28,65 +29,22 @@ pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result
     let mut in_text_code = false;
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => match e.name().local_name().as_ref() {
-                b"PhysicalBox" => page.physical_box = parse_rect(&e),
-                b"Layer" => {
+            Ok(Event::Start(e)) => handle_element_start(&e, &mut page, &mut current_layer, &mut current_text, &mut pending_text_delta, &mut pending_text_body, &mut in_text_code),
+            Ok(Event::Empty(e)) => {
+                let local = e.name().local_name();
+                if local.as_ref() == b"Layer" {
+                    // Empty <ofd:Layer/> has no End event; push immediately so the
+                    // layer survives (write_ofd emits self-closing Layer tags).
                     let lt = match attr(&e, "Type").as_deref() {
                         Some("Foreground") => LayerType::Foreground,
                         Some("Background") => LayerType::Background,
                         _ => LayerType::Body,
                     };
-                    current_layer = Some(Layer { layer_type: lt, objects: vec![] });
+                    page.layers.push(Layer { layer_type: lt, objects: vec![] });
+                } else {
+                    handle_element_start(&e, &mut page, &mut current_layer, &mut current_text, &mut pending_text_delta, &mut pending_text_body, &mut in_text_code);
                 }
-                b"TextObject" => {
-                    current_text = Some(TextObject {
-                        id: ObjectId::new(attr(&e, "ID").unwrap_or_default()),
-                        boundary: parse_rect_attr(&e, "Boundary"),
-                        ctm: attr(&e, "CTM").and_then(parse_ctm),
-                        font: FontId::new(attr(&e, "Font").unwrap_or_default()),
-                        size: attr(&e, "Size").and_then(|s| s.parse().ok()).unwrap_or(0.0),
-                        fill: None,
-                        codes: vec![],
-                    });
-                }
-                b"FillColor" | b"StrokeColor" => {
-                    if let Some(c) = attr(&e, "Color").and_then(parse_color) {
-                        if e.name().local_name().as_ref() == b"FillColor" {
-                            if let Some(t) = current_text.as_mut() { t.fill = Some(c); }
-                        }
-                    }
-                }
-                b"TextCode" => {
-                    in_text_code = true;
-                    pending_text_delta = attr(&e, "DeltaX");
-                    pending_text_body = None;
-                }
-                b"ImageObject" => {
-                    if let Some(l) = current_layer.as_mut() {
-                        l.objects.push(PageObject::Image(ImageObject {
-                            id: ObjectId::new(attr(&e, "ID").unwrap_or_default()),
-                            boundary: parse_rect_attr(&e, "Boundary"),
-                            ctm: attr(&e, "CTM").and_then(parse_ctm),
-                            image: ImageId::new(attr(&e, "ResourceID").unwrap_or_default()),
-                        }));
-                    }
-                }
-                b"PathObject" => {
-                    if let Some(l) = current_layer.as_mut() {
-                        l.objects.push(PageObject::Path(PathObject {
-                            id: ObjectId::new(attr(&e, "ID").unwrap_or_default()),
-                            boundary: parse_rect_attr(&e, "Boundary"),
-                            ctm: attr(&e, "CTM").and_then(parse_ctm),
-                            fill: None,
-                            stroke: None,
-                            line_width: attr(&e, "LineWidth").and_then(|s| s.parse().ok()).unwrap_or(0.0),
-                            data: PathData::default(),
-                        }));
-                    }
-                }
-                b"AbbreviatedData" => { /* text captured in Text event */ }
-                _ => {}
-            },
+            }
             Ok(Event::Text(t)) => {
                 let s = t.unescape().map(|c| c.into_owned()).unwrap_or_default();
                 if in_text_code {
@@ -131,20 +89,94 @@ pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result
     Ok(page)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn handle_element_start(
+    e: &BytesStart,
+    page: &mut Page,
+    current_layer: &mut Option<Layer>,
+    current_text: &mut Option<TextObject>,
+    pending_text_delta: &mut Option<String>,
+    pending_text_body: &mut Option<String>,
+    in_text_code: &mut bool,
+) {
+    match e.name().local_name().as_ref() {
+        b"PhysicalBox" => page.physical_box = parse_rect(e),
+        b"Layer" => {
+            let lt = match attr(e, "Type").as_deref() {
+                Some("Foreground") => LayerType::Foreground,
+                Some("Background") => LayerType::Background,
+                _ => LayerType::Body,
+            };
+            *current_layer = Some(Layer { layer_type: lt, objects: vec![] });
+        }
+        b"TextObject" => {
+            *current_text = Some(TextObject {
+                id: ObjectId::new(attr(e, "ID").unwrap_or_default()),
+                boundary: parse_rect_attr(e, "Boundary"),
+                ctm: attr(e, "CTM").and_then(parse_ctm),
+                font: FontId::new(attr(e, "Font").unwrap_or_default()),
+                size: attr(e, "Size").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                fill: None,
+                codes: vec![],
+            });
+        }
+        b"FillColor" | b"StrokeColor" => {
+            if let Some(c) = attr(e, "Color").and_then(parse_color) {
+                let local = e.name().local_name();
+                if local.as_ref() == b"FillColor" {
+                    if let Some(t) = current_text.as_mut() { t.fill = Some(c); }
+                }
+                // Also apply to the last PathObject in the current layer:
+                // FillColor -> p.fill, StrokeColor -> p.stroke.
+                if let Some(PageObject::Path(p)) =
+                    current_layer.as_mut().and_then(|l| l.objects.last_mut())
+                {
+                    if local.as_ref() == b"FillColor" {
+                        p.fill = Some(c);
+                    } else {
+                        p.stroke = Some(c);
+                    }
+                }
+            }
+        }
+        b"TextCode" => {
+            *in_text_code = true;
+            *pending_text_delta = attr(e, "DeltaX");
+            *pending_text_body = None;
+        }
+        b"ImageObject" => {
+            if let Some(l) = current_layer.as_mut() {
+                l.objects.push(PageObject::Image(ImageObject {
+                    id: ObjectId::new(attr(e, "ID").unwrap_or_default()),
+                    boundary: parse_rect_attr(e, "Boundary"),
+                    ctm: attr(e, "CTM").and_then(parse_ctm),
+                    image: ImageId::new(attr(e, "ResourceID").unwrap_or_default()),
+                }));
+            }
+        }
+        b"PathObject" => {
+            if let Some(l) = current_layer.as_mut() {
+                l.objects.push(PageObject::Path(PathObject {
+                    id: ObjectId::new(attr(e, "ID").unwrap_or_default()),
+                    boundary: parse_rect_attr(e, "Boundary"),
+                    ctm: attr(e, "CTM").and_then(parse_ctm),
+                    fill: None,
+                    stroke: None,
+                    line_width: attr(e, "LineWidth").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                    data: PathData::default(),
+                }));
+            }
+        }
+        b"AbbreviatedData" => { /* text captured in Text event */ }
+        _ => {}
+    }
+}
+
 fn parse_delta_x(s: Option<&str>, glyph_count: usize) -> Vec<(f32, f32)> {
     let s = match s { Some(s) => s, None => return vec![(0.0, 0.0); glyph_count.max(1)] };
     let nums: Vec<f32> = s.split_whitespace().filter_map(|t| t.parse().ok()).collect();
     if nums.is_empty() { return vec![(0.0, 0.0); glyph_count.max(1)]; }
     (0..glyph_count.max(1)).map(|i| (nums.get(i).copied().unwrap_or(0.0), 0.0)).collect()
-}
-
-fn parse_rect(e: &BytesStart) -> Rect {
-    Rect {
-        x: attr(e, "x").and_then(|s| s.parse().ok()).unwrap_or(0.0),
-        y: attr(e, "y").and_then(|s| s.parse().ok()).unwrap_or(0.0),
-        w: attr(e, "w").and_then(|s| s.parse().ok()).unwrap_or(0.0),
-        h: attr(e, "h").and_then(|s| s.parse().ok()).unwrap_or(0.0),
-    }
 }
 
 fn parse_rect_attr(e: &BytesStart, name: &str) -> Rect {

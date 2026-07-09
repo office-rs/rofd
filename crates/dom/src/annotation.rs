@@ -64,24 +64,136 @@ impl AnnotationModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::{FontId, ImageId};
+    use crate::object::{NoteIcon, ShapeKind};
+    use crate::primitives::{Color, PathData, PathCommand, Point, Rect};
 
-    #[test]
-    fn annotation_round_trips_serde_json() {
-        let ann = Annotation {
+    fn base_ann(payload: AnnotationPayload, kind: AnnotationKind) -> Annotation {
+        Annotation {
             id: AnnotationId::new(),
-            kind: AnnotationKind::Highlight,
+            kind,
             page: PageId::new("P0"),
             creator: "张三".into(),
             created: 1_700_000_000_000,
             modified: 1_700_000_000_000,
             reply_to: None,
-            payload: AnnotationPayload::Markup {
+            payload,
+        }
+    }
+
+    fn assert_round_trips(ann: &Annotation) {
+        let s = serde_json::to_string(ann).unwrap();
+        let back: Annotation = serde_json::from_str(&s).unwrap();
+        assert_eq!(ann, &back);
+    }
+
+    #[test]
+    fn annotation_round_trips_serde_json() {
+        let ann = base_ann(
+            AnnotationPayload::Markup {
                 quad_points: vec![Point { x: 0.0, y: 0.0 }, Point { x: 10.0, y: 10.0 }],
                 color: Color::Rgb(255, 255, 0),
             },
-        };
-        let s = serde_json::to_string(&ann).unwrap();
-        let back: Annotation = serde_json::from_str(&s).unwrap();
-        assert_eq!(ann, back);
+            AnnotationKind::Highlight,
+        );
+        assert_round_trips(&ann);
+    }
+
+    #[test]
+    fn annotation_payload_markup_round_trips() {
+        let ann = base_ann(
+            AnnotationPayload::Markup {
+                quad_points: vec![Point { x: 1.0, y: 2.0 }, Point { x: 3.0, y: 4.0 }],
+                color: Color::Rgb(255, 0, 0),
+            },
+            AnnotationKind::Strikeout,
+        );
+        assert_round_trips(&ann);
+    }
+
+    #[test]
+    fn annotation_payload_freehand_round_trips() {
+        let ann = base_ann(
+            AnnotationPayload::Freehand {
+                path: PathData { commands: vec![PathCommand::M(0.0, 0.0), PathCommand::L(5.0, 5.0)] },
+                color: Color::Rgb(0, 0, 255),
+                width: 1.5,
+            },
+            AnnotationKind::Freehand,
+        );
+        assert_round_trips(&ann);
+    }
+
+    #[test]
+    fn annotation_payload_shape_round_trips() {
+        let ann = base_ann(
+            AnnotationPayload::Shape {
+                kind: ShapeKind::Rect,
+                rect: Rect { x: 0.0, y: 0.0, w: 40.0, h: 20.0 },
+                stroke: Color::Rgb(0, 0, 0),
+                fill: Some(Color::Rgb(255, 255, 255)),
+                width: 2.0,
+            },
+            AnnotationKind::Shape(ShapeKind::Rect),
+        );
+        assert_round_trips(&ann);
+    }
+
+    #[test]
+    fn annotation_payload_note_round_trips() {
+        let ann = base_ann(
+            AnnotationPayload::Note {
+                rect: Rect { x: 10.0, y: 10.0, w: 40.0, h: 20.0 },
+                color: Color::Rgb(255, 200, 0),
+                content: "a note".into(),
+                icon: NoteIcon::Help,
+            },
+            AnnotationKind::Note,
+        );
+        assert_round_trips(&ann);
+    }
+
+    #[test]
+    fn annotation_payload_textbox_round_trips() {
+        let ann = base_ann(
+            AnnotationPayload::TextBox {
+                rect: Rect { x: 0.0, y: 0.0, w: 100.0, h: 30.0 },
+                content: "hello".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+            },
+            AnnotationKind::TextBox,
+        );
+        assert_round_trips(&ann);
+    }
+
+    #[test]
+    fn annotation_payload_stamp_round_trips() {
+        let ann = base_ann(
+            AnnotationPayload::Stamp {
+                rect: Rect { x: 0.0, y: 0.0, w: 50.0, h: 50.0 },
+                image: ImageId::new("Img_0"),
+            },
+            AnnotationKind::Stamp,
+        );
+        assert_round_trips(&ann);
+    }
+
+    #[test]
+    fn annotation_payload_watermark_round_trips() {
+        let ann = base_ann(
+            AnnotationPayload::Watermark {
+                rect: Rect { x: 0.0, y: 0.0, w: 200.0, h: 100.0 },
+                content: "DRAFT".into(),
+                opacity: 0.3,
+                angle: 45.0,
+                font: FontId::new("F2"),
+                size: 48.0,
+                color: Color::Rgb(200, 200, 200),
+            },
+            AnnotationKind::Watermark,
+        );
+        assert_round_trips(&ann);
     }
 }

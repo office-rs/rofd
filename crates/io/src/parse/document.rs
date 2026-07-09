@@ -1,10 +1,10 @@
-use quick_xml::events::{BytesStart, Event};
+use quick_xml::events::Event;
 use quick_xml::Reader;
 
 use rofd_dom::{DocMeta, PageId, Rect};
 
 use crate::error::OfdError;
-use crate::parse::attr;
+use crate::parse::{attr, parse_rect};
 
 pub struct PageRef {
     pub id: PageId,
@@ -39,13 +39,4 @@ pub fn parse_document(doc_xml: &str) -> Result<DocHeader, OfdError> {
         }
     }
     Ok(header)
-}
-
-fn parse_rect(e: &BytesStart) -> Rect {
-    Rect {
-        x: attr(e, "x").and_then(|s| s.parse().ok()).unwrap_or(0.0),
-        y: attr(e, "y").and_then(|s| s.parse().ok()).unwrap_or(0.0),
-        w: attr(e, "w").and_then(|s| s.parse().ok()).unwrap_or(0.0),
-        h: attr(e, "h").and_then(|s| s.parse().ok()).unwrap_or(0.0),
-    }
 }

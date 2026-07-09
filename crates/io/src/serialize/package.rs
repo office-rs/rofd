@@ -54,7 +54,7 @@ pub fn write_ofd(doc: &OfdDocument) -> Result<Vec<u8>, OfdError> {
         page_xml.push_str("  </ofd:Content>\n");
         let anns = doc.annotations.for_page(&page.id);
         if !anns.is_empty() {
-            page_xml.push_str("  <ofd:Annotation><ofd:File Loc=\"Page_0/Annotation.xml\"/></ofd:Annotation>\n");
+            page_xml.push_str(&format!("  <ofd:Annotation><ofd:File Loc=\"Page_{i}/Annotation.xml\"/></ofd:Annotation>\n"));
             let xml = serialize_page_annotations(&page.id, anns);
             entries.push((format!("Doc_0/Pages/Page_{i}/Annotation.xml"), xml.into_bytes()));
         }

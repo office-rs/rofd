@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use quick_xml::events::BytesStart;
 
-use rofd_dom::OfdDocument;
+use rofd_dom::{OfdDocument, Rect};
 
 use crate::error::{LoadReport, OfdError, OfdWarning};
 use crate::package::{EntryKind, PackageHandle, PkgEntry};
@@ -16,6 +16,16 @@ use crate::zip_util::read_all_entries;
 
 pub fn attr(e: &BytesStart, name: &str) -> Option<String> {
     e.attributes().flatten().find(|a| a.key.as_ref() == name.as_bytes()).map(|a| String::from_utf8_lossy(&a.value).into_owned())
+}
+
+/// Parse a Rect from x/y/w/h attributes (e.g. PhysicalBox).
+pub(crate) fn parse_rect(e: &BytesStart) -> Rect {
+    Rect {
+        x: attr(e, "x").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+        y: attr(e, "y").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+        w: attr(e, "w").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+        h: attr(e, "h").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+    }
 }
 
 pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
@@ -31,9 +41,10 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
         entries.push(PkgEntry { name: name.clone(), kind, bytes: Arc::new(data.clone()) });
     }
     let doc_root = ofd_xml::parse_doc_root(&ofd_xml)?;
+    let meta = ofd_xml::parse_doc_meta(&ofd_xml)?;
     let doc_xml = entry_str(&entries, &doc_root)?;
     let header = document::parse_document(&doc_xml)?;
-    let mut doc = OfdDocument { meta: header.meta.clone(), ..OfdDocument::default() };
+    let mut doc = OfdDocument { meta, ..OfdDocument::default() };
     for pref in &header.pages {
         let page_path = join(&doc_root, &pref.base_loc);
         let page_xml = entry_str(&entries, &page_path)?;

@@ -1,4 +1,4 @@
-use rofd_dom::{AnnotationKind, AnnotationPayload, FontId, LayerType, PageObject};
+use rofd_dom::{AnnotationKind, AnnotationPayload, Color, FontId, LayerType, PageObject};
 
 #[path = "fixtures/fixtures.rs"]
 mod fixtures;
@@ -43,4 +43,39 @@ fn parse_collects_annotation_into_model() {
     assert_eq!(anns.len(), 1);
     assert!(matches!(anns[0].kind, AnnotationKind::Highlight));
     assert!(matches!(anns[0].payload, AnnotationPayload::Markup { .. }));
+}
+
+#[test]
+fn parse_path_object_captures_stroke_color() {
+    // The fixture's PathObject has <ofd:StrokeColor Color="255 0 0"/>. Before
+    // the fix this color was parsed then discarded (stroke stayed None).
+    let bytes = fixtures::build_minimal_ofd();
+    let report = rofd_io::parse_ofd(&bytes).unwrap();
+    let page = &report.document.pages[0];
+    let body = page
+        .layers
+        .iter()
+        .find(|l| l.layer_type == LayerType::Body)
+        .expect("body layer exists");
+    let path = body
+        .objects
+        .iter()
+        .find_map(|o| match o {
+            PageObject::Path(p) => Some(p),
+            _ => None,
+        })
+        .expect("path object exists");
+    assert_eq!(path.stroke, Some(Color::Rgb(255, 0, 0)), "StrokeColor should be captured");
+}
+
+#[test]
+fn parse_populates_doc_meta_from_doc_info() {
+    // The fixture's OFD.xml has <ofd:DocInfo> with DocID/Title/Author.
+    // Before the fix these were silently dropped (meta stayed default/None).
+    let bytes = fixtures::build_minimal_ofd();
+    let report = rofd_io::parse_ofd(&bytes).unwrap();
+    let meta = &report.document.meta;
+    assert_eq!(meta.title.as_deref(), Some("fixture"), "Title should be populated from DocInfo");
+    assert_eq!(meta.author.as_deref(), Some("tester"), "Author should be populated from DocInfo");
+    assert_eq!(meta.doc_id.as_deref(), Some("doc-001"), "DocID should be populated from DocInfo");
 }
