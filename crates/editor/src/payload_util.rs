@@ -1,4 +1,4 @@
-use rofd_dom::{AnnotationPayload, PathCommand, Rect};
+use rofd_dom::{AnnotationPayload, Color, PathCommand, Rect};
 
 /// Shift an annotation's geometry by (dx, dy).
 pub fn move_payload(p: &mut AnnotationPayload, dx: f64, dy: f64) {
@@ -34,6 +34,28 @@ fn shift_cmd(cmd: &mut PathCommand, dx: f64, dy: f64) {
         PathCommand::Q(x1, y1, x, y) => { *x1 += dx; *y1 += dy; *x += dx; *y += dy; }
         PathCommand::A(_a, _b, _c, _d, x, y) => { *x += dx; *y += dy; }
         PathCommand::Z => {}
+    }
+}
+
+/// Set the primary color of an annotation (no-op for Stamp which has no color).
+pub fn set_color(p: &mut AnnotationPayload, color: Color) {
+    match p {
+        AnnotationPayload::Markup { color: c, .. } => *c = color,
+        AnnotationPayload::Freehand { color: c, .. } => *c = color,
+        AnnotationPayload::Shape { stroke: c, .. } => *c = color,
+        AnnotationPayload::Note { color: c, .. } => *c = color,
+        AnnotationPayload::TextBox { color: c, .. } => *c = color,
+        AnnotationPayload::Watermark { color: c, .. } => *c = color,
+        AnnotationPayload::Stamp { .. } => { /* no color */ }
+    }
+}
+
+/// Set the stroke width (Freehand/Shape only; no-op otherwise).
+pub fn set_width(p: &mut AnnotationPayload, width: f64) {
+    match p {
+        AnnotationPayload::Freehand { width: w, .. } => *w = width,
+        AnnotationPayload::Shape { width: w, .. } => *w = width,
+        _ => {}
     }
 }
 

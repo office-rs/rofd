@@ -79,7 +79,7 @@ impl Editor {
     }
 
     /// Helper: build a ReplaceAnnotationStep Transaction preserving selection/cursor.
-    fn replace_txn(&self, id: AnnotationId, before: Annotation, after: Annotation) -> Transaction {
+    pub(crate) fn replace_txn(&self, id: AnnotationId, before: Annotation, after: Annotation) -> Transaction {
         Transaction {
             steps: vec![Box::new(ReplaceAnnotationStep { id, before, after })],
             selection_before: self.selection.clone(),
