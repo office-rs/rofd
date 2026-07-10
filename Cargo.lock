@@ -1695,6 +1695,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "pollster"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2560ec4d09f0d4db1fb45518d099d74954dd3da5855a0fcb84f2779b5b41a59e"
+
+[[package]]
 name = "polycool"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1901,10 +1907,12 @@ dependencies = [
 name = "rofd-native-view"
 version = "0.1.0"
 dependencies = [
+ "pollster",
  "rofd-component",
  "rofd-dom",
  "rofd-io",
  "vello",
+ "wgpu",
  "winit",
 ]
 

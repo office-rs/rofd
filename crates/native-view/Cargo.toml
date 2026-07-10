@@ -8,4 +8,6 @@ rofd-component = { workspace = true }
 rofd-io = { workspace = true }
 rofd-dom = { workspace = true }
 vello = { workspace = true }
+wgpu = { workspace = true }
 winit = { workspace = true }
+pollster = { workspace = true }
