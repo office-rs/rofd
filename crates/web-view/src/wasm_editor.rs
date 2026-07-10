@@ -40,7 +40,7 @@ pub fn parse_key(s: &str) -> Key {
         "PageUp" => Key::PageUp,
         "PageDown" => Key::PageDown,
         // Single-character keys (letters, digits, punctuation) -> Char.
-        _ if s.len() == 1 => Key::Char(s.chars().next().unwrap()),
+        _ if s.chars().count() == 1 => Key::Char(s.chars().next().unwrap()),
         _ => Key::Unidentified,
     }
 }

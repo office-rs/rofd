@@ -13,6 +13,7 @@ async function main(): Promise<void> {
 
   // Create the editor (empty font bytes for v1 - text won't render).
   const editor = await Editor.create(canvas, new Uint8Array(0));
+  editor.setClock('rofd', Date.now());
 
   function render(): void {
     editor.render();
