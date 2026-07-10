@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/dom", "crates/io", "crates/render", "crates/editor", "crates/component"]
+members = ["crates/dom", "crates/io", "crates/render", "crates/editor", "crates/component", "crates/native-view", "examples/native-app"]
 
 [workspace.dependencies]
 rofd-dom = { path = "crates/dom" }
@@ -8,6 +8,7 @@ rofd-io = { path = "crates/io" }
 rofd-render = { path = "crates/render" }
 rofd-editor = { path = "crates/editor" }
 rofd-component = { path = "crates/component" }
+rofd-native-view = { path = "crates/native-view" }
 serde = { version = "1", features = ["derive", "rc"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
@@ -18,3 +19,6 @@ parley = "0.8"
 peniko = "0.6"
 kurbo = "0.13"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+winit = "0.30"
+wgpu = "28"
+pollster = "1"
