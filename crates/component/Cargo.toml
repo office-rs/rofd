@@ -1,0 +1,10 @@
+[package]
+name = "rofd-component"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rofd-dom = { workspace = true }
+rofd-render = { workspace = true }
+rofd-editor = { workspace = true }
+vello = { workspace = true }
