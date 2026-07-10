@@ -1,0 +1,15 @@
+{
+  "name": "@rofd/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK wrapping the rofd WASM editor exports.",
+  "main": "dist/rofd_web_view.js",
+  "types": "dist/rofd_web_view.d.ts",
+  "scripts": {
+    "build:wasm": "wasm-pack build --target web --out-dir sdk/dist ../",
+    "build": "npm run build:wasm"
+  },
+  "files": [
+    "dist",
+    "src"
+  ]
+}
