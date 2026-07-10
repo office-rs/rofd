@@ -4,10 +4,18 @@
 //! The WebGPU render target (canvas -> wgpu surface -> vello renderer) is
 //! gated behind `cfg(target_arch = "wasm32")` because it uses
 //! `wgpu::SurfaceTarget::Canvas`, which only exists under wgpu's `web` cfg.
+//!
+//! [`wasm_editor::parse_key`] and its tests are **not** cfg-gated - they are
+//! pure Rust and run on native (`cargo test -p rofd-web-view`), giving TDD
+//! coverage for the JS key-string -> [`rofd_component::Key`] mapping without
+//! needing a browser.
 
+pub mod wasm_editor;
 #[cfg(target_arch = "wasm32")]
 pub mod webgpu_render_target;
 
+#[cfg(target_arch = "wasm32")]
+pub use wasm_editor::WasmEditor;
 #[cfg(target_arch = "wasm32")]
 pub use webgpu_render_target::WebGpuRenderTarget;
 
