@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/dom", "crates/io", "crates/render", "crates/editor", "crates/component", "crates/native-view", "examples/native-app"]
+members = ["crates/dom", "crates/io", "crates/render", "crates/editor", "crates/component", "crates/native-view", "crates/web-view", "examples/native-app"]
 
 [workspace.dependencies]
 rofd-dom = { path = "crates/dom" }
@@ -9,8 +9,9 @@ rofd-render = { path = "crates/render" }
 rofd-editor = { path = "crates/editor" }
 rofd-component = { path = "crates/component" }
 rofd-native-view = { path = "crates/native-view" }
+rofd-web-view = { path = "crates/web-view" }
 serde = { version = "1", features = ["derive", "rc"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "serde", "js"] }
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 quick-xml = "0.36"
 thiserror = "1"
@@ -22,3 +23,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 winit = "0.30"
 wgpu = "28"
 pollster = "1"
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["HtmlCanvasElement", "Window", "Document", "Element", "Performance", "ResizeObserver", "ResizeObserverEntry", "KeyboardEvent", "MouseEvent", "WheelEvent", "EventTarget"] }
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
