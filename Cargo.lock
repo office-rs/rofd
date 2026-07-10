@@ -1962,6 +1962,7 @@ dependencies = [
  "vello",
  "wasm-bindgen",
  "web-sys",
+ "wgpu",
 ]
 
 [[package]]

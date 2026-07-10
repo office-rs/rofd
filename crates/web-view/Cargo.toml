@@ -12,6 +12,13 @@ rofd-io = { workspace = true }
 rofd-dom = { workspace = true }
 vello = { workspace = true }
 wasm-bindgen = { workspace = true }
-web-sys = { workspace = true }
 js-sys = { workspace = true }
 console_error_panic_hook = { workspace = true }
+
+[dependencies.wgpu]
+workspace = true
+features = ["webgpu", "wgsl", "fragile-send-sync-non-atomic-wasm"]
+
+[dependencies.web-sys]
+workspace = true
+features = ["HtmlCanvasElement", "console"]
