@@ -1,0 +1,11 @@
+[package]
+name = "rofd-native-view"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rofd-component = { workspace = true }
+rofd-io = { workspace = true }
+rofd-dom = { workspace = true }
+vello = { workspace = true }
+winit = { workspace = true }
