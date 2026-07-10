@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/dom", "crates/io", "crates/render", "crates/editor", "crates/component", "crates/native-view"]
+members = ["crates/dom", "crates/io", "crates/render", "crates/editor", "crates/component", "crates/native-view", "examples/native-app"]
 
 [workspace.dependencies]
 rofd-dom = { path = "crates/dom" }
