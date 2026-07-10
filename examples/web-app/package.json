@@ -1,0 +1,17 @@
+{
+  "name": "rofd-web-app",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:sdk": "cd ../../crates/web-view && wasm-pack build --target web --out-dir sdk/dist"
+  },
+  "dependencies": {
+    "@rofd/sdk": "file:../../crates/web-view/sdk"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "vite": "^5.0.0"
+  }
+}

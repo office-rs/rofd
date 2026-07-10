@@ -1,0 +1,25 @@
+[package]
+name = "rofd-web-view"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rofd-component = { workspace = true }
+rofd-io = { workspace = true }
+rofd-dom = { workspace = true }
+vello = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+js-sys = { workspace = true }
+console_error_panic_hook = { workspace = true }
+
+[dependencies.wgpu]
+workspace = true
+features = ["webgpu", "wgsl", "fragile-send-sync-non-atomic-wasm"]
+
+[dependencies.web-sys]
+workspace = true
+features = ["HtmlCanvasElement", "console"]
