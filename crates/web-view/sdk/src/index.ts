@@ -50,7 +50,7 @@ interface WasmEditor {
   saveOfd(): Uint8Array;
   canUndo(): boolean;
   canRedo(): boolean;
-  setClock(author: string, ts: number): void;
+  setClock(author: string, ts: bigint): void;
   setOnChange(cb: (() => void) | null): void;
   setOnSelectionChange(cb: (() => void) | null): void;
   setOnCursorChange(cb: (() => void) | null): void;
@@ -317,7 +317,8 @@ export class Editor {
 
   /** Set the annotation clock (author + timestamp ms) for subsequent edits. */
   setClock(author: string, ts: number): void {
-    this.wasm.setClock(author, ts);
+    // i64 maps to BigInt in wasm-bindgen; convert from JS number.
+    this.wasm.setClock(author, BigInt(ts));
   }
 }
 
