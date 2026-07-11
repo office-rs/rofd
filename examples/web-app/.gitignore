@@ -1,4 +1,3 @@
 node_modules/
 dist/
 # Default CJK font (Noto Sans SC, ~16 MB) - fetched by `npm run fetch:font`.
-public/NotoSansSC-Regular.otf

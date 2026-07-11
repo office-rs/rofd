@@ -5,8 +5,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "build:sdk": "cd ../../crates/web-view && wasm-pack build --target web --out-dir sdk/dist",
-    "fetch:font": "curl -sL --fail https://cdn.jsdelivr.net/gh/notofonts/noto-cjk@main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf -o public/NotoSansSC-Regular.otf"
+    "build:sdk": "cd ../../crates/web-view && wasm-pack build --target web --out-dir sdk/dist"
   },
   "dependencies": {
     "@rofd/sdk": "file:../../crates/web-view/sdk"
