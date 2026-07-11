@@ -2,6 +2,7 @@
 name = "rofd-web-view"
 version = "0.1.0"
 edition = "2021"
+license = "GPL-3.0-or-later"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -10,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 rofd-component = { workspace = true }
 rofd-io = { workspace = true }
 rofd-dom = { workspace = true }
+rofd-editor = { workspace = true }
 vello = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
@@ -24,4 +26,4 @@ features = ["webgpu", "wgsl", "fragile-send-sync-non-atomic-wasm"]
 
 [dependencies.web-sys]
 workspace = true
-features = ["HtmlCanvasElement", "console"]
+features = ["HtmlCanvasElement", "Element", "DomRect", "console"]

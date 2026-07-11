@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use rofd_dom::OfdDocument;
 use rofd_editor::{Editor, AnnotationSelection, TextCursor};
 use rofd_render::{FontStore, PX_PER_MM, RenderEngine, Scene, Viewport};
@@ -11,10 +13,14 @@ pub struct EditorComponent {
     pub(crate) editor: Editor,
     pub(crate) render: RenderEngine,
     pub(crate) viewport: Viewport,
-    /// Cached `FontStore` (document fonts + default). Rebuilt on
+    /// Cached `FontStore` (document fonts + default + registered). Rebuilt on
     /// `load_document`/`new_document` so a large default CJK font is not
     /// re-registered every frame.
     pub(crate) font_store: Option<FontStore>,
+    /// Font bytes registered at runtime via [`Self::register_font_data`] (e.g.
+    /// by the web SDK loading fonts after construction). Folded into the
+    /// `FontStore` when it is (re)built.
+    pub(crate) registered_font_bytes: Vec<Arc<Vec<u8>>>,
     pub(crate) callbacks: Callbacks,
     pub(crate) modified: bool,
 }
@@ -27,28 +33,52 @@ impl EditorComponent {
             render: RenderEngine::new(config.default_font_bytes.clone()),
             viewport: Viewport { zoom: PX_PER_MM, page_gap, ..Default::default() },
             font_store: None,
+            registered_font_bytes: Vec::new(),
             callbacks: Callbacks::default(),
             modified: false,
         }
     }
 
-    pub fn load_document(&mut self, doc: OfdDocument) {
+    /// Build a `FontStore` from the document's fonts + the default font + any
+    /// runtime-registered fonts. Called on `load_document`/`new_document` and
+    /// lazily by `build_scene`.
+    fn build_font_store(&self) -> FontStore {
         let font_bytes = self.render.default_font_bytes.clone();
+        let mut store =
+            FontStore::from_resources(&self.editor.document().resources, font_bytes);
+        for bytes in &self.registered_font_bytes {
+            store.register_font(bytes.clone());
+        }
+        store
+    }
+
+    /// Register font data (raw bytes) at runtime - e.g. a CJK font loaded by
+    /// the web SDK after the editor is constructed. Mirrors reditor's
+    /// `register_font_data`. If a `FontStore` already exists, the font is
+    /// registered with it immediately; otherwise it is folded in when the
+    /// `FontStore` is next built (on `load_document`/`build_scene`).
+    ///
+    /// Returns `true` if the bytes parsed as a valid font.
+    pub fn register_font_data(&mut self, bytes: Vec<u8>) -> bool {
+        let bytes = Arc::new(bytes);
+        self.registered_font_bytes.push(bytes.clone());
+        if let Some(store) = self.font_store.as_mut() {
+            store.register_font(bytes)
+        } else {
+            // Will be registered when the FontStore is built.
+            true
+        }
+    }
+
+    pub fn load_document(&mut self, doc: OfdDocument) {
         self.editor.load_document(doc);
-        self.font_store = Some(FontStore::from_resources(
-            &self.editor.document().resources,
-            font_bytes,
-        ));
+        self.font_store = Some(self.build_font_store());
         self.modified = false;
     }
 
     pub fn new_document(&mut self) {
-        let font_bytes = self.render.default_font_bytes.clone();
         self.editor.load_document(OfdDocument::default());
-        self.font_store = Some(FontStore::from_resources(
-            &self.editor.document().resources,
-            font_bytes,
-        ));
+        self.font_store = Some(self.build_font_store());
         self.modified = false;
     }
 
@@ -99,9 +129,7 @@ impl EditorComponent {
     /// every frame).
     pub fn build_scene(&mut self) -> Scene {
         if self.font_store.is_none() {
-            let font_bytes = self.render.default_font_bytes.clone();
-            let resources = &self.editor.document().resources;
-            self.font_store = Some(FontStore::from_resources(resources, font_bytes));
+            self.font_store = Some(self.build_font_store());
         }
         let fonts = self.font_store.as_ref().expect("font_store initialized");
         self.render.composite(self.editor.document(), &self.viewport, fonts)

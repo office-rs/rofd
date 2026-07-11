@@ -5,13 +5,13 @@
   <title>rofd - OFD Editor</title>
   <style>
     body { margin: 0; overflow: hidden; background: #E0E0E0; }
-    canvas { display: block; width: 100vw; height: 100vh; }
+    #container { width: 100vw; height: 100vh; }
     #file-input { position: absolute; top: 10px; left: 10px; z-index: 10; }
   </style>
 </head>
 <body>
   <input type="file" id="file-input" accept=".ofd" />
-  <canvas id="canvas"></canvas>
+  <div id="container"></div>
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

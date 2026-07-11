@@ -1,17 +1,16 @@
 //! WasmEditor - wasm-bindgen surface for the rofd web editor.
 //!
-//! Wraps [`EditorComponent`] + [`WebGpuRenderTarget`] and exposes simple
-//! methods (`handle_keydown`, `handle_pointerdown`, `render`, `load_ofd`,
-//! `save_ofd`, ...) that JS calls from DOM event listeners.
+//! Mirrors reditor's `WasmEditor`: created via the `create_wasm_editor` factory
+//! (WebGPU init + warmup), then the SDK registers fonts (`register_font`),
+//! wires JS callbacks (`set_on_*`), and feeds DOM events (`handle_*`) from
+//! `requestAnimationFrame` + event listeners.
 //!
 //! # Module gating
 //! The `WasmEditor` struct + its `#[wasm_bindgen]` impl are gated behind
 //! `cfg(target_arch = "wasm32")` because they use `wasm_bindgen`, `web_sys`,
-//! and [`WebGpuRenderTarget`] (which itself is wasm32-only).
+//! and [`WebGpuRenderTarget`](crate::WebGpuRenderTarget) (wasm32-only).
 //!
-//! [`parse_key`] and its tests are **not** cfg-gated - they are pure Rust and
-//! run on native (`cargo test -p rofd-web-view`), giving TDD coverage without
-//! needing a browser.
+//! [`parse_key`] and its tests are NOT cfg-gated - pure Rust, run on native.
 
 use rofd_component::Key;
 
@@ -49,146 +48,184 @@ pub fn parse_key(s: &str) -> Key {
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_impl {
-    use std::sync::Arc;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
-    use rofd_component::{
-        EditorComponent, EditorConfig, Modifiers, MouseButton, ViewEvent,
-    };
+    use rofd_component::{EditorComponent, EditorConfig, Modifiers, MouseButton, ViewEvent};
+    use rofd_dom::OfdDocument;
+    use rofd_editor::{AnnotationSelection, TextCursor};
     use rofd_io::{parse_ofd, write_ofd};
     use wasm_bindgen::prelude::*;
 
     use crate::webgpu_render_target::WebGpuRenderTarget;
     use crate::wasm_editor::parse_key;
 
+    /// JS callback slots. Each is an `Rc<RefCell<Option<Function>>>` so the
+    /// Rust bridge closures (registered in [`WasmEditor::setup_bridge_callbacks`])
+    /// can read the current slot, and JS can swap the callback via `set_on_*`
+    /// at any time. Single-threaded (wasm32).
+    #[derive(Default)]
+    pub(crate) struct JsCallbacks {
+        pub on_change: Rc<RefCell<Option<js_sys::Function>>>,
+        pub on_selection_change: Rc<RefCell<Option<js_sys::Function>>>,
+        pub on_cursor_change: Rc<RefCell<Option<js_sys::Function>>>,
+        pub on_save_request: Rc<RefCell<Option<js_sys::Function>>>,
+    }
+
     /// wasm-bindgen editor surface for the web.
     ///
     /// Owns an [`EditorComponent`] (model + render) and a [`WebGpuRenderTarget`]
-    /// (canvas -> WebGPU -> vello). JS creates this via [`WasmEditor::new`],
-    /// then calls the `handle_*` / `render` / `load_ofd` / `save_ofd` methods
-    /// from DOM event listeners.
+    /// (canvas -> WebGPU -> vello). The SDK creates this via
+    /// [`create_wasm_editor`](crate::create_wasm_editor), then registers fonts
+    /// and JS callbacks, and feeds DOM events from listeners.
     #[wasm_bindgen]
     pub struct WasmEditor {
         component: EditorComponent,
         render_target: WebGpuRenderTarget,
+        callbacks: JsCallbacks,
     }
 
     #[wasm_bindgen]
     impl WasmEditor {
-        /// Create a new editor bound to a canvas element.
-        ///
-        /// Async because [`WebGpuRenderTarget::new`] requests a wgpu adapter +
-        /// device, which is async on wasm32 (browser WebGPU Promises).
-        ///
-        // `#[allow(deprecated)]`: wasm-bindgen warns that async constructors
-        // produce invalid TS code, but the plan specifies this pattern and the
-        // TS SDK (Task 4) calls `WasmEditor.new(canvas, fontBytes)` which works
-        // with the constructor export.
-        #[wasm_bindgen(constructor)]
-        #[allow(deprecated)]
-        pub async fn new(
-            canvas: web_sys::HtmlCanvasElement,
-            font_bytes: Vec<u8>,
-        ) -> Result<WasmEditor, JsValue> {
-            let config = EditorConfig::new(Arc::new(font_bytes));
-            let component = EditorComponent::new(config);
-            let width = canvas.client_width() as u32;
-            let height = canvas.client_height() as u32;
-            let render_target = WebGpuRenderTarget::new(canvas, width, height)
-                .await
-                .map_err(|e| JsValue::from_str(&e))?;
-            Ok(Self {
-                component,
-                render_target,
-            })
+        /// Render one frame. Called by the JS SDK on each requestAnimationFrame.
+        pub fn render_frame(&mut self) -> Result<(), JsValue> {
+            self.component.render(&mut self.render_target);
+            Ok(())
         }
 
-        /// Handle a keydown event. Returns `true` if the editor needs a repaint.
-        ///
-        /// `key` is `KeyboardEvent.key` (e.g. `"Enter"`, `"a"`, `"ArrowLeft"`).
-        /// `ctrl`/`shift` reflect the modifier state at event time.
-        #[wasm_bindgen(js_name = handle_keydown)]
-        pub fn handle_keydown(&mut self, key: &str, ctrl: bool, shift: bool) -> bool {
-            let key = parse_key(key);
-            let modifiers = Modifiers {
-                control: ctrl,
-                shift,
-                ..Default::default()
-            };
-            self.dispatch(ViewEvent::KeyDown { key, modifiers })
+        /// Register font data (raw bytes) with the editor. Call after
+        /// `create_wasm_editor` to load fonts (e.g. NotoSansCJK) - the web can't
+        /// access system fonts, so registered fonts are the only font source.
+        /// Can be called multiple times. Returns `true` if the bytes parsed.
+        #[wasm_bindgen(js_name = registerFont)]
+        pub fn register_font(&mut self, bytes: &[u8]) -> bool {
+            self.component.register_font_data(bytes.to_vec())
         }
 
-        /// Handle a pointerdown event. Returns `true` if repaint is needed.
-        ///
-        /// `button` follows the JS `MouseEvent.button` convention:
-        /// 0 = left, 1 = middle, 2 = right.
-        #[wasm_bindgen(js_name = handle_pointerdown)]
-        pub fn handle_pointerdown(&mut self, x: f64, y: f64, button: u32) -> bool {
-            let btn = match button {
-                0 => MouseButton::Left,
-                1 => MouseButton::Middle,
-                2 => MouseButton::Right,
-                _ => return false,
-            };
-            self.dispatch(ViewEvent::PointerDown {
-                button: btn,
+        /// Handle viewport resize (device pixels). Reconfigures the WebGPU
+        /// surface and updates the editor viewport.
+        #[wasm_bindgen(js_name = handleResize)]
+        pub fn handle_resize(&mut self, width: f64, height: f64) -> Result<(), JsValue> {
+            self.render_target.resize(width as u32, height as u32);
+            self.component
+                .handle_event(&ViewEvent::Resize { width, height });
+            Ok(())
+        }
+
+        // ─── JS Callback Registration ───────────────────────────────────────
+
+        #[wasm_bindgen(js_name = setOnChange)]
+        pub fn set_on_change(&mut self, callback: Option<js_sys::Function>) {
+            *self.callbacks.on_change.borrow_mut() = callback;
+        }
+
+        #[wasm_bindgen(js_name = setOnSelectionChange)]
+        pub fn set_on_selection_change(&mut self, callback: Option<js_sys::Function>) {
+            *self.callbacks.on_selection_change.borrow_mut() = callback;
+        }
+
+        #[wasm_bindgen(js_name = setOnCursorChange)]
+        pub fn set_on_cursor_change(&mut self, callback: Option<js_sys::Function>) {
+            *self.callbacks.on_cursor_change.borrow_mut() = callback;
+        }
+
+        #[wasm_bindgen(js_name = setOnSaveRequest)]
+        pub fn set_on_save_request(&mut self, callback: Option<js_sys::Function>) {
+            *self.callbacks.on_save_request.borrow_mut() = callback;
+        }
+
+        // ─── Event Handlers ─────────────────────────────────────────────────
+
+        #[wasm_bindgen(js_name = handleKeyDown)]
+        pub fn handle_key_down(
+            &mut self,
+            key: &str,
+            shift: bool,
+            ctrl: bool,
+            alt: bool,
+            meta: bool,
+        ) -> Result<(), JsValue> {
+            let modifiers = Modifiers { shift, control: ctrl, alt, meta };
+            self.component
+                .handle_event(&ViewEvent::KeyDown { key: parse_key(key), modifiers });
+            Ok(())
+        }
+
+        #[wasm_bindgen(js_name = handleMouseDown)]
+        pub fn handle_mouse_down(
+            &mut self,
+            button: u32,
+            x: f64,
+            y: f64,
+            shift: bool,
+            ctrl: bool,
+            alt: bool,
+            meta: bool,
+        ) -> Result<(), JsValue> {
+            let modifiers = Modifiers { shift, control: ctrl, alt, meta };
+            self.component.handle_event(&ViewEvent::PointerDown {
+                button: parse_mouse_button(button),
                 x,
                 y,
-                modifiers: Modifiers::default(),
-            })
+                modifiers,
+            });
+            Ok(())
         }
 
-        /// Handle a pointerup event. Returns `true` if repaint is needed.
-        #[wasm_bindgen(js_name = handle_pointerup)]
-        pub fn handle_pointerup(&mut self, x: f64, y: f64, button: u32) -> bool {
-            let btn = match button {
-                0 => MouseButton::Left,
-                1 => MouseButton::Middle,
-                2 => MouseButton::Right,
-                _ => return false,
-            };
-            self.dispatch(ViewEvent::PointerUp { button: btn, x, y })
+        #[wasm_bindgen(js_name = handleMouseUp)]
+        pub fn handle_mouse_up(
+            &mut self,
+            button: u32,
+            x: f64,
+            y: f64,
+            _shift: bool,
+            _ctrl: bool,
+            _alt: bool,
+            _meta: bool,
+        ) -> Result<(), JsValue> {
+            // rofd's PointerUp carries no modifiers (only Down does).
+            self.component.handle_event(&ViewEvent::PointerUp {
+                button: parse_mouse_button(button),
+                x,
+                y,
+            });
+            Ok(())
         }
 
-        /// Handle a pointermove event. Returns `true` if repaint is needed.
-        #[wasm_bindgen(js_name = handle_pointermove)]
-        pub fn handle_pointermove(&mut self, x: f64, y: f64) -> bool {
-            self.dispatch(ViewEvent::PointerMove { x, y })
+        #[wasm_bindgen(js_name = handleMouseMove)]
+        pub fn handle_mouse_move(&mut self, x: f64, y: f64) -> Result<(), JsValue> {
+            self.component.handle_event(&ViewEvent::PointerMove { x, y });
+            Ok(())
         }
 
-        /// Handle a scroll/wheel event. Returns `true` if repaint is needed.
-        ///
-        /// `dx`/`dy` are in CSS pixels (from `WheelEvent.deltaX/deltaY`).
-        #[wasm_bindgen(js_name = handle_scroll)]
-        pub fn handle_scroll(&mut self, dx: f64, dy: f64) -> bool {
-            self.dispatch(ViewEvent::Scroll { dx, dy })
+        #[wasm_bindgen(js_name = handleMouseScroll)]
+        pub fn handle_mouse_scroll(&mut self, dx: f64, dy: f64) -> Result<(), JsValue> {
+            self.component.handle_event(&ViewEvent::Scroll { dx, dy: -dy });
+            Ok(())
         }
 
-        /// Handle a canvas resize. Reconfigures the WebGPU surface and updates
-        /// the editor viewport. Returns `true` if repaint is needed.
-        #[wasm_bindgen(js_name = handle_resize)]
-        pub fn handle_resize(&mut self, width: f64, height: f64) -> bool {
-            self.render_target.resize(width as u32, height as u32);
-            self.dispatch(ViewEvent::Resize { width, height })
+        #[wasm_bindgen(js_name = handleZoom)]
+        pub fn handle_zoom(&mut self, factor: f64) -> Result<(), JsValue> {
+            self.component.handle_event(&ViewEvent::Zoom { factor });
+            Ok(())
         }
 
-        /// Render the current editor state to the canvas via WebGPU + vello.
-        ///
-        /// JS should call this from a `requestAnimationFrame` loop whenever the
-        /// editor needs repainting (any `handle_*` method returned `true`).
-        pub fn render(&mut self) {
-            self.component.render(&mut self.render_target);
+        #[wasm_bindgen(js_name = handleFocusGained)]
+        pub fn handle_focus_gained(&mut self) -> Result<(), JsValue> {
+            self.component.handle_event(&ViewEvent::FocusGained);
+            Ok(())
         }
+
+        #[wasm_bindgen(js_name = handleFocusLost)]
+        pub fn handle_focus_lost(&mut self) -> Result<(), JsValue> {
+            self.component.handle_event(&ViewEvent::FocusLost);
+            Ok(())
+        }
+
+        // ─── Document I/O ───────────────────────────────────────────────────
 
         /// Load an OFD document from raw `.ofd` package bytes.
-        ///
-        /// Parses the zip package via [`rofd_io::parse_ofd`] and loads the
-        /// resulting [`rofd_dom::OfdDocument`] into the editor component.
-        /// Replaces any previously loaded document.
-        ///
-        /// Note: `EditorComponent` does not have a `load_ofd` method (it has
-        /// `load_document`). We call `parse_ofd` + `load_document` directly,
-        /// matching the native-view's `EditorApp::load_ofd` pattern.
-        #[wasm_bindgen(js_name = load_ofd)]
+        #[wasm_bindgen(js_name = loadOfd)]
         pub fn load_ofd(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
             let report = parse_ofd(bytes).map_err(|e| JsValue::from_str(&format!("{e}")))?;
             self.component.load_document(report.document);
@@ -196,36 +233,101 @@ mod wasm_impl {
         }
 
         /// Serialize the current document to OFD package bytes.
-        ///
-        /// Returns a `Uint8Array` (from `Vec<u8>`) that JS can wrap in a
-        /// `Blob` for download.
-        #[wasm_bindgen(js_name = save_ofd)]
+        #[wasm_bindgen(js_name = saveOfd)]
         pub fn save_ofd(&self) -> Result<Vec<u8>, JsValue> {
             write_ofd(self.component.document()).map_err(|e| JsValue::from_str(&format!("{e}")))
         }
 
         /// Whether there are undoable operations in the history.
-        #[wasm_bindgen(js_name = can_undo)]
+        #[wasm_bindgen(js_name = canUndo)]
         pub fn can_undo(&self) -> bool {
             self.component.can_undo()
         }
 
         /// Whether there are redoable operations in the history.
-        #[wasm_bindgen(js_name = can_redo)]
+        #[wasm_bindgen(js_name = canRedo)]
         pub fn can_redo(&self) -> bool {
             self.component.can_redo()
         }
 
         /// Set the annotation clock (author + timestamp) for subsequent edits.
-        #[wasm_bindgen(js_name = set_clock)]
+        #[wasm_bindgen(js_name = setClock)]
         pub fn set_clock(&mut self, author: String, ts: i64) {
             self.component.set_clock(author, ts);
         }
+    }
 
-        /// Dispatch a [`ViewEvent`] to the component and return whether a
-        /// repaint is needed.
-        fn dispatch(&mut self, event: ViewEvent) -> bool {
-            self.component.handle_event(&event).needs_repaint
+    impl WasmEditor {
+        /// Internal constructor. Called by `create_wasm_editor` after WebGPU
+        /// init + warmup. Wires the component's Rust callbacks to the JS
+        /// callback slots.
+        pub(crate) fn new_internal(
+            width: u32,
+            height: u32,
+            render_target: WebGpuRenderTarget,
+        ) -> Result<Self, JsValue> {
+            let config = EditorConfig::new(std::sync::Arc::new(vec![]));
+            let mut component = EditorComponent::new(config);
+            // Seed the viewport to the canvas size so the first frame isn't
+            // zero-sized (the SDK also calls handleResize after layout).
+            component.handle_event(&ViewEvent::Resize {
+                width: width as f64,
+                height: height as f64,
+            });
+
+            let mut editor = Self {
+                component,
+                render_target,
+                callbacks: JsCallbacks::default(),
+            };
+            editor.setup_bridge_callbacks();
+            Ok(editor)
+        }
+
+        /// Wire the component's Rust callbacks to the JS callback slots. JS
+        /// sets the actual functions via `set_on_*`; the Rust closures read the
+        /// slots and invoke the JS function (if set) when the component fires.
+        /// Callbacks are signal-only (no payload) - the SDK's render loop
+        /// re-renders every frame, so callbacks just notify the app of state
+        /// changes (e.g. to update a "modified" indicator).
+        fn setup_bridge_callbacks(&mut self) {
+            let on_change_js = self.callbacks.on_change.clone();
+            self.component.on_change(Box::new(move |_doc: &OfdDocument| {
+                call_js0(&on_change_js);
+            }));
+
+            let on_selection_change_js = self.callbacks.on_selection_change.clone();
+            self.component
+                .on_selection_change(Box::new(move |_sel: &AnnotationSelection| {
+                    call_js0(&on_selection_change_js);
+                }));
+
+            let on_cursor_change_js = self.callbacks.on_cursor_change.clone();
+            self.component
+                .on_cursor_change(Box::new(move |_cur: Option<&TextCursor>| {
+                    call_js0(&on_cursor_change_js);
+                }));
+
+            let on_save_request_js = self.callbacks.on_save_request.clone();
+            self.component.on_save_request(Box::new(move || {
+                call_js0(&on_save_request_js);
+            }));
+        }
+    }
+
+    /// Invoke a JS callback slot with no arguments (no-op if the slot is empty).
+    fn call_js0(slot: &Rc<RefCell<Option<js_sys::Function>>>) {
+        if let Some(ref js_fn) = *slot.borrow() {
+            let _ = js_fn.call0(&JsValue::null());
+        }
+    }
+
+    fn parse_mouse_button(button: u32) -> MouseButton {
+        match button {
+            0 => MouseButton::Left,
+            1 => MouseButton::Middle,
+            2 => MouseButton::Right,
+            _ => MouseButton::Left,
         }
     }
 }

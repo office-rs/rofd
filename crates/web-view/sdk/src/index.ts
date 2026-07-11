@@ -1,160 +1,334 @@
-// @rofd/sdk - TypeScript SDK wrapping the rofd WASM editor exports.
+// @rofd/sdk - TypeScript SDK wrapping the rofd WASM editor.
 //
-// Wraps the generated `WasmEditor` class (from wasm-pack) in an idiomatic
-// `Editor` class with a static async factory (`Editor.create`). The web-app
-// (Task 5) consumes this SDK via `import { Editor } from '@rofd/sdk'`.
+// Mirrors reditor's SDK: `Editor.init(container, config)` does the full boot
+// (load wasm -> check WebGPU -> create canvas -> create_wasm_editor -> load +
+// register fonts -> register callbacks -> bindEvents -> render loop). The web
+// app just calls `init` and optionally passes fonts/callbacks.
 
-import init, { WasmEditor } from '../dist/rofd_web_view.js';
+// --- wasm module shape (wasm-pack --target web) ---
+// `default` is the async init; `create_wasm_editor` is the factory.
+type WasmModule = {
+  default(): Promise<void>;
+  create_wasm_editor(canvas: HTMLCanvasElement): Promise<WasmEditor>;
+};
+
+interface WasmEditor {
+  renderFrame(): void;
+  registerFont(bytes: Uint8Array): boolean;
+  handleResize(width: number, height: number): void;
+  handleKeyDown(
+    key: string,
+    shift: boolean,
+    ctrl: boolean,
+    alt: boolean,
+    meta: boolean,
+  ): void;
+  handleMouseDown(
+    button: number,
+    x: number,
+    y: number,
+    shift: boolean,
+    ctrl: boolean,
+    alt: boolean,
+    meta: boolean,
+  ): void;
+  handleMouseUp(
+    button: number,
+    x: number,
+    y: number,
+    shift: boolean,
+    ctrl: boolean,
+    alt: boolean,
+    meta: boolean,
+  ): void;
+  handleMouseMove(x: number, y: number): void;
+  handleMouseScroll(dx: number, dy: number): void;
+  handleZoom(factor: number): void;
+  handleFocusGained(): void;
+  handleFocusLost(): void;
+  loadOfd(bytes: Uint8Array): void;
+  saveOfd(): Uint8Array;
+  canUndo(): boolean;
+  canRedo(): boolean;
+  setClock(author: string, ts: number): void;
+  setOnChange(cb: (() => void) | null): void;
+  setOnSelectionChange(cb: (() => void) | null): void;
+  setOnCursorChange(cb: (() => void) | null): void;
+  setOnSaveRequest(cb: (() => void) | null): void;
+}
+
+// --- public SDK types ---
+
+/** A font source: either a URL to fetch or inline bytes. */
+export interface FontSource {
+  url?: string;
+  data?: Uint8Array;
+}
+
+/** Configuration for `Editor.init`. */
+export interface EditorConfig {
+  /** Fonts to load + register. Defaults to Noto Sans + Noto Sans CJK SC from CDN. */
+  fonts?: FontSource[];
+  /** Fired when the document changes (signal-only; the render loop re-renders). */
+  onChange?: () => void;
+  onSelectionChange?: () => void;
+  onCursorChange?: () => void;
+  /** Fired on Ctrl+S (the host should prompt for a path / trigger save). */
+  onSaveRequest?: () => void;
+}
+
+// Default font CDN (jsDelivr - ICP-licensed China CDN nodes). Same fonts reditor
+// uses. The web can't access system fonts, so these are the only font source.
+const FONT_CDN_BASE =
+  'https://cdn.jsdelivr.net/gh/googlefonts/noto-cjk@main/Sans/OTF/SimplifiedChinese';
+const DEFAULT_FONTS: FontSource[] = [
+  { url: `${FONT_CDN_BASE}/NotoSans-Regular.ttf` },
+  { url: `${FONT_CDN_BASE}/NotoSansCJKsc-Regular.otf` },
+];
 
 /**
- * Idiomatic TypeScript wrapper around the raw `WasmEditor` wasm export.
+ * rofd web editor. Created via [`Editor.init`]; the SDK owns the canvas, the
+ * wasm editor, DOM event binding, and the render loop.
  *
  * Usage:
  * ```ts
- * const editor = await Editor.create(canvas, fontBytes);
+ * const editor = await Editor.init(container, {
+ *   onSaveRequest: () => download(editor.saveOfd()),
+ * });
  * editor.loadOfd(ofdBytes);
- * editor.render();
  * ```
- *
- * The wasm module is initialised lazily on first `create` call via the
- * `init` default export (wasm-pack `--target web` pattern).
  */
 export class Editor {
-  private readonly editor: WasmEditor;
+  private wasm: WasmEditor;
+  private canvas: HTMLCanvasElement;
+  private animFrameId: number | null = null;
+  private abortController: AbortController;
 
-  private constructor(editor: WasmEditor) {
-    this.editor = editor;
+  private constructor(wasm: WasmEditor, canvas: HTMLCanvasElement) {
+    this.wasm = wasm;
+    this.canvas = canvas;
+    this.abortController = new AbortController();
   }
 
   /**
-   * Create a new editor bound to a canvas element.
-   *
-   * Initialises the wasm module (if not already initialised) and constructs
-   * the `WasmEditor` (which requests a WebGPU adapter + device for the
-   * canvas). Async because WebGPU device acquisition is async in the browser.
-   *
-   * @param canvas     The canvas element to render into.
-   * @param fontBytes  Document font bytes (empty for v1 - text won't render).
-   * @returns A ready-to-use `Editor` instance.
+   * Initialize a new editor inside `container`: loads the wasm module, checks
+   * WebGPU, creates a canvas, initializes the wasm editor (WebGPU + warmup),
+   * loads + registers fonts, wires callbacks, binds DOM events, and starts the
+   * render loop. Returns a ready-to-use `Editor`.
    */
-  static async create(canvas: HTMLCanvasElement, fontBytes: Uint8Array): Promise<Editor> {
-    await init();
-    // wasm-bindgen exports the async constructor as `new WasmEditor(...)`.
-    // The constructor returns a Promise because WebGpuRenderTarget::new is
-    // async (wasm-bindgen async fn -> JS Promise).
-    const editor = await new WasmEditor(canvas, fontBytes);
-    return new Editor(editor);
+  static async init(
+    container: HTMLElement,
+    config?: EditorConfig,
+  ): Promise<Editor> {
+    // 1. Load wasm module (--target web: fetch-based, auto-resolves .wasm).
+    const wasm = (await import('../dist/rofd_web_view.js')) as unknown as WasmModule;
+    await wasm.default();
+
+    // 2. Check WebGPU support.
+    if (!navigator.gpu) {
+      throw new Error('WebGPU is not supported in this browser');
+    }
+
+    // 3. Create canvas inside container.
+    const canvas = document.createElement('canvas');
+    canvas.tabIndex = 0;
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
+    canvas.style.outline = 'none';
+    canvas.style.cursor = 'text';
+    container.appendChild(canvas);
+
+    // 4. Create WasmEditor (async: WebGPU init + warmup).
+    const wasmEditor = await wasm.create_wasm_editor(canvas);
+
+    // 5. Load + register fonts (web can't access system fonts).
+    const fonts = config?.fonts ?? DEFAULT_FONTS;
+    for (const font of fonts) {
+      try {
+        const bytes = await loadFont(font);
+        wasmEditor.registerFont(bytes);
+      } catch (e) {
+        console.warn('[rofd] font load failed; text may not render', e);
+      }
+    }
+
+    // 6. Register callbacks.
+    if (config?.onChange) wasmEditor.setOnChange(config.onChange);
+    if (config?.onSelectionChange) wasmEditor.setOnSelectionChange(config.onSelectionChange);
+    if (config?.onCursorChange) wasmEditor.setOnCursorChange(config.onCursorChange);
+    if (config?.onSaveRequest) wasmEditor.setOnSaveRequest(config.onSaveRequest);
+
+    // 7. Create wrapper + bind DOM events.
+    const editor = new Editor(wasmEditor, canvas);
+    editor.bindEvents();
+
+    // Prevent the browser's native context menu on the canvas (right-click).
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+    // 8. Initial resize + render loop.
+    editor.resize();
+    editor.startRenderLoop();
+
+    // 9. Focus the canvas so keyboard input works immediately.
+    canvas.focus();
+
+    return editor;
   }
 
-  // ─── File I/O ───────────────────────────────────────────────────────────────
+  /** Destroy the editor: stop the render loop, remove canvas, abort listeners. */
+  destroy(): void {
+    if (this.animFrameId !== null) {
+      cancelAnimationFrame(this.animFrameId);
+      this.animFrameId = null;
+    }
+    this.abortController.abort();
+    if (this.canvas.parentNode) {
+      this.canvas.parentNode.removeChild(this.canvas);
+    }
+  }
 
-  /**
-   * Load an OFD document from raw `.ofd` package bytes.
-   * Replaces any previously loaded document.
-   */
+  // ─── Internal: event binding ──────────────────────────────────────────────
+
+  /** Bind DOM events on the canvas, translating them to wasm calls. */
+  private bindEvents(): void {
+    const opts: AddEventListenerOptions = { signal: this.abortController.signal };
+    const dpr = () => window.devicePixelRatio || 1;
+
+    // Keyboard.
+    this.canvas.addEventListener(
+      'keydown',
+      (e: KeyboardEvent) => {
+        e.preventDefault();
+        this.wasm.handleKeyDown(e.key, e.shiftKey, e.ctrlKey, e.altKey, e.metaKey);
+      },
+      opts,
+    );
+
+    // Mouse (coords in device pixels: CSS * DPR).
+    this.canvas.addEventListener(
+      'mousedown',
+      (e: MouseEvent) => {
+        e.preventDefault();
+        this.canvas.focus();
+        const rect = this.canvas.getBoundingClientRect();
+        this.wasm.handleMouseDown(
+          e.button,
+          (e.clientX - rect.left) * dpr(),
+          (e.clientY - rect.top) * dpr(),
+          e.shiftKey,
+          e.ctrlKey,
+          e.altKey,
+          e.metaKey,
+        );
+      },
+      opts,
+    );
+
+    this.canvas.addEventListener(
+      'mouseup',
+      (e: MouseEvent) => {
+        const rect = this.canvas.getBoundingClientRect();
+        this.wasm.handleMouseUp(
+          e.button,
+          (e.clientX - rect.left) * dpr(),
+          (e.clientY - rect.top) * dpr(),
+          e.shiftKey,
+          e.ctrlKey,
+          e.altKey,
+          e.metaKey,
+        );
+      },
+      opts,
+    );
+
+    this.canvas.addEventListener(
+      'mousemove',
+      (e: MouseEvent) => {
+        const rect = this.canvas.getBoundingClientRect();
+        this.wasm.handleMouseMove((e.clientX - rect.left) * dpr(), (e.clientY - rect.top) * dpr());
+      },
+      opts,
+    );
+
+    // Scroll / zoom.
+    this.canvas.addEventListener(
+      'wheel',
+      (e: WheelEvent) => {
+        e.preventDefault();
+        if (e.ctrlKey || e.metaKey) {
+          this.wasm.handleZoom(e.deltaY > 0 ? 0.9 : 1.1);
+        } else {
+          this.wasm.handleMouseScroll(e.deltaX, e.deltaY);
+        }
+      },
+      { ...opts, passive: false },
+    );
+
+    // Focus.
+    this.canvas.addEventListener('focus', () => this.wasm.handleFocusGained(), opts);
+    this.canvas.addEventListener('blur', () => this.wasm.handleFocusLost(), opts);
+
+    // Resize.
+    window.addEventListener('resize', () => this.resize(), opts);
+  }
+
+  /** Resize the canvas backing store to match its CSS size (× DPR) + notify wasm. */
+  private resize(): void {
+    const rect = this.canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const width = Math.max(1, Math.round(rect.width * dpr));
+    const height = Math.max(1, Math.round(rect.height * dpr));
+    this.canvas.width = width;
+    this.canvas.height = height;
+    this.wasm.handleResize(width, height);
+    this.wasm.renderFrame();
+  }
+
+  /** Start the requestAnimationFrame render loop. */
+  private startRenderLoop(): void {
+    const loop = () => {
+      this.wasm.renderFrame();
+      this.animFrameId = requestAnimationFrame(loop);
+    };
+    this.animFrameId = requestAnimationFrame(loop);
+  }
+
+  // ─── Public API ───────────────────────────────────────────────────────────
+
+  /** Load an OFD document from raw `.ofd` package bytes. */
   loadOfd(bytes: Uint8Array): void {
-    this.editor.load_ofd(bytes);
+    this.wasm.loadOfd(bytes);
   }
 
-  /**
-   * Serialize the current document to OFD package bytes.
-   * @returns A `Uint8Array` that can be wrapped in a `Blob` for download.
-   */
+  /** Serialize the current document to OFD package bytes. */
   saveOfd(): Uint8Array {
-    return this.editor.save_ofd();
+    return this.wasm.saveOfd();
   }
 
-  // ─── Input handling ────────────────────────────────────────────────────────
-
-  /**
-   * Handle a keydown event.
-   * @param key   `KeyboardEvent.key` (e.g. `"Enter"`, `"a"`, `"ArrowLeft"`).
-   * @param ctrl  Whether Ctrl (or Meta) was held.
-   * @param shift Whether Shift was held.
-   * @returns `true` if the editor needs a repaint.
-   */
-  handleKeydown(key: string, ctrl: boolean, shift: boolean): boolean {
-    return this.editor.handle_keydown(key, ctrl, shift);
-  }
-
-  /**
-   * Handle a pointerdown event.
-   * @param x       Canvas-relative X (CSS pixels).
-   * @param y       Canvas-relative Y (CSS pixels).
-   * @param button  `MouseEvent.button` (0=left, 1=middle, 2=right).
-   * @returns `true` if a repaint is needed.
-   */
-  handlePointerDown(x: number, y: number, button: number): boolean {
-    return this.editor.handle_pointerdown(x, y, button);
-  }
-
-  /**
-   * Handle a pointerup event.
-   * @returns `true` if a repaint is needed.
-   */
-  handlePointerUp(x: number, y: number, button: number): boolean {
-    return this.editor.handle_pointerup(x, y, button);
-  }
-
-  /**
-   * Handle a pointermove event.
-   * @returns `true` if a repaint is needed.
-   */
-  handlePointerMove(x: number, y: number): boolean {
-    return this.editor.handle_pointermove(x, y);
-  }
-
-  /**
-   * Handle a scroll/wheel event.
-   * @param dx  Horizontal delta (CSS pixels, from `WheelEvent.deltaX`).
-   * @param dy  Vertical delta (CSS pixels, from `WheelEvent.deltaY`).
-   * @returns `true` if a repaint is needed.
-   */
-  handleScroll(dx: number, dy: number): boolean {
-    return this.editor.handle_scroll(dx, dy);
-  }
-
-  /**
-   * Handle a canvas resize. Reconfigures the WebGPU surface and updates
-   * the editor viewport.
-   * @returns `true` if a repaint is needed.
-   */
-  handleResize(width: number, height: number): boolean {
-    return this.editor.handle_resize(width, height);
-  }
-
-  // ─── Rendering ──────────────────────────────────────────────────────────────
-
-  /**
-   * Render the current editor state to the canvas via WebGPU + vello.
-   * Call this from a `requestAnimationFrame` loop whenever any `handle*`
-   * method returned `true`.
-   */
-  render(): void {
-    this.editor.render();
-  }
-
-  // ─── Undo / redo ───────────────────────────────────────────────────────────
-
-  /** Whether there are undoable operations in the history. */
+  /** Whether there are undoable operations. */
   get canUndo(): boolean {
-    return this.editor.can_undo();
+    return this.wasm.canUndo();
   }
 
-  /** Whether there are redoable operations in the history. */
+  /** Whether there are redoable operations. */
   get canRedo(): boolean {
-    return this.editor.can_redo();
+    return this.wasm.canRedo();
   }
 
-  // ─── Annotation clock ──────────────────────────────────────────────────────
-
-  /**
-   * Set the annotation clock (author + timestamp) for subsequent edits.
-   * @param author  Author identifier for new annotations.
-   * @param ts      Unix timestamp (milliseconds) for new annotations.
-   */
+  /** Set the annotation clock (author + timestamp ms) for subsequent edits. */
   setClock(author: string, ts: number): void {
-    // i64 maps to bigint in wasm-bindgen; convert from JS number.
-    this.editor.set_clock(author, BigInt(ts));
+    this.wasm.setClock(author, ts);
   }
+}
+
+// ─── Font loading ─────────────────────────────────────────────────────────────
+
+/** Load a font: inline `data` if present, else `fetch(url)`. */
+async function loadFont(source: FontSource): Promise<Uint8Array> {
+  if (source.data) return source.data;
+  if (!source.url) throw new Error('FontSource must have url or data');
+  const response = await fetch(source.url);
+  if (!response.ok) throw new Error(`Failed to load font: ${source.url}`);
+  const buffer = await response.arrayBuffer();
+  return new Uint8Array(buffer);
 }

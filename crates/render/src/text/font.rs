@@ -84,6 +84,29 @@ impl FontStore {
         self.fonts.get(id).or(self.default.as_ref())
     }
 
+    /// Register an additional font (raw bytes) at runtime - e.g. a CJK font
+    /// loaded by the web SDK after construction. The font is added to the shared
+    /// `FontContext` so parley can select it: via the default family (the first
+    /// registered font's family becomes the default when none is set) or via
+    /// fontique's script fallback when a glyph is missing in the selected font.
+    ///
+    /// Returns `false` for empty/invalid bytes (no font registered).
+    pub fn register_font(&mut self, bytes: Arc<Vec<u8>>) -> bool {
+        let font = match make_font(bytes) {
+            Some(f) => f,
+            None => return false,
+        };
+        let family = {
+            let mut fcx = self.font_cx.borrow_mut();
+            register_font(&mut fcx, &font)
+        };
+        let ok = family.is_some();
+        if ok && self.default_family.is_none() {
+            self.default_family = family;
+        }
+        ok
+    }
+
     /// Shape `text` with the document font for `font_id` (falling back to the
     /// default font's family if `font_id` is unknown), at `size`.
     ///
@@ -223,5 +246,22 @@ mod tests {
             glyphs.len()
         );
         assert!(font.is_some(), "system CJK font captured");
+    }
+
+    #[test]
+    fn font_store_register_font_then_shapes() {
+        // Register a font at runtime (via register_font, like the web SDK loads
+        // fonts after construction). The first registered font's family becomes
+        // the default, so shaping an unknown font id uses it.
+        let mut store = FontStore::from_resources(&Resources::default(), Arc::new(vec![]));
+        let font_bytes =
+            include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        assert!(
+            store.register_font(Arc::new(font_bytes.to_vec())),
+            "font registered"
+        );
+        let (font, glyphs) = store.shape(&FontId::new("missing"), "Hi", 16.0);
+        assert_eq!(glyphs.len(), 2, "2 glyphs via registered font");
+        assert!(font.is_some(), "registered font captured");
     }
 }
