@@ -1,7 +1,11 @@
-use vello::Scene;
+use rofd_render::Scene;
 
-/// Abstract render surface. The host (Phase 4b) implements this to blit a
-/// `vello::Scene` to the GPU (native: wgpu surface; wasm: WebGPU canvas).
+/// Abstract render surface. The host (native xilem canvas, wasm WebGPU) implements
+/// this to blit a `imaging::record::Scene` (re-exported as [`rofd_render::Scene`])
+/// to the GPU. The native xilem path consumes the scene directly via
+/// `Painter::replay` and does not use this trait; the wasm WebGpuRenderTarget
+/// implements it, converting the imaging scene to a `vello::Scene` via
+/// `imaging_vello::VelloSceneSink` before rendering.
 pub trait RenderTarget {
     fn draw_scene(&mut self, scene: &Scene);
     fn size(&self) -> (f64, f64);

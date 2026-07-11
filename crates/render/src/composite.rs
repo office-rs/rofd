@@ -1,34 +1,44 @@
 //! Render engine: composite a paper-on-desk scene from a document + viewport.
 //!
-//! [`RenderEngine::composite`] builds the top-level scene the host paints: a
-//! gray "desk" background filling the viewport, white pages centered
-//! horizontally and stacked vertically with a gap, and each page's body scene
-//! (stable, cached) and annotation scene (rebuilt when dirty) composited onto
-//! the page rectangle with the page-origin + zoom transform.
+//! [`RenderEngine::composite`] builds the top-level [`imaging::record::Scene`] the
+//! host paints: a gray "desk" background filling the viewport, white pages centered
+//! horizontally and stacked vertically with a gap, and each page's body + annotation
+//! content drawn directly with the page-origin + zoom transform baked into every
+//! draw call.
 //!
-//! # Vello 0.8 scene composition
+//! # Why imaging (not vello::Scene)
 //!
-//! Vello 0.8 has no `push_transform`/`pop` stack. Instead each draw call takes
-//! its own `Affine`, and [`vello::Scene::append`] composites a child scene with
-//! an additional `Option<Affine>` applied to every transform encoded in the
-//! child. `composite` uses `Scene::append(body, Some(transform))` to place each
-//! page's body + annotation scenes onto the desk surface. The page transform is
-//! `compose_transform(page_origin, zoom, None)` (object CTMs are already baked
-//! into the body/annotation scenes by `build_body_scene` /
-//! `build_annotation_scene`).
+//! Masonry (the widget toolkit xilem builds on) authors widget paint via the
+//! `imaging::Painter` command-stream API, not `vello::Scene` directly. imaging is a
+//! backend-agnostic IR layered above vello: the native xilem canvas consumes an
+//! `imaging::record::Scene` via `Painter::replay`, and the web-view converts it to a
+//! `vello::Scene` via `imaging_vello::VelloSceneSink`. Producing an imaging Scene
+//! here lets both hosts share one render path and insulates rofd-render from vello
+//! API churn (the imaging_vello backend absorbs it).
+//!
+//! # Transforms
+//!
+//! imaging has no "replay a pre-built sub-scene with a transform" primitive (unlike
+//! vello's `Scene::append(child, Some(affine))`), so the body/annotation builders do
+//! not produce cached sub-scenes. Instead they draw into the shared painter with
+//! `compose_transform(page_origin, zoom, ctm)` applied per draw call - equivalent to
+//! the old "page-local sub-scene + append with page transform" but with the transform
+//! folded into each command.
 
 use std::sync::Arc;
 
-use kurbo::Rect;
-use peniko::Fill;
+use imaging::kurbo::Rect;
+use imaging::peniko::Color;
+use imaging::record::Scene;
+use imaging::Painter;
 use rofd_dom::OfdDocument;
-use vello::Scene;
 
-use crate::cache::PageSceneCache;
+use crate::annotation_scene::draw_annotations;
+use crate::body_scene::draw_body;
 use crate::text::FontStore;
 use crate::viewport::Viewport;
 
-/// Renders an [`OfdDocument`] into a paper-on-desk [`Scene`] for a [`Viewport`].
+/// Renders an [`OfdDocument`] into a paper-on-desk [`imaging::record::Scene`] for a [`Viewport`].
 ///
 /// Stores only the default fallback font bytes (`Arc`-shared, no copy per
 /// composite). A per-document [`FontStore`] (document fonts + the default) is
@@ -44,25 +54,23 @@ impl RenderEngine {
     }
 
     /// Composite paper-on-desk: gray viewport background, white centered pages,
-    /// body + annotation per page composited with the page-origin + zoom
-    /// transform.
+    /// body + annotation per page drawn with the page-origin + zoom transform.
     ///
     /// Pages are stacked vertically with `page_gap` between them and centered
     /// horizontally within the viewport. `scroll` offsets the stack (positive y
     /// scrolls pages downward) and `zoom` scales each page's physical box.
-    pub fn composite(
-        &self,
-        doc: &OfdDocument,
-        vp: &Viewport,
-        cache: &mut PageSceneCache,
-        fonts: &FontStore,
-    ) -> Scene {
+    ///
+    /// `fonts` is a caller-cached [`FontStore`] (document fonts + default). It is
+    /// passed in rather than built per call so a large default CJK font is not
+    /// re-registered every frame.
+    pub fn composite(&self, doc: &OfdDocument, vp: &Viewport, fonts: &FontStore) -> Scene {
         let mut scene = Scene::new();
+        let mut painter = Painter::new(&mut scene);
 
         // Gray "desk" background filling the viewport.
-        let gray = peniko::Color::from_rgba8(0xE0, 0xE0, 0xE0, 0xFF);
+        let gray = Color::from_rgba8(0xE0, 0xE0, 0xE0, 0xFF);
         let bg = Rect::new(0.0, 0.0, vp.size.0, vp.size.1);
-        scene.fill(Fill::NonZero, kurbo::Affine::IDENTITY, gray, None, &bg);
+        painter.fill_rect(bg, gray);
 
         // Stack pages vertically, centered horizontally, offset by scroll.
         let mut y = vp.page_gap - vp.scroll.1;
@@ -73,41 +81,20 @@ impl RenderEngine {
             let page_origin = (page_x + vp.scroll.0, y);
 
             // White page background.
-            let white = peniko::Color::from_rgba8(0xFF, 0xFF, 0xFF, 0xFF);
+            let white = Color::from_rgba8(0xFF, 0xFF, 0xFF, 0xFF);
             let page_rect = Rect::new(
                 page_origin.0,
                 page_origin.1,
                 page_origin.0 + page_w,
                 page_origin.1 + page_h,
             );
-            scene.fill(
-                Fill::NonZero,
-                kurbo::Affine::IDENTITY,
-                white,
-                None,
-                &page_rect,
-            );
+            painter.fill_rect(page_rect, white);
 
-            // Body (stable, cached) + annotation (rebuilt when dirty),
-            // composited with page_origin + zoom. Object CTMs are already
-            // applied inside build_body_scene / build_annotation_scene, so the
-            // composite transform is compose_transform(_, _, None).
-            //
-            // The body and annotation scenes are borrowed from the cache in
-            // separate scopes so the two &mut cache borrows don't overlap
-            // (cache.body / cache.annotation each take &mut self to rebuild on
-            // miss).
-            let transform = crate::compose_transform(page_origin, vp.zoom, None);
+            // Body + annotation, drawn directly with page_origin + zoom baked
+            // into each draw call (no cached sub-scenes - see module docs).
+            draw_body(&mut painter, page, &doc.resources, fonts, page_origin, vp.zoom);
             let anns = doc.annotations.for_page(&page.id);
-
-            {
-                let body = cache.body(page, &doc.resources, fonts);
-                scene.append(body, Some(transform));
-            }
-            {
-                let ann = cache.annotation(page, anns, &doc.resources, fonts);
-                scene.append(ann, Some(transform));
-            }
+            draw_annotations(&mut painter, anns, &doc.resources, fonts, page_origin, vp.zoom);
 
             y += page_h + vp.page_gap;
         }

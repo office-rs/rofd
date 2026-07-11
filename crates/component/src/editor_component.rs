@@ -1,6 +1,6 @@
 use rofd_dom::OfdDocument;
 use rofd_editor::{Editor, AnnotationSelection, TextCursor};
-use rofd_render::{FontStore, PageSceneCache, PX_PER_MM, RenderEngine, Viewport};
+use rofd_render::{FontStore, PX_PER_MM, RenderEngine, Scene, Viewport};
 
 use crate::callbacks::Callbacks;
 use crate::config::EditorConfig;
@@ -10,7 +10,6 @@ use crate::render_target::RenderTarget;
 pub struct EditorComponent {
     pub(crate) editor: Editor,
     pub(crate) render: RenderEngine,
-    pub(crate) cache: PageSceneCache,
     pub(crate) viewport: Viewport,
     /// Cached `FontStore` (document fonts + default). Rebuilt on
     /// `load_document`/`new_document` so a large default CJK font is not
@@ -26,7 +25,6 @@ impl EditorComponent {
         Self {
             editor: Editor::new(),
             render: RenderEngine::new(config.default_font_bytes.clone()),
-            cache: PageSceneCache::new(),
             viewport: Viewport { zoom: PX_PER_MM, page_gap, ..Default::default() },
             font_store: None,
             callbacks: Callbacks::default(),
@@ -41,7 +39,6 @@ impl EditorComponent {
             &self.editor.document().resources,
             font_bytes,
         ));
-        self.cache = PageSceneCache::new();
         self.modified = false;
     }
 
@@ -52,7 +49,6 @@ impl EditorComponent {
             &self.editor.document().resources,
             font_bytes,
         ));
-        self.cache = PageSceneCache::new();
         self.modified = false;
     }
 
@@ -66,7 +62,7 @@ impl EditorComponent {
 
     // Command pass-throughs. The host calls these for programmatic annotation
     // manipulation; handle_event is for keyboard/mouse. Both paths go through
-    // after_annotation_change -> cache invalidate + on_change.
+    // after_annotation_change -> on_change.
     pub fn create_annotation(
         &mut self, kind: rofd_dom::AnnotationKind, page: rofd_dom::PageId,
         payload: rofd_dom::AnnotationPayload,
@@ -94,19 +90,25 @@ impl EditorComponent {
         self.after_annotation_change();
     }
 
-    pub fn render(&mut self, target: &mut dyn RenderTarget) {
+    /// Build the current editor scene (paper-on-desk) for the host to paint.
+    ///
+    /// The native xilem canvas consumes the returned [`Scene`] via
+    /// `Painter::replay`; the wasm host converts it to a `vello::Scene` via
+    /// `imaging_vello::VelloSceneSink`. The `font_store` is lazily built on
+    /// first call and reused (so a large default CJK font is not re-registered
+    /// every frame).
+    pub fn build_scene(&mut self) -> Scene {
         if self.font_store.is_none() {
             let font_bytes = self.render.default_font_bytes.clone();
             let resources = &self.editor.document().resources;
             self.font_store = Some(FontStore::from_resources(resources, font_bytes));
         }
         let fonts = self.font_store.as_ref().expect("font_store initialized");
-        let scene = self.render.composite(
-            self.editor.document(),
-            &self.viewport,
-            &mut self.cache,
-            fonts,
-        );
+        self.render.composite(self.editor.document(), &self.viewport, fonts)
+    }
+
+    pub fn render(&mut self, target: &mut dyn RenderTarget) {
+        let scene = self.build_scene();
         target.draw_scene(&scene);
     }
 
@@ -247,8 +249,6 @@ impl EditorComponent {
     // Called by annotation-mutating commands (text editing, undo/redo, delete).
     fn after_annotation_change(&mut self) {
         self.modified = true;
-        let pages: Vec<rofd_dom::PageId> = self.editor.document().pages.iter().map(|p| p.id.clone()).collect();
-        for pid in &pages { self.cache.invalidate(pid); }
         if let Some(cb) = &self.callbacks.on_change { cb(self.editor.document()); }
     }
 
@@ -310,7 +310,7 @@ mod tests {
     use super::*;
     use crate::render_target::RenderTarget;
     use std::sync::Arc;
-    use vello::Scene;
+    use rofd_render::Scene;
 
     struct MockRenderTarget { drawn: usize, w: f64, h: f64 }
     impl RenderTarget for MockRenderTarget {
@@ -348,8 +348,6 @@ mod tests {
             },
         );
         // The create_annotation above bypasses handle_event (direct editor call for test setup).
-        // Invalidate cache to stay consistent.
-        for p in &c.editor.document().pages.clone() { c.cache.invalidate(&p.id); }
         c.viewport = rofd_render::Viewport { scroll: (0.0, 0.0), zoom: 1.0, size: (800.0, 600.0), page_gap: 20.0 };
         c
     }

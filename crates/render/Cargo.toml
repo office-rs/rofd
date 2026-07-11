@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 rofd-dom = { workspace = true }
-vello = { workspace = true }
 parley = { workspace = true }
 peniko = { workspace = true }
 kurbo = { workspace = true }

@@ -12,8 +12,11 @@
 //! vello's own `RenderSurface` in `vello::util` and the native-view's
 //! [`VelloRenderTarget`](../../native_view/vello_render_target/struct.VelloRenderTarget.html).
 
+use imaging::kurbo::Rect as KurboRect;
+use imaging::record::Scene;
+use imaging_vello::VelloSceneSink;
 use rofd_component::RenderTarget;
-use vello::{AaConfig, RenderParams, Renderer, RendererOptions, Scene};
+use vello::{AaConfig, RenderParams, Renderer, RendererOptions};
 use wgpu::util::TextureBlitter;
 use wgpu::TextureFormat;
 
@@ -156,25 +159,25 @@ impl WebGpuRenderTarget {
 
     /// Do a warmup render to force shader compilation.
     pub fn warmup(&mut self) {
-        let mut scene = Scene::new();
-        scene.fill(
+        let mut vello_scene = vello::Scene::new();
+        vello_scene.fill(
             vello::peniko::Fill::NonZero,
             vello::kurbo::Affine::IDENTITY,
             vello::peniko::Color::TRANSPARENT,
             None,
             &vello::kurbo::Rect::ZERO,
         );
-        self.render_vello_scene(&scene);
+        self.render_vello_scene(&vello_scene);
     }
 
     /// Render a [`vello::Scene`] to the surface via Vello + blit.
-    fn render_vello_scene(&mut self, scene: &Scene) {
+    fn render_vello_scene(&mut self, vello_scene: &vello::Scene) {
         // 1) Vello renders the scene into the intermediate Rgba8Unorm storage
         //    texture. render_to_texture submits its own command buffer.
         if let Err(e) = self.renderer.render_to_texture(
             &self.device,
             &self.queue,
-            scene,
+            vello_scene,
             &self.target_view,
             &RenderParams {
                 base_color: vello::peniko::Color::from_rgba8(0xE0, 0xE0, 0xE0, 0xFF),
@@ -215,7 +218,14 @@ impl WebGpuRenderTarget {
 
 impl RenderTarget for WebGpuRenderTarget {
     fn draw_scene(&mut self, scene: &Scene) {
-        self.render_vello_scene(scene);
+        // Convert the backend-agnostic imaging scene to a vello::Scene via
+        // VelloSceneSink, then render via the existing vello + blit path.
+        let mut vello_scene = vello::Scene::new();
+        let bounds = KurboRect::new(0.0, 0.0, self.width as f64, self.height as f64);
+        let mut sink = VelloSceneSink::new(&mut vello_scene, bounds);
+        imaging::record::replay(scene, &mut sink);
+        let _ = sink.finish();
+        self.render_vello_scene(&vello_scene);
     }
 
     fn size(&self) -> (f64, f64) {

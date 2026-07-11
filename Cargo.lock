@@ -1898,7 +1898,7 @@ dependencies = [
  "copypasta",
  "masonry_core",
  "masonry_imaging",
- "pollster 0.4.0",
+ "pollster",
  "tracing",
  "ui-events-winit",
  "wgpu",
@@ -2014,10 +2014,9 @@ dependencies = [
 name = "native-app"
 version = "0.1.0"
 dependencies = [
- "imaging",
+ "masonry_winit",
  "rfd",
  "rofd-component",
- "rofd-io",
  "rofd-native-view",
  "winit",
  "xilem",
@@ -2628,12 +2627,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
 
 [[package]]
-name = "pollster"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2560ec4d09f0d4db1fb45518d099d74954dd3da5855a0fcb84f2779b5b41a59e"
-
-[[package]]
 name = "polycool"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2898,7 +2891,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
- "pollster 0.4.0",
+ "pollster",
  "raw-window-handle",
  "urlencoding",
  "wasm-bindgen",
@@ -2920,11 +2913,9 @@ dependencies = [
 name = "rofd-component"
 version = "0.1.0"
 dependencies = [
- "imaging",
  "rofd-dom",
  "rofd-editor",
  "rofd-render",
- "vello",
 ]
 
 [[package]]
@@ -2958,16 +2949,11 @@ dependencies = [
 name = "rofd-native-view"
 version = "0.1.0"
 dependencies = [
- "imaging",
- "pollster 1.0.0",
- "rfd",
  "rofd-component",
  "rofd-dom",
  "rofd-io",
- "vello",
- "wgpu",
+ "rofd-render",
  "winit",
- "xilem",
 ]
 
 [[package]]
@@ -2981,7 +2967,6 @@ dependencies = [
  "peniko",
  "rofd-dom",
  "rofd-io",
- "vello",
  "zip",
 ]
 

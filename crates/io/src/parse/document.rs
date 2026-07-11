@@ -32,11 +32,12 @@ pub fn parse_document(doc_xml: &str) -> Result<DocHeader, OfdError> {
                 b"Page" => handle_page(&e, &mut header),
                 _ => {}
             },
-            Ok(Event::Empty(e)) => match e.name().local_name().as_ref() {
+            Ok(Event::Empty(e)) => {
                 // Self-closing <Page/> has no End event; register immediately.
-                b"Page" => handle_page(&e, &mut header),
-                _ => {}
-            },
+                if e.name().local_name().as_ref() == b"Page" {
+                    handle_page(&e, &mut header);
+                }
+            }
             Ok(Event::Text(t)) => {
                 if in_physical_box {
                     let s = t.unescape().map(|c| c.into_owned()).unwrap_or_default();

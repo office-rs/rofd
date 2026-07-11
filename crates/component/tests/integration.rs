@@ -1,7 +1,7 @@
 use rofd_component::{EditorComponent, EditorConfig, Key, Modifiers, RenderTarget, ViewEvent};
 use rofd_dom::{AnnotationKind, AnnotationPayload, Color, NoteIcon, PageId, Rect};
 use std::sync::{Arc, Mutex};
-use vello::Scene;
+use rofd_render::Scene;
 
 struct MockRenderTarget {
     drawn: usize,

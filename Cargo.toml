@@ -29,6 +29,7 @@ pollster = "1"
 # the vello bridge; rofd-render produces imaging::record::Scene, web-view converts it
 # to vello::Scene via VelloSceneSink.
 xilem = { git = "https://github.com/linebender/xilem", rev = "bf81712d44e3" }
+masonry_winit = { git = "https://github.com/linebender/xilem", rev = "bf81712d44e3" }
 imaging = { git = "https://github.com/forest-rs/imaging.git", rev = "0eea0499d2666195103b9837ac4c3ee474176a5b" }
 imaging_vello = { git = "https://github.com/forest-rs/imaging.git", rev = "0eea0499d2666195103b9837ac4c3ee474176a5b" }
 rfd = "0.15"

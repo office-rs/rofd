@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
-use rofd_component::{EditorComponent, EditorConfig, EventOutcome, RenderTarget, ViewEvent};
+use rofd_component::{EditorComponent, EditorConfig, EventOutcome, ViewEvent};
 use rofd_dom::OfdDocument;
 use rofd_io::{parse_ofd, write_ofd};
+use rofd_render::Scene;
 
 /// Platform-agnostic editor state (no winit types). Owns the EditorComponent.
 /// File I/O (load_ofd/save_ofd) lives here, not on EditorComponent.
@@ -41,8 +42,16 @@ impl EditorApp {
         outcome
     }
 
-    pub fn render(&mut self, target: &mut dyn RenderTarget) {
-        self.component.render(target);
+    /// Build the current editor scene for the host to paint. The native xilem
+    /// canvas consumes this via `Painter::replay`.
+    pub fn build_scene(&mut self) -> Scene {
+        self.component.build_scene()
+    }
+
+    /// Update the canvas dimensions (logical pixels). Drives the component's
+    /// viewport size via a `Resize` event.
+    pub fn set_size(&mut self, width: f64, height: f64) {
+        self.component.handle_event(&ViewEvent::Resize { width, height });
     }
 
     pub fn document(&self) -> &OfdDocument { self.component.document() }

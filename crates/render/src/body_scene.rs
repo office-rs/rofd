@@ -1,68 +1,78 @@
-//! Body scene builder: render a Page's body objects into a `vello::Scene`.
+//! Body scene builder: render a Page's body objects into the shared imaging scene.
 //!
-//! For each [`PageObject`] on a page's body layers, render it into a fresh
-//! [`vello::Scene`]:
+//! For each [`PageObject`] on a page's body layers, draw it via the imaging
+//! [`Painter`] with `compose_transform(page_origin, zoom, ctm)` as the per-draw
+//! transform (page-origin + zoom + object CTM folded together):
 //! - **Text**: shape `TextCode.text` via [`FontStore::shape`], position glyphs by
 //!   the cumulative document deltas (NOT the shaper's x/y), and draw via
-//!   [`Scene::draw_glyphs`] with the object's CTM as the transform.
+//!   `Painter::glyphs` at the object's CTM + page transform.
 //! - **Path**: convert [`PathData`] to a [`kurbo::BezPath`] via
-//!   [`path_to_bezpath`], then [`Scene::fill`] / [`Scene::stroke`] with the
-//!   object's CTM.
-//! - **Image**: decode bytes via [`decode_image`], then [`Scene::draw_image`]
+//!   [`path_to_bezpath`], then `Painter::fill` / `Painter::stroke` with the
+//!   object's CTM + page transform.
+//! - **Image**: decode bytes via [`decode_image`], then `Painter::draw_image`
 //!   placed at the boundary origin and scaled to the boundary w/h, composed
-//!   with the object's CTM.
+//!   with the object's CTM + page transform.
 //! - **Composite**: skipped in v1 (the caller emits an [`OfdWarning`]).
 //!
-//! Each object's CTM is applied via the `Affine` argument to the draw call;
-//! `None` CTM maps to [`kurbo::Affine::IDENTITY`].
+//! All coordinates are page-local; the page-origin + zoom + CTM transform is
+//! applied per draw call (there is no cached sub-scene - see [`composite`] docs).
 //!
 //! [`OfdWarning`]: rofd_io::OfdWarning
 
-use kurbo::Affine;
-use peniko::Fill;
+use imaging::kurbo::Affine;
+use imaging::record::{Glyph, Scene};
+use imaging::Painter;
+use peniko::{Fill, Style};
 use rofd_dom::{Page, PageObject, PathObject, Resources, TextObject, ImageObject};
-use vello::Scene;
 
 use crate::color::to_peniko;
-use crate::ctm::ctm_to_affine;
+use crate::ctm::compose_transform;
 use crate::image::decode_image;
 use crate::path::path_to_bezpath;
 use crate::text::FontStore;
 
-/// Build the body scene for one page.
+/// Draw the body objects for one page into `painter`.
 ///
-/// Iterates every object on every layer and renders Text / Path / Image objects
-/// into a new `Scene`. Composite objects are skipped (v1). Each object's CTM is
-/// applied as the affine transform for its draw call; a `None` CTM uses the
-/// identity transform.
-///
-/// Coordinates are page-local (no page-origin translation or zoom is applied
-/// here - the caller composes those via [`compose_transform`](crate::compose_transform)
-/// or [`Scene::append`] if needed).
-pub fn build_body_scene(page: &Page, res: &Resources, fonts: &FontStore) -> Scene {
-    let mut scene = Scene::new();
+/// Iterates every object on every layer and draws Text / Path / Image objects.
+/// Composite objects are skipped (v1). Each object's page-origin + zoom + CTM
+/// transform is applied as the affine for its draw call.
+pub fn draw_body(
+    painter: &mut Painter<Scene>,
+    page: &Page,
+    res: &Resources,
+    fonts: &FontStore,
+    page_origin: (f64, f64),
+    zoom: f64,
+) {
     for layer in &page.layers {
         for obj in &layer.objects {
             match obj {
-                PageObject::Text(t) => draw_text(&mut scene, t, res, fonts),
-                PageObject::Path(p) => draw_path(&mut scene, p, res),
-                PageObject::Image(i) => draw_image_obj(&mut scene, i, res),
+                PageObject::Text(t) => draw_text(painter, t, res, fonts, page_origin, zoom),
+                PageObject::Path(p) => draw_path(painter, p, res, page_origin, zoom),
+                PageObject::Image(i) => draw_image_obj(painter, i, res, page_origin, zoom),
                 // v1: skip composite objects. The caller can emit an OfdWarning
-                // (SkippedObject) for each composite; the scene builder just
-                // omits them.
+                // (SkippedObject) for each composite; the drawer just omits them.
                 PageObject::Composite(_) => {}
             }
         }
     }
-    scene
 }
 
 /// Render a text object: shape each `TextCode.text` with the document font,
-/// position glyphs by cumulative deltas, and draw via `draw_glyphs` with the
-/// object's CTM as the transform.
+/// position glyphs by the TextCode X/Y origin + cumulative deltas, and draw via
+/// `Painter::glyphs` with the page-origin + zoom + CTM transform.
 ///
-/// Skips silently if the font can't be resolved or the object has no fill color.
-fn draw_text(scene: &mut Scene, t: &TextObject, res: &Resources, fonts: &FontStore) {
+/// Fill resolves inline first, then falls back to the object's `DrawParam`
+/// (GB/T 33190). Skips silently if the font can't be resolved or no fill color
+/// is available.
+fn draw_text(
+    painter: &mut Painter<Scene>,
+    t: &TextObject,
+    res: &Resources,
+    fonts: &FontStore,
+    page_origin: (f64, f64),
+    zoom: f64,
+) {
     let font = match fonts.resolve_or_default(&t.font) {
         Some(f) => f,
         None => return,
@@ -77,11 +87,7 @@ fn draw_text(scene: &mut Scene, t: &TextObject, res: &Resources, fonts: &FontSto
         Some(c) => to_peniko(c),
         None => return,
     };
-    let affine = t
-        .ctm
-        .as_ref()
-        .map(ctm_to_affine)
-        .unwrap_or(Affine::IDENTITY);
+    let affine = compose_transform(page_origin, zoom, t.ctm.as_ref());
 
     for code in &t.codes {
         // Shape with the document font (reuses the store's FontContext).
@@ -95,11 +101,11 @@ fn draw_text(scene: &mut Scene, t: &TextObject, res: &Resources, fonts: &FontSto
         // x/y is ignored.
         let mut pen_x = code.x as f32;
         let mut pen_y = code.y as f32;
-        let positioned: Vec<vello::Glyph> = glyphs
+        let positioned: Vec<Glyph> = glyphs
             .iter()
             .enumerate()
             .map(|(i, g)| {
-                let glyph = vello::Glyph { id: g.glyph_id, x: pen_x, y: pen_y };
+                let glyph = Glyph { id: g.glyph_id, x: pen_x, y: pen_y };
                 let (dx, dy) = code.deltas.get(i).copied().unwrap_or((0.0, 0.0));
                 pen_x += dx;
                 pen_y += dy;
@@ -107,27 +113,30 @@ fn draw_text(scene: &mut Scene, t: &TextObject, res: &Resources, fonts: &FontSto
             })
             .collect();
         if !positioned.is_empty() {
-            scene
-                .draw_glyphs(font)
-                .brush(fill)
+            painter
+                .glyphs(font, fill)
                 .font_size(t.size as f32)
                 .transform(affine)
-                .draw(Fill::NonZero, positioned.into_iter());
+                .draw(&Style::Fill(Fill::NonZero), &positioned);
         }
     }
 }
 
-/// Render a path object: fill and/or stroke the BezPath with the object's CTM.
+/// Render a path object: fill and/or stroke the BezPath with the page-origin +
+/// zoom + CTM transform.
 ///
-/// If both `fill` and `stroke` are `None`, nothing is drawn. Fill is applied
-/// first, then stroke (standard painter's order for OFD).
-fn draw_path(scene: &mut Scene, p: &PathObject, res: &Resources) {
+/// Colors/width resolve inline first, then fall back to the object's
+/// `DrawParam` (GB/T 33190). If both `fill` and `stroke` end up `None`, nothing
+/// is drawn. Fill is applied first, then stroke (standard painter's order).
+fn draw_path(
+    painter: &mut Painter<Scene>,
+    p: &PathObject,
+    res: &Resources,
+    page_origin: (f64, f64),
+    zoom: f64,
+) {
     let bez = path_to_bezpath(&p.data);
-    let affine = p
-        .ctm
-        .as_ref()
-        .map(ctm_to_affine)
-        .unwrap_or(Affine::IDENTITY);
+    let affine = compose_transform(page_origin, zoom, p.ctm.as_ref());
     // Resolve colors/width: inline first, then DrawParam fallback (GB/T 33190).
     let dp = p
         .draw_param
@@ -141,23 +150,27 @@ fn draw_path(scene: &mut Scene, p: &PathObject, res: &Resources) {
         dp.and_then(|d| d.line_width).unwrap_or(0.0)
     };
     if let Some(c) = fill {
-        // brush_transform = None: the brush is in user space (no separate
-        // brush transform composed with the shape transform).
-        scene.fill(Fill::NonZero, affine, to_peniko(c), None, &bez);
+        painter.fill(&bez, to_peniko(c)).transform(affine).draw();
     }
     if let Some(c) = stroke {
-        let stroke = kurbo::Stroke::new(line_width);
-        scene.stroke(&stroke, affine, to_peniko(c), None, &bez);
+        let stroke = imaging::kurbo::Stroke::new(line_width);
+        painter.stroke(&bez, &stroke, to_peniko(c)).transform(affine).draw();
     }
 }
 
 /// Render an image object: decode the referenced image bytes and draw the image
 /// placed at the boundary origin, scaled to the boundary w/h, composed with the
-/// object's CTM.
+/// page-origin + zoom + CTM transform.
 ///
 /// Skips silently if the image id is not in resources or the bytes fail to
 /// decode (the caller can warn).
-fn draw_image_obj(scene: &mut Scene, i: &ImageObject, res: &Resources) {
+fn draw_image_obj(
+    painter: &mut Painter<Scene>,
+    i: &ImageObject,
+    res: &Resources,
+    page_origin: (f64, f64),
+    zoom: f64,
+) {
     let bytes = match res.images.get(&i.image) {
         Some(b) => b,
         None => return,
@@ -166,28 +179,26 @@ fn draw_image_obj(scene: &mut Scene, i: &ImageObject, res: &Resources) {
         Some(img) => img,
         None => return,
     };
-    let affine = i
-        .ctm
-        .as_ref()
-        .map(ctm_to_affine)
-        .unwrap_or(Affine::IDENTITY);
     // Place the image at its boundary origin and scale it to the boundary
     // w/h. `draw_image` fills a rect (0, 0, img.width, img.height) in the
-    // image's natural pixel dimensions, so the transform must map that rect
+    // image's natural pixel dimensions, so the place transform maps that rect
     // onto the boundary (x, y, w, h): translate to the boundary origin, then
-    // scale by (w / img_w, h / img_h). Compose with the object's CTM.
+    // scale by (w / img_w, h / img_h). Compose with the page + CTM transform.
     let scale_x = if img.width > 0 { i.boundary.w / img.width as f64 } else { 1.0 };
     let scale_y = if img.height > 0 { i.boundary.h / img.height as f64 } else { 1.0 };
     let place = Affine::translate((i.boundary.x, i.boundary.y))
         * Affine::scale_non_uniform(scale_x, scale_y);
-    scene.draw_image(&img, affine * place);
+    let affine = compose_transform(page_origin, zoom, i.ctm.as_ref()) * place;
+    painter.draw_image(&img, affine);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use imaging::kurbo::Rect as KurboRect;
+    use rofd_dom::Rect;
     use rofd_dom::{
-        Ctm, FontId, ImageId, ObjectId, PathCommand, PathData, PathObject, Rect, TextCode,
+        Ctm, FontId, ImageId, ObjectId, PathCommand, PathData, PathObject, TextCode,
         TextObject,
     };
     use std::sync::Arc;
@@ -198,15 +209,21 @@ mod tests {
         FontStore::from_resources(&Resources::default(), Arc::new(font_bytes.to_vec()))
     }
 
+    /// Draw into a fresh scene and return it (callers assert non-panic).
+    fn build(page: &Page, res: &Resources, fonts: &FontStore) -> Scene {
+        let mut scene = Scene::new();
+        let mut painter = Painter::new(&mut scene);
+        painter.fill_rect(KurboRect::new(0.0, 0.0, 800.0, 600.0), peniko::Color::BLACK);
+        draw_body(&mut painter, page, res, fonts, (0.0, 0.0), 1.0);
+        scene
+    }
+
     #[test]
-    fn empty_page_builds_empty_scene() {
+    fn empty_page_draws_without_panic() {
         let page = Page::default();
         let res = Resources::default();
         let fonts = test_font_store();
-        let scene = build_body_scene(&page, &res, &fonts);
-        // An empty page encodes no drawing commands. The encoding exists but
-        // has no path/glyph streams. We assert the call returns without panic.
-        let _ = scene.encoding();
+        let _ = build(&page, &res, &fonts);
     }
 
     #[test]
@@ -239,10 +256,7 @@ mod tests {
         };
         let res = Resources::default();
         let fonts = test_font_store();
-        let scene = build_body_scene(&page, &res, &fonts);
-        // The scene should have encoded at least one command (the stroke).
-        // We assert non-panic; deeper introspection is left to the smoke test.
-        let _ = scene.encoding();
+        let _ = build(&page, &res, &fonts);
     }
 
     #[test]
@@ -274,8 +288,7 @@ mod tests {
         };
         let res = Resources::default();
         let fonts = test_font_store();
-        let scene = build_body_scene(&page, &res, &fonts);
-        let _ = scene.encoding();
+        let _ = build(&page, &res, &fonts);
     }
 
     #[test]
@@ -297,9 +310,7 @@ mod tests {
         };
         let res = Resources::default();
         let fonts = test_font_store();
-        // Must not panic; composite is silently skipped.
-        let scene = build_body_scene(&page, &res, &fonts);
-        let _ = scene.encoding();
+        let _ = build(&page, &res, &fonts);
     }
 
     #[test]
@@ -319,17 +330,13 @@ mod tests {
             }],
             template: None,
         };
-        // No images in resources -> draw_image_obj skips.
         let res = Resources::default();
         let fonts = test_font_store();
-        let scene = build_body_scene(&page, &res, &fonts);
-        let _ = scene.encoding();
+        let _ = build(&page, &res, &fonts);
     }
 
     #[test]
     fn ctm_applied_per_object() {
-        // A path with a non-identity CTM should still build without panic;
-        // the CTM is passed as the affine arg to fill/stroke.
         let path = PathObject {
             id: ObjectId::new("p1"),
             boundary: Rect::default(),
@@ -353,15 +360,11 @@ mod tests {
         };
         let res = Resources::default();
         let fonts = test_font_store();
-        let scene = build_body_scene(&page, &res, &fonts);
-        let _ = scene.encoding();
+        let _ = build(&page, &res, &fonts);
     }
 
     #[test]
     fn image_object_draws_into_scene_with_correct_scaling() {
-        // Build a 2x2 red PNG and place it in a 100x50 boundary. The scene
-        // must build without panic; the scaling math (w/img_w, h/img_h) must
-        // not divide by zero or produce NaN.
         let mut buf = std::io::Cursor::new(Vec::new());
         let img = image::RgbImage::from_raw(2, 2, vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0]).unwrap();
         image::DynamicImage::ImageRgb8(img)
@@ -387,13 +390,11 @@ mod tests {
         let mut res = Resources::default();
         res.images.insert(ImageId::new("I1"), png_bytes);
         let fonts = test_font_store();
-        let scene = build_body_scene(&page, &res, &fonts);
-        let _ = scene.encoding();
+        let _ = build(&page, &res, &fonts);
     }
 
     #[test]
     fn image_with_ctm_composes_transforms() {
-        // An image with a non-identity CTM must compose CTM * place without panic.
         let mut buf = std::io::Cursor::new(Vec::new());
         let img = image::RgbImage::from_raw(1, 1, vec![255, 0, 0]).unwrap();
         image::DynamicImage::ImageRgb8(img)
@@ -419,8 +420,7 @@ mod tests {
         let mut res = Resources::default();
         res.images.insert(ImageId::new("I1"), png_bytes);
         let fonts = test_font_store();
-        let scene = build_body_scene(&page, &res, &fonts);
-        let _ = scene.encoding();
+        let _ = build(&page, &res, &fonts);
     }
 
     #[test]
@@ -457,8 +457,7 @@ mod tests {
             },
         );
         let fonts = test_font_store();
-        let scene = build_body_scene(&page, &res, &fonts);
         // Non-panic is the gate; the DrawParam stroke was resolved + stroked.
-        let _ = scene.encoding();
+        let _ = build(&page, &res, &fonts);
     }
 }

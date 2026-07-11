@@ -7,38 +7,64 @@ pub struct WinitEventBridge {
     cursor_phys_x: f64,
     cursor_phys_y: f64,
     pub scale_factor: f64,
+    /// Logical-pixel origin of the canvas widget within the window. Pushed by
+    /// the host each frame (the canvas sits below the toolbar, so its origin is
+    /// not (0, 0)). Until set, coord-bearing pointer events are dropped.
+    canvas_origin: Option<(f64, f64)>,
 }
 
 impl WinitEventBridge {
     pub fn new() -> Self {
-        Self { modifiers: Modifiers::default(), cursor_phys_x: 0.0, cursor_phys_y: 0.0, scale_factor: 1.0 }
+        Self {
+            modifiers: Modifiers::default(),
+            cursor_phys_x: 0.0,
+            cursor_phys_y: 0.0,
+            scale_factor: 1.0,
+            canvas_origin: None,
+        }
     }
 
     pub fn set_scale_factor(&mut self, sf: f64) { self.scale_factor = sf; }
 
     pub fn set_cursor(&mut self, x: f64, y: f64) { self.cursor_phys_x = x; self.cursor_phys_y = y; }
 
-    /// Canvas-local logical px = physical px / scale_factor (full-window canvas, origin = (0,0)).
-    fn canvas_local(&self) -> (f64, f64) {
-        (self.cursor_phys_x / self.scale_factor, self.cursor_phys_y / self.scale_factor)
+    /// Inform the bridge of the canvas widget's logical-pixel origin within the
+    /// window. The host's canvas/render callback should call this every frame.
+    /// Without it, pointer events are silently dropped.
+    pub fn set_canvas_origin(&mut self, logical_x: f64, logical_y: f64) {
+        self.canvas_origin = Some((logical_x, logical_y));
     }
 
-    /// Translate a winit WindowEvent into a rofd ViewEvent (or None if not relevant).
-    /// Returns Some(ViewEvent) for pointer/keyboard/scroll/resize events.
-    pub fn translate(&self, event: &winit::event::WindowEvent) -> Option<ViewEvent> {
+    /// Last cursor position in canvas-local logical pixels, or `None` if the
+    /// canvas origin has not been set yet.
+    fn canvas_local_cursor(&self) -> Option<(f64, f64)> {
+        let (ox, oy) = self.canvas_origin?;
+        let lx = self.cursor_phys_x / self.scale_factor;
+        let ly = self.cursor_phys_y / self.scale_factor;
+        Some((lx - ox, ly - oy))
+    }
+
+    /// Translate a winit WindowEvent into a rofd ViewEvent (or None if not
+    /// relevant). CursorMoved updates the stored cursor position; pointer
+    /// events are emitted with canvas-local coordinates (and dropped until
+    /// [`set_canvas_origin`](Self::set_canvas_origin) has been called).
+    pub fn translate(&mut self, event: &winit::event::WindowEvent) -> Option<ViewEvent> {
         use winit::event::WindowEvent;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                Some(ViewEvent::PointerMove { x: position.x / self.scale_factor, y: position.y / self.scale_factor })
+                self.cursor_phys_x = position.x;
+                self.cursor_phys_y = position.y;
+                self.canvas_local_cursor()
+                    .map(|(x, y)| ViewEvent::PointerMove { x, y })
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                let (x, y) = self.canvas_local();
                 let btn = match button {
                     winit::event::MouseButton::Left => MouseButton::Left,
                     winit::event::MouseButton::Right => MouseButton::Right,
                     winit::event::MouseButton::Middle => MouseButton::Middle,
                     _ => return None,
                 };
+                let (x, y) = self.canvas_local_cursor()?;
                 match state {
                     winit::event::ElementState::Pressed => Some(ViewEvent::PointerDown { button: btn, x, y, modifiers: self.modifiers }),
                     winit::event::ElementState::Released => Some(ViewEvent::PointerUp { button: btn, x, y }),
@@ -141,7 +167,8 @@ mod tests {
         let mut bridge = WinitEventBridge::new();
         bridge.set_scale_factor(2.0);
         bridge.set_cursor(100.0, 200.0);
-        let (x, y) = bridge.canvas_local();
+        bridge.set_canvas_origin(0.0, 0.0);
+        let (x, y) = bridge.canvas_local_cursor().expect("origin set");
         assert_eq!(x, 50.0);
         assert_eq!(y, 100.0);
     }
@@ -150,9 +177,29 @@ mod tests {
     fn canvas_local_default_scale_1() {
         let mut bridge = WinitEventBridge::new();
         bridge.set_cursor(10.0, 20.0);
-        let (x, y) = bridge.canvas_local();
+        bridge.set_canvas_origin(0.0, 0.0);
+        let (x, y) = bridge.canvas_local_cursor().expect("origin set");
         assert_eq!(x, 10.0);
         assert_eq!(y, 20.0);
+    }
+
+    #[test]
+    fn canvas_local_subtracts_origin() {
+        let mut bridge = WinitEventBridge::new();
+        bridge.set_cursor(100.0, 200.0);
+        bridge.set_canvas_origin(10.0, 20.0);
+        let (x, y) = bridge.canvas_local_cursor().expect("origin set");
+        assert_eq!(x, 90.0);
+        assert_eq!(y, 180.0);
+    }
+
+    #[test]
+    fn canvas_local_none_until_origin_set() {
+        let mut bridge = WinitEventBridge::new();
+        bridge.set_cursor(100.0, 200.0);
+        assert!(bridge.canvas_local_cursor().is_none(), "dropped before canvas origin set");
+        bridge.set_canvas_origin(0.0, 0.0);
+        assert!(bridge.canvas_local_cursor().is_some());
     }
 
     #[test]

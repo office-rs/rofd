@@ -1,8 +1,9 @@
-//! Annotation overlay scene builder: render an OFD page's annotations into a
-//! `vello::Scene`.
+//! Annotation overlay drawer: render an OFD page's annotations into the shared
+//! imaging scene via a [`Painter`].
 //!
-//! For each [`Annotation`] on a page, render its [`AnnotationPayload`] into a
-//! fresh [`vello::Scene`]:
+//! For each [`Annotation`] on a page, draw its [`AnnotationPayload`] with the
+//! page-origin + zoom transform (`base = compose_transform(page_origin, zoom, None)`)
+//! applied per draw call:
 //! - **Markup** (highlight/underline/strikeout): semi-transparent rectangles
 //!   drawn over each pair of quad points (~38% opacity, so the underlying text
 //!   remains visible through the highlight).
@@ -17,17 +18,19 @@
 //! - **Watermark**: `content` shaped, drawn translucent (`opacity`) and rotated
 //!   by `angle` about the rect center.
 //!
-//! All draw calls use page-local coordinates (no page-origin translation or
-//! zoom is applied here - the caller composes those if needed).
+//! All draw calls use page-local coordinates; `base` (page-origin + zoom) is
+//! applied per draw (no cached sub-scene - see [`composite`] docs).
 //!
 //! [`PathData`]: rofd_dom::PathData
 
-use kurbo::{Affine, BezPath, Ellipse, Rect as KurboRect, Shape, Stroke};
-use peniko::Fill;
+use imaging::kurbo::{Affine, BezPath, Ellipse, Rect as KurboRect, Shape, Stroke};
+use imaging::record::{Glyph, Scene};
+use imaging::Painter;
+use peniko::{Fill, Style};
 use rofd_dom::{Annotation, AnnotationPayload, Color, FontId, Rect, Resources, ShapeKind};
-use vello::Scene;
 
 use crate::color::to_peniko;
+use crate::ctm::compose_transform;
 use crate::image::decode_image;
 use crate::path::path_to_bezpath;
 use crate::text::FontStore;
@@ -43,24 +46,27 @@ const MARKUP_ALPHA: f32 = 96.0 / 255.0;
 /// required.
 const SHAPE_TOLERANCE: f64 = 1e-3;
 
-/// Build the annotation overlay scene for one page's annotations.
+/// Draw the annotation overlay for one page's annotations into `painter`.
 ///
-/// Iterates every annotation and renders its payload into a new `Scene`. Each
-/// payload variant is drawn in page-local coordinates; missing fonts / images
-/// are skipped silently (the caller can warn).
-pub fn build_annotation_scene(
+/// Iterates every annotation and draws its payload. Each payload variant is
+/// drawn in page-local coordinates with `base` (page-origin + zoom) applied per
+/// draw call; missing fonts / images are skipped silently (the caller can warn).
+pub fn draw_annotations(
+    painter: &mut Painter<Scene>,
     anns: &[Annotation],
     res: &Resources,
     fonts: &FontStore,
-) -> Scene {
-    let mut scene = Scene::new();
+    page_origin: (f64, f64),
+    zoom: f64,
+) {
+    let base = compose_transform(page_origin, zoom, None);
     for ann in anns {
         match &ann.payload {
             AnnotationPayload::Markup { quad_points, color } => {
-                draw_markup(&mut scene, quad_points, color);
+                draw_markup(painter, quad_points, color, base);
             }
             AnnotationPayload::Freehand { path, color, width } => {
-                draw_freehand(&mut scene, path, *color, *width);
+                draw_freehand(painter, path, *color, *width, base);
             }
             AnnotationPayload::Shape {
                 kind,
@@ -69,7 +75,7 @@ pub fn build_annotation_scene(
                 fill,
                 width,
             } => {
-                draw_shape(&mut scene, *kind, rect, *stroke, *fill, *width);
+                draw_shape(painter, *kind, rect, *stroke, *fill, *width, base);
             }
             AnnotationPayload::Note {
                 rect,
@@ -80,13 +86,7 @@ pub fn build_annotation_scene(
                 // v1: draw the note's icon as a filled rectangle (popup text is
                 // rendered by the host UI, not in the scene).
                 let bez = rofd_rect_to_kurbo(rect).to_path(SHAPE_TOLERANCE);
-                scene.fill(
-                    Fill::NonZero,
-                    Affine::IDENTITY,
-                    to_peniko(*color),
-                    None,
-                    &bez,
-                );
+                painter.fill(&bez, to_peniko(*color)).transform(base).draw();
             }
             AnnotationPayload::TextBox {
                 rect,
@@ -96,10 +96,10 @@ pub fn build_annotation_scene(
                 color,
             } => {
                 let text = TextParams { content, font, size: *size, color: *color };
-                draw_text_in_rect(&mut scene, &text, rect, fonts);
+                draw_text_in_rect(painter, &text, rect, fonts, base);
             }
             AnnotationPayload::Stamp { rect, image } => {
-                draw_stamp(&mut scene, rect, image, res);
+                draw_stamp(painter, rect, image, res, base);
             }
             AnnotationPayload::Watermark {
                 rect,
@@ -111,17 +111,16 @@ pub fn build_annotation_scene(
                 color,
             } => {
                 let text = TextParams { content, font, size: *size, color: *color };
-                draw_watermark_text(&mut scene, &text, *opacity, *angle, rect, fonts);
+                draw_watermark_text(painter, &text, *opacity, *angle, rect, fonts, base);
             }
         }
     }
-    scene
 }
 
 /// Highlight/underline/strikeout: draw a semi-transparent rectangle over each
 /// pair of quad points. OFD quad points come in pairs (start/end of a
 /// highlighted line segment); the rectangle spans the two points.
-fn draw_markup(scene: &mut Scene, quad_points: &[rofd_dom::Point], color: &Color) {
+fn draw_markup(painter: &mut Painter<Scene>, quad_points: &[rofd_dom::Point], color: &Color, base: Affine) {
     let translucent = to_peniko(*color).with_alpha(MARKUP_ALPHA);
     for chunk in quad_points.chunks(2) {
         if chunk.len() == 2 {
@@ -134,39 +133,31 @@ fn draw_markup(scene: &mut Scene, quad_points: &[rofd_dom::Point], color: &Color
                 p0.x.max(p1.x),
                 p0.y.max(p1.y),
             );
-            scene.fill(
-                Fill::NonZero,
-                Affine::IDENTITY,
-                translucent,
-                None,
-                &rect,
-            );
+            painter.fill(rect, translucent).transform(base).draw();
         }
     }
 }
 
 /// Freehand: convert the PathData to a BezPath and stroke it.
-fn draw_freehand(scene: &mut Scene, path: &rofd_dom::PathData, color: Color, width: f64) {
+fn draw_freehand(painter: &mut Painter<Scene>, path: &rofd_dom::PathData, color: Color, width: f64, base: Affine) {
     let bez = path_to_bezpath(path);
-    scene.stroke(
-        &Stroke::new(width),
-        Affine::IDENTITY,
-        to_peniko(color),
-        None,
-        &bez,
-    );
+    painter
+        .stroke(&bez, &Stroke::new(width), to_peniko(color))
+        .transform(base)
+        .draw();
 }
 
 /// Shape: fill and/or stroke a rectangle / ellipse / arrow / line bounded by
 /// `rect`. Arrow/line use the rect's bounding box in v1 (true arrowhead geometry
 /// is deferred). Fill is applied first, then stroke (painter's order).
 fn draw_shape(
-    scene: &mut Scene,
+    painter: &mut Painter<Scene>,
     kind: ShapeKind,
     rect: &Rect,
     stroke: Color,
     fill: Option<Color>,
     width: f64,
+    base: Affine,
 ) {
     let bez: BezPath = match kind {
         ShapeKind::Rect | ShapeKind::Arrow | ShapeKind::Line => {
@@ -179,26 +170,17 @@ fn draw_shape(
         }
     };
     if let Some(fc) = fill {
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            to_peniko(fc),
-            None,
-            &bez,
-        );
+        painter.fill(&bez, to_peniko(fc)).transform(base).draw();
     }
-    scene.stroke(
-        &Stroke::new(width),
-        Affine::IDENTITY,
-        to_peniko(stroke),
-        None,
-        &bez,
-    );
+    painter
+        .stroke(&bez, &Stroke::new(width), to_peniko(stroke))
+        .transform(base)
+        .draw();
 }
 
 /// Stamp: decode the referenced image and draw it into `rect` (translate to the
 /// rect origin, scale to the rect's w/h).
-fn draw_stamp(scene: &mut Scene, rect: &Rect, image: &rofd_dom::ImageId, res: &Resources) {
+fn draw_stamp(painter: &mut Painter<Scene>, rect: &Rect, image: &rofd_dom::ImageId, res: &Resources, base: Affine) {
     let bytes = match res.images.get(image) {
         Some(b) => b,
         None => return,
@@ -208,8 +190,9 @@ fn draw_stamp(scene: &mut Scene, rect: &Rect, image: &rofd_dom::ImageId, res: &R
         None => return,
     };
     // `draw_image` fills a rect (0, 0, img.width, img.height) in the image's
-    // natural pixel dimensions, so the transform maps that onto (x, y, w, h):
-    // translate to the rect origin, then scale by (w / img_w, h / img_h).
+    // natural pixel dimensions, so the place transform maps that onto
+    // (x, y, w, h): translate to the rect origin, then scale by
+    // (w / img_w, h / img_h).
     let scale_x = if img.width > 0 {
         rect.w / img.width as f64
     } else {
@@ -221,7 +204,7 @@ fn draw_stamp(scene: &mut Scene, rect: &Rect, image: &rofd_dom::ImageId, res: &R
         1.0
     };
     let place = Affine::translate((rect.x, rect.y)) * Affine::scale_non_uniform(scale_x, scale_y);
-    scene.draw_image(&img, place);
+    painter.draw_image(&img, base * place);
 }
 
 /// Bundle the text fields common to TextBox and Watermark payloads.
@@ -238,18 +221,19 @@ struct TextParams<'a> {
 ///
 /// Skips silently if the font can't be resolved or shaping yields no glyphs.
 fn draw_text_in_rect(
-    scene: &mut Scene,
+    painter: &mut Painter<Scene>,
     text: &TextParams,
     rect: &Rect,
     fonts: &FontStore,
+    base: Affine,
 ) {
     let font = match fonts.resolve_or_default(text.font) {
         Some(f) => f,
         None => return,
     };
     let glyphs = shape_positioned(text.content, text.font, text.size, fonts);
-    let affine = Affine::translate((rect.x, rect.y));
-    draw_glyph_run(scene, font, &glyphs, affine, to_peniko(text.color), text.size);
+    let affine = base * Affine::translate((rect.x, rect.y));
+    draw_glyph_run(painter, font, &glyphs, affine, to_peniko(text.color), text.size);
 }
 
 /// Watermark text: shaped, drawn translucent (`opacity`) and rotated by `angle`
@@ -257,12 +241,13 @@ fn draw_text_in_rect(
 ///
 /// Skips silently if the font can't be resolved or shaping yields no glyphs.
 fn draw_watermark_text(
-    scene: &mut Scene,
+    painter: &mut Painter<Scene>,
     text: &TextParams,
     opacity: f64,
     angle: f64,
     rect: &Rect,
     fonts: &FontStore,
+    base: Affine,
 ) {
     let font = match fonts.resolve_or_default(text.font) {
         Some(f) => f,
@@ -273,8 +258,8 @@ fn draw_watermark_text(
     // Rotate about the rect center. The shaped glyphs are positioned relative
     // to the rect origin; the rotation composes as: translate(center) * rotate.
     let center = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
-    let affine = Affine::translate(center) * Affine::rotate(angle);
-    draw_glyph_run(scene, font, &glyphs, affine, translucent, text.size);
+    let affine = base * Affine::translate(center) * Affine::rotate(angle);
+    draw_glyph_run(painter, font, &glyphs, affine, translucent, text.size);
 }
 
 /// Shape `content` and offset each glyph's y by `size` (baseline drop), so text
@@ -285,12 +270,12 @@ fn shape_positioned(
     font_id: &FontId,
     size: f64,
     fonts: &FontStore,
-) -> Vec<vello::Glyph> {
+) -> Vec<Glyph> {
     let glyphs = fonts.shape(font_id, content, size);
     let baseline_offset = size as f32;
     glyphs
         .iter()
-        .map(|g| vello::Glyph {
+        .map(|g| Glyph {
             id: g.glyph_id,
             x: g.x,
             y: g.y + baseline_offset,
@@ -301,9 +286,9 @@ fn shape_positioned(
 /// Draw a run of positioned glyphs with the given font, transform, brush, and
 /// size. No-op if `glyphs` is empty.
 fn draw_glyph_run(
-    scene: &mut Scene,
+    painter: &mut Painter<Scene>,
     font: &peniko::FontData,
-    glyphs: &[vello::Glyph],
+    glyphs: &[Glyph],
     affine: Affine,
     brush: peniko::Color,
     size: f64,
@@ -311,12 +296,11 @@ fn draw_glyph_run(
     if glyphs.is_empty() {
         return;
     }
-    scene
-        .draw_glyphs(font)
-        .brush(brush)
+    painter
+        .glyphs(font, brush)
         .font_size(size as f32)
         .transform(affine)
-        .draw(Fill::NonZero, glyphs.iter().copied());
+        .draw(&Style::Fill(Fill::NonZero), glyphs);
 }
 
 /// Convert a rofd `Rect { x, y, w, h }` (origin + dimensions) to a kurbo
@@ -328,8 +312,9 @@ fn rofd_rect_to_kurbo(r: &Rect) -> KurboRect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use imaging::kurbo::Rect as KurboRect;
     use rofd_dom::{
-        Annotation, AnnotationId, AnnotationKind, AnnotationPayload, Color, FontId, ImageId,
+        AnnotationId, AnnotationKind, AnnotationPayload, Color, FontId, ImageId,
         NoteIcon, PathCommand, PathData, Point, Rect, ShapeKind,
     };
     use std::sync::Arc;
@@ -352,17 +337,20 @@ mod tests {
         }
     }
 
+    /// Draw into a fresh scene and return it (callers assert non-panic).
     fn build(anns: &[Annotation]) -> Scene {
         let res = Resources::default();
         let fonts = test_font_store();
-        build_annotation_scene(anns, &res, &fonts)
+        let mut scene = Scene::new();
+        let mut painter = Painter::new(&mut scene);
+        painter.fill_rect(KurboRect::new(0.0, 0.0, 800.0, 600.0), peniko::Color::BLACK);
+        draw_annotations(&mut painter, anns, &res, &fonts, (0.0, 0.0), 1.0);
+        scene
     }
 
     #[test]
-    fn empty_annotations_build_empty_scene() {
-        let scene = build(&[]);
-        // No panic; encoding exists (empty).
-        let _ = scene.encoding();
+    fn empty_annotations_draw_without_panic() {
+        let _ = build(&[]);
     }
 
     #[test]
@@ -379,8 +367,7 @@ mod tests {
             },
             AnnotationKind::Highlight,
         );
-        let scene = build(&[ann]);
-        let _ = scene.encoding();
+        let _ = build(&[ann]);
     }
 
     #[test]
@@ -393,8 +380,7 @@ mod tests {
             },
             AnnotationKind::Strikeout,
         );
-        let scene = build(&[ann]);
-        let _ = scene.encoding();
+        let _ = build(&[ann]);
     }
 
     #[test]
@@ -409,8 +395,7 @@ mod tests {
             },
             AnnotationKind::Freehand,
         );
-        let scene = build(&[ann]);
-        let _ = scene.encoding();
+        let _ = build(&[ann]);
     }
 
     #[test]
@@ -425,8 +410,7 @@ mod tests {
             },
             AnnotationKind::Shape(ShapeKind::Rect),
         );
-        let scene = build(&[ann]);
-        let _ = scene.encoding();
+        let _ = build(&[ann]);
     }
 
     #[test]
@@ -441,8 +425,7 @@ mod tests {
             },
             AnnotationKind::Shape(ShapeKind::Ellipse),
         );
-        let scene = build(&[ann]);
-        let _ = scene.encoding();
+        let _ = build(&[ann]);
     }
 
     #[test]
@@ -457,8 +440,7 @@ mod tests {
             },
             AnnotationKind::Shape(ShapeKind::Arrow),
         );
-        let scene = build(&[ann]);
-        let _ = scene.encoding();
+        let _ = build(&[ann]);
     }
 
     #[test]
@@ -472,8 +454,7 @@ mod tests {
             },
             AnnotationKind::Note,
         );
-        let scene = build(&[ann]);
-        let _ = scene.encoding();
+        let _ = build(&[ann]);
     }
 
     #[test]
@@ -488,8 +469,7 @@ mod tests {
             },
             AnnotationKind::TextBox,
         );
-        let scene = build(&[ann]);
-        let _ = scene.encoding();
+        let _ = build(&[ann]);
     }
 
     #[test]
@@ -502,8 +482,7 @@ mod tests {
             },
             AnnotationKind::Stamp,
         );
-        let scene = build(&[ann]);
-        let _ = scene.encoding();
+        let _ = build(&[ann]);
     }
 
     #[test]
@@ -532,8 +511,10 @@ mod tests {
             },
             AnnotationKind::Stamp,
         );
-        let scene = build_annotation_scene(&[ann], &res, &fonts);
-        let _ = scene.encoding();
+        let mut scene = Scene::new();
+        let mut painter = Painter::new(&mut scene);
+        draw_annotations(&mut painter, &[ann], &res, &fonts, (0.0, 0.0), 1.0);
+        let _ = scene;
     }
 
     #[test]
@@ -550,8 +531,7 @@ mod tests {
             },
             AnnotationKind::Watermark,
         );
-        let scene = build(&[ann]);
-        let _ = scene.encoding();
+        let _ = build(&[ann]);
     }
 
     #[test]
@@ -635,8 +615,10 @@ mod tests {
                 AnnotationKind::Watermark,
             ),
         ];
-        let scene = build_annotation_scene(&anns, &res, &fonts);
-        let _ = scene.encoding();
+        let mut scene = Scene::new();
+        let mut painter = Painter::new(&mut scene);
+        draw_annotations(&mut painter, &anns, &res, &fonts, (0.0, 0.0), 1.0);
+        let _ = scene;
     }
 
     #[test]
