@@ -1,6 +1,6 @@
 use rofd_dom::OfdDocument;
 use rofd_editor::{Editor, AnnotationSelection, TextCursor};
-use rofd_render::{RenderEngine, PageSceneCache, Viewport};
+use rofd_render::{FontStore, PageSceneCache, PX_PER_MM, RenderEngine, Viewport};
 
 use crate::callbacks::Callbacks;
 use crate::config::EditorConfig;
@@ -12,6 +12,10 @@ pub struct EditorComponent {
     pub(crate) render: RenderEngine,
     pub(crate) cache: PageSceneCache,
     pub(crate) viewport: Viewport,
+    /// Cached `FontStore` (document fonts + default). Rebuilt on
+    /// `load_document`/`new_document` so a large default CJK font is not
+    /// re-registered every frame.
+    pub(crate) font_store: Option<FontStore>,
     pub(crate) callbacks: Callbacks,
     pub(crate) modified: bool,
 }
@@ -23,20 +27,31 @@ impl EditorComponent {
             editor: Editor::new(),
             render: RenderEngine::new(config.default_font_bytes.clone()),
             cache: PageSceneCache::new(),
-            viewport: Viewport { zoom: 1.0, page_gap, ..Default::default() },
+            viewport: Viewport { zoom: PX_PER_MM, page_gap, ..Default::default() },
+            font_store: None,
             callbacks: Callbacks::default(),
             modified: false,
         }
     }
 
     pub fn load_document(&mut self, doc: OfdDocument) {
+        let font_bytes = self.render.default_font_bytes.clone();
         self.editor.load_document(doc);
+        self.font_store = Some(FontStore::from_resources(
+            &self.editor.document().resources,
+            font_bytes,
+        ));
         self.cache = PageSceneCache::new();
         self.modified = false;
     }
 
     pub fn new_document(&mut self) {
+        let font_bytes = self.render.default_font_bytes.clone();
         self.editor.load_document(OfdDocument::default());
+        self.font_store = Some(FontStore::from_resources(
+            &self.editor.document().resources,
+            font_bytes,
+        ));
         self.cache = PageSceneCache::new();
         self.modified = false;
     }
@@ -80,7 +95,18 @@ impl EditorComponent {
     }
 
     pub fn render(&mut self, target: &mut dyn RenderTarget) {
-        let scene = self.render.composite(self.editor.document(), &self.viewport, &mut self.cache);
+        if self.font_store.is_none() {
+            let font_bytes = self.render.default_font_bytes.clone();
+            let resources = &self.editor.document().resources;
+            self.font_store = Some(FontStore::from_resources(resources, font_bytes));
+        }
+        let fonts = self.font_store.as_ref().expect("font_store initialized");
+        let scene = self.render.composite(
+            self.editor.document(),
+            &self.viewport,
+            &mut self.cache,
+            fonts,
+        );
         target.draw_scene(&scene);
     }
 
@@ -341,7 +367,8 @@ mod tests {
         let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
         let outcome = c.handle_event(&ViewEvent::Zoom { factor: 2.0 });
         assert!(outcome.needs_repaint);
-        assert_eq!(c.viewport.zoom, 2.0);
+        // Default zoom is PX_PER_MM (96 DPI); Zoom multiplies on top.
+        assert_eq!(c.viewport.zoom, rofd_render::PX_PER_MM * 2.0);
     }
 
     #[test]

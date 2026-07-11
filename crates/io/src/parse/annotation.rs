@@ -7,7 +7,7 @@ use rofd_dom::{
 };
 
 use crate::error::OfdError;
-use crate::parse::attr;
+use crate::parse::{attr, parse_color_value};
 
 struct Pending {
     kind: AnnotationKind,
@@ -38,7 +38,7 @@ pub fn parse_annotation_xml(xml: &str, page: &PageId) -> Result<Vec<Annotation>,
             }
             Ok(Event::Empty(e)) if e.name().local_name().as_ref() == b"Color" => {
                 if let Some(p) = current.as_mut() {
-                    p.color = attr(&e, "Color").and_then(parse_color);
+                    p.color = attr(&e, "Value").and_then(|v| parse_color_value(&v));
                 }
             }
             Ok(Event::Text(t)) => {
@@ -88,12 +88,4 @@ pub fn parse_annotation_xml(xml: &str, page: &PageId) -> Result<Vec<Annotation>,
         }
     }
     Ok(out)
-}
-
-fn parse_color(s: String) -> Option<Color> {
-    let n: Vec<u8> = s.split_whitespace().filter_map(|t| t.parse().ok()).collect();
-    match n.len() {
-        3 => Some(Color::Rgb(n[0], n[1], n[2])),
-        _ => None,
-    }
 }

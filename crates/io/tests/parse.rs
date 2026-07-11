@@ -1,4 +1,6 @@
-use rofd_dom::{AnnotationKind, AnnotationPayload, Color, FontId, LayerType, PageObject};
+use rofd_dom::{
+    AnnotationKind, AnnotationPayload, Color, DrawParamId, FontId, ImageId, LayerType, PageObject,
+};
 
 #[path = "fixtures/fixtures.rs"]
 mod fixtures;
@@ -95,4 +97,38 @@ fn parse_loads_font_data_from_fontfile() {
     let bytes = fixtures::build_minimal_ofd_with_font();
     let report = rofd_io::parse_ofd(&bytes).unwrap();
     assert!(report.document.resources.font_data.contains_key(&rofd_dom::FontId::new("F1")));
+}
+
+#[test]
+fn parse_resolves_drawparam_and_multimedia_from_document_res() {
+    let bytes = fixtures::build_minimal_ofd_with_drawparam();
+    let report = rofd_io::parse_ofd(&bytes).unwrap();
+    // DrawParam 5 parsed from DocumentRes.xml with `Value` colors + LineWidth.
+    let dp5 = report
+        .document
+        .resources
+        .draw_params
+        .get(&DrawParamId::new("5"))
+        .expect("DrawParam 5 parsed");
+    assert_eq!(dp5.stroke, Some(Color::Rgb(255, 0, 0)));
+    assert_eq!(dp5.fill, Some(Color::Rgb(0, 0, 0)));
+    assert_eq!(dp5.line_width, Some(2.0));
+    // Image 9 loaded from Doc_0/Res/img.png (MediaFile relative to BaseLoc="Res").
+    assert!(
+        report.document.resources.images.contains_key(&ImageId::new("9")),
+        "image bytes loaded"
+    );
+    // The PathObject carries DrawParam="5" and no inline color (resolved at render).
+    let page = &report.document.pages[0];
+    let path = page
+        .layers
+        .iter()
+        .flat_map(|l| l.objects.iter())
+        .find_map(|o| match o {
+            PageObject::Path(p) => Some(p),
+            _ => None,
+        })
+        .expect("path object");
+    assert_eq!(path.draw_param, Some(DrawParamId::new("5")));
+    assert!(path.stroke.is_none(), "no inline StrokeColor -> None until render resolves");
 }

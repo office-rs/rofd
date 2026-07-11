@@ -2,7 +2,7 @@ use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
 
 use rofd_dom::{
-    Ctm, Color, FontId, ImageId, ImageObject, Layer, LayerType, ObjectId, Page, PageId,
+    Ctm, DrawParamId, FontId, ImageId, ImageObject, Layer, LayerType, ObjectId, Page, PageId,
     PageObject, PathData, PathObject, Rect, TextCode, TextObject,
 };
 
@@ -10,7 +10,7 @@ use crate::abbreviated::parse_abbreviated;
 use crate::error::OfdError;
 use crate::parse::attr;
 use crate::parse::document::DocHeader;
-use crate::parse::parse_rect;
+use crate::parse::{parse_color_value, parse_rect_ws};
 
 pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result<Page, OfdError> {
     let mut reader = Reader::from_str(page_xml);
@@ -27,9 +27,20 @@ pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result
     let mut pending_text_delta: Option<String> = None;
     let mut pending_text_body: Option<String> = None;
     let mut in_text_code = false;
+    // TextCode X/Y origin (page-local) captured on its Start, applied at End.
+    let mut text_origin = (0.0_f64, 0.0_f64);
+    // Page-level PhysicalBox (inside <Area>) overrides the doc default; its
+    // geometry is element text content ("x y w h"), not attributes.
+    let mut in_physical_box = false;
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => handle_element_start(&e, &mut page, &mut current_layer, &mut current_text, &mut pending_text_delta, &mut pending_text_body, &mut in_text_code),
+            Ok(Event::Start(e)) => {
+                if e.name().local_name().as_ref() == b"PhysicalBox" {
+                    in_physical_box = true;
+                } else {
+                    handle_element_start(&e, &mut current_layer, &mut current_text, &mut pending_text_delta, &mut pending_text_body, &mut in_text_code, &mut text_origin);
+                }
+            }
             Ok(Event::Empty(e)) => {
                 let local = e.name().local_name();
                 if local.as_ref() == b"Layer" {
@@ -42,12 +53,15 @@ pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result
                     };
                     page.layers.push(Layer { layer_type: lt, objects: vec![] });
                 } else {
-                    handle_element_start(&e, &mut page, &mut current_layer, &mut current_text, &mut pending_text_delta, &mut pending_text_body, &mut in_text_code);
+                    handle_element_start(&e, &mut current_layer, &mut current_text, &mut pending_text_delta, &mut pending_text_body, &mut in_text_code, &mut text_origin);
                 }
             }
             Ok(Event::Text(t)) => {
                 let s = t.unescape().map(|c| c.into_owned()).unwrap_or_default();
-                if in_text_code {
+                if in_physical_box {
+                    page.physical_box = parse_rect_ws(&s);
+                    in_physical_box = false;
+                } else if in_text_code {
                     pending_text_body = Some(s);
                 } else if !s.is_empty() {
                     if let Some(l) = current_layer.as_mut() {
@@ -64,7 +78,7 @@ pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result
                         let body = pending_text_body.take().unwrap_or_default();
                         // v1: glyph_ids left empty (no Glyph attr in common subset); deltas derived from DeltaX string
                         let deltas = parse_delta_x(pending_text_delta.as_deref(), body.chars().count());
-                        t.codes.push(TextCode { glyph_ids: vec![], deltas, text: body });
+                        t.codes.push(TextCode { glyph_ids: vec![], deltas, text: body, x: text_origin.0, y: text_origin.1 });
                     }
                     pending_text_delta = None;
                     in_text_code = false;
@@ -79,6 +93,7 @@ pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result
                         page.layers.push(l);
                     }
                 }
+                b"PhysicalBox" => in_physical_box = false,
                 _ => {}
             },
             Ok(Event::Eof) => break,
@@ -92,15 +107,14 @@ pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result
 #[allow(clippy::too_many_arguments)]
 fn handle_element_start(
     e: &BytesStart,
-    page: &mut Page,
     current_layer: &mut Option<Layer>,
     current_text: &mut Option<TextObject>,
     pending_text_delta: &mut Option<String>,
     pending_text_body: &mut Option<String>,
     in_text_code: &mut bool,
+    text_origin: &mut (f64, f64),
 ) {
     match e.name().local_name().as_ref() {
-        b"PhysicalBox" => page.physical_box = parse_rect(e),
         b"Layer" => {
             let lt = match attr(e, "Type").as_deref() {
                 Some("Foreground") => LayerType::Foreground,
@@ -118,10 +132,11 @@ fn handle_element_start(
                 size: attr(e, "Size").and_then(|s| s.parse().ok()).unwrap_or(0.0),
                 fill: None,
                 codes: vec![],
+                draw_param: attr(e, "DrawParam").map(DrawParamId::new),
             });
         }
         b"FillColor" | b"StrokeColor" => {
-            if let Some(c) = attr(e, "Color").and_then(parse_color) {
+            if let Some(c) = attr(e, "Value").and_then(|v| parse_color_value(&v)) {
                 let local = e.name().local_name();
                 if local.as_ref() == b"FillColor" {
                     if let Some(t) = current_text.as_mut() { t.fill = Some(c); }
@@ -143,6 +158,11 @@ fn handle_element_start(
             *in_text_code = true;
             *pending_text_delta = attr(e, "DeltaX");
             *pending_text_body = None;
+            // X/Y is the absolute pen origin (page-local) for the first glyph.
+            *text_origin = (
+                attr(e, "X").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                attr(e, "Y").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+            );
         }
         b"ImageObject" => {
             if let Some(l) = current_layer.as_mut() {
@@ -164,6 +184,7 @@ fn handle_element_start(
                     stroke: None,
                     line_width: attr(e, "LineWidth").and_then(|s| s.parse().ok()).unwrap_or(0.0),
                     data: PathData::default(),
+                    draw_param: attr(e, "DrawParam").map(DrawParamId::new),
                 }));
             }
         }
@@ -190,14 +211,6 @@ fn parse_ctm(s: String) -> Option<Ctm> {
     let n: Vec<f64> = s.split_whitespace().filter_map(|t| t.parse().ok()).collect();
     if n.len() != 6 { return None; }
     Some(Ctm { a: n[0], b: n[1], c: n[2], d: n[3], e: n[4], f: n[5] })
-}
-
-fn parse_color(s: String) -> Option<Color> {
-    let n: Vec<u8> = s.split_whitespace().filter_map(|t| t.parse().ok()).collect();
-    match n.len() {
-        3 => Some(Color::Rgb(n[0], n[1], n[2])),
-        _ => None, // non-RGB (CMYK/gray) -> skipped, render substitutes; v1 common subset
-    }
 }
 
 #[cfg(test)]

@@ -23,4 +23,4 @@ pub use hit_test::{hit_test, HitTarget};
 pub use image::decode_image;
 pub use path::path_to_bezpath;
 pub use text::{FontStore, shape_text, ShapedGlyph};
-pub use viewport::Viewport;
+pub use viewport::{Viewport, PX_PER_MM};

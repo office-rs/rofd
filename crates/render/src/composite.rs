@@ -55,6 +55,7 @@ impl RenderEngine {
         doc: &OfdDocument,
         vp: &Viewport,
         cache: &mut PageSceneCache,
+        fonts: &FontStore,
     ) -> Scene {
         let mut scene = Scene::new();
 
@@ -62,10 +63,6 @@ impl RenderEngine {
         let gray = peniko::Color::from_rgba8(0xE0, 0xE0, 0xE0, 0xFF);
         let bg = Rect::new(0.0, 0.0, vp.size.0, vp.size.1);
         scene.fill(Fill::NonZero, kurbo::Affine::IDENTITY, gray, None, &bg);
-
-        // Per-doc FontStore: document fonts + default fallback. Arc-shared
-        // bytes -> no font copy per composite.
-        let doc_fonts = FontStore::from_resources(&doc.resources, self.default_font_bytes.clone());
 
         // Stack pages vertically, centered horizontally, offset by scroll.
         let mut y = vp.page_gap - vp.scroll.1;
@@ -104,11 +101,11 @@ impl RenderEngine {
             let anns = doc.annotations.for_page(&page.id);
 
             {
-                let body = cache.body(page, &doc.resources, &doc_fonts);
+                let body = cache.body(page, &doc.resources, fonts);
                 scene.append(body, Some(transform));
             }
             {
-                let ann = cache.annotation(page, anns, &doc.resources, &doc_fonts);
+                let ann = cache.annotation(page, anns, &doc.resources, fonts);
                 scene.append(ann, Some(transform));
             }
 

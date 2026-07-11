@@ -11,9 +11,28 @@ async function main(): Promise<void> {
   };
   resize();
 
-  // Create the editor (empty font bytes for v1 - text won't render).
-  const editor = await Editor.create(canvas, new Uint8Array(0));
+  // Fetch the default CJK font (Noto Sans SC) so Chinese text renders. Lives
+  // in public/ and is served at the site root by Vite. If the fetch fails the
+  // editor still loads but text won't render.
+  let fontBytes = new Uint8Array(0);
+  try {
+    const res = await fetch('/NotoSansSC-Regular.otf');
+    if (res.ok) {
+      fontBytes = new Uint8Array(await res.arrayBuffer());
+    } else {
+      console.warn(`font fetch returned ${res.status}; text will not render`);
+    }
+  } catch (e) {
+    console.warn('font fetch failed; text will not render', e);
+  }
+
+  const editor = await Editor.create(canvas, fontBytes);
   editor.setClock('rofd', Date.now());
+  // Initialise the editor viewport to the canvas size. Without this the
+  // viewport.size stays (0,0) until the first window resize (handleResize is
+  // only wired to the resize event below) -> the gray desk background would
+  // be zero-sized on the first frame.
+  editor.handleResize(canvas.width, canvas.height);
 
   function render(): void {
     editor.render();

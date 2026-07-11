@@ -44,8 +44,8 @@ pub fn build_body_scene(page: &Page, res: &Resources, fonts: &FontStore) -> Scen
     for layer in &page.layers {
         for obj in &layer.objects {
             match obj {
-                PageObject::Text(t) => draw_text(&mut scene, t, fonts),
-                PageObject::Path(p) => draw_path(&mut scene, p),
+                PageObject::Text(t) => draw_text(&mut scene, t, res, fonts),
+                PageObject::Path(p) => draw_path(&mut scene, p, res),
                 PageObject::Image(i) => draw_image_obj(&mut scene, i, res),
                 // v1: skip composite objects. The caller can emit an OfdWarning
                 // (SkippedObject) for each composite; the scene builder just
@@ -62,12 +62,18 @@ pub fn build_body_scene(page: &Page, res: &Resources, fonts: &FontStore) -> Scen
 /// object's CTM as the transform.
 ///
 /// Skips silently if the font can't be resolved or the object has no fill color.
-fn draw_text(scene: &mut Scene, t: &TextObject, fonts: &FontStore) {
+fn draw_text(scene: &mut Scene, t: &TextObject, res: &Resources, fonts: &FontStore) {
     let font = match fonts.resolve_or_default(&t.font) {
         Some(f) => f,
         None => return,
     };
-    let fill = match t.fill {
+    // Fill: inline first, then DrawParam fallback (GB/T 33190).
+    let fill = match t.fill.or_else(|| {
+        t.draw_param
+            .as_ref()
+            .and_then(|id| res.draw_params.get(id))
+            .and_then(|d| d.fill)
+    }) {
         Some(c) => to_peniko(c),
         None => return,
     };
@@ -83,19 +89,21 @@ fn draw_text(scene: &mut Scene, t: &TextObject, fonts: &FontStore) {
         if glyphs.is_empty() {
             continue;
         }
-        // Position each glyph by cumulative document deltas (NOT the shaper's
-        // x/y). The deltas are (dx, dy) per glyph; we accumulate them into a
-        // pen position.
-        let mut pen_x = 0.0_f32;
-        let mut pen_y = 0.0_f32;
+        // Position glyphs by the TextCode X/Y origin + cumulative document
+        // deltas. The first glyph sits at (x, y); each delta is the advance to
+        // the next glyph (GB/T 33190 DeltaX semantics). The shaper's natural
+        // x/y is ignored.
+        let mut pen_x = code.x as f32;
+        let mut pen_y = code.y as f32;
         let positioned: Vec<vello::Glyph> = glyphs
             .iter()
             .enumerate()
             .map(|(i, g)| {
+                let glyph = vello::Glyph { id: g.glyph_id, x: pen_x, y: pen_y };
                 let (dx, dy) = code.deltas.get(i).copied().unwrap_or((0.0, 0.0));
                 pen_x += dx;
                 pen_y += dy;
-                vello::Glyph { id: g.glyph_id, x: pen_x, y: pen_y }
+                glyph
             })
             .collect();
         if !positioned.is_empty() {
@@ -113,20 +121,32 @@ fn draw_text(scene: &mut Scene, t: &TextObject, fonts: &FontStore) {
 ///
 /// If both `fill` and `stroke` are `None`, nothing is drawn. Fill is applied
 /// first, then stroke (standard painter's order for OFD).
-fn draw_path(scene: &mut Scene, p: &PathObject) {
+fn draw_path(scene: &mut Scene, p: &PathObject, res: &Resources) {
     let bez = path_to_bezpath(&p.data);
     let affine = p
         .ctm
         .as_ref()
         .map(ctm_to_affine)
         .unwrap_or(Affine::IDENTITY);
-    if let Some(c) = p.fill {
+    // Resolve colors/width: inline first, then DrawParam fallback (GB/T 33190).
+    let dp = p
+        .draw_param
+        .as_ref()
+        .and_then(|id| res.draw_params.get(id));
+    let fill = p.fill.or_else(|| dp.and_then(|d| d.fill));
+    let stroke = p.stroke.or_else(|| dp.and_then(|d| d.stroke));
+    let line_width = if p.line_width > 0.0 {
+        p.line_width
+    } else {
+        dp.and_then(|d| d.line_width).unwrap_or(0.0)
+    };
+    if let Some(c) = fill {
         // brush_transform = None: the brush is in user space (no separate
         // brush transform composed with the shape transform).
         scene.fill(Fill::NonZero, affine, to_peniko(c), None, &bez);
     }
-    if let Some(c) = p.stroke {
-        let stroke = kurbo::Stroke::new(p.line_width);
+    if let Some(c) = stroke {
+        let stroke = kurbo::Stroke::new(line_width);
         scene.stroke(&stroke, affine, to_peniko(c), None, &bez);
     }
 }
@@ -206,6 +226,7 @@ mod tests {
                     PathCommand::Z,
                 ],
             },
+            draw_param: None,
         };
         let page = Page {
             id: rofd_dom::PageId::new("P0"),
@@ -237,7 +258,10 @@ mod tests {
                 glyph_ids: vec![],
                 deltas: vec![(0.0, 0.0); 5],
                 text: "Hello".into(),
+                x: 0.0,
+                y: 0.0,
             }],
+            draw_param: None,
         };
         let page = Page {
             id: rofd_dom::PageId::new("P0"),
@@ -316,6 +340,7 @@ mod tests {
             data: PathData {
                 commands: vec![PathCommand::M(0.0, 0.0), PathCommand::L(10.0, 0.0)],
             },
+            draw_param: None,
         };
         let page = Page {
             id: rofd_dom::PageId::new("P0"),
@@ -395,6 +420,45 @@ mod tests {
         res.images.insert(ImageId::new("I1"), png_bytes);
         let fonts = test_font_store();
         let scene = build_body_scene(&page, &res, &fonts);
+        let _ = scene.encoding();
+    }
+
+    #[test]
+    fn path_draw_param_resolves_color_when_no_inline() {
+        // Path with DrawParam="5" but no inline fill/stroke. The DrawParam (in
+        // res) supplies the stroke color + line_width, so the path strokes into
+        // the scene instead of being skipped.
+        let path = PathObject {
+            id: ObjectId::new("p1"),
+            boundary: Rect { x: 0.0, y: 0.0, w: 100.0, h: 10.0 },
+            ctm: None,
+            fill: None,
+            stroke: None,
+            line_width: 0.0,
+            data: PathData { commands: vec![PathCommand::M(0.0, 0.0), PathCommand::L(100.0, 0.0)] },
+            draw_param: Some(rofd_dom::DrawParamId::new("5")),
+        };
+        let page = Page {
+            id: rofd_dom::PageId::new("P0"),
+            physical_box: Rect::default(),
+            layers: vec![rofd_dom::Layer {
+                layer_type: rofd_dom::LayerType::Body,
+                objects: vec![PageObject::Path(path)],
+            }],
+            template: None,
+        };
+        let mut res = Resources::default();
+        res.draw_params.insert(
+            rofd_dom::DrawParamId::new("5"),
+            rofd_dom::DrawParam {
+                line_width: Some(2.0),
+                stroke: Some(rofd_dom::Color::Rgb(255, 0, 0)),
+                fill: None,
+            },
+        );
+        let fonts = test_font_store();
+        let scene = build_body_scene(&page, &res, &fonts);
+        // Non-panic is the gate; the DrawParam stroke was resolved + stroked.
         let _ = scene.encoding();
     }
 }

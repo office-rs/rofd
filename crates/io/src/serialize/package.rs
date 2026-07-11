@@ -18,7 +18,7 @@ pub fn write_ofd(doc: &OfdDocument) -> Result<Vec<u8>, OfdError> {
     let pb = doc.pages.first().map(|p| p.physical_box);
     if let Some(r) = pb {
         doc_xml.push_str(&format!(
-            "  <ofd:Common><ofd:PageArea><ofd:PhysicalBox x=\"{}\" y=\"{}\" w=\"{}\" h=\"{}\"/></ofd:PageArea></ofd:Common>\n",
+            "  <ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>{} {} {} {}</ofd:PhysicalBox></ofd:PageArea></ofd:CommonData>\n",
             r.x, r.y, r.w, r.h
         ));
     }
@@ -36,7 +36,7 @@ pub fn write_ofd(doc: &OfdDocument) -> Result<Vec<u8>, OfdError> {
         let mut page_xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
         page_xml.push_str("<ofd:Page xmlns:ofd=\"http://www.ofdspec.org/2016\">\n");
         page_xml.push_str(&format!(
-            "  <ofd:Area><ofd:PhysicalBox x=\"{}\" y=\"{}\" w=\"{}\" h=\"{}\"/></ofd:Area>\n",
+            "  <ofd:Area><ofd:PhysicalBox>{} {} {} {}</ofd:PhysicalBox></ofd:Area>\n",
             page.physical_box.x, page.physical_box.y, page.physical_box.w, page.physical_box.h
         ));
         page_xml.push_str("  <ofd:Content>\n");

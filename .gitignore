@@ -1,6 +1,7 @@
 target/
 .superpowers/
 .claude/worktrees/
+.wasm-bindgen-install/
 agent.*
 *.profraw
 /cc_config*

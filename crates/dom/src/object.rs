@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{FontId, ImageId, ObjectId};
+use crate::ids::{DrawParamId, FontId, ImageId, ObjectId};
 use crate::primitives::{Color, Ctm, PathData, Rect};
 
 /// Shape kind for Shape annotations and composite primitives.
@@ -30,6 +30,11 @@ pub struct TextCode {
     /// The TextCode element's text content (e.g. "Hello"). v1: glyph_ids may be empty;
     /// renderers shape this string to obtain glyph IDs.
     pub text: String,
+    /// Absolute pen origin (page-local, mm) for the first glyph, from the
+    /// TextCode element's `X`/`Y` attributes. Subsequent glyphs advance by
+    /// `deltas`. Defaults to (0, 0) when absent.
+    pub x: f64,
+    pub y: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -41,6 +46,9 @@ pub struct TextObject {
     pub size: f64,
     pub fill: Option<Color>,
     pub codes: Vec<TextCode>,
+    /// `DrawParam` attribute (GB/T 33190): id of a `DrawParam` in `Resources`
+    /// supplying fallback fill/stroke/line_width when inline colors are absent.
+    pub draw_param: Option<DrawParamId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -60,6 +68,8 @@ pub struct PathObject {
     pub stroke: Option<Color>,
     pub line_width: f64,
     pub data: PathData,
+    /// `DrawParam` attribute: fallback fill/stroke/line_width source.
+    pub draw_param: Option<DrawParamId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -93,6 +103,7 @@ mod tests {
             size: 12.0,
             fill: None,
             codes: vec![],
+            draw_param: None,
         };
         let _clone = t.clone();
         assert_eq!(t.size, 12.0);
@@ -108,13 +119,14 @@ mod tests {
             stroke: Some(Color::Rgb(0, 0, 0)),
             line_width: 1.0,
             data: PathData::default(),
+            draw_param: None,
         });
         assert!(matches!(p, PageObject::Path(_)));
     }
 
     #[test]
     fn textcode_carries_text() {
-        let tc = TextCode { glyph_ids: vec![], deltas: vec![], text: "Hello".into() };
+        let tc = TextCode { glyph_ids: vec![], deltas: vec![], text: "Hello".into(), x: 0.0, y: 0.0 };
         assert_eq!(tc.text, "Hello");
     }
 }

@@ -29,7 +29,7 @@ fn serialize_one(a: &Annotation, _page: &PageId) -> String {
     };
     let mut s = format!("  <ofd:Annotation ID=\"{}\" Type=\"{}\">\n", a.id.0, ty);
     if let Some(c) = color {
-        s.push_str(&format!("    <ofd:Color Color=\"{}\"/>\n", color_str(&c)));
+        s.push_str(&format!("    <ofd:Color Value=\"{}\"/>\n", color_str(&c)));
     }
     s.push_str(&format!("    <ofd:Creator>{}</ofd:Creator>\n", xml_escape(&a.creator)));
     s.push_str("  </ofd:Annotation>\n");

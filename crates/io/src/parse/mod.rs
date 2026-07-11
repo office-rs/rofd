@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use quick_xml::events::BytesStart;
 
-use rofd_dom::{OfdDocument, Rect};
+use rofd_dom::{Color, OfdDocument, Rect};
 
 use crate::error::{LoadReport, OfdError, OfdWarning};
 use crate::package::{EntryKind, PackageHandle, PkgEntry};
@@ -18,13 +18,29 @@ pub fn attr(e: &BytesStart, name: &str) -> Option<String> {
     e.attributes().flatten().find(|a| a.key.as_ref() == name.as_bytes()).map(|a| String::from_utf8_lossy(&a.value).into_owned())
 }
 
-/// Parse a Rect from x/y/w/h attributes (e.g. PhysicalBox).
-pub(crate) fn parse_rect(e: &BytesStart) -> Rect {
+/// Parse a Rect from a whitespace-separated `"x y w h"` string.
+///
+/// Per GB/T 33190, the page-area box elements (`PhysicalBox`, `ApplicationBox`,
+/// ...) carry their geometry as element **text content**
+/// (e.g. `<ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox>`), not attributes.
+pub(crate) fn parse_rect_ws(s: &str) -> Rect {
+    let n: Vec<f64> = s.split_whitespace().filter_map(|t| t.parse().ok()).collect();
     Rect {
-        x: attr(e, "x").and_then(|s| s.parse().ok()).unwrap_or(0.0),
-        y: attr(e, "y").and_then(|s| s.parse().ok()).unwrap_or(0.0),
-        w: attr(e, "w").and_then(|s| s.parse().ok()).unwrap_or(0.0),
-        h: attr(e, "h").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+        x: n.first().copied().unwrap_or(0.0),
+        y: n.get(1).copied().unwrap_or(0.0),
+        w: n.get(2).copied().unwrap_or(0.0),
+        h: n.get(3).copied().unwrap_or(0.0),
+    }
+}
+
+/// Parse a color from a whitespace-separated `"r g b"` (or `"r g b a"`) string -
+/// the format of the `Value` attribute on `FillColor`/`StrokeColor`/`Color`
+/// (GB/T 33190). Alpha is accepted but currently dropped (`Color::Rgb`).
+pub(crate) fn parse_color_value(s: &str) -> Option<Color> {
+    let n: Vec<u8> = s.split_whitespace().filter_map(|t| t.parse::<u8>().ok()).collect();
+    match n.len() {
+        3 | 4 => Some(Color::Rgb(n[0], n[1], n[2])),
+        _ => None,
     }
 }
 
@@ -54,6 +70,42 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
             warnings.push(OfdWarning::MissingFeature { feature: "Template".into(), entry: page_path.clone() });
         }
         doc.pages.push(page);
+    }
+    // Resources: DocumentRes.xml / PublicRes.xml carry DrawParams, MultiMedias
+    // (images), and Fonts (GB/T 33190). Paths resolve relative to the Res
+    // BaseLoc (itself relative to the resource entry's own directory).
+    for e in &entries {
+        let name = e.name.as_str();
+        if name.ends_with("DocumentRes.xml") || name.ends_with("PublicRes.xml") {
+            let xml = String::from_utf8_lossy(&e.bytes).into_owned();
+            let parsed = resource::parse_res(&xml)?;
+            let res_dir = e.name.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+            let base_dir = if parsed.base_loc.is_empty() {
+                res_dir.to_string()
+            } else if res_dir.is_empty() {
+                parsed.base_loc.clone()
+            } else {
+                format!("{res_dir}/{}", parsed.base_loc)
+            };
+            for (id, dp) in parsed.draw_params {
+                doc.resources.draw_params.insert(id, dp);
+            }
+            for (id, media_file, _fmt) in parsed.multimedias {
+                let path = if base_dir.is_empty() { media_file } else { format!("{base_dir}/{media_file}") };
+                if let Some(fe) = entries.iter().find(|x| x.name == path) {
+                    doc.resources.images.insert(id, fe.bytes.clone());
+                }
+            }
+            for (id, fref, font_file) in parsed.fonts {
+                doc.resources.fonts.insert(id.clone(), fref);
+                if let Some(rel) = font_file {
+                    let path = if base_dir.is_empty() { rel } else { format!("{base_dir}/{rel}") };
+                    if let Some(fe) = entries.iter().find(|x| x.name == path) {
+                        doc.resources.font_data.insert(id, fe.bytes.clone());
+                    }
+                }
+            }
+        }
     }
     // Resources: Font.xml entries (+ font bytes via FontFile)
     for e in &entries {
