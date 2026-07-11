@@ -11,6 +11,17 @@ async function main(): Promise<void> {
   const fileInput = document.getElementById('file-input') as HTMLInputElement;
 
   const editor = await Editor.init(container, {
+    fonts: [
+      { url: '/fonts/NotoSans-Regular.ttf' },
+      { url: '/fonts/NotoSansCJKsc-Regular.otf' },
+      { url: '/fonts/NotoSerifCJKsc-Regular.otf' },
+      { url: '/fonts/simsun.ttc' },
+      { url: '/fonts/simhei.ttf' },
+      { url: '/fonts/msyh.ttc' },
+      { url: '/fonts/arial.ttf' },
+      { url: '/fonts/times.ttf' },
+      { url: '/fonts/calibri.ttf' },
+    ],
     // Ctrl+S: download the current document as .ofd.
     onSaveRequest: () => {
       const bytes = editor.saveOfd();

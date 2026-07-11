@@ -88,6 +88,7 @@ mod wasm_impl {
     #[wasm_bindgen]
     impl WasmEditor {
         /// Render one frame. Called by the JS SDK on each requestAnimationFrame.
+        #[wasm_bindgen(js_name = renderFrame)]
         pub fn render_frame(&mut self) -> Result<(), JsValue> {
             self.component.render(&mut self.render_target);
             Ok(())
