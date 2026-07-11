@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use parley::style::{FontFamily, GenericFamily};
 use peniko::FontData;
 use rofd_dom::{FontId, Resources};
 
@@ -89,14 +90,22 @@ impl FontStore {
     /// Reuses the store's shared `FontContext` (registered in
     /// [`Self::from_resources`]). Ligatures OFF (1:1 char<->glyph).
     ///
-    /// Returns glyph IDs + the shaper's natural positions. The body scene
-    /// ignores x/y and uses document deltas; annotation text uses x/y.
+    /// If neither a document font nor a default font is resolved, falls back to
+    /// a generic system family (SansSerif) so text still renders - parley's
+    /// `FontContext` discovers system fonts (via the `system` feature), and
+    /// fontique's script fallback covers characters the default lacks (e.g. CJK
+    /// on a Latin default). Returns glyph IDs + the shaper's natural positions.
     pub fn shape(&self, font_id: &FontId, text: &str, size: f64) -> Vec<ShapedGlyph> {
-        let family = self
+        let family_name = self
             .families
             .get(font_id)
             .map(String::as_str)
             .or(self.default_family.as_deref());
+        let family = match family_name {
+            Some(name) => FontFamily::named(name),
+            // No document/default font resolved -> generic system family.
+            None => FontFamily::from(GenericFamily::SansSerif),
+        };
         let mut fcx = self.font_cx.borrow_mut();
         shape_with_family(&mut fcx, text, size, family)
     }
@@ -166,6 +175,38 @@ mod tests {
         assert!(
             glyphs.iter().all(|g| g.glyph_id != 0),
             "all glyphs have valid ids"
+        );
+    }
+
+    #[test]
+    fn font_store_shape_falls_back_to_system_when_no_font() {
+        // No document fonts + empty default -> FontStore::shape falls back to a
+        // generic system family (SansSerif). On a system with fonts installed,
+        // "Hello" shapes to 5 glyphs (1:1, ligatures off).
+        let store = FontStore::from_resources(&Resources::default(), Arc::new(vec![]));
+        let glyphs = store.shape(&FontId::new("missing"), "Hello", 12.0);
+        assert_eq!(
+            glyphs.len(),
+            5,
+            "system fallback shapes 5 glyphs for 'Hello'"
+        );
+        assert!(
+            glyphs.iter().all(|g| g.glyph_id != 0),
+            "all glyphs have valid ids"
+        );
+    }
+
+    #[test]
+    fn font_store_shape_system_fallback_covers_cjk() {
+        // The system fallback (generic SansSerif) + fontique's script fallback
+        // should cover CJK even when the system's default sans-serif is
+        // Latin-only. Requires system fonts to be installed.
+        let store = FontStore::from_resources(&Resources::default(), Arc::new(vec![]));
+        let glyphs = store.shape(&FontId::new("missing"), "入院记录", 12.0);
+        assert!(
+            !glyphs.is_empty(),
+            "system fallback covers CJK; got {} glyphs",
+            glyphs.len()
         );
     }
 }

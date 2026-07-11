@@ -43,11 +43,20 @@ pub struct ShapedGlyph {
 ///
 /// Ligatures OFF (`liga=0`): 1:1 char<->glyph for delta alignment.
 ///
+/// If `font` fails to register (e.g. garbage bytes), returns an empty `Vec` -
+/// the caller explicitly passed a font, so silent system-font fallback would be
+/// wrong. Use [`FontStore::shape`](super::FontStore::shape) for the
+/// system-fallback behavior.
+///
 /// Returns glyph IDs + the shaper's natural positions.
 pub fn shape_text(text: &str, font: &FontData, size: f64) -> Vec<ShapedGlyph> {
     let mut fcx = FontContext::new();
     let family = register_font(&mut fcx, font);
-    shape_with_family(&mut fcx, text, size, family.as_deref())
+    let family_name = match family {
+        Some(name) => name,
+        None => return Vec::new(),
+    };
+    shape_with_family(&mut fcx, text, size, FontFamily::named(&family_name))
 }
 
 /// Register `font`'s bytes with `fcx.collection` and return the
@@ -63,31 +72,29 @@ pub(crate) fn register_font(fcx: &mut FontContext, font: &FontData) -> Option<St
     fcx.collection.family(*family_id).map(|info| info.name().to_owned())
 }
 
-/// Shape `text` at `size` using `family_name` as the default family.
+/// Shape `text` at `size` using `family` as the font family.
 ///
-/// If `family_name` is `None` (font registration failed - no document or
-/// default font is available), return an empty `Vec<ShapedGlyph>`: with no
-/// registered font, there are no glyphs to emit. We MUST NOT fall back to
-/// Parley's default (system) fonts - that would silently render text with a
-/// wrong font, violating the document-fonts decision. An empty result makes
-/// the failure visible (text is absent) rather than silently wrong.
+/// Ligatures OFF (`liga=0`): 1:1 char<->glyph for delta alignment.
+///
+/// The caller chooses the family - [`shape_text`](super::shape_text) passes the
+/// explicitly-registered document font (and returns empty if registration
+/// failed, before reaching here), while
+/// [`FontStore::shape`](super::FontStore::shape) passes the resolved
+/// document/default family or a generic system family as a fallback.
+///
+/// Returns glyph IDs + the shaper's natural positions.
 pub(crate) fn shape_with_family(
     fcx: &mut FontContext,
     text: &str,
     size: f64,
-    family_name: Option<&str>,
+    family: FontFamily<'_>,
 ) -> Vec<ShapedGlyph> {
-    let family_name = match family_name {
-        Some(name) => name,
-        // No registered font available -> no glyphs (not a system-font fallback).
-        None => return Vec::new(),
-    };
     let mut lcx: LayoutContext = LayoutContext::new();
     let mut builder = lcx.ranged_builder(fcx, text, 1.0, false);
     builder.push_default(StyleProperty::FontSize(size as f32));
     builder.push_default(StyleProperty::FontWeight(FontWeight::NORMAL));
     builder.push_default(StyleProperty::FontStyle(ParleyFontStyle::Normal));
-    builder.push_default(StyleProperty::FontFamily(FontFamily::named(family_name)));
+    builder.push_default(StyleProperty::FontFamily(family));
     // Disable ligatures: liga=0 (keeps 1:1 char<->glyph for delta alignment).
     let liga_off = [FontFeature::new(Tag::from_bytes(*b"liga"), 0)];
     builder.push_default(StyleProperty::FontFeatures(liga_off.as_slice().into()));
