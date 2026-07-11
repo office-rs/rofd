@@ -70,7 +70,7 @@ pub fn caret_rect(
     };
 
     // Shape with the document font (or the default fallback) for glyph advances.
-    let glyphs = fonts.shape(font_id, content, size);
+    let (_font, glyphs) = fonts.shape(font_id, content, size);
 
     // Caret x (page-local) = the shaped glyph x at `offset`. For an offset at
     // or past the end of the run, place the caret at the last glyph's x (the
@@ -226,7 +226,7 @@ mod tests {
         // vp: page_gap=20, scroll=(0,0), zoom=1, size=(800,600).
         // page_w = 200, page_x = (800-200)/2 = 300. page_origin = (300, 20).
         // caret x_local at offset 0 = glyphs[0].x (first glyph's shaped x).
-        let glyphs = fonts.shape(&FontId::new("F1"), "Hi", 12.0);
+        let (_font, glyphs) = fonts.shape(&FontId::new("F1"), "Hi", 12.0);
         let first_x = glyphs[0].x as f64;
         let expected_x = 300.0 + (10.0 + first_x) * 1.0;
         let expected_y = 20.0 + 20.0 * 1.0;
@@ -264,7 +264,7 @@ mod tests {
         };
         // page_w = 200*2 = 400, page_x = (800-400)/2 = 200.
         // page_origin = (200 + 50, 20 - 30) = (250, -10).
-        let glyphs = fonts.shape(&FontId::new("F1"), "Hi", 12.0);
+        let (_font, glyphs) = fonts.shape(&FontId::new("F1"), "Hi", 12.0);
         let first_x = glyphs[0].x as f64;
         let expected_x = 250.0 + (10.0 + first_x) * 2.0;
         let expected_y = -10.0 + 20.0 * 2.0;

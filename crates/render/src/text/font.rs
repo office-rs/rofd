@@ -94,8 +94,14 @@ impl FontStore {
     /// a generic system family (SansSerif) so text still renders - parley's
     /// `FontContext` discovers system fonts (via the `system` feature), and
     /// fontique's script fallback covers characters the default lacks (e.g. CJK
-    /// on a Latin default). Returns glyph IDs + the shaper's natural positions.
-    pub fn shape(&self, font_id: &FontId, text: &str, size: f64) -> Vec<ShapedGlyph> {
+    /// on a Latin default).
+    ///
+    /// Returns the `FontData` that actually shaped the glyphs (captured from the
+    /// parley run) alongside the glyph ids + positions. The caller MUST draw
+    /// with this font - it is the system font when the fallback was used, so
+    /// using a different font (e.g. an empty default) would mismatch the glyph
+    /// ids and panic in vello/skrifa. `None` only when no glyphs were produced.
+    pub fn shape(&self, font_id: &FontId, text: &str, size: f64) -> (Option<FontData>, Vec<ShapedGlyph>) {
         let family_name = self
             .families
             .get(font_id)
@@ -113,8 +119,12 @@ impl FontStore {
 
 /// Wrap raw font bytes into a shareable `peniko::FontData` (collection index 0).
 /// `Blob::new` takes `Arc<dyn AsRef<[u8]> + Send + Sync>`; an `Arc<Vec<u8>>`
-/// coerces, so the bytes are shared (not copied).
+/// coerces, so the bytes are shared (not copied). Returns `None` for empty
+/// bytes (no valid font) so the caller falls back to a system family.
 fn make_font(bytes: Arc<Vec<u8>>) -> Option<FontData> {
+    if bytes.is_empty() {
+        return None;
+    }
     let blob = peniko::Blob::new(bytes);
     Some(FontData::new(blob, 0))
 }
@@ -155,8 +165,9 @@ mod tests {
             .insert(FontId::new("F1"), Arc::new(font_bytes.to_vec()));
         let store = FontStore::from_resources(&res, Arc::new(font_bytes.to_vec()));
 
-        let glyphs = store.shape(&FontId::new("F1"), "Hello", 12.0);
+        let (font, glyphs) = store.shape(&FontId::new("F1"), "Hello", 12.0);
         assert_eq!(glyphs.len(), 5, "5 glyphs for 5 chars (ligatures off)");
+        assert!(font.is_some(), "font captured from the run");
         assert!(
             glyphs.iter().all(|g| g.glyph_id != 0),
             "all glyphs have valid ids"
@@ -170,8 +181,9 @@ mod tests {
             include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
         let store = FontStore::from_resources(&Resources::default(), Arc::new(font_bytes.to_vec()));
 
-        let glyphs = store.shape(&FontId::new("missing"), "Hi", 16.0);
+        let (font, glyphs) = store.shape(&FontId::new("missing"), "Hi", 16.0);
         assert_eq!(glyphs.len(), 2, "2 glyphs for 'Hi' via default font");
+        assert!(font.is_some(), "font captured from the run");
         assert!(
             glyphs.iter().all(|g| g.glyph_id != 0),
             "all glyphs have valid ids"
@@ -182,14 +194,16 @@ mod tests {
     fn font_store_shape_falls_back_to_system_when_no_font() {
         // No document fonts + empty default -> FontStore::shape falls back to a
         // generic system family (SansSerif). On a system with fonts installed,
-        // "Hello" shapes to 5 glyphs (1:1, ligatures off).
+        // "Hello" shapes to 5 glyphs (1:1, ligatures off). The returned font is
+        // the system font parley selected (not the empty default).
         let store = FontStore::from_resources(&Resources::default(), Arc::new(vec![]));
-        let glyphs = store.shape(&FontId::new("missing"), "Hello", 12.0);
+        let (font, glyphs) = store.shape(&FontId::new("missing"), "Hello", 12.0);
         assert_eq!(
             glyphs.len(),
             5,
             "system fallback shapes 5 glyphs for 'Hello'"
         );
+        assert!(font.is_some(), "system font captured (not the empty default)");
         assert!(
             glyphs.iter().all(|g| g.glyph_id != 0),
             "all glyphs have valid ids"
@@ -202,11 +216,12 @@ mod tests {
         // should cover CJK even when the system's default sans-serif is
         // Latin-only. Requires system fonts to be installed.
         let store = FontStore::from_resources(&Resources::default(), Arc::new(vec![]));
-        let glyphs = store.shape(&FontId::new("missing"), "入院记录", 12.0);
+        let (font, glyphs) = store.shape(&FontId::new("missing"), "入院记录", 12.0);
         assert!(
             !glyphs.is_empty(),
             "system fallback covers CJK; got {} glyphs",
             glyphs.len()
         );
+        assert!(font.is_some(), "system CJK font captured");
     }
 }

@@ -26,7 +26,7 @@
 use imaging::kurbo::{Affine, BezPath, Ellipse, Rect as KurboRect, Shape, Stroke};
 use imaging::record::{Glyph, Scene};
 use imaging::Painter;
-use peniko::{Fill, Style};
+use peniko::{Fill, FontData, Style};
 use rofd_dom::{Annotation, AnnotationPayload, Color, FontId, Rect, Resources, ShapeKind};
 
 use crate::color::to_peniko;
@@ -227,13 +227,13 @@ fn draw_text_in_rect(
     fonts: &FontStore,
     base: Affine,
 ) {
-    let font = match fonts.resolve_or_default(text.font) {
+    let (font, glyphs) = shape_positioned(text.content, text.font, text.size, fonts);
+    let font = match font {
         Some(f) => f,
         None => return,
     };
-    let glyphs = shape_positioned(text.content, text.font, text.size, fonts);
     let affine = base * Affine::translate((rect.x, rect.y));
-    draw_glyph_run(painter, font, &glyphs, affine, to_peniko(text.color), text.size);
+    draw_glyph_run(painter, &font, &glyphs, affine, to_peniko(text.color), text.size);
 }
 
 /// Watermark text: shaped, drawn translucent (`opacity`) and rotated by `angle`
@@ -249,45 +249,47 @@ fn draw_watermark_text(
     fonts: &FontStore,
     base: Affine,
 ) {
-    let font = match fonts.resolve_or_default(text.font) {
+    let (font, glyphs) = shape_positioned(text.content, text.font, text.size, fonts);
+    let font = match font {
         Some(f) => f,
         None => return,
     };
-    let glyphs = shape_positioned(text.content, text.font, text.size, fonts);
     let translucent = to_peniko(text.color).with_alpha(opacity as f32);
     // Rotate about the rect center. The shaped glyphs are positioned relative
     // to the rect origin; the rotation composes as: translate(center) * rotate.
     let center = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
     let affine = base * Affine::translate(center) * Affine::rotate(angle);
-    draw_glyph_run(painter, font, &glyphs, affine, translucent, text.size);
+    draw_glyph_run(painter, &font, &glyphs, affine, translucent, text.size);
 }
 
 /// Shape `content` and offset each glyph's y by `size` (baseline drop), so text
 /// sits just inside the top of its bounding rect. Annotation text uses the
 /// shaper's natural x/y directly (unlike body text which uses document deltas).
+/// Returns the font that shaped the glyphs (caller draws with it).
 fn shape_positioned(
     content: &str,
     font_id: &FontId,
     size: f64,
     fonts: &FontStore,
-) -> Vec<Glyph> {
-    let glyphs = fonts.shape(font_id, content, size);
+) -> (Option<FontData>, Vec<Glyph>) {
+    let (font, glyphs) = fonts.shape(font_id, content, size);
     let baseline_offset = size as f32;
-    glyphs
+    let positioned: Vec<Glyph> = glyphs
         .iter()
         .map(|g| Glyph {
             id: g.glyph_id,
             x: g.x,
             y: g.y + baseline_offset,
         })
-        .collect()
+        .collect();
+    (font, positioned)
 }
 
 /// Draw a run of positioned glyphs with the given font, transform, brush, and
 /// size. No-op if `glyphs` is empty.
 fn draw_glyph_run(
     painter: &mut Painter<Scene>,
-    font: &peniko::FontData,
+    font: &FontData,
     glyphs: &[Glyph],
     affine: Affine,
     brush: peniko::Color,

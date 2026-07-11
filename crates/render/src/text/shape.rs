@@ -56,7 +56,7 @@ pub fn shape_text(text: &str, font: &FontData, size: f64) -> Vec<ShapedGlyph> {
         Some(name) => name,
         None => return Vec::new(),
     };
-    shape_with_family(&mut fcx, text, size, FontFamily::named(&family_name))
+    shape_with_family(&mut fcx, text, size, FontFamily::named(&family_name)).1
 }
 
 /// Register `font`'s bytes with `fcx.collection` and return the
@@ -76,19 +76,24 @@ pub(crate) fn register_font(fcx: &mut FontContext, font: &FontData) -> Option<St
 ///
 /// Ligatures OFF (`liga=0`): 1:1 char<->glyph for delta alignment.
 ///
+/// Returns the `FontData` that actually shaped the glyphs (captured from the
+/// parley `GlyphRun`) alongside the glyphs. This is critical for the system
+/// fallback: when `FontStore::shape` falls back to a generic system family, the
+/// returned font is the system font parley selected, so the caller draws the
+/// glyphs with the SAME font that shaped them (mismatched font + glyph ids
+/// would panic in vello/skrifa). `None` only when no glyphs were produced.
+///
 /// The caller chooses the family - [`shape_text`](super::shape_text) passes the
 /// explicitly-registered document font (and returns empty if registration
 /// failed, before reaching here), while
 /// [`FontStore::shape`](super::FontStore::shape) passes the resolved
 /// document/default family or a generic system family as a fallback.
-///
-/// Returns glyph IDs + the shaper's natural positions.
 pub(crate) fn shape_with_family(
     fcx: &mut FontContext,
     text: &str,
     size: f64,
     family: FontFamily<'_>,
-) -> Vec<ShapedGlyph> {
+) -> (Option<FontData>, Vec<ShapedGlyph>) {
     let mut lcx: LayoutContext = LayoutContext::new();
     let mut builder = lcx.ranged_builder(fcx, text, 1.0, false);
     builder.push_default(StyleProperty::FontSize(size as f32));
@@ -102,17 +107,21 @@ pub(crate) fn shape_with_family(
     let mut layout = builder.build(text);
     layout.break_all_lines(None);
 
+    let mut font = None;
     let mut out = Vec::new();
     for line in layout.lines() {
         for item in line.items() {
             if let PositionedLayoutItem::GlyphRun(run) = item {
+                if font.is_none() {
+                    font = Some(run.run().font().clone());
+                }
                 for g in run.positioned_glyphs() {
                     out.push(ShapedGlyph { glyph_id: g.id, x: g.x, y: g.y });
                 }
             }
         }
     }
-    out
+    (font, out)
 }
 
 #[cfg(test)]

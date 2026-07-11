@@ -73,10 +73,6 @@ fn draw_text(
     page_origin: (f64, f64),
     zoom: f64,
 ) {
-    let font = match fonts.resolve_or_default(&t.font) {
-        Some(f) => f,
-        None => return,
-    };
     // Fill: inline first, then DrawParam fallback (GB/T 33190).
     let fill = match t.fill.or_else(|| {
         t.draw_param
@@ -90,8 +86,14 @@ fn draw_text(
     let affine = compose_transform(page_origin, zoom, t.ctm.as_ref());
 
     for code in &t.codes {
-        // Shape with the document font (reuses the store's FontContext).
-        let glyphs = fonts.shape(&t.font, &code.text, t.size);
+        // Shape with the document font (reuses the store's FontContext). The
+        // returned font is the one parley actually used (document, default, or
+        // system fallback) - draw with THAT font so glyph ids match.
+        let (font, glyphs) = fonts.shape(&t.font, &code.text, t.size);
+        let font = match font {
+            Some(f) => f,
+            None => continue,
+        };
         if glyphs.is_empty() {
             continue;
         }
@@ -114,7 +116,7 @@ fn draw_text(
             .collect();
         if !positioned.is_empty() {
             painter
-                .glyphs(font, fill)
+                .glyphs(&font, fill)
                 .font_size(t.size as f32)
                 .transform(affine)
                 .draw(&Style::Fill(Fill::NonZero), &positioned);
