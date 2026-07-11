@@ -17,12 +17,21 @@ quick-xml = "0.36"
 thiserror = "1"
 vello = "0.8"
 parley = "0.8"
-peniko = "0.6"
-kurbo = "0.13"
+peniko = "0.6.1"
+kurbo = "0.13.1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 winit = "0.30"
 wgpu = "28"
 pollster = "1"
+# Xilem + imaging: pinned to the same git revs reditor uses. xilem main (bf81712d44e3)
+# is the only xilem compatible with vello 0.8 / parley 0.8 (crates.io 0.4.0 still ships
+# vello 0.6). imaging/imaging_vello are the forest-rs backend-agnostic drawing IR +
+# the vello bridge; rofd-render produces imaging::record::Scene, web-view converts it
+# to vello::Scene via VelloSceneSink.
+xilem = { git = "https://github.com/linebender/xilem", rev = "bf81712d44e3" }
+imaging = { git = "https://github.com/forest-rs/imaging.git", rev = "0eea0499d2666195103b9837ac4c3ee474176a5b" }
+imaging_vello = { git = "https://github.com/forest-rs/imaging.git", rev = "0eea0499d2666195103b9837ac4c3ee474176a5b" }
+rfd = "0.15"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["HtmlCanvasElement", "Window", "Document", "Element", "Performance", "ResizeObserver", "ResizeObserverEntry", "KeyboardEvent", "MouseEvent", "WheelEvent", "EventTarget"] }

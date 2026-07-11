@@ -8,3 +8,4 @@ rofd-dom = { workspace = true }
 rofd-render = { workspace = true }
 rofd-editor = { workspace = true }
 vello = { workspace = true }
+imaging = { workspace = true }

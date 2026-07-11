@@ -8,3 +8,6 @@ rofd-native-view = { workspace = true }
 rofd-component = { workspace = true }
 rofd-io = { workspace = true }
 winit = { workspace = true }
+xilem = { workspace = true }
+rfd = { workspace = true }
+imaging = { workspace = true }

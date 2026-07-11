@@ -11,3 +11,6 @@ vello = { workspace = true }
 wgpu = { workspace = true }
 winit = { workspace = true }
 pollster = { workspace = true }
+xilem = { workspace = true }
+imaging = { workspace = true }
+rfd = { workspace = true }
