@@ -2980,6 +2980,7 @@ dependencies = [
  "js-sys",
  "rofd-component",
  "rofd-dom",
+ "rofd-editor",
  "rofd-io",
  "vello",
  "wasm-bindgen",
