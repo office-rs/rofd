@@ -227,11 +227,38 @@ impl NativeApp {
     }
 }
 
+/// Load a default CJK font (NotoSansSC) from a few candidate paths relative to
+/// the current working directory. Returns an empty `Vec` (no glyphs) if none
+/// found, logging a warning. The font is downloaded by the web-app's
+/// `fetch:font` script into `examples/web-app/public/`.
+fn load_default_font() -> Arc<Vec<u8>> {
+    const CANDIDATES: &[&str] = &[
+        "examples/web-app/public/NotoSansSC-Regular.otf",
+        "../examples/web-app/public/NotoSansSC-Regular.otf",
+        "NotoSansSC-Regular.otf",
+    ];
+    for path in CANDIDATES {
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                eprintln!("[font] loaded {} ({} bytes)", path, bytes.len());
+                return Arc::new(bytes);
+            }
+            Err(_) => continue,
+        }
+    }
+    eprintln!(
+        "[font] no default font found at {:?}; text won't render. Run `npm run fetch:font` in examples/web-app first.",
+        CANDIDATES
+    );
+    Arc::new(vec![])
+}
+
 fn main() -> Result<(), winit::error::EventLoopError> {
-    // v1: empty default font bytes. The render engine's font fallback will
-    // produce no glyphs for text. To render text, register a real font (e.g. a
-    // CJK TTF) via EditorConfig and pass it here.
-    let default_font_bytes: Arc<Vec<u8>> = Arc::new(vec![]);
+    // Load a default font so text shapes into glyphs. The OFD has no embedded
+    // fonts, so without this text won't render. NotoSansSC is the same CJK font
+    // the web app uses (downloaded by `npm run fetch:font` into
+    // examples/web-app/public/). Try a few candidate paths relative to CWD.
+    let default_font_bytes = load_default_font();
     let mut editor = EditorApp::new(rofd_component::EditorConfig::new(default_font_bytes));
     editor.set_clock("rofd".into(), 0);
 
