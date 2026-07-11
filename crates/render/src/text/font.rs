@@ -37,6 +37,15 @@ pub struct FontStore {
     families: HashMap<FontId, String>,
     /// Registered family name for the default font.
     default_family: Option<String>,
+    /// Shaped-glyph cache: `font_id -> (size_bits -> (text -> (font, glyphs)))`.
+    /// OFD body text is static, so shaping happens once per unique (font, size,
+    /// text); subsequent composites hit the cache and skip parley re-shaping
+    /// (which dominated render time - ~500ms for a text-heavy doc per frame).
+    /// `size.to_bits()` keys avoid `f64` not being `Eq`. Cleared on
+    /// `register_font`.
+    #[allow(clippy::type_complexity)]
+    glyph_cache:
+        RefCell<HashMap<FontId, HashMap<u64, HashMap<String, (Option<FontData>, Rc<Vec<ShapedGlyph>>)>>>>,
 }
 
 impl FontStore {
@@ -66,6 +75,7 @@ impl FontStore {
             font_cx: Rc::new(RefCell::new(font_cx)),
             families,
             default_family,
+            glyph_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -104,27 +114,47 @@ impl FontStore {
         if ok && self.default_family.is_none() {
             self.default_family = family;
         }
+        // Font set changed -> cached shapes (which may reference the old font
+        // selection) are invalid.
+        self.glyph_cache.borrow_mut().clear();
         ok
     }
 
     /// Shape `text` with the document font for `font_id` (falling back to the
     /// default font's family if `font_id` is unknown), at `size`.
     ///
-    /// Reuses the store's shared `FontContext` (registered in
-    /// [`Self::from_resources`]). Ligatures OFF (1:1 char<->glyph).
+    /// Results are cached by `(font_id, size, text)` - OFD body text is static,
+    /// so shaping happens once per unique triple and subsequent composites hit
+    /// the cache (parley re-shaping dominated render time otherwise). Cleared on
+    /// `register_font`.
     ///
-    /// If neither a document font nor a default font is resolved, falls back to
-    /// a generic system family (SansSerif) so text still renders - parley's
-    /// `FontContext` discovers system fonts (via the `system` feature), and
-    /// fontique's script fallback covers characters the default lacks (e.g. CJK
-    /// on a Latin default).
+    /// Ligatures OFF (1:1 char<->glyph). If neither a document font nor a
+    /// default font is resolved, falls back to a generic system family
+    /// (SansSerif) so text still renders - parley's `FontContext` discovers
+    /// system fonts (via the `system` feature), and fontique's script fallback
+    /// covers characters the default lacks (e.g. CJK on a Latin default).
     ///
     /// Returns the `FontData` that actually shaped the glyphs (captured from the
-    /// parley run) alongside the glyph ids + positions. The caller MUST draw
-    /// with this font - it is the system font when the fallback was used, so
-    /// using a different font (e.g. an empty default) would mismatch the glyph
-    /// ids and panic in vello/skrifa. `None` only when no glyphs were produced.
-    pub fn shape(&self, font_id: &FontId, text: &str, size: f64) -> (Option<FontData>, Vec<ShapedGlyph>) {
+    /// parley run) alongside the glyph ids + positions (`Rc`-shared from the
+    /// cache, so cache hits don't copy the glyph vec). The caller MUST draw with
+    /// this font - it is the system font when the fallback was used, so using a
+    /// different font would mismatch the glyph ids and panic in vello/skrifa.
+    /// `None` only when no glyphs were produced.
+    pub fn shape(&self, font_id: &FontId, text: &str, size: f64) -> (Option<FontData>, Rc<Vec<ShapedGlyph>>) {
+        let size_key = size.to_bits();
+        // Cache hit (no clones for the lookup: font_id borrowed, size_key Copy,
+        // text borrowed via String: Borrow<str>).
+        if let Some(cached) = self
+            .glyph_cache
+            .borrow()
+            .get(font_id)
+            .and_then(|m1| m1.get(&size_key))
+            .and_then(|m2| m2.get(text))
+            .cloned()
+        {
+            return cached;
+        }
+        // Cache miss: shape, cache, return.
         let family_name = self
             .families
             .get(font_id)
@@ -135,8 +165,19 @@ impl FontStore {
             // No document/default font resolved -> generic system family.
             None => FontFamily::from(GenericFamily::SansSerif),
         };
-        let mut fcx = self.font_cx.borrow_mut();
-        shape_with_family(&mut fcx, text, size, family)
+        let result = {
+            let mut fcx = self.font_cx.borrow_mut();
+            shape_with_family(&mut fcx, text, size, family)
+        };
+        let cached = (result.0, Rc::new(result.1));
+        self.glyph_cache
+            .borrow_mut()
+            .entry(font_id.clone())
+            .or_default()
+            .entry(size_key)
+            .or_default()
+            .insert(text.to_string(), cached.clone());
+        cached
     }
 }
 
@@ -263,5 +304,23 @@ mod tests {
         let (font, glyphs) = store.shape(&FontId::new("missing"), "Hi", 16.0);
         assert_eq!(glyphs.len(), 2, "2 glyphs via registered font");
         assert!(font.is_some(), "registered font captured");
+    }
+
+    #[test]
+    fn font_store_shape_cache_hits() {
+        // Shaping the same (font, size, text) twice: the second call hits the
+        // glyph cache (no parley re-shaping). Verifies the cache that keeps
+        // multi-page documents from re-shaping every frame.
+        let store = FontStore::from_resources(&Resources::default(), Arc::new(vec![]));
+        let text = "The quick brown fox";
+        let t0 = std::time::Instant::now();
+        let (_f1, g1) = store.shape(&FontId::new("missing"), text, 12.0);
+        let miss = t0.elapsed();
+        let t1 = std::time::Instant::now();
+        let (_f2, g2) = store.shape(&FontId::new("missing"), text, 12.0);
+        let hit = t1.elapsed();
+        assert_eq!(g1.len(), g2.len(), "cached result matches fresh");
+        eprintln!("[cache] miss={:.2?} hit={:.2?}", miss, hit);
+        assert!(hit <= miss, "cache hit ({:.2?}) not slower than miss ({:.2?})", hit, miss);
     }
 }

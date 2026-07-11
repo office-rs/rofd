@@ -80,6 +80,19 @@ impl RenderEngine {
             let page_x = ((vp.size.0 - page_w) / 2.0).max(0.0);
             let page_origin = (page_x + vp.scroll.0, y);
 
+            // Cull off-screen pages: skip pages fully above the viewport
+            // (scrolled past) and stop once a page starts below it. This avoids
+            // shaping/drawing pages the user can't see - critical for
+            // multi-page docs (shaping dominates render time). The page-origin
+            // math matches hit_test.rs exactly.
+            if page_origin.1 + page_h < 0.0 {
+                y += page_h + vp.page_gap;
+                continue;
+            }
+            if page_origin.1 > vp.size.1 {
+                break;
+            }
+
             // White page background.
             let white = Color::from_rgba8(0xFF, 0xFF, 0xFF, 0xFF);
             let page_rect = Rect::new(
