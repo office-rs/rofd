@@ -201,7 +201,16 @@ mod wasm_impl {
 
         #[wasm_bindgen(js_name = handleMouseScroll)]
         pub fn handle_mouse_scroll(&mut self, dx: f64, dy: f64) -> Result<(), JsValue> {
-            self.component.handle_event(&ViewEvent::Scroll { dx, dy: -dy });
+            // Web `wheel` events use the OPPOSITE sign convention to winit:
+            // `deltaY > 0` means the user scrolled DOWN, whereas winit's
+            // `LineDelta` y > 0 means UP. `ViewEvent::Scroll`'s semantic is
+            // "dy > 0 = scroll toward the bottom of the document" (see
+            // `composite.rs`: `y = page_gap - scroll.1`). The native winit
+            // bridge negates winit's dy to match; on the web we must NOT
+            // negate, or the scroll direction is inverted. Mirrors reditor's
+            // `handle_mouse_scroll` (no negation). dx is the same sign on both
+            // platforms (positive = scroll right), so it passes through.
+            self.component.handle_event(&ViewEvent::Scroll { dx, dy });
             Ok(())
         }
 
