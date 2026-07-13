@@ -1,13 +1,15 @@
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use parley::style::{FontFamily, GenericFamily};
+use parley::fontique::FamilyId;
+use parley::style::{FontFamily, FontFamilyName, GenericFamily};
 use peniko::FontData;
 use rofd_dom::{FontId, Resources};
 
-use super::shape::{register_font, shape_with_family, ShapedGlyph};
+use super::shape::{register_font_with_ids, shape_with_family, ShapedGlyph};
 
 /// Holds document fonts (from `Resources.font_data`) + a default fallback font,
 /// resolved to `peniko::FontData` for Vello `draw_glyphs`.
@@ -57,17 +59,21 @@ impl FontStore {
 
         for (id, bytes) in &res.font_data {
             if let Some(font) = make_font(bytes.clone()) {
-                if let Some(family) = register_font(&mut font_cx, &font) {
-                    families.insert(id.clone(), family);
+                let (family, ids) = register_font_with_ids(&mut font_cx, &font);
+                if let Some(name) = family {
+                    families.insert(id.clone(), name);
                 }
+                append_sansserif(&mut font_cx, ids);
                 fonts.insert(id.clone(), font);
             }
         }
 
         let default = make_font(default_bytes);
-        let default_family = default
-            .as_ref()
-            .and_then(|font| register_font(&mut font_cx, font));
+        let (default_family, default_ids) = match &default {
+            Some(font) => register_font_with_ids(&mut font_cx, font),
+            None => (None, Vec::new()),
+        };
+        append_sansserif(&mut font_cx, default_ids);
 
         Self {
             fonts,
@@ -108,7 +114,9 @@ impl FontStore {
         };
         let family = {
             let mut fcx = self.font_cx.borrow_mut();
-            register_font(&mut fcx, &font)
+            let (name, ids) = register_font_with_ids(&mut fcx, &font);
+            append_sansserif(&mut fcx, ids);
+            name
         };
         let ok = family.is_some();
         if ok && self.default_family.is_none() {
@@ -160,9 +168,18 @@ impl FontStore {
             .get(font_id)
             .map(String::as_str)
             .or(self.default_family.as_deref());
+        // Build a family list: the named document/default font first, then
+        // `SansSerif` as a glyph-coverage fallback. `SansSerif` resolves to
+        // every registered font (appended in `from_resources`/`register_font`)
+        // plus system fonts (native), so a CJK char in a Latin-only named
+        // family falls back to a registered CJK font. On wasm, system fonts
+        // are unavailable, so without this list CJK renders as .notdef (tofu).
         let family = match family_name {
-            Some(name) => FontFamily::named(name),
-            // No document/default font resolved -> generic system family.
+            Some(name) => FontFamily::List(Cow::Owned(vec![
+                FontFamilyName::Named(Cow::Owned(name.to_string())),
+                FontFamilyName::Generic(GenericFamily::SansSerif),
+            ])),
+            // No document/default font resolved -> generic family.
             None => FontFamily::from(GenericFamily::SansSerif),
         };
         let result = {
@@ -193,14 +210,30 @@ fn make_font(bytes: Arc<Vec<u8>>) -> Option<FontData> {
     Some(FontData::new(blob, 0))
 }
 
+/// Append `ids` to the `SansSerif` generic family so the default `sans-serif`
+/// resolves to registered fonts. `append` (not `set`) accumulates across calls
+/// so a CJK font registered earlier survives a later Latin-only registration
+/// (mirrors reditor's `parley_font.rs`). No-op for empty `ids`.
+///
+/// This is the wasm CJK fallback path: parley's script fallback is empty on
+/// wasm (fontique's `System` backend is a dummy there), so registered fonts
+/// must be reachable via the `SansSerif` generic used as the list fallback in
+/// [`FontStore::shape`].
+fn append_sansserif(fcx: &mut parley::FontContext, ids: Vec<FamilyId>) {
+    if ids.is_empty() {
+        return;
+    }
+    fcx.collection
+        .append_generic_families(GenericFamily::SansSerif, ids.into_iter());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn font_store_resolves_registered_document_font() {
-        let font_bytes =
-            include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        let font_bytes = include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
         let mut res = Resources::default();
         res.font_data
             .insert(FontId::new("F1"), Arc::new(font_bytes.to_vec()));
@@ -210,8 +243,7 @@ mod tests {
 
     #[test]
     fn font_store_falls_back_to_default_when_font_absent() {
-        let font_bytes =
-            include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        let font_bytes = include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
         let store = FontStore::from_resources(&Resources::default(), Arc::new(font_bytes.to_vec()));
         assert!(store.default_font().is_some(), "default font available");
         assert!(
@@ -222,8 +254,7 @@ mod tests {
 
     #[test]
     fn font_store_shape_hello_with_document_font() {
-        let font_bytes =
-            include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        let font_bytes = include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
         let mut res = Resources::default();
         res.font_data
             .insert(FontId::new("F1"), Arc::new(font_bytes.to_vec()));
@@ -241,8 +272,7 @@ mod tests {
     #[test]
     fn font_store_shape_falls_back_to_default_family() {
         // An unknown font id should still shape using the default font's family.
-        let font_bytes =
-            include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        let font_bytes = include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
         let store = FontStore::from_resources(&Resources::default(), Arc::new(font_bytes.to_vec()));
 
         let (font, glyphs) = store.shape(&FontId::new("missing"), "Hi", 16.0);
@@ -295,8 +325,7 @@ mod tests {
         // fonts after construction). The first registered font's family becomes
         // the default, so shaping an unknown font id uses it.
         let mut store = FontStore::from_resources(&Resources::default(), Arc::new(vec![]));
-        let font_bytes =
-            include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        let font_bytes = include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
         assert!(
             store.register_font(Arc::new(font_bytes.to_vec())),
             "font registered"
@@ -322,5 +351,76 @@ mod tests {
         assert_eq!(g1.len(), g2.len(), "cached result matches fresh");
         eprintln!("[cache] miss={:.2?} hit={:.2?}", miss, hit);
         assert!(hit <= miss, "cache hit ({:.2?}) not slower than miss ({:.2?})", hit, miss);
+    }
+
+    #[test]
+    fn register_font_appends_to_sansserif_generic() {
+        // Regression (web CJK tofu): registering a font at runtime (the web SDK
+        // path) must append it to the SansSerif generic family. On wasm, system
+        // fonts are unavailable (fontique's System backend is a dummy), so
+        // registered fonts are the only fallback source - without this append,
+        // a CJK char in a Latin-only named family has no fallback and renders
+        // as .notdef (tofu). `shape` lists SansSerif after the named family, so
+        // parley picks up the registered CJK font via SansSerif.
+        let mut store = FontStore::from_resources(&Resources::default(), Arc::new(vec![]));
+        let font_bytes = include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        assert!(
+            store.register_font(Arc::new(font_bytes.to_vec())),
+            "font registered"
+        );
+
+        let registered_name = store
+            .default_family
+            .as_deref()
+            .expect("default family set after register_font");
+        let sansserif_ids: Vec<FamilyId> = {
+            let mut fcx = store.font_cx.borrow_mut();
+            fcx.collection
+                .generic_families(GenericFamily::SansSerif)
+                .collect()
+        };
+        let registered_id = {
+            let mut fcx = store.font_cx.borrow_mut();
+            fcx.collection
+                .family_id(registered_name)
+                .expect("family id resolves")
+        };
+        assert!(
+            sansserif_ids.contains(&registered_id),
+            "SansSerif generic must contain the runtime-registered font's family id"
+        );
+    }
+
+    #[test]
+    fn from_resources_appends_document_font_to_sansserif() {
+        // Regression (web CJK tofu): document fonts (from Resources.font_data)
+        // must also be appended to SansSerif so they participate in glyph-
+        // coverage fallback alongside runtime-registered fonts.
+        let font_bytes = include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        let mut res = Resources::default();
+        res.font_data
+            .insert(FontId::new("F1"), Arc::new(font_bytes.to_vec()));
+        let store = FontStore::from_resources(&res, Arc::new(vec![]));
+
+        let family_name = store
+            .families
+            .get(&FontId::new("F1"))
+            .expect("document family registered");
+        let sansserif_ids: Vec<FamilyId> = {
+            let mut fcx = store.font_cx.borrow_mut();
+            fcx.collection
+                .generic_families(GenericFamily::SansSerif)
+                .collect()
+        };
+        let family_id = {
+            let mut fcx = store.font_cx.borrow_mut();
+            fcx.collection
+                .family_id(family_name)
+                .expect("family id resolves")
+        };
+        assert!(
+            sansserif_ids.contains(&family_id),
+            "SansSerif generic must contain the document font's family id"
+        );
     }
 }

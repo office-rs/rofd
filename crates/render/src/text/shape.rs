@@ -60,16 +60,40 @@ pub fn shape_text(text: &str, font: &FontData, size: f64) -> Vec<ShapedGlyph> {
 }
 
 /// Register `font`'s bytes with `fcx.collection` and return the
+/// registered family name (the first family reported by the font) alongside
+/// the family ids it registered under.
+///
+/// The bytes are shared (not copied): `font.data` is a `Blob<u8>`
+/// which clones cheaply (Arc internally), and `register_fonts` takes
+/// ownership of a `Blob<u8>`.
+///
+/// The returned ids let the caller also append the font to a generic family
+/// (e.g. `SansSerif`) so parley can fall back to it when a named family lacks
+/// a glyph - critical on wasm, where system fonts are unavailable and
+/// registered fonts are the only fallback source.
+pub(crate) fn register_font_with_ids(
+    fcx: &mut FontContext,
+    font: &FontData,
+) -> (Option<String>, Vec<parley::fontique::FamilyId>) {
+    let blob = font.data.clone();
+    let families = fcx.collection.register_fonts(blob, None);
+    let ids: Vec<parley::fontique::FamilyId> = families.iter().map(|(id, _)| *id).collect();
+    let name = families.first().and_then(|(id, _)| {
+        fcx.collection
+            .family(*id)
+            .map(|info| info.name().to_owned())
+    });
+    (name, ids)
+}
+
+/// Register `font`'s bytes with `fcx.collection` and return the
 /// registered family name (the first family reported by the font).
 ///
 /// The bytes are shared (not copied): `font.data` is a `Blob<u8>`
 /// which clones cheaply (Arc internally), and `register_fonts` takes
 /// ownership of a `Blob<u8>`.
 pub(crate) fn register_font(fcx: &mut FontContext, font: &FontData) -> Option<String> {
-    let blob = font.data.clone();
-    let families = fcx.collection.register_fonts(blob, None);
-    let (family_id, _fonts) = families.first()?;
-    fcx.collection.family(*family_id).map(|info| info.name().to_owned())
+    register_font_with_ids(fcx, font).0
 }
 
 /// Shape `text` at `size` using `family` as the font family.
