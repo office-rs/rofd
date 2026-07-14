@@ -243,9 +243,16 @@ fn draw_selection_overlay(painter: &mut Painter<Scene>, vr: RofdRect) {
 
 /// Draw a semi-transparent preview of an in-progress drag operation.
 ///
-/// - `Create`: stroked page-local rect transformed to viewport coords.
+/// - `Create`: stroked page-local rect transformed to viewport coords (uses
+///   page 0's origin - T2/T3 will pass the active page).
 /// - `CreateFreehand`: stroked viewport-space path.
-/// - `Move`/`Resize`: stroked page-local rect transformed to viewport coords.
+/// - `Move`/`Resize`: stroked page-local rect transformed to viewport coords,
+///   using the annotation's page's stacked Y origin (NOT page 0's).
+///
+/// The Y-origin computation mirrors `composite`'s page-stacking loop: Y starts
+/// at `page_gap - scroll.1` for page 0 and advances by `page_h + page_gap` per
+/// subsequent page. This is critical for multi-page docs - a drag preview for
+/// an annotation on page 1+ must use page 1+'s Y origin.
 fn draw_drag_preview(
     painter: &mut Painter<Scene>,
     preview: &DragPreview,
@@ -256,28 +263,43 @@ fn draw_drag_preview(
         DragPreview::Create { rect, .. }
         | DragPreview::Move { rect, .. }
         | DragPreview::Resize { rect, .. } => {
-            // Transform page-local rect to viewport coords. We need the page
-            // origin for the annotation's page (or the first page for Create).
-            let page_id = match preview {
+            // For Move/Resize, find the annotation's page so we use the
+            // correct stacked Y origin. For Create (no annotation id), fall
+            // back to the first page (page 0's origin is correct for page 0).
+            let target_page_id = match preview {
                 DragPreview::Move { id, .. } | DragPreview::Resize { id, .. } => {
                     doc.annotations.find(id).map(|a| a.page.clone())
                 }
                 _ => None,
             };
-            let page = if let Some(pid) = page_id {
-                doc.pages.iter().find(|p| p.id == pid)
-            } else {
-                doc.pages.first()
+
+            // Iterate pages mirroring composite's page-stacking loop to find
+            // the target page and its accumulated Y origin.
+            let mut y = vp.page_gap - vp.scroll.1;
+            let mut found_page = None;
+            for page in &doc.pages {
+                let page_w = page.physical_box.w * vp.zoom;
+                let page_h = page.physical_box.h * vp.zoom;
+                let is_target = match &target_page_id {
+                    Some(pid) => &page.id == pid,
+                    None => found_page.is_none(), // Create: first page
+                };
+                if is_target {
+                    let page_x = ((vp.size.0 - page_w) / 2.0).max(0.0);
+                    found_page = Some((page_x + vp.scroll.0, y));
+                    break;
+                }
+                y += page_h + vp.page_gap;
+            }
+            let Some((origin_x, origin_y)) = found_page else {
+                return;
             };
-            let Some(page) = page else { return };
-            let page_w = page.physical_box.w * vp.zoom;
-            let page_x = ((vp.size.0 - page_w) / 2.0).max(0.0);
-            let page_origin = (page_x + vp.scroll.0, vp.page_gap - vp.scroll.1);
+
             let vr = Rect::new(
-                page_origin.0 + rect.x * vp.zoom,
-                page_origin.1 + rect.y * vp.zoom,
-                page_origin.0 + (rect.x + rect.w) * vp.zoom,
-                page_origin.1 + (rect.y + rect.h) * vp.zoom,
+                origin_x + rect.x * vp.zoom,
+                origin_y + rect.y * vp.zoom,
+                origin_x + (rect.x + rect.w) * vp.zoom,
+                origin_y + (rect.y + rect.h) * vp.zoom,
             );
             painter
                 .stroke(vr, &Stroke::new(PREVIEW_STROKE_WIDTH), PREVIEW_COLOR)
