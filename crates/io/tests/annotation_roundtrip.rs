@@ -206,6 +206,100 @@ fn watermark_roundtrips() {
     assert_eq!(wm, roundtrip(&wm));
 }
 
+// --- C1.5 Task 5: inverse round-trip for the remaining payload kinds ---
+// (FreeText/TextBox, Squiggly, Polygon, PolyLine). These complete the
+// coverage of the §15.2 serialization fidelity contract started above.
+
+#[test]
+fn freetext_textbox_roundtrips() {
+    let a = ann(
+        20,
+        AnnotationKind::TextBox,
+        AnnotationPayload::TextBox {
+            rect: Rect {
+                x: 10.0,
+                y: 10.0,
+                w: 50.0,
+                h: 10.0,
+            },
+            content: "文字批注".into(),
+            font: FontId::new("F1"),
+            size: 5.0,
+            color: Color::Rgb(13, 13, 13),
+        },
+        None,
+    );
+    assert_eq!(a, roundtrip(&a));
+}
+
+#[test]
+fn squiggly_roundtrips() {
+    let a = ann(
+        21,
+        AnnotationKind::Squiggly,
+        AnnotationPayload::Markup {
+            quad_points: vec![Point { x: 10.0, y: 10.0 }, Point { x: 50.0, y: 14.0 }],
+            color: Color::Rgb(0, 164, 247),
+        },
+        None,
+    );
+    assert_eq!(a, roundtrip(&a));
+}
+
+#[test]
+fn polygon_roundtrips() {
+    let a = ann(
+        22,
+        AnnotationKind::Shape(ShapeKind::Polygon),
+        AnnotationPayload::Shape {
+            kind: ShapeKind::Polygon,
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 10.0,
+                h: 10.0,
+            },
+            stroke: Color::Rgb(255, 0, 0),
+            fill: None,
+            width: 1.0,
+            points: vec![
+                Point { x: 0.0, y: 0.0 },
+                Point { x: 5.0, y: 10.0 },
+                Point { x: 10.0, y: 0.0 },
+            ],
+        },
+        None,
+    );
+    assert_eq!(a, roundtrip(&a));
+}
+
+#[test]
+fn polyline_roundtrips() {
+    let a = ann(
+        23,
+        AnnotationKind::Shape(ShapeKind::PolyLine),
+        AnnotationPayload::Shape {
+            kind: ShapeKind::PolyLine,
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 10.0,
+                h: 10.0,
+            },
+            stroke: Color::Rgb(255, 0, 0),
+            fill: None,
+            width: 1.0,
+            points: vec![
+                Point { x: 0.0, y: 0.0 },
+                Point { x: 5.0, y: 10.0 },
+                Point { x: 10.0, y: 0.0 },
+            ],
+        },
+        None,
+    );
+    assert_eq!(a, roundtrip(&a));
+}
+
 /// Multiple annotations on one page serialize/parse together.
 #[test]
 fn multiple_annots_roundtrip_together() {
