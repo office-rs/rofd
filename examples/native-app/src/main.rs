@@ -88,8 +88,8 @@ fn app_logic(_app: &mut AppState) -> impl WidgetView<AppState> + use<> {
         {
             match std::fs::read(&path) {
                 Ok(bytes) => {
-                    if let Err(e) = app.editor.lock().unwrap().load_ofd(&bytes) {
-                        eprintln!("[ERROR] load_ofd failed for {}: {}", path.display(), e);
+                    if let Err(e) = app.editor.lock().unwrap().open_file(&bytes, path.clone()) {
+                        eprintln!("[ERROR] open_file failed for {}: {}", path.display(), e);
                     }
                     // Wake the app so the canvas repaints with the new document.
                     if let Some(proxy) = app.wake_proxy.lock().unwrap().as_ref() {
@@ -300,7 +300,7 @@ fn main() -> Result<(), winit::error::EventLoopError> {
     if args.len() >= 2 {
         match std::fs::read(&args[1]) {
             Ok(bytes) => {
-                if let Err(e) = editor.load_ofd(&bytes) {
+                if let Err(e) = editor.open_file(&bytes, std::path::PathBuf::from(&args[1])) {
                     eprintln!("failed to load {}: {}", args[1], e);
                 }
             }

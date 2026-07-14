@@ -29,6 +29,15 @@ impl EditorApp {
         Ok(())
     }
 
+    /// Load an OFD document from `bytes` and remember `path` as the current
+    /// file (so subsequent Save overwrites it). Use `load_ofd` instead when
+    /// the source path is not meaningful (e.g. in-memory bytes).
+    pub fn open_file(&mut self, bytes: &[u8], path: PathBuf) -> Result<(), String> {
+        self.load_ofd(bytes)?;
+        self.current_file = Some(path);
+        Ok(())
+    }
+
     /// Serialize the current document to .ofd bytes. Surgical save (preserves
     /// unmodelled body) when a package was loaded; full write for new documents.
     pub fn save_ofd(&self) -> Result<Vec<u8>, String> {
@@ -100,6 +109,17 @@ mod tests {
         let app = EditorApp::new(EditorConfig::new(Arc::new(vec![])));
         assert!(!app.is_modified());
         assert!(app.current_file.is_none());
+    }
+
+    #[test]
+    fn open_file_sets_current_file() {
+        let bytes = rofd_io::write_ofd(&OfdDocument::default()).unwrap();
+        let mut app = EditorApp::new(EditorConfig::new(Arc::new(vec![])));
+        let path = std::path::PathBuf::from("/tmp/test.ofd");
+        app.open_file(&bytes, path.clone()).unwrap();
+        assert_eq!(app.current_file, Some(path));
+        assert!(app.package.is_some(), "package retained");
+        assert!(!app.is_modified(), "load resets modified");
     }
 
     #[test]
