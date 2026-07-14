@@ -16,7 +16,10 @@ use crate::package::{EntryKind, PackageHandle, PkgEntry};
 use crate::zip_util::read_all_entries;
 
 pub fn attr(e: &BytesStart, name: &str) -> Option<String> {
-    e.attributes().flatten().find(|a| a.key.as_ref() == name.as_bytes()).map(|a| String::from_utf8_lossy(&a.value).into_owned())
+    e.attributes()
+        .flatten()
+        .find(|a| a.key.as_ref() == name.as_bytes())
+        .map(|a| String::from_utf8_lossy(&a.value).into_owned())
 }
 
 /// Parse a Rect from a whitespace-separated `"x y w h"` string.
@@ -25,7 +28,10 @@ pub fn attr(e: &BytesStart, name: &str) -> Option<String> {
 /// ...) carry their geometry as element **text content**
 /// (e.g. `<ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox>`), not attributes.
 pub(crate) fn parse_rect_ws(s: &str) -> Rect {
-    let n: Vec<f64> = s.split_whitespace().filter_map(|t| t.parse().ok()).collect();
+    let n: Vec<f64> = s
+        .split_whitespace()
+        .filter_map(|t| t.parse().ok())
+        .collect();
     Rect {
         x: n.first().copied().unwrap_or(0.0),
         y: n.get(1).copied().unwrap_or(0.0),
@@ -38,7 +44,10 @@ pub(crate) fn parse_rect_ws(s: &str) -> Rect {
 /// the format of the `Value` attribute on `FillColor`/`StrokeColor`/`Color`
 /// (GB/T 33190). Alpha is accepted but currently dropped (`Color::Rgb`).
 pub(crate) fn parse_color_value(s: &str) -> Option<Color> {
-    let n: Vec<u8> = s.split_whitespace().filter_map(|t| t.parse::<u8>().ok()).collect();
+    let n: Vec<u8> = s
+        .split_whitespace()
+        .filter_map(|t| t.parse::<u8>().ok())
+        .collect();
     match n.len() {
         3 | 4 => Some(Color::Rgb(n[0], n[1], n[2])),
         _ => None,
@@ -55,13 +64,20 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
         if name == "OFD.xml" {
             ofd_xml = String::from_utf8_lossy(data).into_owned();
         }
-        entries.push(PkgEntry { name: name.clone(), kind, bytes: Arc::new(data.clone()) });
+        entries.push(PkgEntry {
+            name: name.clone(),
+            kind,
+            bytes: Arc::new(data.clone()),
+        });
     }
     let doc_root = ofd_xml::parse_doc_root(&ofd_xml)?;
     let meta = ofd_xml::parse_doc_meta(&ofd_xml)?;
     let doc_xml = entry_str(&entries, &doc_root)?;
     let header = document::parse_document(&doc_xml)?;
-    let mut doc = OfdDocument { meta, ..OfdDocument::default() };
+    let mut doc = OfdDocument {
+        meta,
+        ..OfdDocument::default()
+    };
     doc.max_unit_id = header.max_unit_id;
     for pref in &header.pages {
         let page_path = join(&doc_root, &pref.base_loc);
@@ -69,7 +85,10 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
         let page = page::parse_page(pref.id.clone(), &page_xml, &header)?;
         // Template handling: if page.template is Some, emit warning (v1 doesn't expand).
         if page.template.is_some() {
-            warnings.push(OfdWarning::MissingFeature { feature: "Template".into(), entry: page_path.clone() });
+            warnings.push(OfdWarning::MissingFeature {
+                feature: "Template".into(),
+                entry: page_path.clone(),
+            });
         }
         doc.pages.push(page);
     }
@@ -93,7 +112,11 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
                 doc.resources.draw_params.insert(id, dp);
             }
             for (id, media_file, _fmt) in parsed.multimedias {
-                let path = if base_dir.is_empty() { media_file } else { format!("{base_dir}/{media_file}") };
+                let path = if base_dir.is_empty() {
+                    media_file
+                } else {
+                    format!("{base_dir}/{media_file}")
+                };
                 if let Some(fe) = entries.iter().find(|x| x.name == path) {
                     doc.resources.images.insert(id, fe.bytes.clone());
                 }
@@ -101,7 +124,11 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
             for (id, fref, font_file) in parsed.fonts {
                 doc.resources.fonts.insert(id.clone(), fref);
                 if let Some(rel) = font_file {
-                    let path = if base_dir.is_empty() { rel } else { format!("{base_dir}/{rel}") };
+                    let path = if base_dir.is_empty() {
+                        rel
+                    } else {
+                        format!("{base_dir}/{rel}")
+                    };
                     if let Some(fe) = entries.iter().find(|x| x.name == path) {
                         doc.resources.font_data.insert(id, fe.bytes.clone());
                     }
@@ -118,7 +145,11 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
                 doc.resources.fonts.insert(id.clone(), fref);
                 if let Some(rel) = font_file {
                     // FontFile is relative to the Res dir.
-                    let font_path = if font_dir.is_empty() { rel } else { format!("{font_dir}/{rel}") };
+                    let font_path = if font_dir.is_empty() {
+                        rel
+                    } else {
+                        format!("{font_dir}/{rel}")
+                    };
                     if let Some(fe) = entries.iter().find(|x| x.name == font_path) {
                         doc.resources.font_data.insert(id, fe.bytes.clone());
                     }
@@ -126,19 +157,66 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
             }
         }
     }
-    // Annotations: per-page Annotation.xml; map each entry to its page by index.
-    for e in &entries {
-        if e.name.ends_with("/Annotation.xml") {
-            let page_idx = e
-                .name
-                .split('/')
-                .find_map(|seg| seg.strip_prefix("Page_").and_then(|n| n.parse::<usize>().ok()));
-            if let Some(idx) = page_idx {
-                if let Some(page) = doc.pages.get(idx) {
-                    let xml = String::from_utf8_lossy(&e.bytes).into_owned();
-                    let anns = annotation::parse_annotation_xml(&xml, &page.id)?;
-                    if !anns.is_empty() {
-                        doc.annotations.by_page.entry(page.id.clone()).or_default().extend(anns);
+    // Annotations: GB/T 33190 standard path - Document.xml <Annotations> loc
+    // -> Annotations.xml entry -> per-page PageAnnot files. Falls back to a
+    // scan of entries ending in `/Annotation.xml` (+ warning) when the doc
+    // has no annotations_loc (residual old-format files).
+    if let Some(ann_loc) = header.annotations_loc.as_deref() {
+        let entry_path = join(&doc_root, ann_loc);
+        if let Some(entry_xml) = entries
+            .iter()
+            .find(|e| e.name == entry_path)
+            .map(|e| String::from_utf8_lossy(&e.bytes).into_owned())
+        {
+            let entry_dir = entry_path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+            for pref in annotation_entry::parse_annotations_entry(&entry_xml)? {
+                // FileLoc is relative to the entry file's own directory.
+                let page_path = if entry_dir.is_empty() {
+                    pref.file_loc.clone()
+                } else {
+                    format!("{entry_dir}/{}", pref.file_loc)
+                };
+                // Match by PageID against the parsed pages.
+                if let Some(page) = doc.pages.iter().find(|p| p.id.0 == pref.page_id) {
+                    if let Some(fe) = entries.iter().find(|e| e.name == page_path) {
+                        let xml = String::from_utf8_lossy(&fe.bytes).into_owned();
+                        let anns = annotation::parse_page_annot(&xml, &page.id)?;
+                        if !anns.is_empty() {
+                            doc.annotations
+                                .by_page
+                                .entry(page.id.clone())
+                                .or_default()
+                                .extend(anns);
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        // Backward-compat fallback: scan for /Annotation.xml entries (old format
+        // without a document-level Annotations.xml). Emit a warning per the
+        // degraded-input policy (AGENTS.md §4.6).
+        for e in &entries {
+            if e.name.ends_with("/Annotation.xml") {
+                warnings.push(OfdWarning::MissingFeature {
+                    feature: "standard annotation entry (Annotations.xml)".into(),
+                    entry: e.name.clone(),
+                });
+                let page_idx = e.name.split('/').find_map(|seg| {
+                    seg.strip_prefix("Page_")
+                        .and_then(|n| n.parse::<usize>().ok())
+                });
+                if let Some(idx) = page_idx {
+                    if let Some(page) = doc.pages.get(idx) {
+                        let xml = String::from_utf8_lossy(&e.bytes).into_owned();
+                        let anns = annotation::parse_page_annot(&xml, &page.id)?;
+                        if !anns.is_empty() {
+                            doc.annotations
+                                .by_page
+                                .entry(page.id.clone())
+                                .or_default()
+                                .extend(anns);
+                        }
                     }
                 }
             }
@@ -149,7 +227,10 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
 }
 
 fn classify(name: &str) -> EntryKind {
-    if name.ends_with("Annotation.xml") || name.contains("/Annotations/") {
+    if name.ends_with("Annotation.xml")
+        || name.ends_with("Annotations.xml")
+        || name.contains("/Annots/")
+    {
         EntryKind::Annotation
     } else if name.ends_with("Page.xml") || name.ends_with("Document.xml") || name == "OFD.xml" {
         EntryKind::Body
@@ -167,11 +248,18 @@ fn entry_str(entries: &[PkgEntry], name: &str) -> Result<String, OfdError> {
         .iter()
         .find(|e| e.name == name)
         .map(|e| String::from_utf8_lossy(&e.bytes).into_owned())
-        .ok_or_else(|| OfdError::Schema { entry: name.into(), reason: "entry missing".into() })
+        .ok_or_else(|| OfdError::Schema {
+            entry: name.into(),
+            reason: "entry missing".into(),
+        })
 }
 
 fn join(doc_root: &str, base_loc: &str) -> String {
     // base_loc is relative to the document's directory.
     let dir = doc_root.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
-    if dir.is_empty() { base_loc.to_string() } else { format!("{dir}/{base_loc}") }
+    if dir.is_empty() {
+        base_loc.to_string()
+    } else {
+        format!("{dir}/{base_loc}")
+    }
 }

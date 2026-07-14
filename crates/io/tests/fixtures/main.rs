@@ -9,8 +9,9 @@ fn read_all_entries_lists_fixture_parts() {
     let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
     assert!(names.contains(&"OFD.xml"));
     assert!(names.contains(&"Doc_0/Document.xml"));
-    assert!(names.contains(&"Doc_0/Pages/Page_0/Page.xml"));
-    assert!(names.contains(&"Doc_0/Pages/Page_0/Annotation.xml"));
+    assert!(names.contains(&"Doc_0/Pages/Page_0/Content.xml"));
+    assert!(names.contains(&"Doc_0/Annots/Annotations.xml"));
+    assert!(names.contains(&"Doc_0/Annots/Page_0/Annotation.xml"));
 }
 
 #[test]
