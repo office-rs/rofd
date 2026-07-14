@@ -27,16 +27,60 @@
 
 use std::sync::Arc;
 
-use imaging::kurbo::Rect;
+use imaging::kurbo::{Rect, Stroke};
 use imaging::peniko::Color;
 use imaging::record::Scene;
 use imaging::Painter;
-use rofd_dom::OfdDocument;
+use rofd_dom::{AnnotationKind, AnnotationSelection, OfdDocument, Rect as RofdRect};
 
 use crate::annotation_scene::draw_annotations;
 use crate::body_scene::draw_body;
+use crate::hit_test::{annotation_viewport_rect, HANDLE_SIZE};
 use crate::text::FontStore;
 use crate::viewport::Viewport;
+
+/// In-progress drag visualization. Passed by the component (T2/T3) during a
+/// pointer drag so the user sees a live preview of the annotation being
+/// created, moved, or resized.
+///
+/// `composite` draws this as a semi-transparent overlay on top of the existing
+/// scene (after body + annotations + selection handles).
+#[derive(Debug, Clone)]
+pub enum DragPreview {
+    /// Creating a new rect-bounded annotation (Shape/Note/TextBox/etc.).
+    /// `rect` is in page-local coordinates.
+    Create {
+        kind: AnnotationKind,
+        rect: RofdRect,
+    },
+    /// Creating a freehand annotation; `path` is viewport-space points.
+    CreateFreehand { path: Vec<(f64, f64)> },
+    /// Moving an existing annotation; `rect` is the new page-local position.
+    Move {
+        id: rofd_dom::AnnotationId,
+        rect: RofdRect,
+    },
+    /// Resizing an existing annotation; `rect` is the new page-local rect.
+    Resize {
+        id: rofd_dom::AnnotationId,
+        rect: RofdRect,
+    },
+}
+
+/// Color for selection handle fills (opaque blue).
+const HANDLE_COLOR: Color = Color::from_rgba8(0x00, 0x72, 0xC6, 0xFF);
+
+/// Color for the selection frame stroke (opaque blue).
+const FRAME_COLOR: Color = Color::from_rgba8(0x00, 0x72, 0xC6, 0xFF);
+
+/// Color for drag preview outlines (semi-transparent blue).
+const PREVIEW_COLOR: Color = Color::from_rgba8(0x00, 0x72, 0xC6, 0x80);
+
+/// Stroke width for the selection frame (screen pixels).
+const FRAME_STROKE_WIDTH: f64 = 1.0;
+
+/// Stroke width for drag preview outlines (screen pixels).
+const PREVIEW_STROKE_WIDTH: f64 = 1.0;
 
 /// Renders an [`OfdDocument`] into a paper-on-desk [`imaging::record::Scene`] for a [`Viewport`].
 ///
@@ -63,7 +107,19 @@ impl RenderEngine {
     /// `fonts` is a caller-cached [`FontStore`] (document fonts + default). It is
     /// passed in rather than built per call so a large default CJK font is not
     /// re-registered every frame.
-    pub fn composite(&self, doc: &OfdDocument, vp: &Viewport, fonts: &FontStore) -> Scene {
+    ///
+    /// `selection` controls handle drawing: if [`AnnotationSelection::Single`],
+    /// 8 resize handles + a selection frame are drawn on the selected
+    /// annotation's viewport-space bounding rect. `drag` draws a live
+    /// semi-transparent preview of an in-progress create/move/resize operation.
+    pub fn composite(
+        &self,
+        doc: &OfdDocument,
+        vp: &Viewport,
+        fonts: &FontStore,
+        selection: &AnnotationSelection,
+        drag: Option<&DragPreview>,
+    ) -> Scene {
         let mut scene = Scene::new();
         let mut painter = Painter::new(&mut scene);
 
@@ -126,6 +182,324 @@ impl RenderEngine {
             y += page_h + vp.page_gap;
         }
 
+        // Selection overlay: draw 8 handles + a frame on the selected
+        // annotation (if Single). Drawn after all pages so handles appear on
+        // top. Handles are screen-space (not page-local); they don't scale
+        // with zoom.
+        if let AnnotationSelection::Single(id) = selection {
+            if let Some(ann) = doc.annotations.find(id) {
+                if let Some(vr) = annotation_viewport_rect(doc, ann, vp) {
+                    draw_selection_overlay(&mut painter, vr);
+                }
+            }
+        }
+
+        // Drag preview: semi-transparent outline of the in-progress operation.
+        if let Some(preview) = drag {
+            draw_drag_preview(&mut painter, preview, doc, vp);
+        }
+
         scene
+    }
+}
+
+/// Draw the selection frame (stroked bounding rect) + 8 handle fills on the
+/// annotation's viewport-space rect.
+///
+/// Handles are `HANDLE_SIZE` x `HANDLE_SIZE` screen-pixel squares centered on
+/// the 4 corners + 4 edge midpoints. The frame is a 1px stroked rect.
+fn draw_selection_overlay(painter: &mut Painter<Scene>, vr: RofdRect) {
+    let kurbo_rect = Rect::new(vr.x, vr.y, vr.x + vr.w, vr.y + vr.h);
+
+    // Selection frame: stroked bounding rect.
+    painter
+        .stroke(kurbo_rect, &Stroke::new(FRAME_STROKE_WIDTH), FRAME_COLOR)
+        .draw();
+
+    // 8 handles: 4 corners + 4 edge midpoints.
+    let half = HANDLE_SIZE / 2.0;
+    let x0 = vr.x;
+    let y0 = vr.y;
+    let x1 = vr.x + vr.w;
+    let y1 = vr.y + vr.h;
+    let cx = (x0 + x1) / 2.0;
+    let cy = (y0 + y1) / 2.0;
+
+    let handle_centers = [
+        (x0, y0), // Nw
+        (x1, y0), // Ne
+        (x0, y1), // Sw
+        (x1, y1), // Se
+        (cx, y0), // N
+        (cx, y1), // S
+        (x1, cy), // E
+        (x0, cy), // W
+    ];
+    for (hx, hy) in &handle_centers {
+        let handle_rect = Rect::new(hx - half, hy - half, hx + half, hy + half);
+        painter.fill_rect(handle_rect, HANDLE_COLOR);
+    }
+}
+
+/// Draw a semi-transparent preview of an in-progress drag operation.
+///
+/// - `Create`: stroked page-local rect transformed to viewport coords.
+/// - `CreateFreehand`: stroked viewport-space path.
+/// - `Move`/`Resize`: stroked page-local rect transformed to viewport coords.
+fn draw_drag_preview(
+    painter: &mut Painter<Scene>,
+    preview: &DragPreview,
+    doc: &OfdDocument,
+    vp: &Viewport,
+) {
+    match preview {
+        DragPreview::Create { rect, .. }
+        | DragPreview::Move { rect, .. }
+        | DragPreview::Resize { rect, .. } => {
+            // Transform page-local rect to viewport coords. We need the page
+            // origin for the annotation's page (or the first page for Create).
+            let page_id = match preview {
+                DragPreview::Move { id, .. } | DragPreview::Resize { id, .. } => {
+                    doc.annotations.find(id).map(|a| a.page.clone())
+                }
+                _ => None,
+            };
+            let page = if let Some(pid) = page_id {
+                doc.pages.iter().find(|p| p.id == pid)
+            } else {
+                doc.pages.first()
+            };
+            let Some(page) = page else { return };
+            let page_w = page.physical_box.w * vp.zoom;
+            let page_x = ((vp.size.0 - page_w) / 2.0).max(0.0);
+            let page_origin = (page_x + vp.scroll.0, vp.page_gap - vp.scroll.1);
+            let vr = Rect::new(
+                page_origin.0 + rect.x * vp.zoom,
+                page_origin.1 + rect.y * vp.zoom,
+                page_origin.0 + (rect.x + rect.w) * vp.zoom,
+                page_origin.1 + (rect.y + rect.h) * vp.zoom,
+            );
+            painter
+                .stroke(vr, &Stroke::new(PREVIEW_STROKE_WIDTH), PREVIEW_COLOR)
+                .draw();
+        }
+        DragPreview::CreateFreehand { path } => {
+            if path.len() < 2 {
+                return;
+            }
+            let mut bez = imaging::kurbo::BezPath::new();
+            bez.move_to((path[0].0, path[0].1));
+            for &(x, y) in &path[1..] {
+                bez.line_to((x, y));
+            }
+            painter
+                .stroke(&bez, &Stroke::new(PREVIEW_STROKE_WIDTH), PREVIEW_COLOR)
+                .draw();
+        }
+    }
+}
+
+/// Count `Draw::Fill` commands in a scene (used by tests to assert handle count).
+#[cfg(test)]
+fn count_fills(scene: &Scene) -> usize {
+    use imaging::record::{Command, Draw};
+    scene
+        .commands()
+        .iter()
+        .filter(|cmd| match cmd {
+            Command::Draw(id) => matches!(scene.draw_op(*id), Draw::Fill { .. }),
+            _ => false,
+        })
+        .count()
+}
+
+/// Count `Draw::Stroke` commands in a scene (used by tests to assert frame count).
+#[cfg(test)]
+fn count_strokes(scene: &Scene) -> usize {
+    use imaging::record::{Command, Draw};
+    scene
+        .commands()
+        .iter()
+        .filter(|cmd| match cmd {
+            Command::Draw(id) => matches!(scene.draw_op(*id), Draw::Stroke { .. }),
+            _ => false,
+        })
+        .count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rofd_dom::{
+        Annotation, AnnotationId, AnnotationKind, AnnotationModel, AnnotationPayload,
+        AnnotationSelection, Color, OfdDocument, Page, PageId, Rect, ShapeKind,
+    };
+    use std::sync::Arc;
+
+    /// Build a doc with one page (100x100) and one rect annotation on it.
+    fn doc_with_rect_annotation() -> (OfdDocument, AnnotationId) {
+        let page_id = PageId::new("P0");
+        let ann_id = AnnotationId::from_int(1);
+        let annotation = Annotation {
+            id: ann_id.clone(),
+            kind: AnnotationKind::Shape(ShapeKind::Rect),
+            page: page_id.clone(),
+            creator: "t".into(),
+            created: 0,
+            modified: 0,
+            reply_to: None,
+            payload: AnnotationPayload::Shape {
+                kind: ShapeKind::Rect,
+                rect: Rect {
+                    x: 10.0,
+                    y: 10.0,
+                    w: 80.0,
+                    h: 60.0,
+                },
+                stroke: Color::Rgb(0, 0, 0),
+                fill: Some(Color::Rgb(255, 255, 255)),
+                width: 2.0,
+                points: vec![],
+            },
+        };
+        let page = Page {
+            id: page_id,
+            physical_box: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+            },
+            layers: vec![],
+            template: None,
+        };
+        let mut model = AnnotationModel::default();
+        model.insert(annotation);
+        let doc = OfdDocument {
+            meta: Default::default(),
+            pages: vec![page],
+            resources: Default::default(),
+            annotations: model,
+            max_unit_id: 0,
+        };
+        (doc, ann_id)
+    }
+
+    fn build_font_store() -> FontStore {
+        let font_bytes = include_bytes!("../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        FontStore::from_resources(
+            &rofd_dom::Resources::default(),
+            Arc::new(font_bytes.to_vec()),
+        )
+    }
+
+    #[test]
+    fn composite_with_selection_draws_handles() {
+        // Select a rect annotation -> composite draws 8 handle fills + 1 frame stroke.
+        let (doc, ann_id) = doc_with_rect_annotation();
+        let fonts = build_font_store();
+        let engine = RenderEngine::new(Arc::new(vec![]));
+        let vp = Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (200.0, 200.0),
+            page_gap: 20.0,
+        };
+        let selection = AnnotationSelection::Single(ann_id);
+
+        // With selection: the scene should have at least 8 more fills (handles)
+        // and 1 more stroke (selection frame) than without selection.
+        let scene_no_sel = engine.composite(&doc, &vp, &fonts, &AnnotationSelection::None, None);
+        let scene_sel = engine.composite(&doc, &vp, &fonts, &selection, None);
+
+        let fills_no_sel = count_fills(&scene_no_sel);
+        let fills_sel = count_fills(&scene_sel);
+        let strokes_no_sel = count_strokes(&scene_no_sel);
+        let strokes_sel = count_strokes(&scene_sel);
+
+        assert_eq!(
+            fills_sel - fills_no_sel,
+            8,
+            "selection should add exactly 8 handle fills"
+        );
+        assert!(
+            strokes_sel > strokes_no_sel,
+            "selection should add at least 1 frame stroke ({} -> {})",
+            strokes_no_sel,
+            strokes_sel
+        );
+    }
+
+    #[test]
+    fn composite_with_no_selection_draws_no_handles() {
+        // No selection -> no extra fills beyond the desk bg + page bg + annotation fill.
+        let (doc, _ann_id) = doc_with_rect_annotation();
+        let fonts = build_font_store();
+        let engine = RenderEngine::new(Arc::new(vec![]));
+        let vp = Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (200.0, 200.0),
+            page_gap: 20.0,
+        };
+        let scene = engine.composite(&doc, &vp, &fonts, &AnnotationSelection::None, None);
+        let fills = count_fills(&scene);
+        // Desk bg (1) + page bg (1) + annotation fill (1) = 3 fills. No handles.
+        assert_eq!(
+            fills, 3,
+            "no selection -> desk bg + page bg + annotation fill, no handles"
+        );
+    }
+
+    #[test]
+    fn composite_with_drag_preview_draws_preview() {
+        // A DragPreview::Create should add a stroke (the preview rect outline).
+        let (doc, _ann_id) = doc_with_rect_annotation();
+        let fonts = build_font_store();
+        let engine = RenderEngine::new(Arc::new(vec![]));
+        let vp = Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (200.0, 200.0),
+            page_gap: 20.0,
+        };
+        let preview = DragPreview::Create {
+            kind: AnnotationKind::Shape(ShapeKind::Rect),
+            rect: Rect {
+                x: 5.0,
+                y: 5.0,
+                w: 30.0,
+                h: 20.0,
+            },
+        };
+        let scene_no_drag = engine.composite(&doc, &vp, &fonts, &AnnotationSelection::None, None);
+        let scene_drag = engine.composite(
+            &doc,
+            &vp,
+            &fonts,
+            &AnnotationSelection::None,
+            Some(&preview),
+        );
+        // The drag preview adds 1 stroke (the preview rect outline).
+        assert!(
+            count_strokes(&scene_drag) > count_strokes(&scene_no_drag),
+            "drag preview should add strokes ({} -> {})",
+            count_strokes(&scene_no_drag),
+            count_strokes(&scene_drag)
+        );
+    }
+
+    #[test]
+    fn composite_does_not_panic_on_empty_doc() {
+        let doc = OfdDocument::default();
+        let fonts = build_font_store();
+        let engine = RenderEngine::new(Arc::new(vec![]));
+        let vp = Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (800.0, 600.0),
+            page_gap: 20.0,
+        };
+        let _scene = engine.composite(&doc, &vp, &fonts, &AnnotationSelection::None, None);
     }
 }

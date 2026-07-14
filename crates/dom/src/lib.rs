@@ -7,6 +7,7 @@ pub mod object;
 pub mod page;
 pub mod primitives;
 pub mod resource;
+pub mod selection;
 
 pub use annotation::*;
 pub use document::*;
@@ -15,3 +16,4 @@ pub use object::*;
 pub use page::*;
 pub use primitives::*;
 pub use resource::*;
+pub use selection::*;

@@ -13,6 +13,7 @@ use std::sync::Arc;
 use imaging::kurbo::Rect as KurboRect;
 use imaging::record::Scene;
 use imaging::Painter;
+use rofd_dom::AnnotationSelection;
 use rofd_render::{
     draw_annotations, draw_body, hit_test, FontStore, RenderEngine, Viewport, PX_PER_MM,
 };
@@ -82,7 +83,13 @@ fn composite_builds_paper_on_desk_scene() {
         size: (800.0, 600.0),
         page_gap: 20.0,
     };
-    let _scene = engine.composite(&report.document, &vp, &fonts); // built without panic
+    let _scene = engine.composite(
+        &report.document,
+        &vp,
+        &fonts,
+        &AnnotationSelection::None,
+        None,
+    ); // built without panic
 }
 
 /// End-to-end: parse fixture -> composite -> hit_test -> re-composite.
@@ -101,15 +108,32 @@ fn end_to_end_parse_composite_hit_test() {
         page_gap: 20.0,
     };
 
-    let _scene = engine.composite(&report.document, &vp, &fonts);
+    let _scene = engine.composite(
+        &report.document,
+        &vp,
+        &fonts,
+        &AnnotationSelection::None,
+        None,
+    );
 
     // Hit-test somewhere on page 0 (annotation entries exist in the fixture).
     // The result is not asserted on a specific target - the gate is that the
     // full geometry path runs without panicking for a point on the page.
-    let _hit = hit_test(&report.document, &vp, (400.0, 50.0));
+    let _hit = hit_test(
+        &report.document,
+        &vp,
+        &AnnotationSelection::None,
+        (400.0, 50.0),
+    );
 
     // Re-composite (simulates a repaint after a state change). Must not panic.
-    let _scene2 = engine.composite(&report.document, &vp, &fonts);
+    let _scene2 = engine.composite(
+        &report.document,
+        &vp,
+        &fonts,
+        &AnnotationSelection::None,
+        None,
+    );
 }
 
 /// Parses the real `test/ru-yuan-ji-lu.ofd` (if present locally) and composites
@@ -155,7 +179,13 @@ fn real_ofd_parses_and_composites() {
         page_gap: 20.0,
         ..Default::default()
     };
-    let _scene = engine.composite(&report.document, &vp, &fonts); // composites without panic
+    let _scene = engine.composite(
+        &report.document,
+        &vp,
+        &fonts,
+        &AnnotationSelection::None,
+        None,
+    ); // composites without panic
 
     // Draw page 0's body in isolation (non-panic).
     let mut body_scene = Scene::new();

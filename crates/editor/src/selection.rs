@@ -1,42 +1,8 @@
-use rofd_dom::AnnotationId;
+//! Re-export of [`AnnotationSelection`] from `rofd-dom`.
+//!
+//! The type lives in dom so that `rofd-render` (which depends on dom but not
+//! editor) can consume it for handle drawing and hit-testing without creating
+//! a reverse dependency edge. Editor re-exports it for backward compatibility
+//! with existing `use rofd_editor::AnnotationSelection` imports.
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum AnnotationSelection {
-    None,
-    Single(AnnotationId),
-    Multi(Vec<AnnotationId>),
-}
-
-impl AnnotationSelection {
-    pub fn contains(&self, id: &AnnotationId) -> bool {
-        match self {
-            AnnotationSelection::None => false,
-            AnnotationSelection::Single(s) => s == id,
-            AnnotationSelection::Multi(ids) => ids.iter().any(|i| i == id),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn none_contains_nothing() {
-        assert!(!AnnotationSelection::None.contains(&AnnotationId::from_int(1)));
-    }
-
-    #[test]
-    fn single_contains_its_id() {
-        let id = AnnotationId::from_int(1);
-        assert!(AnnotationSelection::Single(id.clone()).contains(&id));
-        assert!(!AnnotationSelection::Single(id.clone()).contains(&AnnotationId::from_int(2)));
-    }
-
-    #[test]
-    fn multi_contains_any_listed() {
-        let a = AnnotationId::from_int(1);
-        let b = AnnotationId::from_int(2);
-        assert!(AnnotationSelection::Multi(vec![a.clone(), b.clone()]).contains(&a));
-    }
-}
+pub use rofd_dom::AnnotationSelection;

@@ -7,8 +7,9 @@
 //! they are tested first (topmost first = reverse doc order).
 
 use rofd_dom::{
-    Annotation, AnnotationId, AnnotationKind, AnnotationModel, AnnotationPayload, Color, FontId,
-    ImageId, NoteIcon, OfdDocument, Page, PageId, PathCommand, PathData, Point, Rect, ShapeKind,
+    Annotation, AnnotationId, AnnotationKind, AnnotationModel, AnnotationPayload,
+    AnnotationSelection, Color, FontId, ImageId, NoteIcon, OfdDocument, Page, PageId, PathCommand,
+    PathData, Point, Rect, ShapeKind,
 };
 use rofd_render::{hit_test, HitTarget, Viewport};
 
@@ -63,7 +64,12 @@ fn hit_test_empty_viewport_returns_empty() {
         page_gap: 20.0,
     };
     // Click far from any page -> Empty.
-    let target = hit_test(&report.document, &vp, (1.0, 1.0));
+    let target = hit_test(
+        &report.document,
+        &vp,
+        &AnnotationSelection::None,
+        (1.0, 1.0),
+    );
     assert!(matches!(target, HitTarget::Empty) || matches!(target, HitTarget::Page(_)));
 }
 
@@ -92,7 +98,7 @@ fn hit_test_center_of_page_returns_page() {
         size: (200.0, 200.0),
         page_gap: 20.0,
     };
-    let target = hit_test(&doc, &vp, (100.0, 70.0));
+    let target = hit_test(&doc, &vp, &AnnotationSelection::None, (100.0, 70.0));
     assert_eq!(target, HitTarget::Page(PageId::new("P0")));
 }
 
@@ -117,7 +123,7 @@ fn hit_test_outside_pages_returns_empty() {
     // (10,10) is above the page (page starts at y=20) and left of it (x starts
     // at 50).
     assert!(matches!(
-        hit_test(&doc, &vp, (10.0, 10.0)),
+        hit_test(&doc, &vp, &AnnotationSelection::None, (10.0, 10.0)),
         HitTarget::Empty
     ));
 }
@@ -152,12 +158,22 @@ fn hit_test_scroll_x_shifts_page_horizontally() {
     };
     // Center of the page with scroll applied: x=200, y=70.
     assert_eq!(
-        hit_test(&doc, &vp_scroll_x, (200.0, 70.0)),
+        hit_test(
+            &doc,
+            &vp_scroll_x,
+            &AnnotationSelection::None,
+            (200.0, 70.0)
+        ),
         HitTarget::Page(PageId::new("P0"))
     );
     // Same point without scroll is off the page (page x is [50,150], 200 > 150).
     assert!(matches!(
-        hit_test(&doc, &vp_no_scroll, (200.0, 70.0)),
+        hit_test(
+            &doc,
+            &vp_no_scroll,
+            &AnnotationSelection::None,
+            (200.0, 70.0)
+        ),
         HitTarget::Empty
     ));
 }
@@ -184,7 +200,7 @@ fn hit_test_scroll_y_shifts_page_vertically() {
     };
     // page_x = 50; center = (100, 20).
     assert_eq!(
-        hit_test(&doc, &vp, (100.0, 20.0)),
+        hit_test(&doc, &vp, &AnnotationSelection::None, (100.0, 20.0)),
         HitTarget::Page(PageId::new("P0"))
     );
     // Without scroll the page center is at y=70; (100,20) would be above the
@@ -198,7 +214,12 @@ fn hit_test_scroll_y_shifts_page_vertically() {
         page_gap: 20.0,
     };
     assert!(matches!(
-        hit_test(&doc, &vp_no_scroll, (100.0, 10.0)),
+        hit_test(
+            &doc,
+            &vp_no_scroll,
+            &AnnotationSelection::None,
+            (100.0, 10.0)
+        ),
         HitTarget::Empty
     ));
 }
@@ -225,7 +246,7 @@ fn hit_test_zoom_scales_page() {
         page_gap: 20.0,
     };
     assert_eq!(
-        hit_test(&doc, &vp, (200.0, 120.0)),
+        hit_test(&doc, &vp, &AnnotationSelection::None, (200.0, 120.0)),
         HitTarget::Page(PageId::new("P0"))
     );
 }
@@ -262,7 +283,7 @@ fn hit_test_second_page_stacked_vertically() {
     };
     // Page 0: y[20,120]. Page 1: y = 120 + 20 = 140 -> y[140,240]. Center y=190.
     assert_eq!(
-        hit_test(&doc, &vp, (100.0, 190.0)),
+        hit_test(&doc, &vp, &AnnotationSelection::None, (100.0, 190.0)),
         HitTarget::Page(PageId::new("P1"))
     );
 }
@@ -302,14 +323,14 @@ fn hit_test_markup_annotation_hit_and_miss() {
         page_gap: 20.0,
     };
     // page_x=50, page_y=20. Local of viewport (60,30) = (10,10) -> inside quad.
-    let hit = hit_test(&doc, &vp, (60.0, 30.0));
+    let hit = hit_test(&doc, &vp, &AnnotationSelection::None, (60.0, 30.0));
     assert!(
         matches!(hit, HitTarget::Annotation(_)),
         "expected Annotation hit, got {hit:?}"
     );
     // Just outside the quad (local (25,25)) falls through to Page.
     assert_eq!(
-        hit_test(&doc, &vp, (75.0, 45.0)),
+        hit_test(&doc, &vp, &AnnotationSelection::None, (75.0, 45.0)),
         HitTarget::Page(PageId::new("P0"))
     );
 }
@@ -354,7 +375,7 @@ fn hit_test_topmost_annotation_wins() {
         page_gap: 20.0,
     };
     // Local (20,20) -> viewport (70,40). Should hit ann_second (reverse order).
-    let hit = hit_test(&doc, &vp, (70.0, 40.0));
+    let hit = hit_test(&doc, &vp, &AnnotationSelection::None, (70.0, 40.0));
     match hit {
         HitTarget::Annotation(id) => {
             // The second annotation's id should be returned.
@@ -391,7 +412,12 @@ fn hit_at_local(doc: &OfdDocument, local: (f64, f64)) -> HitTarget {
         size: (200.0, 200.0),
         page_gap: 20.0,
     };
-    hit_test(doc, &vp, (local.0 + page_x, local.1 + 20.0))
+    hit_test(
+        doc,
+        &vp,
+        &AnnotationSelection::None,
+        (local.0 + page_x, local.1 + 20.0),
+    )
 }
 
 #[test]
