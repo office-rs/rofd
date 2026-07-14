@@ -49,20 +49,9 @@ C3 补齐交互式批注 UX 的**主循环**：创建（拖拽绘制）-> 选择
 
 ## 3. 设计
 
-### 3.1 模型：加 Squiggly
+### 3.1 模型：Squiggly（已由 C1.5 完成）
 
-```rust
-// crates/dom/src/annotation.rs
-pub enum AnnotationKind {
-    Highlight, Underline, Strikeout, Squiggly,   // 加 Squiggly
-    Freehand, Shape(ShapeKind), Note, TextBox, Stamp, Watermark,
-}
-```
-- Squiggly 复用 `AnnotationPayload::Markup { quad_points, color }`（与 Highlight/Underline/Strikeout 同）。
-- io（C1 的 map）：`Type="Highlight" Subtype="Squiggly"` <-> `AnnotationKind::Squiggly`（改 C1 原 `Squiggly -> Highlight 降级` 为精确 Squiggly）。serialize：`kind_to_type_subtype` 加 `Squiggly => ("Highlight", Some("Squiggly"))`。parse：`map_type_subtype` `Squiggly => Squiggly`（不再降级）。
-- render：Squiggly 画波浪线（quad_points 区域内 Q 曲线，如真实样本 `Doc_0/Annots/Page_0/Annotation.xml` 的 Squiggly Appearance）。
-- editor：`create_annotation(Squiggly, ...)` 可用。
-- ripple：dom（enum + 测试）/ io（map 两处 + 往返测试）/ render（draw_squiggly）/ editor（无新命令，create_annotation 已接 kind）。小。
+C1.5 已加 `AnnotationKind::Squiggly`（Markup payload 复用）+ io `Type=Highlight Subtype=Squiggly` 精确映射（不降级）+ render 波浪 Q 曲线。**C3 不再重复模型/io/render 改动**；C3 仅在创建 UI（§3.5）把 Squiggly 作为 WPS 6 种可创建类型之一（`create_annotation(Squiggly, ...)` 已可用）。
 
 ### 3.2 render：手柄 + composite 接 selection + handle 命中
 
