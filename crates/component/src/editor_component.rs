@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use rofd_dom::OfdDocument;
-use rofd_editor::{AnnotationSelection, Editor, TextCursor};
+use rofd_dom::{AnnotationSelection, OfdDocument};
+use rofd_editor::{Editor, TextCursor};
 use rofd_render::{FontStore, RenderEngine, Scene, Viewport, PX_PER_MM};
 
 use crate::callbacks::Callbacks;
@@ -155,8 +155,13 @@ impl EditorComponent {
             self.font_store = Some(self.build_font_store());
         }
         let fonts = self.font_store.as_ref().expect("font_store initialized");
-        self.render
-            .composite(self.editor.document(), &self.viewport, fonts)
+        self.render.composite(
+            self.editor.document(),
+            &self.viewport,
+            fonts,
+            &AnnotationSelection::None,
+            None,
+        )
     }
 
     pub fn render(&mut self, target: &mut dyn RenderTarget) {
@@ -173,8 +178,12 @@ impl EditorComponent {
                 y,
                 ..
             } => {
-                let target =
-                    rofd_render::hit_test(self.editor.document(), &self.viewport, (*x, *y));
+                let target = rofd_render::hit_test(
+                    self.editor.document(),
+                    &self.viewport,
+                    &AnnotationSelection::None,
+                    (*x, *y),
+                );
                 match target {
                     rofd_render::HitTarget::Annotation(id) => {
                         self.editor.select(id.clone());

@@ -8,12 +8,42 @@
 //! document order), matching painter's order (later annotations paint over
 //! earlier ones).
 //!
+//! When an annotation is selected, its 8 resize handles (4 corners + 4 edge
+//! midpoints) are tested first - before the annotation body - so that a click
+//! on a handle returns [`HitTarget::Handle`] rather than [`HitTarget::Annotation`].
+//!
 //! [`HitTarget::AnnotationText`] is reserved for future caret placement on text
 //! annotations; v1 returns [`HitTarget::Annotation`] for all hits.
 
-use rofd_dom::{Annotation, AnnotationId, AnnotationPayload, OfdDocument, PageId, PathCommand};
+use rofd_dom::{
+    Annotation, AnnotationId, AnnotationPayload, AnnotationSelection, OfdDocument, PageId,
+    PathCommand, Rect,
+};
 
 use crate::viewport::Viewport;
+
+/// Edge / corner of a selected annotation's bounding rect. Used by both
+/// hit-testing (which handle was clicked) and the component (which resize
+/// operation to perform).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandlePos {
+    /// North-west corner (top-left).
+    Nw,
+    /// North-east corner (top-right).
+    Ne,
+    /// South-west corner (bottom-left).
+    Sw,
+    /// South-east corner (bottom-right).
+    Se,
+    /// North edge midpoint (top-center).
+    N,
+    /// South edge midpoint (bottom-center).
+    S,
+    /// East edge midpoint (right-center).
+    E,
+    /// West edge midpoint (left-center).
+    W,
+}
 
 /// The topmost thing under a viewport point.
 #[derive(Debug, Clone, PartialEq)]
@@ -21,17 +51,32 @@ pub enum HitTarget {
     /// An annotation was hit (rendered above the body).
     Annotation(AnnotationId),
     /// A text annotation was hit at this character offset (future: caret
-    /// placement). v1 does not compute offsets and returns [`Annotation`]
+    /// placement). v1 does not compute offsets and returns [`HitTarget::Annotation`]
     /// instead.
     AnnotationText(AnnotationId, usize),
+    /// A selection handle on a selected annotation was hit (resize grip).
+    Handle(AnnotationId, HandlePos),
     /// The page body (no annotation under the point).
     Page(PageId),
     /// The desk background (no page under the point).
     Empty,
 }
 
+/// Handle visual size in screen pixels (not zoom-scaled). Handles stay a
+/// constant on-screen size regardless of zoom level.
+pub(crate) const HANDLE_SIZE: f64 = 8.0;
+
+/// Extra hit padding around each handle (screen pixels), so handles are
+/// grabbable even if the user's click is slightly off.
+const HIT_PAD: f64 = 4.0;
+
 /// Hit-test a viewport point (device pixels). Returns the topmost annotation it
 /// hits (annotations render above the body), else the page, else [`HitTarget::Empty`].
+///
+/// If `selection` is [`AnnotationSelection::Single`], the selected annotation's
+/// 8 resize handles are tested first - a hit returns
+/// [`HitTarget::Handle(id, pos)`]. Otherwise the annotation body / page / empty
+/// logic runs as usual.
 ///
 /// The page-origin computation matches `composite.rs`:
 /// - `page_x = ((vp.size.0 - page_w) / 2.0).max(0.0)` (centered, never negative)
@@ -40,8 +85,29 @@ pub enum HitTarget {
 /// - `page_w = physical_box.w * zoom`, `page_h = physical_box.h * zoom`
 ///
 /// Page-local coordinates are `(point - page_origin) / zoom`.
-pub fn hit_test(doc: &OfdDocument, vp: &Viewport, point: (f64, f64)) -> HitTarget {
+pub fn hit_test(
+    doc: &OfdDocument,
+    vp: &Viewport,
+    selection: &AnnotationSelection,
+    point: (f64, f64),
+) -> HitTarget {
     let (px, py) = point;
+
+    // 1. If an annotation is selected, test its handles first (before any
+    //    page/annotation body hit-test). Handles are screen-space (not
+    //    page-local), so we compute the selected annotation's viewport-space
+    //    bounding rect and check if the point falls on any of the 8 handle
+    //    positions.
+    if let AnnotationSelection::Single(id) = selection {
+        if let Some(ann) = doc.annotations.find(id) {
+            if let Some(viewport_rect) = annotation_viewport_rect(doc, ann, vp) {
+                if let Some(h) = hit_handle(viewport_rect, point) {
+                    return HitTarget::Handle(id.clone(), h);
+                }
+            }
+        }
+    }
+
     let mut y = vp.page_gap - vp.scroll.1;
     for page in &doc.pages {
         let page_w = page.physical_box.w * vp.zoom;
@@ -69,6 +135,134 @@ pub fn hit_test(doc: &OfdDocument, vp: &Viewport, point: (f64, f64)) -> HitTarge
         return HitTarget::Page(page.id.clone());
     }
     HitTarget::Empty
+}
+
+/// Compute the viewport-space (screen pixel) bounding rect of an annotation.
+///
+/// Finds the annotation's page in `doc`, then applies the page-origin + zoom
+/// transform to the annotation's page-local bounding rect. Returns `None` if
+/// the annotation's page is not found or the payload has no geometry (e.g.
+/// empty Freehand path).
+///
+/// The page-origin computation matches `composite.rs` exactly.
+pub(crate) fn annotation_viewport_rect(
+    doc: &OfdDocument,
+    ann: &Annotation,
+    vp: &Viewport,
+) -> Option<Rect> {
+    let page = doc.pages.iter().find(|p| p.id == ann.page)?;
+    let page_w = page.physical_box.w * vp.zoom;
+    let page_x = ((vp.size.0 - page_w) / 2.0).max(0.0);
+    let page_origin = (page_x + vp.scroll.0, vp.page_gap - vp.scroll.1);
+
+    let local = annotation_local_rect(ann)?;
+    Some(Rect {
+        x: page_origin.0 + local.x * vp.zoom,
+        y: page_origin.1 + local.y * vp.zoom,
+        w: local.w * vp.zoom,
+        h: local.h * vp.zoom,
+    })
+}
+
+/// Compute the page-local bounding rect of an annotation's payload.
+///
+/// - Rect-bearing payloads (`Note`/`TextBox`/`Stamp`/`Watermark`/`Shape`):
+///   the payload's `rect` field directly.
+/// - `Markup`: the bounding box of all quad-point pairs.
+/// - `Freehand`: the bounding box of all path control/end points. Returns
+///   `None` if the path is empty.
+fn annotation_local_rect(ann: &Annotation) -> Option<Rect> {
+    match &ann.payload {
+        AnnotationPayload::Markup { quad_points, .. } => {
+            let (minx, miny, maxx, maxy) =
+                quad_points
+                    .iter()
+                    .fold(None::<(f64, f64, f64, f64)>, |acc, p| match acc {
+                        None => Some((p.x, p.y, p.x, p.y)),
+                        Some((minx, miny, maxx, maxy)) => {
+                            Some((minx.min(p.x), miny.min(p.y), maxx.max(p.x), maxy.max(p.y)))
+                        }
+                    })?;
+            Some(Rect {
+                x: minx,
+                y: miny,
+                w: maxx - minx,
+                h: maxy - miny,
+            })
+        }
+        AnnotationPayload::Freehand { path, .. } => {
+            let (minx, miny, maxx, maxy) =
+                path.commands
+                    .iter()
+                    .fold(None::<(f64, f64, f64, f64)>, |acc, cmd| {
+                        let pts = path_points(cmd);
+                        pts.into_iter().fold(acc, |a, (px, py)| match a {
+                            None => Some((px, py, px, py)),
+                            Some((minx, miny, maxx, maxy)) => {
+                                Some((minx.min(px), miny.min(py), maxx.max(px), maxy.max(py)))
+                            }
+                        })
+                    })?;
+            Some(Rect {
+                x: minx,
+                y: miny,
+                w: maxx - minx,
+                h: maxy - miny,
+            })
+        }
+        AnnotationPayload::Shape { rect, .. }
+        | AnnotationPayload::Note { rect, .. }
+        | AnnotationPayload::TextBox { rect, .. }
+        | AnnotationPayload::Stamp { rect, .. }
+        | AnnotationPayload::Watermark { rect, .. } => Some(*rect),
+    }
+}
+
+/// Test whether a viewport-space point falls within the hit radius of any of
+/// the 8 handles on `rect`. Returns the first hit handle, or `None`.
+///
+/// Handles are positioned at the 4 corners + 4 edge midpoints of `rect`. The
+/// hit radius is `HANDLE_SIZE / 2 + HIT_PAD` (screen pixels, not zoom-scaled).
+///
+/// Corner handles are tested before edge handles (corners take priority when
+/// they overlap with edges at very small rect sizes).
+fn hit_handle(rect: Rect, point: (f64, f64)) -> Option<HandlePos> {
+    let r = HANDLE_SIZE / 2.0 + HIT_PAD;
+    let (px, py) = point;
+    let x0 = rect.x;
+    let y0 = rect.y;
+    let x1 = rect.x + rect.w;
+    let y1 = rect.y + rect.h;
+    let cx = (x0 + x1) / 2.0;
+    let cy = (y0 + y1) / 2.0;
+
+    // 4 corners first (priority over edges).
+    let corners = [
+        (HandlePos::Nw, x0, y0),
+        (HandlePos::Ne, x1, y0),
+        (HandlePos::Sw, x0, y1),
+        (HandlePos::Se, x1, y1),
+    ];
+    for (pos, hx, hy) in &corners {
+        if (px - hx).abs() <= r && (py - hy).abs() <= r {
+            return Some(*pos);
+        }
+    }
+
+    // 4 edge midpoints.
+    let edges = [
+        (HandlePos::N, cx, y0),
+        (HandlePos::S, cx, y1),
+        (HandlePos::E, x1, cy),
+        (HandlePos::W, x0, cy),
+    ];
+    for (pos, hx, hy) in &edges {
+        if (px - hx).abs() <= r && (py - hy).abs() <= r {
+            return Some(*pos);
+        }
+    }
+
+    None
 }
 
 /// Test whether a page-local point falls inside an annotation's hit region.
@@ -240,5 +434,150 @@ mod tests {
         assert_ne!(a, HitTarget::Empty);
         let s = format!("{a:?}");
         assert!(s.contains("Page"));
+    }
+
+    #[test]
+    fn hit_test_handle_when_point_on_selected_corner() {
+        // Select a rect annotation, point on its NW corner handle -> Handle(id, Nw).
+        //
+        // Annotation rect: page-local (10,10) w=80 h=60 -> corners:
+        //   NW=(10,10), NE=(90,10), SW=(10,70), SE=(90,70).
+        // Viewport: 200x200, zoom 1, page 100x100, gap 20.
+        //   page_x = ((200-100)/2).max(0) = 50; page_y = 20.
+        //   NW corner in viewport = (50+10, 20+10) = (60, 30).
+        // Handle center is at the corner; hit radius = HANDLE_SIZE/2 + HIT_PAD
+        //   = 4 + 4 = 8. Point (60, 30) is exactly on the corner -> hit.
+        use rofd_dom::{AnnotationModel, AnnotationSelection, OfdDocument, Page};
+
+        let page_id = PageId::new("P0");
+        let annotation = Annotation {
+            id: AnnotationId::from_int(1),
+            kind: AnnotationKind::Shape(ShapeKind::Rect),
+            page: page_id.clone(),
+            creator: "t".into(),
+            created: 0,
+            modified: 0,
+            reply_to: None,
+            payload: AnnotationPayload::Shape {
+                kind: ShapeKind::Rect,
+                rect: Rect {
+                    x: 10.0,
+                    y: 10.0,
+                    w: 80.0,
+                    h: 60.0,
+                },
+                stroke: Color::Rgb(0, 0, 0),
+                fill: Some(Color::Rgb(255, 255, 255)),
+                width: 2.0,
+                points: vec![],
+            },
+        };
+        let page = Page {
+            id: page_id.clone(),
+            physical_box: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+            },
+            layers: vec![],
+            template: None,
+        };
+        let mut model = AnnotationModel::default();
+        model.insert(annotation.clone());
+        let doc = OfdDocument {
+            meta: Default::default(),
+            pages: vec![page],
+            resources: Default::default(),
+            annotations: model,
+            max_unit_id: 0,
+        };
+        let vp = Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (200.0, 200.0),
+            page_gap: 20.0,
+        };
+        let selection = AnnotationSelection::Single(annotation.id.clone());
+
+        // Point on the NW corner handle.
+        let target = hit_test(&doc, &vp, &selection, (60.0, 30.0));
+        assert_eq!(
+            target,
+            HitTarget::Handle(annotation.id.clone(), HandlePos::Nw),
+            "NW corner handle should be hit"
+        );
+
+        // Point on the SE corner: viewport (50+90, 20+70) = (140, 90).
+        let target = hit_test(&doc, &vp, &selection, (140.0, 90.0));
+        assert_eq!(
+            target,
+            HitTarget::Handle(annotation.id.clone(), HandlePos::Se),
+            "SE corner handle should be hit"
+        );
+    }
+
+    #[test]
+    fn hit_test_no_handle_when_not_selected() {
+        // Same annotation, but selection = None -> clicking on the corner falls
+        // through to the annotation body (not a handle).
+        use rofd_dom::{AnnotationModel, AnnotationSelection, OfdDocument, Page};
+
+        let page_id = PageId::new("P0");
+        let annotation = Annotation {
+            id: AnnotationId::from_int(1),
+            kind: AnnotationKind::Shape(ShapeKind::Rect),
+            page: page_id.clone(),
+            creator: "t".into(),
+            created: 0,
+            modified: 0,
+            reply_to: None,
+            payload: AnnotationPayload::Shape {
+                kind: ShapeKind::Rect,
+                rect: Rect {
+                    x: 10.0,
+                    y: 10.0,
+                    w: 80.0,
+                    h: 60.0,
+                },
+                stroke: Color::Rgb(0, 0, 0),
+                fill: Some(Color::Rgb(255, 255, 255)),
+                width: 2.0,
+                points: vec![],
+            },
+        };
+        let page = Page {
+            id: page_id.clone(),
+            physical_box: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+            },
+            layers: vec![],
+            template: None,
+        };
+        let mut model = AnnotationModel::default();
+        model.insert(annotation);
+        let doc = OfdDocument {
+            meta: Default::default(),
+            pages: vec![page],
+            resources: Default::default(),
+            annotations: model,
+            max_unit_id: 0,
+        };
+        let vp = Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (200.0, 200.0),
+            page_gap: 20.0,
+        };
+
+        // Point on the NW corner, but no selection -> Annotation, not Handle.
+        let target = hit_test(&doc, &vp, &AnnotationSelection::None, (60.0, 30.0));
+        assert!(
+            matches!(target, HitTarget::Annotation(_)),
+            "without selection, corner falls through to annotation body, got {target:?}"
+        );
     }
 }
