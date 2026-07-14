@@ -6,10 +6,12 @@
 //! applied per draw call:
 //! - **Markup** (highlight/underline/strikeout): semi-transparent rectangles
 //!   drawn over each pair of quad points (~38% opacity, so the underlying text
-//!   remains visible through the highlight).
+//!   remains visible through the highlight). **Squiggly** is the exception:
+//!   it strokes a wavy Q-curve path (alternating up/down) instead of filling.
 //! - **Freehand**: the annotation's [`PathData`] stroked with `color`/`width`.
 //! - **Shape**: a filled and/or stroked rectangle / ellipse / arrow / line
-//!   bounded by `rect` (arrow/line use the rect's bounding box in v1).
+//!   bounded by `rect` (arrow/line use the rect's bounding box in v1), or a
+//!   polygon/polyline built from `points` (polygon closes the path).
 //! - **Note**: a filled rectangle for the sticky-note icon (popup text is
 //!   rendered by the host UI, not in the scene).
 //! - **TextBox**: `content` shaped with the annotation's font and drawn inside
@@ -27,7 +29,9 @@ use imaging::kurbo::{Affine, BezPath, Ellipse, Rect as KurboRect, Shape, Stroke}
 use imaging::record::{Glyph, Scene};
 use imaging::Painter;
 use peniko::{Fill, FontData, Style};
-use rofd_dom::{Annotation, AnnotationPayload, Color, FontId, Rect, Resources, ShapeKind};
+use rofd_dom::{
+    Annotation, AnnotationKind, AnnotationPayload, Color, FontId, Rect, Resources, ShapeKind,
+};
 
 use crate::color::to_peniko;
 use crate::ctm::compose_transform;
@@ -38,6 +42,11 @@ use crate::text::FontStore;
 /// Alpha (0.0-1.0) for markup highlights. ~38% opacity keeps the underlying
 /// text legible through the highlight rectangle.
 const MARKUP_ALPHA: f32 = 96.0 / 255.0;
+
+/// Amplitude (page-local units) of the Squiggly wavy underline. The control
+/// point of each Q-curve segment alternates +/- this value around the baseline.
+/// 1.0 matches the visual weight of a typical squiggly underline.
+const SQUIGGLY_AMPLITUDE: f64 = 1.0;
 
 /// Tolerance for converting kurbo shapes (Rect/Ellipse) to BezPath. kurbo
 /// subdivides curves until they deviate from the true curve by less than this;
@@ -63,7 +72,7 @@ pub fn draw_annotations(
     for ann in anns {
         match &ann.payload {
             AnnotationPayload::Markup { quad_points, color } => {
-                draw_markup(painter, quad_points, color, base);
+                draw_markup(painter, &ann.kind, quad_points, color, base);
             }
             AnnotationPayload::Freehand { path, color, width } => {
                 draw_freehand(painter, path, *color, *width, base);
@@ -74,9 +83,9 @@ pub fn draw_annotations(
                 stroke,
                 fill,
                 width,
-                ..
+                points,
             } => {
-                draw_shape(painter, *kind, rect, *stroke, *fill, *width, base);
+                draw_shape(painter, *kind, rect, *stroke, *fill, *width, points, base);
             }
             AnnotationPayload::Note {
                 rect,
@@ -131,27 +140,73 @@ pub fn draw_annotations(
 /// Highlight/underline/strikeout: draw a semi-transparent rectangle over each
 /// pair of quad points. OFD quad points come in pairs (start/end of a
 /// highlighted line segment); the rectangle spans the two points.
+///
+/// Squiggly is the exception: instead of a filled rectangle it strokes a wavy
+/// Q-curve path (alternating up/down around the baseline `p0.y`) so the
+/// signature squiggle is visible.
 fn draw_markup(
     painter: &mut Painter<Scene>,
+    kind: &AnnotationKind,
     quad_points: &[rofd_dom::Point],
     color: &Color,
     base: Affine,
 ) {
-    let translucent = to_peniko(*color).with_alpha(MARKUP_ALPHA);
+    // Highlight keeps ~38% alpha so text shows through; Squiggly/Underline/
+    // Strikeout render at full opacity (they're stroked lines, not fills).
+    let alpha = if matches!(kind, AnnotationKind::Highlight) {
+        MARKUP_ALPHA
+    } else {
+        1.0
+    };
+    let peniko_color = to_peniko(*color).with_alpha(alpha);
     for chunk in quad_points.chunks(2) {
         if chunk.len() == 2 {
             let (p0, p1) = (chunk[0], chunk[1]);
-            // kurbo::Rect is corner-based: (x0, y0, x1, y1). Use min/max so the
-            // rectangle is well-formed regardless of point ordering.
-            let rect = KurboRect::new(
-                p0.x.min(p1.x),
-                p0.y.min(p1.y),
-                p0.x.max(p1.x),
-                p0.y.max(p1.y),
-            );
-            painter.fill(rect, translucent).transform(base).draw();
+            match kind {
+                AnnotationKind::Squiggly => {
+                    let path = squiggly_path(p0, p1);
+                    painter
+                        .stroke(&path, &Stroke::new(1.0), peniko_color)
+                        .transform(base)
+                        .draw();
+                }
+                _ => {
+                    // kurbo::Rect is corner-based: (x0, y0, x1, y1). Use min/max
+                    // so the rectangle is well-formed regardless of point order.
+                    let rect = KurboRect::new(
+                        p0.x.min(p1.x),
+                        p0.y.min(p1.y),
+                        p0.x.max(p1.x),
+                        p0.y.max(p1.y),
+                    );
+                    painter.fill(rect, peniko_color).transform(base).draw();
+                }
+            }
         }
     }
+}
+
+/// Build a wavy Q-curve BezPath from `p0` to `p1`: `steps` segments, each a
+/// quadratic Bezier whose control point alternates above/below the baseline
+/// (`p0.y`) by `SQUIGGLY_AMPLITUDE`. Produces the classic squiggly-underline
+/// shape. Panics never (steps clamped to >= 1).
+fn squiggly_path(p0: rofd_dom::Point, p1: rofd_dom::Point) -> BezPath {
+    let steps = 20;
+    let dx = (p1.x - p0.x) / steps as f64;
+    let mut path = BezPath::new();
+    path.move_to((p0.x, p0.y));
+    for i in 0..steps {
+        let xm = p0.x + dx * (i as f64 + 0.5);
+        let x1 = p0.x + dx * (i as f64 + 1.0);
+        // Alternate the control point above/below the baseline.
+        let ym = if i % 2 == 0 {
+            p0.y - SQUIGGLY_AMPLITUDE
+        } else {
+            p0.y + SQUIGGLY_AMPLITUDE
+        };
+        path.quad_to((xm, ym), (x1, p0.y));
+    }
+    path
 }
 
 /// Freehand: convert the PathData to a BezPath and stroke it.
@@ -169,9 +224,19 @@ fn draw_freehand(
         .draw();
 }
 
-/// Shape: fill and/or stroke a rectangle / ellipse / arrow / line bounded by
-/// `rect`. Arrow/line use the rect's bounding box in v1 (true arrowhead geometry
-/// is deferred). Fill is applied first, then stroke (painter's order).
+/// Shape: fill and/or stroke a rectangle / ellipse / arrow / line / polygon /
+/// polyline bounded by `rect` (or built from `points` for polygon/polyline).
+///
+/// - Rect/Arrow/Line: rect bounding box (arrow/line use the bbox in v1; true
+///   arrowhead geometry is deferred).
+/// - Ellipse: kurbo `Ellipse` from the rect.
+/// - Polygon: BezPath through `points` (closed); fill (if Some) + stroke.
+/// - PolyLine: BezPath through `points` (open); stroke only (fill is typically
+///   None, but if provided it is still applied to the open path).
+///
+/// Fill is applied first, then stroke (painter's order). An empty `points`
+/// vector for Polygon/PolyLine draws nothing.
+#[allow(clippy::too_many_arguments)] // all params describe one shape draw call
 fn draw_shape(
     painter: &mut Painter<Scene>,
     kind: ShapeKind,
@@ -179,17 +244,26 @@ fn draw_shape(
     stroke: Color,
     fill: Option<Color>,
     width: f64,
+    points: &[rofd_dom::Point],
     base: Affine,
 ) {
     let bez: BezPath = match kind {
-        ShapeKind::Rect
-        | ShapeKind::Arrow
-        | ShapeKind::Line
-        | ShapeKind::Polygon
-        | ShapeKind::PolyLine => {
-            // v1 placeholder: Polygon/PolyLine use the rect bounding box;
-            // T4 will build the path from `points`.
+        ShapeKind::Rect | ShapeKind::Arrow | ShapeKind::Line => {
             rofd_rect_to_kurbo(rect).to_path(SHAPE_TOLERANCE)
+        }
+        ShapeKind::Polygon | ShapeKind::PolyLine => {
+            if points.is_empty() {
+                return;
+            }
+            let mut path = BezPath::new();
+            path.move_to((points[0].x, points[0].y));
+            for p in &points[1..] {
+                path.line_to((p.x, p.y));
+            }
+            if matches!(kind, ShapeKind::Polygon) {
+                path.close_path();
+            }
+            path
         }
         ShapeKind::Ellipse => {
             let center = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
@@ -502,6 +576,140 @@ mod tests {
             AnnotationKind::Shape(ShapeKind::Arrow),
         );
         let _ = build(&[ann]);
+    }
+
+    #[test]
+    fn shape_variant_polygon_draws_from_points() {
+        // Polygon: closed path through points, fill + stroke.
+        let ann = ann(
+            AnnotationPayload::Shape {
+                kind: ShapeKind::Polygon,
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 100.0,
+                    h: 100.0,
+                },
+                stroke: Color::Rgb(0, 0, 0),
+                fill: Some(Color::Rgb(255, 0, 0)),
+                width: 1.5,
+                points: vec![
+                    Point { x: 0.0, y: 0.0 },
+                    Point { x: 50.0, y: 0.0 },
+                    Point { x: 50.0, y: 50.0 },
+                    Point { x: 0.0, y: 50.0 },
+                ],
+            },
+            AnnotationKind::Shape(ShapeKind::Polygon),
+        );
+        let _ = build(&[ann]);
+    }
+
+    #[test]
+    fn shape_variant_polyline_draws_from_points() {
+        // PolyLine: open path through points, stroke only.
+        let ann = ann(
+            AnnotationPayload::Shape {
+                kind: ShapeKind::PolyLine,
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 100.0,
+                    h: 100.0,
+                },
+                stroke: Color::Rgb(0, 255, 0),
+                fill: None,
+                width: 2.0,
+                points: vec![
+                    Point { x: 10.0, y: 10.0 },
+                    Point { x: 40.0, y: 30.0 },
+                    Point { x: 70.0, y: 10.0 },
+                    Point { x: 90.0, y: 50.0 },
+                ],
+            },
+            AnnotationKind::Shape(ShapeKind::PolyLine),
+        );
+        let _ = build(&[ann]);
+    }
+
+    #[test]
+    fn shape_variant_polygon_empty_points_does_not_panic() {
+        // Empty points: draw_shape returns early without drawing.
+        let ann = ann(
+            AnnotationPayload::Shape {
+                kind: ShapeKind::Polygon,
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 10.0,
+                    h: 10.0,
+                },
+                stroke: Color::Rgb(0, 0, 0),
+                fill: None,
+                width: 1.0,
+                points: vec![],
+            },
+            AnnotationKind::Shape(ShapeKind::Polygon),
+        );
+        let _ = build(&[ann]);
+    }
+
+    #[test]
+    fn shape_variant_polygon_single_point_does_not_panic() {
+        // Single point: move_to only, no line_to, no close -> no panic.
+        let ann = ann(
+            AnnotationPayload::Shape {
+                kind: ShapeKind::Polygon,
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 10.0,
+                    h: 10.0,
+                },
+                stroke: Color::Rgb(0, 0, 0),
+                fill: None,
+                width: 1.0,
+                points: vec![Point { x: 5.0, y: 5.0 }],
+            },
+            AnnotationKind::Shape(ShapeKind::Polygon),
+        );
+        let _ = build(&[ann]);
+    }
+
+    #[test]
+    fn markup_squiggly_draws_wavy_path() {
+        // Squiggly: wavy Q-curve stroke (not a filled rect).
+        let ann = ann(
+            AnnotationPayload::Markup {
+                quad_points: vec![Point { x: 0.0, y: 20.0 }, Point { x: 100.0, y: 20.0 }],
+                color: Color::Rgb(255, 0, 0),
+            },
+            AnnotationKind::Squiggly,
+        );
+        let _ = build(&[ann]);
+    }
+
+    #[test]
+    fn markup_squiggly_single_quad_point_does_not_panic() {
+        // Odd quad points: the lone point forms no pair and is skipped.
+        let ann = ann(
+            AnnotationPayload::Markup {
+                quad_points: vec![Point { x: 0.0, y: 20.0 }],
+                color: Color::Rgb(255, 0, 0),
+            },
+            AnnotationKind::Squiggly,
+        );
+        let _ = build(&[ann]);
+    }
+
+    #[test]
+    fn squiggly_path_produces_segments() {
+        // The wavy path should have 20 quad_to segments (the move_to is not
+        // counted as a segment by kurbo's segments() iterator).
+        let p0 = Point { x: 0.0, y: 10.0 };
+        let p1 = Point { x: 100.0, y: 10.0 };
+        let path = squiggly_path(p0, p1);
+        assert_eq!(path.segments().count(), 20);
     }
 
     #[test]
