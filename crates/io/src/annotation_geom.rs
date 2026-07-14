@@ -21,19 +21,23 @@ pub fn rect_path(r: &Rect) -> PathData {
     }
 }
 
-/// Ellipse path (4-segment cubic Bezier approximation), centered at (w/2, h/2).
+/// Ellipse path (4-segment arc), centered at (w/2, h/2). Matches the real OFD
+/// sample form `M cx+rx cy A rx ry 0 0 1 ...` (GB/T 33190 §8.2 AbbreviatedData
+/// `A` arc operator), rather than a cubic-Bezier approximation.
+///
+/// Note: `PathCommand::A` carries 6 params `(rx, ry, rot, sweep, x, y)` (the
+/// OFD/dom convention drops SVG's `large-arc-flag`; quarter arcs are always
+/// small-arc). See `docs/superpowers/specs/2026-07-14-c1.5-*.md` §A.
 pub fn ellipse_path(r: &Rect) -> PathData {
-    let (w, h) = (r.w, r.h);
-    let (cx, cy) = (w / 2.0, h / 2.0);
-    let (rx, ry) = (w / 2.0, h / 2.0);
-    let k = 0.5522847498; // circle Bezier magic constant
+    let (cx, cy) = (r.w / 2.0, r.h / 2.0);
+    let (rx, ry) = (r.w / 2.0, r.h / 2.0);
     PathData {
         commands: vec![
             PathCommand::M(cx + rx, cy),
-            PathCommand::C(cx + rx, cy + ry * k, cx + rx * k, cy + ry, cx, cy + ry),
-            PathCommand::C(cx - rx * k, cy + ry, cx - rx, cy + ry * k, cx - rx, cy),
-            PathCommand::C(cx - rx, cy - ry * k, cx - rx * k, cy - ry, cx, cy - ry),
-            PathCommand::C(cx + rx * k, cy - ry, cx + rx, cy - ry * k, cx + rx, cy),
+            PathCommand::A(rx, ry, 0.0, 1.0, cx, cy + ry),
+            PathCommand::A(rx, ry, 0.0, 1.0, cx - rx, cy),
+            PathCommand::A(rx, ry, 0.0, 1.0, cx, cy - ry),
+            PathCommand::A(rx, ry, 0.0, 1.0, cx + rx, cy),
             PathCommand::Z,
         ],
     }
@@ -46,20 +50,71 @@ pub fn line_path(r: &Rect) -> PathData {
     }
 }
 
-/// Arrow path: main diagonal line + two short head segments.
+/// Arrow path: main diagonal line (0,0)->(w,h) plus a filled triangle head
+/// at the tip, oriented along the line direction. The head size scales with
+/// the smaller of (w, h). Emits M-L for the shaft, then M-L-L-Z for the head.
 pub fn arrow_path(r: &Rect) -> PathData {
     let (w, h) = (r.w, r.h);
     let head = w.min(h).max(1.0) * 0.25;
+    // Main line (0,0)->(w,h); triangle head at (w,h), along the line direction.
+    let angle = (h).atan2(w);
+    let (dx, dy) = (angle.cos() * head, angle.sin() * head);
+    let (nx, ny) = (-angle.sin() * head, angle.cos() * head);
     PathData {
         commands: vec![
             PathCommand::M(0.0, 0.0),
             PathCommand::L(w, h),
-            PathCommand::M(w, h),
-            PathCommand::L(w - head, h),
-            PathCommand::M(w, h),
-            PathCommand::L(w, h - head),
+            PathCommand::M(w - dx + nx, h - dy + ny),
+            PathCommand::L(w, h),
+            PathCommand::L(w - dx - nx, h - dy - ny),
+            PathCommand::Z,
         ],
     }
+}
+
+/// Polygon path (closed): M-L-...-L-Z from the given points. Empty input
+/// yields an empty path (no commands).
+pub fn polygon_path(points: &[Point]) -> PathData {
+    let mut cmds = Vec::with_capacity(points.len() + 1);
+    if let Some(p0) = points.first() {
+        cmds.push(PathCommand::M(p0.x, p0.y));
+        for p in &points[1..] {
+            cmds.push(PathCommand::L(p.x, p.y));
+        }
+        cmds.push(PathCommand::Z);
+    }
+    PathData { commands: cmds }
+}
+
+/// Polyline path (open): M-L-...-L from the given points. Empty input yields
+/// an empty path (no commands).
+pub fn polyline_path(points: &[Point]) -> PathData {
+    let mut cmds = Vec::with_capacity(points.len());
+    if let Some(p0) = points.first() {
+        cmds.push(PathCommand::M(p0.x, p0.y));
+        for p in &points[1..] {
+            cmds.push(PathCommand::L(p.x, p.y));
+        }
+    }
+    PathData { commands: cmds }
+}
+
+/// Squiggly (wavy) path between two quad_points, using Q quadratic curves that
+/// alternate above and below the baseline. The amplitude is half the quad's
+/// height; 20 steps span the p0->p1 x-range. Used by the Squiggly Markup
+/// appearance (GB/T 33190 §15.2.3.4).
+pub fn squiggly_path(p0: Point, p1: Point) -> PathData {
+    let mut cmds = vec![PathCommand::M(p0.x, p0.y)];
+    let steps = 20;
+    let dx = (p1.x - p0.x) / steps as f64;
+    let amp = (p1.y - p0.y).abs() / 2.0;
+    for i in 0..steps {
+        let x0 = p0.x + dx * i as f64;
+        let x1 = p0.x + dx * (i as f64 + 1.0);
+        let y_mid = if i % 2 == 0 { p0.y - amp } else { p0.y + amp };
+        cmds.push(PathCommand::Q(x0, y_mid, x1, p0.y));
+    }
+    PathData { commands: cmds }
 }
 
 /// Markup underline/strikeout line path.
@@ -102,7 +157,24 @@ mod tests {
             w: 10.0,
             h: 10.0,
         });
-        assert_eq!(p.commands.len(), 6); // M + 4*C + Z
+        assert_eq!(p.commands.len(), 6); // M + 4*A + Z
+    }
+
+    #[test]
+    fn ellipse_path_uses_arc_commands() {
+        // T3: ellipse must emit A (arc) operators, not C (Bezier).
+        let p = ellipse_path(&Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 10.0,
+            h: 10.0,
+        });
+        assert!(matches!(p.commands[0], PathCommand::M(_, _)));
+        assert!(matches!(p.commands[1], PathCommand::A(_, _, _, _, _, _)));
+        assert!(matches!(p.commands[2], PathCommand::A(_, _, _, _, _, _)));
+        assert!(matches!(p.commands[3], PathCommand::A(_, _, _, _, _, _)));
+        assert!(matches!(p.commands[4], PathCommand::A(_, _, _, _, _, _)));
+        assert!(matches!(p.commands[5], PathCommand::Z));
     }
 
     #[test]
@@ -125,6 +197,70 @@ mod tests {
             h: 10.0,
         });
         assert_eq!(p.commands.len(), 6);
+    }
+
+    #[test]
+    fn arrow_path_starts_with_main_line_and_ends_with_closed_triangle() {
+        // T3: M(0,0) L(w,h)  then  M(..) L(w,h) L(..) Z (filled triangle head).
+        let p = arrow_path(&Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 10.0,
+            h: 10.0,
+        });
+        assert!(matches!(p.commands[0], PathCommand::M(0.0, 0.0)));
+        assert!(matches!(p.commands[1], PathCommand::L(10.0, 10.0)));
+        // Triangle head closes with Z (filled), not the old open two-stub form.
+        assert!(matches!(p.commands.last(), Some(PathCommand::Z)));
+    }
+
+    #[test]
+    fn polygon_path_closed_with_z() {
+        let pts = vec![
+            Point { x: 0.0, y: 0.0 },
+            Point { x: 5.0, y: 10.0 },
+            Point { x: 10.0, y: 0.0 },
+        ];
+        let p = polygon_path(&pts);
+        // M + 2*L + Z = 4
+        assert_eq!(p.commands.len(), 4);
+        assert!(matches!(p.commands[0], PathCommand::M(0.0, 0.0)));
+        assert!(matches!(p.commands[1], PathCommand::L(5.0, 10.0)));
+        assert!(matches!(p.commands[2], PathCommand::L(10.0, 0.0)));
+        assert!(matches!(p.commands[3], PathCommand::Z));
+    }
+
+    #[test]
+    fn polyline_path_open_no_z() {
+        let pts = vec![
+            Point { x: 0.0, y: 0.0 },
+            Point { x: 5.0, y: 10.0 },
+            Point { x: 10.0, y: 0.0 },
+        ];
+        let p = polyline_path(&pts);
+        // M + 2*L = 3 (no Z)
+        assert_eq!(p.commands.len(), 3);
+        assert!(matches!(p.commands.last(), Some(PathCommand::L(10.0, 0.0))));
+    }
+
+    #[test]
+    fn polygon_and_polyline_empty_points_yield_no_commands() {
+        assert!(polygon_path(&[]).commands.is_empty());
+        assert!(polyline_path(&[]).commands.is_empty());
+    }
+
+    #[test]
+    fn squiggly_path_starts_with_m_and_uses_q_curves() {
+        let p = squiggly_path(Point { x: 0.0, y: 4.0 }, Point { x: 40.0, y: 8.0 });
+        // M + 20 Q = 21
+        assert_eq!(p.commands.len(), 21);
+        assert!(matches!(p.commands[0], PathCommand::M(0.0, 4.0)));
+        for c in &p.commands[1..] {
+            assert!(
+                matches!(c, PathCommand::Q(_, _, _, _)),
+                "expected Q, got {c:?}"
+            );
+        }
     }
 
     #[test]
