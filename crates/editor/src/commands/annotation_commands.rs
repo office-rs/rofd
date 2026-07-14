@@ -11,7 +11,8 @@ impl Editor {
     pub fn create_annotation(
         &mut self, kind: AnnotationKind, page: PageId, payload: AnnotationPayload,
     ) -> AnnotationId {
-        let id = AnnotationId::new();
+        // Placeholder: T2 rewrites this to allocate from max_unit_id + 1.
+        let id = AnnotationId::from_int(0);
         let ann = Annotation {
             id: id.clone(), kind, page, creator: self.author.clone(),
             created: self.current_ts, modified: self.current_ts, reply_to: None, payload,

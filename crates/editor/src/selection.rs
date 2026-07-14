@@ -23,20 +23,20 @@ mod tests {
 
     #[test]
     fn none_contains_nothing() {
-        assert!(!AnnotationSelection::None.contains(&AnnotationId::new()));
+        assert!(!AnnotationSelection::None.contains(&AnnotationId::from_int(1)));
     }
 
     #[test]
     fn single_contains_its_id() {
-        let id = AnnotationId::new();
+        let id = AnnotationId::from_int(1);
         assert!(AnnotationSelection::Single(id.clone()).contains(&id));
-        assert!(!AnnotationSelection::Single(id.clone()).contains(&AnnotationId::new()));
+        assert!(!AnnotationSelection::Single(id.clone()).contains(&AnnotationId::from_int(2)));
     }
 
     #[test]
     fn multi_contains_any_listed() {
-        let a = AnnotationId::new();
-        let b = AnnotationId::new();
+        let a = AnnotationId::from_int(1);
+        let b = AnnotationId::from_int(2);
         assert!(AnnotationSelection::Multi(vec![a.clone(), b.clone()]).contains(&a));
     }
 }

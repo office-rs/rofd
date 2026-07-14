@@ -13,7 +13,7 @@ mod tests {
 
     #[test]
     fn cursor_clone_eq() {
-        let c = TextCursor { annotation: AnnotationId::new(), offset: 3, preferred_x: Some(1.0) };
+        let c = TextCursor { annotation: AnnotationId::from_int(1), offset: 3, preferred_x: Some(1.0) };
         assert_eq!(c, c.clone());
     }
 }

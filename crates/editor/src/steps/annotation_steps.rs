@@ -42,7 +42,7 @@ mod tests {
 
     fn note_ann(id: &str, content: &str) -> Annotation {
         Annotation {
-            id: AnnotationId(uuid::Uuid::parse_str(id).unwrap()),
+            id: AnnotationId::new(id),
             kind: AnnotationKind::Note,
             page: PageId::new("P0"),
             creator: "t".into(), created: 0, modified: 0, reply_to: None,
@@ -56,7 +56,7 @@ mod tests {
     #[test]
     fn insert_then_revert_yields_empty() {
         let mut m = AnnotationModel::default();
-        let ann = note_ann("00000000-0000-0000-0000-000000000011", "a");
+        let ann = note_ann("11", "a");
         let step = InsertAnnotationStep { annotation: ann.clone() };
         step.apply(&mut m);
         assert!(m.find(&ann.id).is_some());
@@ -67,7 +67,7 @@ mod tests {
     #[test]
     fn delete_then_revert_restores() {
         let mut m = AnnotationModel::default();
-        let ann = note_ann("00000000-0000-0000-0000-000000000012", "a");
+        let ann = note_ann("12", "a");
         m.insert(ann.clone());
         let step = DeleteAnnotationStep { annotation: ann.clone() };
         step.apply(&mut m);
@@ -79,7 +79,7 @@ mod tests {
     #[test]
     fn replace_then_revert_restores_before() {
         let mut m = AnnotationModel::default();
-        let before = note_ann("00000000-0000-0000-0000-000000000013", "before");
+        let before = note_ann("13", "before");
         let mut after = before.clone();
         if let AnnotationPayload::Note { content, .. } = &mut after.payload { *content = "after".into(); }
         m.insert(before.clone());

@@ -10,6 +10,8 @@ pub struct OfdDocument {
     pub pages: Vec<Page>,
     pub resources: Resources,
     pub annotations: AnnotationModel,
+    /// GB/T 33190 CommonData/MaxUnitID: 文档内最大 ST_ID。新 ID 从 max_unit_id+1 分配。
+    pub max_unit_id: u64,
 }
 
 #[cfg(test)]
@@ -24,6 +26,7 @@ mod tests {
         let doc = OfdDocument::default();
         assert!(doc.pages.is_empty());
         assert!(doc.annotations.by_page.is_empty());
+        assert_eq!(doc.max_unit_id, 0);
     }
 
     #[test]

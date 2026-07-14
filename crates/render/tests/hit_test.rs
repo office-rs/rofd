@@ -31,12 +31,13 @@ fn doc_with_page_and_anns(phys: Rect, anns: Vec<Annotation>) -> OfdDocument {
         pages: vec![page],
         resources: Default::default(),
         annotations: model,
+        max_unit_id: 0,
     }
 }
 
 fn ann(_id: &str, page: &PageId, payload: AnnotationPayload, kind: AnnotationKind) -> Annotation {
     Annotation {
-        id: AnnotationId::new(),
+        id: AnnotationId::from_int(1),
         kind,
         page: page.clone(),
         creator: "tester".into(),

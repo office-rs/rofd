@@ -149,7 +149,7 @@ mod tests {
 
     fn ann(payload: AnnotationPayload) -> Annotation {
         Annotation {
-            id: AnnotationId::new(),
+            id: AnnotationId::from_int(1),
             kind: AnnotationKind::Highlight,
             page: PageId::new("P0"),
             creator: "tester".into(),
