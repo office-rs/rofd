@@ -5,6 +5,9 @@ use crate::serialize::annotation::serialize_page_annotations;
 use crate::zip_util::write_zip;
 
 /// Full write: construct a fresh .ofd package from the model (generation / conversion).
+///
+/// Emits GB/T 33190 standard structure: Document.xml with `<Annotations>` loc,
+/// Annots/Annotations.xml entry, Annots/Page_0/Annotation.xml per-page.
 pub fn write_ofd(doc: &OfdDocument) -> Result<Vec<u8>, OfdError> {
     let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
 
@@ -13,23 +16,28 @@ pub fn write_ofd(doc: &OfdDocument) -> Result<Vec<u8>, OfdError> {
 <ofd:DocRoot>Doc_0/Document.xml</ofd:DocRoot>\n  </ofd:DocBody>\n</ofd:OFD>";
     entries.push(("OFD.xml".into(), ofd_xml.as_bytes().to_vec()));
 
+    let has_annots = doc.annotations.by_page.values().any(|v| !v.is_empty());
     let mut doc_xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     doc_xml.push_str("<ofd:Document xmlns:ofd=\"http://www.ofdspec.org/2016\">\n");
     let pb = doc.pages.first().map(|p| p.physical_box);
     if let Some(r) = pb {
         doc_xml.push_str(&format!(
-            "  <ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>{} {} {} {}</ofd:PhysicalBox></ofd:PageArea></ofd:CommonData>\n",
-            r.x, r.y, r.w, r.h
+            "  <ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>{} {} {} {}</ofd:PhysicalBox></ofd:PageArea>\n  <ofd:MaxUnitID>{}</ofd:MaxUnitID></ofd:CommonData>\n",
+            r.x, r.y, r.w, r.h, doc.max_unit_id
         ));
     }
     doc_xml.push_str("  <ofd:Pages>\n");
     for (i, page) in doc.pages.iter().enumerate() {
         doc_xml.push_str(&format!(
-            "    <ofd:Page ID=\"{}\" BaseLoc=\"Pages/Page_{i}/Page.xml\"/>\n",
+            "    <ofd:Page ID=\"{}\" BaseLoc=\"Pages/Page_{i}/Content.xml\"/>\n",
             page.id.0
         ));
     }
-    doc_xml.push_str("  </ofd:Pages>\n</ofd:Document>");
+    doc_xml.push_str("  </ofd:Pages>\n");
+    if has_annots {
+        doc_xml.push_str("  <ofd:Annotations>Annots/Annotations.xml</ofd:Annotations>\n");
+    }
+    doc_xml.push_str("</ofd:Document>");
     entries.push(("Doc_0/Document.xml".into(), doc_xml.into_bytes()));
 
     for (i, page) in doc.pages.iter().enumerate() {
@@ -52,14 +60,35 @@ pub fn write_ofd(doc: &OfdDocument) -> Result<Vec<u8>, OfdError> {
             // required for write_ofd (generation path).
         }
         page_xml.push_str("  </ofd:Content>\n");
-        let anns = doc.annotations.for_page(&page.id);
-        if !anns.is_empty() {
-            page_xml.push_str(&format!("  <ofd:Annotation><ofd:File Loc=\"Page_{i}/Annotation.xml\"/></ofd:Annotation>\n"));
-            let xml = serialize_page_annotations(&page.id, anns);
-            entries.push((format!("Doc_0/Pages/Page_{i}/Annotation.xml"), xml.into_bytes()));
-        }
         page_xml.push_str("</ofd:Page>");
-        entries.push((format!("Doc_0/Pages/Page_{i}/Page.xml"), page_xml.into_bytes()));
+        entries.push((
+            format!("Doc_0/Pages/Page_{i}/Content.xml"),
+            page_xml.into_bytes(),
+        ));
+    }
+
+    // Annotations: entry file + per-page PageAnnot files (GB/T 33190 §15.1/§15.2).
+    if has_annots {
+        let mut entry_xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        entry_xml.push_str("<ofd:Annotations xmlns:ofd=\"http://www.ofdspec.org/2016\">\n");
+        for (i, page) in doc.pages.iter().enumerate() {
+            if !doc.annotations.for_page(&page.id).is_empty() {
+                entry_xml.push_str(&format!(
+                    "  <ofd:Page PageID=\"{}\"><ofd:FileLoc>Page_{i}/Annotation.xml</ofd:FileLoc></ofd:Page>\n",
+                    page.id.0
+                ));
+                let xml = serialize_page_annotations(&page.id, doc.annotations.for_page(&page.id));
+                entries.push((
+                    format!("Doc_0/Annots/Page_{i}/Annotation.xml"),
+                    xml.into_bytes(),
+                ));
+            }
+        }
+        entry_xml.push_str("</ofd:Annotations>");
+        entries.push((
+            "Doc_0/Annots/Annotations.xml".into(),
+            entry_xml.into_bytes(),
+        ));
     }
 
     write_zip(&entries)

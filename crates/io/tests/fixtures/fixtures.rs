@@ -15,10 +15,12 @@ const OFD_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 
 const DOCUMENT_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <ofd:Document xmlns:ofd="http://www.ofdspec.org/2016">
-  <ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:PageArea></ofd:CommonData>
+  <ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:PageArea>
+  <ofd:MaxUnitID>101</ofd:MaxUnitID></ofd:CommonData>
   <ofd:Pages>
-    <ofd:Page ID="P0" BaseLoc="Pages/Page_0/Page.xml"/>
+    <ofd:Page ID="1" BaseLoc="Pages/Page_0/Content.xml"/>
   </ofd:Pages>
+  <ofd:Annotations>Annots/Annotations.xml</ofd:Annotations>
 </ofd:Document>"#;
 
 const PAGE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -36,19 +38,27 @@ const PAGE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
       </ofd:PathObject>
     </ofd:Layer>
   </ofd:Content>
-  <ofd:Annotation><ofd:File Loc="Page_0/Annotation.xml"/></ofd:Annotation>
 </ofd:Page>"#;
 
-const ANNOTATION_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+/// GB/T 33190 §15.1 annotation entry file (Annotations.xml): references the
+/// per-page PageAnnot file by PageID + FileLoc.
+const ANNOTATION_ENTRY_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <ofd:Annotations xmlns:ofd="http://www.ofdspec.org/2016">
-  <ofd:Annotation ID="a1" Type="Highlight">
-    <ofd:Appearance><ofd:Page><ofd:Area><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:Area></ofd:Page></ofd:Appearance>
-    <ofd:Color Value="255 255 0"/>
-    <ofd:Creator>tester</ofd:Creator>
-    <ofd:CreationDate>2026-07-08T00:00:00</ofd:CreationDate>
-    <ofd:LastModDate>2026-07-08T00:00:00</ofd:LastModDate>
-  </ofd:Annotation>
+  <ofd:Page PageID="1"><ofd:FileLoc>Page_0/Annotation.xml</ofd:FileLoc></ofd:Page>
 </ofd:Annotations>"#;
+
+/// GB/T 33190 §15.2 per-page PageAnnot: <Annot Type Subtype ID Creator
+/// LastModDate><Appearance Boundary><PathObject>. Standard structure.
+const ANNOTATION_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Annot Type="Highlight" Subtype="Highlight" ID="100" Creator="tester" LastModDate="2026-07-08">
+    <ofd:Appearance Boundary="10 10 100 20">
+      <ofd:PathObject ID="101" Boundary="10 10 100 20" LineWidth="1">
+        <ofd:StrokeColor Value="255 255 0"/>
+      </ofd:PathObject>
+    </ofd:Appearance>
+  </ofd:Annot>
+</ofd:PageAnnot>"#;
 
 const FONT_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <ofd:Res xmlns:ofd="http://www.ofdspec.org/2016">
@@ -82,7 +92,9 @@ const DOCUMENT_RES_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <ofd:MultiMedias><ofd:MultiMedia Type="Image" Format="PNG" ID="9"><ofd:MediaFile>img.png</ofd:MediaFile></ofd:MultiMedia></ofd:MultiMedias>
 </ofd:Res>"#;
 
-/// Build a minimal but valid-shaped .ofd ZIP in memory.
+/// Build a minimal but valid-shaped .ofd ZIP in memory (GB/T 33190 standard
+/// structure: Doc_0/Document.xml with Annotations loc, Doc_0/Annots/
+/// Annotations.xml entry, Doc_0/Annots/Page_0/Annotation.xml per-page).
 pub fn build_minimal_ofd() -> Vec<u8> {
     let cursor = std::io::Cursor::new(Vec::new());
     let mut zip = ZipWriter::new(cursor);
@@ -91,8 +103,9 @@ pub fn build_minimal_ofd() -> Vec<u8> {
     for (name, body) in [
         ("OFD.xml", OFD_XML),
         ("Doc_0/Document.xml", DOCUMENT_XML),
-        ("Doc_0/Pages/Page_0/Page.xml", PAGE_XML),
-        ("Doc_0/Pages/Page_0/Annotation.xml", ANNOTATION_XML),
+        ("Doc_0/Pages/Page_0/Content.xml", PAGE_XML),
+        ("Doc_0/Annots/Annotations.xml", ANNOTATION_ENTRY_XML),
+        ("Doc_0/Annots/Page_0/Annotation.xml", ANNOTATION_XML),
         ("Doc_0/Res/Font.xml", FONT_XML),
     ] {
         zip.start_file(name, opts).unwrap();
@@ -111,10 +124,11 @@ pub fn build_minimal_ofd_with_font() -> Vec<u8> {
     for (name, body) in [
         ("OFD.xml", OFD_XML),
         ("Doc_0/Document.xml", DOCUMENT_XML),
-        ("Doc_0/Pages/Page_0/Page.xml", PAGE_XML),
-        ("Doc_0/Pages/Page_0/Annotation.xml", ANNOTATION_XML),
+        ("Doc_0/Pages/Page_0/Content.xml", PAGE_XML),
+        ("Doc_0/Annots/Annotations.xml", ANNOTATION_ENTRY_XML),
+        ("Doc_0/Annots/Page_0/Annotation.xml", ANNOTATION_XML),
         ("Doc_0/Res/Font.xml", FONT_XML_WITH_FILE),
-        ("Doc_0/Res/Font_1.ttf", ""),  // dummy font bytes (real font not needed for io parse test)
+        ("Doc_0/Res/Font_1.ttf", ""), // dummy font bytes (real font not needed for io parse test)
     ] {
         zip.start_file(name, opts).unwrap();
         zip.write_all(body.as_bytes()).unwrap();
@@ -133,9 +147,9 @@ pub fn build_minimal_ofd_with_drawparam() -> Vec<u8> {
     for (name, body) in [
         ("OFD.xml", OFD_XML),
         ("Doc_0/Document.xml", DOCUMENT_XML),
-        ("Doc_0/Pages/Page_0/Page.xml", PAGE_WITH_DRAWPARAM_XML),
+        ("Doc_0/Pages/Page_0/Content.xml", PAGE_WITH_DRAWPARAM_XML),
         ("Doc_0/DocumentRes.xml", DOCUMENT_RES_XML),
-        ("Doc_0/Res/img.png", ""),  // dummy image bytes (parse test only)
+        ("Doc_0/Res/img.png", ""), // dummy image bytes (parse test only)
     ] {
         zip.start_file(name, opts).unwrap();
         zip.write_all(body.as_bytes()).unwrap();
