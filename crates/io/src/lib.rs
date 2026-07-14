@@ -1,6 +1,7 @@
 //! rofd-io - parse / surgical-save / full-write for .ofd packages.
 
 pub mod abbreviated;
+pub mod annotation_geom;
 pub mod dateutil;
 pub mod error;
 pub mod package;

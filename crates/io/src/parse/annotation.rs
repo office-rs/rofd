@@ -175,6 +175,21 @@ fn handle_event(p: &mut PendingAnnot, ev: &Result<Event, quick_xml::Error>) {
     match ev {
         Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
             handle_element_start(p, e);
+            // Self-closing appearance objects (Empty event) have no End event:
+            // push them immediately so they aren't lost when the next element
+            // overwrites cur_obj. (ImageObject is commonly self-closing.)
+            if matches!(ev, Ok(Event::Empty(_))) {
+                let local = e.name().local_name();
+                let is_appearance_obj = matches!(
+                    local.as_ref(),
+                    b"PathObject" | b"TextObject" | b"ImageObject"
+                ) && p.in_appearance;
+                if is_appearance_obj {
+                    if let Some(o) = p.cur_obj.take() {
+                        p.objects.push(o);
+                    }
+                }
+            }
         }
         Ok(Event::Text(t)) => {
             let s = t.unescape().map(|c| c.into_owned()).unwrap_or_default();
@@ -195,18 +210,20 @@ fn handle_event(p: &mut PendingAnnot, ev: &Result<Event, quick_xml::Error>) {
             b"Parameter" => p.in_param = None,
             b"Appearance" => p.in_appearance = false,
             b"PathObject" | b"TextObject" | b"ImageObject" if p.in_appearance => {
-                if p.in_text_code {
-                    if let Some(AppearanceObject::Text { content, .. }) = p.cur_obj.as_mut() {
-                        *content = std::mem::take(&mut p.text_body);
-                    }
-                    p.in_text_code = false;
-                }
                 if let Some(o) = p.cur_obj.take() {
                     p.objects.push(o);
                 }
             }
             b"AbbreviatedData" => p.in_abbrev = false,
-            b"TextCode" => p.in_text_code = false,
+            b"TextCode" => {
+                // Transfer accumulated text body into the Text object's content
+                // when TextCode closes (not when TextObject closes, because
+                // in_text_code is cleared here).
+                if let Some(AppearanceObject::Text { content, .. }) = p.cur_obj.as_mut() {
+                    *content = std::mem::take(&mut p.text_body);
+                }
+                p.in_text_code = false;
+            }
             _ => {}
         },
         _ => {}
@@ -376,12 +393,23 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
                 width,
             }
         }
-        AnnotationKind::Note => AnnotationPayload::Note {
-            rect: boundary,
-            color: Color::Rgb(255, 200, 0),
-            content: p.remark.clone(),
-            icon: NoteIcon::Note,
-        },
+        AnnotationKind::Note => {
+            // Color from the first PathObject's stroke (fallback: default yellow).
+            let color = p
+                .objects
+                .iter()
+                .find_map(|o| match o {
+                    AppearanceObject::Path { stroke, .. } => *stroke,
+                    _ => None,
+                })
+                .unwrap_or(Color::Rgb(255, 200, 0));
+            AnnotationPayload::Note {
+                rect: boundary,
+                color,
+                content: p.remark.clone(),
+                icon: NoteIcon::Note,
+            }
+        }
         AnnotationKind::TextBox => {
             let (content, font, size, color) = p
                 .objects
@@ -436,11 +464,26 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
                     _ => None,
                 })
                 .unwrap_or_default();
+            // Opacity and angle are stored as Parameters (lossless f64) rather
+            // than derived from Alpha (u8, lossy) or CTM (atan2, precision risk).
+            // Alpha + CTM are still emitted on the TextObject for rendering.
+            let opacity = p
+                .params
+                .iter()
+                .find(|(k, _)| k == "Opacity")
+                .and_then(|(_, v)| v.parse::<f64>().ok())
+                .unwrap_or(1.0);
+            let angle = p
+                .params
+                .iter()
+                .find(|(k, _)| k == "Angle")
+                .and_then(|(_, v)| v.parse::<f64>().ok())
+                .unwrap_or(0.0);
             AnnotationPayload::Watermark {
                 rect: boundary,
                 content,
-                opacity: 1.0,
-                angle: 0.0,
+                opacity,
+                angle,
                 font: FontId::new(font),
                 size,
                 color: color.unwrap_or(Color::Rgb(200, 200, 200)),
