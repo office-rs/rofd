@@ -95,7 +95,12 @@ pub fn draw_annotations(
                 size,
                 color,
             } => {
-                let text = TextParams { content, font, size: *size, color: *color };
+                let text = TextParams {
+                    content,
+                    font,
+                    size: *size,
+                    color: *color,
+                };
                 draw_text_in_rect(painter, &text, rect, fonts, base);
             }
             AnnotationPayload::Stamp { rect, image } => {
@@ -110,7 +115,12 @@ pub fn draw_annotations(
                 size,
                 color,
             } => {
-                let text = TextParams { content, font, size: *size, color: *color };
+                let text = TextParams {
+                    content,
+                    font,
+                    size: *size,
+                    color: *color,
+                };
                 draw_watermark_text(painter, &text, *opacity, *angle, rect, fonts, base);
             }
         }
@@ -120,7 +130,12 @@ pub fn draw_annotations(
 /// Highlight/underline/strikeout: draw a semi-transparent rectangle over each
 /// pair of quad points. OFD quad points come in pairs (start/end of a
 /// highlighted line segment); the rectangle spans the two points.
-fn draw_markup(painter: &mut Painter<Scene>, quad_points: &[rofd_dom::Point], color: &Color, base: Affine) {
+fn draw_markup(
+    painter: &mut Painter<Scene>,
+    quad_points: &[rofd_dom::Point],
+    color: &Color,
+    base: Affine,
+) {
     let translucent = to_peniko(*color).with_alpha(MARKUP_ALPHA);
     for chunk in quad_points.chunks(2) {
         if chunk.len() == 2 {
@@ -139,7 +154,13 @@ fn draw_markup(painter: &mut Painter<Scene>, quad_points: &[rofd_dom::Point], co
 }
 
 /// Freehand: convert the PathData to a BezPath and stroke it.
-fn draw_freehand(painter: &mut Painter<Scene>, path: &rofd_dom::PathData, color: Color, width: f64, base: Affine) {
+fn draw_freehand(
+    painter: &mut Painter<Scene>,
+    path: &rofd_dom::PathData,
+    color: Color,
+    width: f64,
+    base: Affine,
+) {
     let bez = path_to_bezpath(path);
     painter
         .stroke(&bez, &Stroke::new(width), to_peniko(color))
@@ -180,7 +201,13 @@ fn draw_shape(
 
 /// Stamp: decode the referenced image and draw it into `rect` (translate to the
 /// rect origin, scale to the rect's w/h).
-fn draw_stamp(painter: &mut Painter<Scene>, rect: &Rect, image: &rofd_dom::ImageId, res: &Resources, base: Affine) {
+fn draw_stamp(
+    painter: &mut Painter<Scene>,
+    rect: &Rect,
+    image: &rofd_dom::ImageId,
+    res: &Resources,
+    base: Affine,
+) {
     let bytes = match res.images.get(image) {
         Some(b) => b,
         None => return,
@@ -233,7 +260,14 @@ fn draw_text_in_rect(
         None => return,
     };
     let affine = base * Affine::translate((rect.x, rect.y));
-    draw_glyph_run(painter, &font, &glyphs, affine, to_peniko(text.color), text.size);
+    draw_glyph_run(
+        painter,
+        &font,
+        &glyphs,
+        affine,
+        to_peniko(text.color),
+        text.size,
+    );
 }
 
 /// Watermark text: shaped, drawn translucent (`opacity`) and rotated by `angle`
@@ -316,8 +350,8 @@ mod tests {
     use super::*;
     use imaging::kurbo::Rect as KurboRect;
     use rofd_dom::{
-        AnnotationId, AnnotationKind, AnnotationPayload, Color, FontId, ImageId,
-        NoteIcon, PathCommand, PathData, Point, Rect, ShapeKind,
+        AnnotationId, AnnotationKind, AnnotationPayload, Color, FontId, ImageId, NoteIcon,
+        PathCommand, PathData, Point, Rect, ShapeKind,
     };
     use std::sync::Arc;
 
@@ -405,7 +439,12 @@ mod tests {
         let ann = ann(
             AnnotationPayload::Shape {
                 kind: ShapeKind::Rect,
-                rect: Rect { x: 0.0, y: 0.0, w: 40.0, h: 20.0 },
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 40.0,
+                    h: 20.0,
+                },
                 stroke: Color::Rgb(0, 0, 0),
                 fill: Some(Color::Rgb(255, 255, 255)),
                 width: 2.0,
@@ -420,7 +459,12 @@ mod tests {
         let ann = ann(
             AnnotationPayload::Shape {
                 kind: ShapeKind::Ellipse,
-                rect: Rect { x: 10.0, y: 10.0, w: 60.0, h: 30.0 },
+                rect: Rect {
+                    x: 10.0,
+                    y: 10.0,
+                    w: 60.0,
+                    h: 30.0,
+                },
                 stroke: Color::Rgb(255, 0, 0),
                 fill: None,
                 width: 1.0,
@@ -435,7 +479,12 @@ mod tests {
         let ann = ann(
             AnnotationPayload::Shape {
                 kind: ShapeKind::Arrow,
-                rect: Rect { x: 0.0, y: 0.0, w: 100.0, h: 10.0 },
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 100.0,
+                    h: 10.0,
+                },
                 stroke: Color::Rgb(0, 0, 0),
                 fill: None,
                 width: 1.0,
@@ -449,7 +498,12 @@ mod tests {
     fn note_variant_draws_filled_rect() {
         let ann = ann(
             AnnotationPayload::Note {
-                rect: Rect { x: 10.0, y: 10.0, w: 40.0, h: 20.0 },
+                rect: Rect {
+                    x: 10.0,
+                    y: 10.0,
+                    w: 40.0,
+                    h: 20.0,
+                },
                 color: Color::Rgb(255, 200, 0),
                 content: "a note".into(),
                 icon: NoteIcon::Help,
@@ -463,7 +517,12 @@ mod tests {
     fn textbox_variant_shapes_and_draws_text() {
         let ann = ann(
             AnnotationPayload::TextBox {
-                rect: Rect { x: 0.0, y: 0.0, w: 100.0, h: 30.0 },
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 100.0,
+                    h: 30.0,
+                },
                 content: "hello".into(),
                 font: FontId::new("F1"),
                 size: 12.0,
@@ -479,7 +538,12 @@ mod tests {
         // No images in resources -> draw_stamp skips without panic.
         let ann = ann(
             AnnotationPayload::Stamp {
-                rect: Rect { x: 0.0, y: 0.0, w: 50.0, h: 50.0 },
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 50.0,
+                    h: 50.0,
+                },
                 image: ImageId::new("missing"),
             },
             AnnotationKind::Stamp,
@@ -491,12 +555,9 @@ mod tests {
     fn stamp_variant_with_image_draws_into_rect() {
         // Build a 2x2 red PNG and place it in a 100x50 rect via resources.
         let mut buf = std::io::Cursor::new(Vec::new());
-        let img = image::RgbImage::from_raw(
-            2,
-            2,
-            vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0],
-        )
-        .unwrap();
+        let img =
+            image::RgbImage::from_raw(2, 2, vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0])
+                .unwrap();
         image::DynamicImage::ImageRgb8(img)
             .write_to(&mut buf, image::ImageFormat::Png)
             .unwrap();
@@ -508,7 +569,12 @@ mod tests {
 
         let ann = ann(
             AnnotationPayload::Stamp {
-                rect: Rect { x: 10.0, y: 20.0, w: 100.0, h: 50.0 },
+                rect: Rect {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 100.0,
+                    h: 50.0,
+                },
                 image: ImageId::new("I1"),
             },
             AnnotationKind::Stamp,
@@ -523,7 +589,12 @@ mod tests {
     fn watermark_variant_draws_rotated_translucent_text() {
         let ann = ann(
             AnnotationPayload::Watermark {
-                rect: Rect { x: 0.0, y: 0.0, w: 200.0, h: 100.0 },
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 200.0,
+                    h: 100.0,
+                },
                 content: "DRAFT".into(),
                 opacity: 0.3,
                 angle: std::f64::consts::FRAC_PI_4, // 45 degrees
@@ -571,7 +642,12 @@ mod tests {
             ann(
                 AnnotationPayload::Shape {
                     kind: ShapeKind::Rect,
-                    rect: Rect { x: 0.0, y: 0.0, w: 40.0, h: 20.0 },
+                    rect: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 40.0,
+                        h: 20.0,
+                    },
                     stroke: Color::Rgb(0, 0, 0),
                     fill: Some(Color::Rgb(255, 255, 255)),
                     width: 2.0,
@@ -580,7 +656,12 @@ mod tests {
             ),
             ann(
                 AnnotationPayload::Note {
-                    rect: Rect { x: 10.0, y: 10.0, w: 40.0, h: 20.0 },
+                    rect: Rect {
+                        x: 10.0,
+                        y: 10.0,
+                        w: 40.0,
+                        h: 20.0,
+                    },
                     color: Color::Rgb(255, 200, 0),
                     content: "note".into(),
                     icon: NoteIcon::Note,
@@ -589,7 +670,12 @@ mod tests {
             ),
             ann(
                 AnnotationPayload::TextBox {
-                    rect: Rect { x: 0.0, y: 0.0, w: 100.0, h: 30.0 },
+                    rect: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 100.0,
+                        h: 30.0,
+                    },
                     content: "hi".into(),
                     font: FontId::new("F1"),
                     size: 12.0,
@@ -599,14 +685,24 @@ mod tests {
             ),
             ann(
                 AnnotationPayload::Stamp {
-                    rect: Rect { x: 0.0, y: 0.0, w: 50.0, h: 50.0 },
+                    rect: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 50.0,
+                        h: 50.0,
+                    },
                     image: ImageId::new("I1"),
                 },
                 AnnotationKind::Stamp,
             ),
             ann(
                 AnnotationPayload::Watermark {
-                    rect: Rect { x: 0.0, y: 0.0, w: 200.0, h: 100.0 },
+                    rect: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 200.0,
+                        h: 100.0,
+                    },
                     content: "DRAFT".into(),
                     opacity: 0.3,
                     angle: std::f64::consts::FRAC_PI_4,
@@ -626,7 +722,12 @@ mod tests {
     #[test]
     fn rofd_rect_to_kurbo_uses_corners() {
         // rofd Rect { x, y, w, h } -> kurbo Rect { x0, y0, x1, y1 } (corners).
-        let r = Rect { x: 10.0, y: 20.0, w: 100.0, h: 30.0 };
+        let r = Rect {
+            x: 10.0,
+            y: 20.0,
+            w: 100.0,
+            h: 30.0,
+        };
         let k = rofd_rect_to_kurbo(&r);
         assert_eq!(k.x0, 10.0);
         assert_eq!(k.y0, 20.0);

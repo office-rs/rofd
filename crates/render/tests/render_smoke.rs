@@ -14,7 +14,7 @@ use imaging::kurbo::Rect as KurboRect;
 use imaging::record::Scene;
 use imaging::Painter;
 use rofd_render::{
-    draw_annotations, draw_body, hit_test, FontStore, PX_PER_MM, RenderEngine, Viewport,
+    draw_annotations, draw_body, hit_test, FontStore, RenderEngine, Viewport, PX_PER_MM,
 };
 
 #[path = "../../io/tests/fixtures/fixtures.rs"]
@@ -58,7 +58,14 @@ fn annotation_scene_draws_for_fixture() {
     let anns = report.document.annotations.for_page(&page.id);
     let mut scene = Scene::new();
     let mut painter = Painter::new(&mut scene);
-    draw_annotations(&mut painter, anns, &report.document.resources, &fonts, (0.0, 0.0), 1.0);
+    draw_annotations(
+        &mut painter,
+        anns,
+        &report.document.resources,
+        &fonts,
+        (0.0, 0.0),
+        1.0,
+    );
     let _ = scene;
 }
 
@@ -122,10 +129,21 @@ fn real_ofd_parses_and_composites() {
     let report = rofd_io::parse_ofd(&bytes).expect("real OFD parses");
     assert_eq!(report.document.pages.len(), 3, "3 pages");
     for (i, p) in report.document.pages.iter().enumerate() {
-        assert!(p.physical_box.w > 200.0, "page {i} physical_box.w = {}", p.physical_box.w);
-        assert!(p.physical_box.h > 290.0, "page {i} physical_box.h = {}", p.physical_box.h);
+        assert!(
+            p.physical_box.w > 200.0,
+            "page {i} physical_box.w = {}",
+            p.physical_box.w
+        );
+        assert!(
+            p.physical_box.h > 290.0,
+            "page {i} physical_box.h = {}",
+            p.physical_box.h
+        );
     }
-    assert!(!report.document.resources.draw_params.is_empty(), "DrawParams parsed");
+    assert!(
+        !report.document.resources.draw_params.is_empty(),
+        "DrawParams parsed"
+    );
     assert_eq!(report.document.resources.images.len(), 2, "2 images loaded");
 
     let font_bytes = Arc::new(include_bytes!("fixtures/fonts/TestFont.ttf").to_vec());

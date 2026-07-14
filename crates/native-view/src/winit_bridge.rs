@@ -24,9 +24,14 @@ impl WinitEventBridge {
         }
     }
 
-    pub fn set_scale_factor(&mut self, sf: f64) { self.scale_factor = sf; }
+    pub fn set_scale_factor(&mut self, sf: f64) {
+        self.scale_factor = sf;
+    }
 
-    pub fn set_cursor(&mut self, x: f64, y: f64) { self.cursor_phys_x = x; self.cursor_phys_y = y; }
+    pub fn set_cursor(&mut self, x: f64, y: f64) {
+        self.cursor_phys_x = x;
+        self.cursor_phys_y = y;
+    }
 
     /// Inform the bridge of the canvas widget's logical-pixel origin within the
     /// window. The host's canvas/render callback should call this every frame.
@@ -66,34 +71,52 @@ impl WinitEventBridge {
                 };
                 let (x, y) = self.canvas_local_cursor()?;
                 match state {
-                    winit::event::ElementState::Pressed => Some(ViewEvent::PointerDown { button: btn, x, y, modifiers: self.modifiers }),
-                    winit::event::ElementState::Released => Some(ViewEvent::PointerUp { button: btn, x, y }),
+                    winit::event::ElementState::Pressed => Some(ViewEvent::PointerDown {
+                        button: btn,
+                        x,
+                        y,
+                        modifiers: self.modifiers,
+                    }),
+                    winit::event::ElementState::Released => {
+                        Some(ViewEvent::PointerUp { button: btn, x, y })
+                    }
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(lx, ly) => (*lx as f64 * 20.0, *ly as f64 * 20.0),
+                    winit::event::MouseScrollDelta::LineDelta(lx, ly) => {
+                        (*lx as f64 * 20.0, *ly as f64 * 20.0)
+                    }
                     winit::event::MouseScrollDelta::PixelDelta(p) => (p.x, p.y),
                 };
                 if self.modifiers.control {
-                    Some(ViewEvent::Zoom { factor: if dy > 0.0 { 1.1 } else { 0.9 } })
+                    Some(ViewEvent::Zoom {
+                        factor: if dy > 0.0 { 1.1 } else { 0.9 },
+                    })
                 } else {
                     Some(ViewEvent::Scroll { dx, dy: -dy })
                 }
             }
-            WindowEvent::Resized(physical_size) => {
-                Some(ViewEvent::Resize {
-                    width: physical_size.width as f64 / self.scale_factor,
-                    height: physical_size.height as f64 / self.scale_factor,
+            WindowEvent::Resized(physical_size) => Some(ViewEvent::Resize {
+                width: physical_size.width as f64 / self.scale_factor,
+                height: physical_size.height as f64 / self.scale_factor,
+            }),
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.state != winit::event::ElementState::Pressed {
+                    return None;
+                }
+                let key = winit_key_to_rofd(&event.physical_key, &event.text);
+                Some(ViewEvent::KeyDown {
+                    key,
+                    modifiers: self.modifiers,
                 })
             }
-            WindowEvent::KeyboardInput { event, .. } => {
-                if event.state != winit::event::ElementState::Pressed { return None; }
-                let key = winit_key_to_rofd(&event.physical_key, &event.text);
-                Some(ViewEvent::KeyDown { key, modifiers: self.modifiers })
-            }
             WindowEvent::Focused(focused) => {
-                if *focused { Some(ViewEvent::FocusGained) } else { Some(ViewEvent::FocusLost) }
+                if *focused {
+                    Some(ViewEvent::FocusGained)
+                } else {
+                    Some(ViewEvent::FocusLost)
+                }
             }
             _ => None,
         }
@@ -124,7 +147,10 @@ impl Default for WinitEventBridge {
 ///
 /// `text` is winit's `Option<SmolStr>` (the `KeyEvent.text` field in 0.30),
 /// used as a fallback for character keys not covered by the named KeyCode arms.
-fn winit_key_to_rofd(key: &winit::keyboard::PhysicalKey, text: &Option<winit::keyboard::SmolStr>) -> Key {
+fn winit_key_to_rofd(
+    key: &winit::keyboard::PhysicalKey,
+    text: &Option<winit::keyboard::SmolStr>,
+) -> Key {
     use winit::keyboard::PhysicalKey;
     match key {
         PhysicalKey::Code(code) => {
@@ -197,7 +223,10 @@ mod tests {
     fn canvas_local_none_until_origin_set() {
         let mut bridge = WinitEventBridge::new();
         bridge.set_cursor(100.0, 200.0);
-        assert!(bridge.canvas_local_cursor().is_none(), "dropped before canvas origin set");
+        assert!(
+            bridge.canvas_local_cursor().is_none(),
+            "dropped before canvas origin set"
+        );
         bridge.set_canvas_origin(0.0, 0.0);
         assert!(bridge.canvas_local_cursor().is_some());
     }

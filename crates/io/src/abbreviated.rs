@@ -13,12 +13,49 @@ pub fn parse_abbreviated(s: &str) -> PathData {
             (v, idx + 1)
         };
         match op {
-            "M" => { let (x, n) = f(i); let (y, n) = f(n); i = n; cmds.push(PathCommand::M(x, y)); }
-            "L" => { let (x, n) = f(i); let (y, n) = f(n); i = n; cmds.push(PathCommand::L(x, y)); }
-            "C" => { let (a, n) = f(i); let (b, n) = f(n); let (c, n) = f(n); let (d, n) = f(n); let (e, n) = f(n); let (g, n) = f(n); i = n; cmds.push(PathCommand::C(a, b, c, d, e, g)); }
-            "Q" => { let (a, n) = f(i); let (b, n) = f(n); let (c, n) = f(n); let (d, n) = f(n); i = n; cmds.push(PathCommand::Q(a, b, c, d)); }
-            "A" => { let (a, n) = f(i); let (b, n) = f(n); let (c, n) = f(n); let (d, n) = f(n); let (e, n) = f(n); let (g, n) = f(n); i = n; cmds.push(PathCommand::A(a, b, c, d, e, g)); }
-            "Z" | "S" => { cmds.push(PathCommand::Z); }
+            "M" => {
+                let (x, n) = f(i);
+                let (y, n) = f(n);
+                i = n;
+                cmds.push(PathCommand::M(x, y));
+            }
+            "L" => {
+                let (x, n) = f(i);
+                let (y, n) = f(n);
+                i = n;
+                cmds.push(PathCommand::L(x, y));
+            }
+            "C" => {
+                let (a, n) = f(i);
+                let (b, n) = f(n);
+                let (c, n) = f(n);
+                let (d, n) = f(n);
+                let (e, n) = f(n);
+                let (g, n) = f(n);
+                i = n;
+                cmds.push(PathCommand::C(a, b, c, d, e, g));
+            }
+            "Q" => {
+                let (a, n) = f(i);
+                let (b, n) = f(n);
+                let (c, n) = f(n);
+                let (d, n) = f(n);
+                i = n;
+                cmds.push(PathCommand::Q(a, b, c, d));
+            }
+            "A" => {
+                let (a, n) = f(i);
+                let (b, n) = f(n);
+                let (c, n) = f(n);
+                let (d, n) = f(n);
+                let (e, n) = f(n);
+                let (g, n) = f(n);
+                i = n;
+                cmds.push(PathCommand::A(a, b, c, d, e, g));
+            }
+            "Z" | "S" => {
+                cmds.push(PathCommand::Z);
+            }
             _ => { /* unknown token: skip */ }
         }
     }

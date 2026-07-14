@@ -13,24 +13,36 @@ pub fn parse_doc_root(ofd_xml: &str) -> Result<String, OfdError> {
     let mut in_doc_root = false;
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"DocRoot" => in_doc_root = true,
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"DocRoot" => {
+                in_doc_root = true
+            }
             Ok(Event::Empty(_)) => {}
             Ok(Event::Text(e)) if in_doc_root => {
-                return Ok(e.unescape().map_err(|source| OfdError::Xml {
-                    entry: "OFD.xml".into(),
-                    loc: "DocRoot".into(),
-                    source,
-                })?.into_owned());
+                return Ok(e
+                    .unescape()
+                    .map_err(|source| OfdError::Xml {
+                        entry: "OFD.xml".into(),
+                        loc: "DocRoot".into(),
+                        source,
+                    })?
+                    .into_owned());
             }
             Ok(Event::End(_)) => in_doc_root = false,
             Ok(Event::Eof) => break,
             Err(e) => {
-                return Err(OfdError::Xml { entry: "OFD.xml".into(), loc: String::new(), source: e });
+                return Err(OfdError::Xml {
+                    entry: "OFD.xml".into(),
+                    loc: String::new(),
+                    source: e,
+                });
             }
             _ => {}
         }
     }
-    Err(OfdError::Schema { entry: "OFD.xml".into(), reason: "DocRoot missing".into() })
+    Err(OfdError::Schema {
+        entry: "OFD.xml".into(),
+        reason: "DocRoot missing".into(),
+    })
 }
 
 /// Extract DocInfo (DocID/Title/Author/CreationDate/LastModDate) from OFD.xml.
@@ -88,7 +100,11 @@ pub fn parse_doc_meta(ofd_xml: &str) -> Result<DocMeta, OfdError> {
             }
             Ok(Event::Eof) => break,
             Err(e) => {
-                return Err(OfdError::Xml { entry: "OFD.xml".into(), loc: String::new(), source: e });
+                return Err(OfdError::Xml {
+                    entry: "OFD.xml".into(),
+                    loc: String::new(),
+                    source: e,
+                });
             }
             _ => {}
         }

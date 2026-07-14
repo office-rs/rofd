@@ -10,7 +10,11 @@ pub struct History {
 
 impl History {
     pub fn new(capacity: usize) -> Self {
-        Self { done: VecDeque::new(), redo: Vec::new(), capacity }
+        Self {
+            done: VecDeque::new(),
+            redo: Vec::new(),
+            capacity,
+        }
     }
 
     pub fn push(&mut self, txn: Transaction) {
@@ -26,7 +30,9 @@ impl History {
         if let Some(txn) = self.done.pop_back() {
             self.redo.push(txn);
             self.redo.last()
-        } else { None }
+        } else {
+            None
+        }
     }
 
     /// Move the last-undone transaction from `redo` back to `done`. Returns a reference to it (now in done).
@@ -34,9 +40,15 @@ impl History {
         if let Some(txn) = self.redo.pop() {
             self.done.push_back(txn);
             self.done.back()
-        } else { None }
+        } else {
+            None
+        }
     }
 
-    pub fn can_undo(&self) -> bool { !self.done.is_empty() }
-    pub fn can_redo(&self) -> bool { !self.redo.is_empty() }
+    pub fn can_undo(&self) -> bool {
+        !self.done.is_empty()
+    }
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
 }

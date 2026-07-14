@@ -41,11 +41,21 @@ impl Editor {
         self.current_ts = ts;
     }
 
-    pub fn document(&self) -> &OfdDocument { &self.document }
-    pub fn selection(&self) -> &AnnotationSelection { &self.selection }
-    pub fn text_cursor(&self) -> Option<&TextCursor> { self.text_cursor.as_ref() }
-    pub fn can_undo(&self) -> bool { self.history.can_undo() }
-    pub fn can_redo(&self) -> bool { self.history.can_redo() }
+    pub fn document(&self) -> &OfdDocument {
+        &self.document
+    }
+    pub fn selection(&self) -> &AnnotationSelection {
+        &self.selection
+    }
+    pub fn text_cursor(&self) -> Option<&TextCursor> {
+        self.text_cursor.as_ref()
+    }
+    pub fn can_undo(&self) -> bool {
+        self.history.can_undo()
+    }
+    pub fn can_redo(&self) -> bool {
+        self.history.can_redo()
+    }
 
     /// Select a single annotation by id.
     pub fn select(&mut self, id: AnnotationId) {
@@ -61,7 +71,11 @@ impl Editor {
     }
     /// Position the text cursor at `offset` within `annotation`.
     pub fn set_cursor(&mut self, annotation: AnnotationId, offset: usize) {
-        self.text_cursor = Some(TextCursor { annotation, offset, preferred_x: None });
+        self.text_cursor = Some(TextCursor {
+            annotation,
+            offset,
+            preferred_x: None,
+        });
     }
     /// Clear the text cursor.
     pub fn clear_cursor(&mut self) {
@@ -90,7 +104,9 @@ impl Editor {
             self.selection = txn.selection_before.clone();
             self.text_cursor = txn.text_cursor_before.clone();
             true
-        } else { false }
+        } else {
+            false
+        }
     }
 
     pub fn redo(&mut self) -> bool {
@@ -102,28 +118,45 @@ impl Editor {
             self.selection = txn.selection_after.clone();
             self.text_cursor = txn.text_cursor_after.clone();
             true
-        } else { false }
+        } else {
+            false
+        }
     }
 }
 
 impl Default for Editor {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::steps::annotation_steps::InsertAnnotationStep;
-    use rofd_dom::{Annotation, AnnotationId, AnnotationKind, AnnotationPayload, Color, NoteIcon, PageId, Rect};
+    use rofd_dom::{
+        Annotation, AnnotationId, AnnotationKind, AnnotationPayload, Color, NoteIcon, PageId, Rect,
+    };
 
     fn note_ann(id: &str) -> Annotation {
         Annotation {
             id: AnnotationId::new(id),
-            kind: AnnotationKind::Note, page: PageId::new("P0"),
-            creator: "t".into(), created: 0, modified: 0, reply_to: None,
+            kind: AnnotationKind::Note,
+            page: PageId::new("P0"),
+            creator: "t".into(),
+            created: 0,
+            modified: 0,
+            reply_to: None,
             payload: AnnotationPayload::Note {
-                rect: Rect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }, color: Color::Rgb(0,0,0),
-                content: "x".into(), icon: NoteIcon::Note,
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 1.0,
+                    h: 1.0,
+                },
+                color: Color::Rgb(0, 0, 0),
+                content: "x".into(),
+                icon: NoteIcon::Note,
             },
         }
     }
@@ -133,10 +166,13 @@ mod tests {
         let mut e = Editor::new();
         let ann = note_ann("21");
         let txn = Transaction {
-            steps: vec![Box::new(InsertAnnotationStep { annotation: ann.clone() })],
+            steps: vec![Box::new(InsertAnnotationStep {
+                annotation: ann.clone(),
+            })],
             selection_before: AnnotationSelection::None,
             selection_after: AnnotationSelection::Single(ann.id.clone()),
-            text_cursor_before: None, text_cursor_after: None,
+            text_cursor_before: None,
+            text_cursor_after: None,
         };
         e.execute_transaction(txn);
         assert!(e.document().annotations.find(&ann.id).is_some());
@@ -155,12 +191,15 @@ mod tests {
                 steps: vec![Box::new(InsertAnnotationStep { annotation: ann })],
                 selection_before: AnnotationSelection::None,
                 selection_after: AnnotationSelection::None,
-                text_cursor_before: None, text_cursor_after: None,
+                text_cursor_before: None,
+                text_cursor_after: None,
             };
             e.execute_transaction(txn);
         }
         assert!(e.can_undo());
-        for _ in 0..100 { assert!(e.undo()); }
+        for _ in 0..100 {
+            assert!(e.undo());
+        }
         assert!(!e.can_undo());
     }
 }

@@ -82,7 +82,13 @@ pub fn parse_document(doc_xml: &str) -> Result<DocHeader, OfdError> {
                 _ => {}
             },
             Ok(Event::Eof) => break,
-            Err(e) => return Err(OfdError::Xml { entry: "Document.xml".into(), loc: String::new(), source: e }),
+            Err(e) => {
+                return Err(OfdError::Xml {
+                    entry: "Document.xml".into(),
+                    loc: String::new(),
+                    source: e,
+                })
+            }
             _ => {}
         }
     }
@@ -92,5 +98,8 @@ pub fn parse_document(doc_xml: &str) -> Result<DocHeader, OfdError> {
 fn handle_page(e: &BytesStart, header: &mut DocHeader) {
     let id = attr(e, "ID").unwrap_or_default();
     let base = attr(e, "BaseLoc").unwrap_or_default();
-    header.pages.push(PageRef { id: PageId::new(id), base_loc: base });
+    header.pages.push(PageRef {
+        id: PageId::new(id),
+        base_loc: base,
+    });
 }

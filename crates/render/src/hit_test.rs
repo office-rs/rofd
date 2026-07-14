@@ -88,23 +88,19 @@ fn hit_annotation(ann: &Annotation, local: (f64, f64)) -> bool {
         | AnnotationPayload::Shape { rect, .. } => {
             x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h
         }
-        AnnotationPayload::Markup { quad_points, .. } => quad_points
-            .chunks(2)
-            .any(|chunk| {
-                if chunk.len() < 2 {
-                    return false;
-                }
-                let (p0, p1) = (chunk[0], chunk[1]);
-                x >= p0.x.min(p1.x)
-                    && x <= p0.x.max(p1.x)
-                    && y >= p0.y.min(p1.y)
-                    && y <= p0.y.max(p1.y)
-            }),
+        AnnotationPayload::Markup { quad_points, .. } => quad_points.chunks(2).any(|chunk| {
+            if chunk.len() < 2 {
+                return false;
+            }
+            let (p0, p1) = (chunk[0], chunk[1]);
+            x >= p0.x.min(p1.x) && x <= p0.x.max(p1.x) && y >= p0.y.min(p1.y) && y <= p0.y.max(p1.y)
+        }),
         AnnotationPayload::Freehand { path, .. } => {
             // v1: bounding-box test on the path's control/end points (coarse).
-            let bbox = path.commands.iter().fold(
-                None::<(f64, f64, f64, f64)>,
-                |acc, cmd| {
+            let bbox = path
+                .commands
+                .iter()
+                .fold(None::<(f64, f64, f64, f64)>, |acc, cmd| {
                     let pts = path_points(cmd);
                     pts.into_iter().fold(acc, |a, (px, py)| match a {
                         None => Some((px, py, px, py)),
@@ -112,12 +108,9 @@ fn hit_annotation(ann: &Annotation, local: (f64, f64)) -> bool {
                             Some((minx.min(px), miny.min(py), maxx.max(px), maxy.max(py)))
                         }
                     })
-                },
-            );
+                });
             match bbox {
-                Some((minx, miny, maxx, maxy)) => {
-                    x >= minx && x <= maxx && y >= miny && y <= maxy
-                }
+                Some((minx, miny, maxx, maxy)) => x >= minx && x <= maxx && y >= miny && y <= maxy,
                 None => false,
             }
         }
@@ -143,9 +136,7 @@ fn path_points(cmd: &PathCommand) -> Vec<(f64, f64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rofd_dom::{
-        AnnotationKind, Color, NoteIcon, PathData, Point, Rect, ShapeKind,
-    };
+    use rofd_dom::{AnnotationKind, Color, NoteIcon, PathData, Point, Rect, ShapeKind};
 
     fn ann(payload: AnnotationPayload) -> Annotation {
         Annotation {
@@ -183,7 +174,12 @@ mod tests {
     fn shape_hit_inside_rect() {
         let a = ann(AnnotationPayload::Shape {
             kind: ShapeKind::Rect,
-            rect: Rect { x: 10.0, y: 10.0, w: 40.0, h: 20.0 },
+            rect: Rect {
+                x: 10.0,
+                y: 10.0,
+                w: 40.0,
+                h: 20.0,
+            },
             stroke: Color::Rgb(0, 0, 0),
             fill: Some(Color::Rgb(255, 255, 255)),
             width: 2.0,
@@ -195,7 +191,12 @@ mod tests {
     #[test]
     fn note_hit_inside_rect() {
         let a = ann(AnnotationPayload::Note {
-            rect: Rect { x: 10.0, y: 10.0, w: 40.0, h: 20.0 },
+            rect: Rect {
+                x: 10.0,
+                y: 10.0,
+                w: 40.0,
+                h: 20.0,
+            },
             color: Color::Rgb(255, 200, 0),
             content: "n".into(),
             icon: NoteIcon::Note,
@@ -206,7 +207,9 @@ mod tests {
     #[test]
     fn freehand_empty_path_never_hits() {
         let a = ann(AnnotationPayload::Freehand {
-            path: PathData { commands: vec![PathCommand::Z] },
+            path: PathData {
+                commands: vec![PathCommand::Z],
+            },
             color: Color::Rgb(0, 0, 255),
             width: 1.0,
         });

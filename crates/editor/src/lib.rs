@@ -10,4 +10,6 @@ pub mod steps;
 pub use cursor::TextCursor;
 pub use editor::Editor;
 pub use selection::AnnotationSelection;
-pub use steps::{DeleteAnnotationStep, InsertAnnotationStep, ReplaceAnnotationStep, Step, Transaction};
+pub use steps::{
+    DeleteAnnotationStep, InsertAnnotationStep, ReplaceAnnotationStep, Step, Transaction,
+};

@@ -25,7 +25,7 @@ pub use ctm::{compose_transform, ctm_to_affine};
 pub use hit_test::{hit_test, HitTarget};
 pub use image::decode_image;
 pub use path::path_to_bezpath;
-pub use text::{FontStore, shape_text, ShapedGlyph};
+pub use text::{shape_text, FontStore, ShapedGlyph};
 pub use viewport::{Viewport, PX_PER_MM};
 
 /// The backend-agnostic scene type this crate produces.

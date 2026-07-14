@@ -18,9 +18,7 @@
 
 use parley::setting::Tag;
 use parley::style::{FontFamily, FontFeature, FontStyle as ParleyFontStyle, FontWeight};
-use parley::{
-    FontContext, LayoutContext, PositionedLayoutItem, StyleProperty,
-};
+use parley::{FontContext, LayoutContext, PositionedLayoutItem, StyleProperty};
 use peniko::FontData;
 
 /// A shaped glyph: its ID and the shaper's natural position.
@@ -140,7 +138,11 @@ pub(crate) fn shape_with_family(
                     font = Some(run.run().font().clone());
                 }
                 for g in run.positioned_glyphs() {
-                    out.push(ShapedGlyph { glyph_id: g.id, x: g.x, y: g.y });
+                    out.push(ShapedGlyph {
+                        glyph_id: g.id,
+                        x: g.x,
+                        y: g.y,
+                    });
                 }
             }
         }

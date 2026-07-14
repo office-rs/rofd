@@ -44,11 +44,19 @@ mod tests {
         let segs: Vec<_> = bez.segments().collect();
         // kurbo 0.13: move_to is not a segment; each line_to is a Line; close_path
         // emits a Line back to the subpath start. So M + 2 L + Z -> 3 Line segments.
-        assert_eq!(segs.len(), 3, "M + 2 L + Z -> 3 segments (move is not a segment)");
+        assert_eq!(
+            segs.len(),
+            3,
+            "M + 2 L + Z -> 3 segments (move is not a segment)"
+        );
         assert!(segs.iter().all(|s| matches!(s, PathSeg::Line(_))));
         // Close-path segment returns to the start point (0, 0).
         let close_end = segs[2].end();
-        assert_eq!(close_end, Point::new(0.0, 0.0), "close_path returns to start");
+        assert_eq!(
+            close_end,
+            Point::new(0.0, 0.0),
+            "close_path returns to start"
+        );
     }
 
     #[test]
@@ -85,8 +93,16 @@ mod tests {
         };
         let bez = path_to_bezpath(&pd);
         let segs: Vec<_> = bez.segments().collect();
-        assert_eq!(segs.len(), 1, "arc approximated as a single line to endpoint");
+        assert_eq!(
+            segs.len(),
+            1,
+            "arc approximated as a single line to endpoint"
+        );
         let end = segs[0].end();
-        assert_eq!(end, Point::new(40.0, 0.0), "arc endpoint is (x, y) = last two fields");
+        assert_eq!(
+            end,
+            Point::new(40.0, 0.0),
+            "arc endpoint is (x, y) = last two fields"
+        );
     }
 }

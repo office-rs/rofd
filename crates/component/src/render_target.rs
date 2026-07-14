@@ -15,15 +15,27 @@ pub trait RenderTarget {
 mod tests {
     use super::*;
 
-    struct MockRenderTarget { drawn: usize, w: f64, h: f64 }
+    struct MockRenderTarget {
+        drawn: usize,
+        w: f64,
+        h: f64,
+    }
     impl RenderTarget for MockRenderTarget {
-        fn draw_scene(&mut self, _scene: &Scene) { self.drawn += 1; }
-        fn size(&self) -> (f64, f64) { (self.w, self.h) }
+        fn draw_scene(&mut self, _scene: &Scene) {
+            self.drawn += 1;
+        }
+        fn size(&self) -> (f64, f64) {
+            (self.w, self.h)
+        }
     }
 
     #[test]
     fn mock_render_target_records_draws() {
-        let mut rt = MockRenderTarget { drawn: 0, w: 800.0, h: 600.0 };
+        let mut rt = MockRenderTarget {
+            drawn: 0,
+            w: 800.0,
+            h: 600.0,
+        };
         let scene = Scene::new();
         rt.draw_scene(&scene);
         assert_eq!(rt.drawn, 1);

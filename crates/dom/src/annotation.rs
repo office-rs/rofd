@@ -21,12 +21,39 @@ pub enum AnnotationKind {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AnnotationPayload {
-    Markup { quad_points: Vec<Point>, color: Color },
-    Freehand { path: PathData, color: Color, width: f64 },
-    Shape { kind: ShapeKind, rect: Rect, stroke: Color, fill: Option<Color>, width: f64 },
-    Note { rect: Rect, color: Color, content: String, icon: NoteIcon },
-    TextBox { rect: Rect, content: String, font: FontId, size: f64, color: Color },
-    Stamp { rect: Rect, image: ImageId },
+    Markup {
+        quad_points: Vec<Point>,
+        color: Color,
+    },
+    Freehand {
+        path: PathData,
+        color: Color,
+        width: f64,
+    },
+    Shape {
+        kind: ShapeKind,
+        rect: Rect,
+        stroke: Color,
+        fill: Option<Color>,
+        width: f64,
+    },
+    Note {
+        rect: Rect,
+        color: Color,
+        content: String,
+        icon: NoteIcon,
+    },
+    TextBox {
+        rect: Rect,
+        content: String,
+        font: FontId,
+        size: f64,
+        color: Color,
+    },
+    Stamp {
+        rect: Rect,
+        image: ImageId,
+    },
     Watermark {
         rect: Rect,
         content: String,
@@ -91,7 +118,7 @@ mod tests {
     use super::*;
     use crate::ids::{FontId, ImageId};
     use crate::object::{NoteIcon, ShapeKind};
-    use crate::primitives::{Color, PathData, PathCommand, Point, Rect};
+    use crate::primitives::{Color, PathCommand, PathData, Point, Rect};
 
     fn base_ann(payload: AnnotationPayload, kind: AnnotationKind) -> Annotation {
         Annotation {
@@ -140,7 +167,9 @@ mod tests {
     fn annotation_payload_freehand_round_trips() {
         let ann = base_ann(
             AnnotationPayload::Freehand {
-                path: PathData { commands: vec![PathCommand::M(0.0, 0.0), PathCommand::L(5.0, 5.0)] },
+                path: PathData {
+                    commands: vec![PathCommand::M(0.0, 0.0), PathCommand::L(5.0, 5.0)],
+                },
                 color: Color::Rgb(0, 0, 255),
                 width: 1.5,
             },
@@ -154,7 +183,12 @@ mod tests {
         let ann = base_ann(
             AnnotationPayload::Shape {
                 kind: ShapeKind::Rect,
-                rect: Rect { x: 0.0, y: 0.0, w: 40.0, h: 20.0 },
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 40.0,
+                    h: 20.0,
+                },
                 stroke: Color::Rgb(0, 0, 0),
                 fill: Some(Color::Rgb(255, 255, 255)),
                 width: 2.0,
@@ -168,7 +202,12 @@ mod tests {
     fn annotation_payload_note_round_trips() {
         let ann = base_ann(
             AnnotationPayload::Note {
-                rect: Rect { x: 10.0, y: 10.0, w: 40.0, h: 20.0 },
+                rect: Rect {
+                    x: 10.0,
+                    y: 10.0,
+                    w: 40.0,
+                    h: 20.0,
+                },
                 color: Color::Rgb(255, 200, 0),
                 content: "a note".into(),
                 icon: NoteIcon::Help,
@@ -182,7 +221,12 @@ mod tests {
     fn annotation_payload_textbox_round_trips() {
         let ann = base_ann(
             AnnotationPayload::TextBox {
-                rect: Rect { x: 0.0, y: 0.0, w: 100.0, h: 30.0 },
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 100.0,
+                    h: 30.0,
+                },
                 content: "hello".into(),
                 font: FontId::new("F1"),
                 size: 12.0,
@@ -197,7 +241,12 @@ mod tests {
     fn annotation_payload_stamp_round_trips() {
         let ann = base_ann(
             AnnotationPayload::Stamp {
-                rect: Rect { x: 0.0, y: 0.0, w: 50.0, h: 50.0 },
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 50.0,
+                    h: 50.0,
+                },
                 image: ImageId::new("Img_0"),
             },
             AnnotationKind::Stamp,
@@ -209,7 +258,12 @@ mod tests {
     fn annotation_payload_watermark_round_trips() {
         let ann = base_ann(
             AnnotationPayload::Watermark {
-                rect: Rect { x: 0.0, y: 0.0, w: 200.0, h: 100.0 },
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 200.0,
+                    h: 100.0,
+                },
                 content: "DRAFT".into(),
                 opacity: 0.3,
                 angle: 45.0,
@@ -228,9 +282,16 @@ mod tests {
             kind: AnnotationKind::Note,
             page: PageId::new(page),
             creator: "tester".into(),
-            created: 0, modified: 0, reply_to: None,
+            created: 0,
+            modified: 0,
+            reply_to: None,
             payload: AnnotationPayload::Note {
-                rect: Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 },
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 10.0,
+                    h: 10.0,
+                },
                 color: Color::Rgb(0, 0, 0),
                 content: "hi".into(),
                 icon: NoteIcon::Note,
@@ -243,7 +304,10 @@ mod tests {
         let mut m = AnnotationModel::default();
         let ann = sample_ann("1", "P0");
         m.insert(ann.clone());
-        assert_eq!(m.find(&ann.id).map(|a| a.id.0.clone()), Some(ann.id.0.clone()));
+        assert_eq!(
+            m.find(&ann.id).map(|a| a.id.0.clone()),
+            Some(ann.id.0.clone())
+        );
     }
 
     #[test]

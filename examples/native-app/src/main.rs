@@ -25,8 +25,8 @@ use winit::event::WindowEvent;
 
 use xilem::core::MessageProxy;
 use xilem::kurbo::{Point, Size};
-use xilem::masonry::imaging::{kurbo::Rect as KurboRect, peniko::Color, record::Scene, Painter};
 use xilem::masonry::core::WidgetId;
+use xilem::masonry::imaging::{kurbo::Rect as KurboRect, peniko::Color, record::Scene, Painter};
 use xilem::style::{Padding, Style};
 use xilem::view::{canvas, flex_col, flex_row, sized_box, task, text_button, FlexExt};
 use xilem::{EventLoop, WidgetView, WindowOptions, Xilem};
@@ -46,7 +46,10 @@ struct AppState {
 
 fn app_logic(_app: &mut AppState) -> impl WidgetView<AppState> + use<> {
     let btn_open = text_button("Open", |app: &mut AppState| {
-        if let Some(path) = FileDialog::new().add_filter("OFD document", &["ofd"]).pick_file() {
+        if let Some(path) = FileDialog::new()
+            .add_filter("OFD document", &["ofd"])
+            .pick_file()
+        {
             match std::fs::read(&path) {
                 Ok(bytes) => {
                     if let Err(e) = app.editor.lock().unwrap().load_ofd(&bytes) {
@@ -65,31 +68,30 @@ fn app_logic(_app: &mut AppState) -> impl WidgetView<AppState> + use<> {
     .border_width(0.0)
     .corner_radius(2.0);
 
-    let menu_bar = sized_box(flex_row((btn_open,)).gap(xilem::masonry::layout::Length::const_px(2.0)))
-        .padding(Padding::from_vh(2.0, 4.0))
-        .background_color(Color::from_rgb8(240, 240, 240));
+    let menu_bar =
+        sized_box(flex_row((btn_open,)).gap(xilem::masonry::layout::Length::const_px(2.0)))
+            .padding(Padding::from_vh(2.0, 4.0))
+            .background_color(Color::from_rgb8(240, 240, 240));
 
     // OFD canvas: a masonry Canvas widget whose paint closure builds the editor
     // scene each frame and replays it into the widget's imaging scene.
-    let doc_canvas = canvas(
-        |app: &mut AppState, ctx, scene: &mut Scene, size: Size| {
-            let mut editor = app.editor.lock().unwrap();
-            editor.set_size(size.width, size.height);
-            drop(editor);
-            *app.canvas_widget_id.lock().unwrap() = Some(ctx.widget_id());
+    let doc_canvas = canvas(|app: &mut AppState, ctx, scene: &mut Scene, size: Size| {
+        let mut editor = app.editor.lock().unwrap();
+        editor.set_size(size.width, size.height);
+        drop(editor);
+        *app.canvas_widget_id.lock().unwrap() = Some(ctx.widget_id());
 
-            // Gray desk background (matches RenderEngine's base color).
-            let mut painter = Painter::new(scene);
-            painter.fill_rect(
-                KurboRect::new(0.0, 0.0, size.width, size.height),
-                Color::from_rgba8(0xE0, 0xE0, 0xE0, 0xFF),
-            );
+        // Gray desk background (matches RenderEngine's base color).
+        let mut painter = Painter::new(scene);
+        painter.fill_rect(
+            KurboRect::new(0.0, 0.0, size.width, size.height),
+            Color::from_rgba8(0xE0, 0xE0, 0xE0, 0xFF),
+        );
 
-            let mut editor = app.editor.lock().unwrap();
-            let doc_scene = editor.build_scene();
-            Painter::new(scene).replay(&doc_scene);
-        },
-    );
+        let mut editor = app.editor.lock().unwrap();
+        let doc_scene = editor.build_scene();
+        Painter::new(scene).replay(&doc_scene);
+    });
 
     let main_view = flex_col((menu_bar, sized_box(doc_canvas).flex(1.0)));
 
@@ -136,7 +138,8 @@ impl ApplicationHandler<MasonryUserEvent> for NativeApp {
     }
 
     fn user_event(&mut self, el: &winit::event_loop::ActiveEventLoop, ev: MasonryUserEvent) {
-        self.masonry_state.handle_user_event(el, ev, self.app_driver.as_mut());
+        self.masonry_state
+            .handle_user_event(el, ev, self.app_driver.as_mut());
         // A wake from the Open callback: force the canvas to repaint.
         self.request_canvas_render();
     }

@@ -23,7 +23,7 @@ use imaging::kurbo::Affine;
 use imaging::record::{Glyph, Scene};
 use imaging::Painter;
 use peniko::{Fill, Style};
-use rofd_dom::{Page, PageObject, PathObject, Resources, TextObject, ImageObject};
+use rofd_dom::{ImageObject, Page, PageObject, PathObject, Resources, TextObject};
 
 use crate::color::to_peniko;
 use crate::ctm::compose_transform;
@@ -107,7 +107,11 @@ fn draw_text(
             .iter()
             .enumerate()
             .map(|(i, g)| {
-                let glyph = Glyph { id: g.glyph_id, x: pen_x, y: pen_y };
+                let glyph = Glyph {
+                    id: g.glyph_id,
+                    x: pen_x,
+                    y: pen_y,
+                };
                 let (dx, dy) = code.deltas.get(i).copied().unwrap_or((0.0, 0.0));
                 pen_x += dx;
                 pen_y += dy;
@@ -140,10 +144,7 @@ fn draw_path(
     let bez = path_to_bezpath(&p.data);
     let affine = compose_transform(page_origin, zoom, p.ctm.as_ref());
     // Resolve colors/width: inline first, then DrawParam fallback (GB/T 33190).
-    let dp = p
-        .draw_param
-        .as_ref()
-        .and_then(|id| res.draw_params.get(id));
+    let dp = p.draw_param.as_ref().and_then(|id| res.draw_params.get(id));
     let fill = p.fill.or_else(|| dp.and_then(|d| d.fill));
     let stroke = p.stroke.or_else(|| dp.and_then(|d| d.stroke));
     let line_width = if p.line_width > 0.0 {
@@ -156,7 +157,10 @@ fn draw_path(
     }
     if let Some(c) = stroke {
         let stroke = imaging::kurbo::Stroke::new(line_width);
-        painter.stroke(&bez, &stroke, to_peniko(c)).transform(affine).draw();
+        painter
+            .stroke(&bez, &stroke, to_peniko(c))
+            .transform(affine)
+            .draw();
     }
 }
 
@@ -186,8 +190,16 @@ fn draw_image_obj(
     // image's natural pixel dimensions, so the place transform maps that rect
     // onto the boundary (x, y, w, h): translate to the boundary origin, then
     // scale by (w / img_w, h / img_h). Compose with the page + CTM transform.
-    let scale_x = if img.width > 0 { i.boundary.w / img.width as f64 } else { 1.0 };
-    let scale_y = if img.height > 0 { i.boundary.h / img.height as f64 } else { 1.0 };
+    let scale_x = if img.width > 0 {
+        i.boundary.w / img.width as f64
+    } else {
+        1.0
+    };
+    let scale_y = if img.height > 0 {
+        i.boundary.h / img.height as f64
+    } else {
+        1.0
+    };
     let place = Affine::translate((i.boundary.x, i.boundary.y))
         * Affine::scale_non_uniform(scale_x, scale_y);
     let affine = compose_transform(page_origin, zoom, i.ctm.as_ref()) * place;
@@ -200,14 +212,12 @@ mod tests {
     use imaging::kurbo::Rect as KurboRect;
     use rofd_dom::Rect;
     use rofd_dom::{
-        Ctm, FontId, ImageId, ObjectId, PathCommand, PathData, PathObject, TextCode,
-        TextObject,
+        Ctm, FontId, ImageId, ObjectId, PathCommand, PathData, PathObject, TextCode, TextObject,
     };
     use std::sync::Arc;
 
     fn test_font_store() -> FontStore {
-        let font_bytes =
-            include_bytes!("../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        let font_bytes = include_bytes!("../tests/fixtures/fonts/TestFont.ttf") as &[u8];
         FontStore::from_resources(&Resources::default(), Arc::new(font_bytes.to_vec()))
     }
 
@@ -232,7 +242,12 @@ mod tests {
     fn path_object_strokes_into_scene() {
         let path = PathObject {
             id: ObjectId::new("p1"),
-            boundary: Rect { x: 0.0, y: 0.0, w: 100.0, h: 10.0 },
+            boundary: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 10.0,
+            },
             ctm: None,
             fill: None,
             stroke: Some(rofd_dom::Color::Rgb(255, 0, 0)),
@@ -265,7 +280,12 @@ mod tests {
     fn text_object_shapes_and_draws_into_scene() {
         let text = TextObject {
             id: ObjectId::new("t1"),
-            boundary: Rect { x: 10.0, y: 10.0, w: 100.0, h: 20.0 },
+            boundary: Rect {
+                x: 10.0,
+                y: 10.0,
+                w: 100.0,
+                h: 20.0,
+            },
             ctm: None,
             font: FontId::new("F1"),
             size: 12.0,
@@ -319,7 +339,12 @@ mod tests {
     fn missing_image_id_skips_silently() {
         let img_obj = rofd_dom::ImageObject {
             id: ObjectId::new("i1"),
-            boundary: Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 },
+            boundary: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 10.0,
+                h: 10.0,
+            },
             ctm: None,
             image: ImageId::new("missing"),
         };
@@ -342,7 +367,14 @@ mod tests {
         let path = PathObject {
             id: ObjectId::new("p1"),
             boundary: Rect::default(),
-            ctm: Some(Ctm { a: 2.0, b: 0.0, c: 0.0, d: 2.0, e: 10.0, f: 20.0 }),
+            ctm: Some(Ctm {
+                a: 2.0,
+                b: 0.0,
+                c: 0.0,
+                d: 2.0,
+                e: 10.0,
+                f: 20.0,
+            }),
             fill: Some(rofd_dom::Color::Rgb(0, 0, 255)),
             stroke: None,
             line_width: 0.0,
@@ -368,7 +400,9 @@ mod tests {
     #[test]
     fn image_object_draws_into_scene_with_correct_scaling() {
         let mut buf = std::io::Cursor::new(Vec::new());
-        let img = image::RgbImage::from_raw(2, 2, vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0]).unwrap();
+        let img =
+            image::RgbImage::from_raw(2, 2, vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0])
+                .unwrap();
         image::DynamicImage::ImageRgb8(img)
             .write_to(&mut buf, image::ImageFormat::Png)
             .unwrap();
@@ -376,7 +410,12 @@ mod tests {
 
         let img_obj = rofd_dom::ImageObject {
             id: ObjectId::new("i1"),
-            boundary: Rect { x: 10.0, y: 20.0, w: 100.0, h: 50.0 },
+            boundary: Rect {
+                x: 10.0,
+                y: 20.0,
+                w: 100.0,
+                h: 50.0,
+            },
             ctm: None,
             image: ImageId::new("I1"),
         };
@@ -406,8 +445,20 @@ mod tests {
 
         let img_obj = rofd_dom::ImageObject {
             id: ObjectId::new("i1"),
-            boundary: Rect { x: 5.0, y: 5.0, w: 40.0, h: 40.0 },
-            ctm: Some(Ctm { a: 2.0, b: 0.0, c: 0.0, d: 2.0, e: 100.0, f: 200.0 }),
+            boundary: Rect {
+                x: 5.0,
+                y: 5.0,
+                w: 40.0,
+                h: 40.0,
+            },
+            ctm: Some(Ctm {
+                a: 2.0,
+                b: 0.0,
+                c: 0.0,
+                d: 2.0,
+                e: 100.0,
+                f: 200.0,
+            }),
             image: ImageId::new("I1"),
         };
         let page = Page {
@@ -432,12 +483,19 @@ mod tests {
         // the scene instead of being skipped.
         let path = PathObject {
             id: ObjectId::new("p1"),
-            boundary: Rect { x: 0.0, y: 0.0, w: 100.0, h: 10.0 },
+            boundary: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 10.0,
+            },
             ctm: None,
             fill: None,
             stroke: None,
             line_width: 0.0,
-            data: PathData { commands: vec![PathCommand::M(0.0, 0.0), PathCommand::L(100.0, 0.0)] },
+            data: PathData {
+                commands: vec![PathCommand::M(0.0, 0.0), PathCommand::L(100.0, 0.0)],
+            },
             draw_param: Some(rofd_dom::DrawParamId::new("5")),
         };
         let page = Page {

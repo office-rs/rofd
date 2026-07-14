@@ -46,8 +46,9 @@ pub struct FontStore {
     /// `size.to_bits()` keys avoid `f64` not being `Eq`. Cleared on
     /// `register_font`.
     #[allow(clippy::type_complexity)]
-    glyph_cache:
-        RefCell<HashMap<FontId, HashMap<u64, HashMap<String, (Option<FontData>, Rc<Vec<ShapedGlyph>>)>>>>,
+    glyph_cache: RefCell<
+        HashMap<FontId, HashMap<u64, HashMap<String, (Option<FontData>, Rc<Vec<ShapedGlyph>>)>>>,
+    >,
 }
 
 impl FontStore {
@@ -148,7 +149,12 @@ impl FontStore {
     /// this font - it is the system font when the fallback was used, so using a
     /// different font would mismatch the glyph ids and panic in vello/skrifa.
     /// `None` only when no glyphs were produced.
-    pub fn shape(&self, font_id: &FontId, text: &str, size: f64) -> (Option<FontData>, Rc<Vec<ShapedGlyph>>) {
+    pub fn shape(
+        &self,
+        font_id: &FontId,
+        text: &str,
+        size: f64,
+    ) -> (Option<FontData>, Rc<Vec<ShapedGlyph>>) {
         let size_key = size.to_bits();
         // Cache hit (no clones for the lookup: font_id borrowed, size_key Copy,
         // text borrowed via String: Borrow<str>).
@@ -238,7 +244,10 @@ mod tests {
         res.font_data
             .insert(FontId::new("F1"), Arc::new(font_bytes.to_vec()));
         let store = FontStore::from_resources(&res, Arc::new(font_bytes.to_vec()));
-        assert!(store.resolve(&FontId::new("F1")).is_some(), "document font resolves");
+        assert!(
+            store.resolve(&FontId::new("F1")).is_some(),
+            "document font resolves"
+        );
     }
 
     #[test]
@@ -297,7 +306,10 @@ mod tests {
             5,
             "system fallback shapes 5 glyphs for 'Hello'"
         );
-        assert!(font.is_some(), "system font captured (not the empty default)");
+        assert!(
+            font.is_some(),
+            "system font captured (not the empty default)"
+        );
         assert!(
             glyphs.iter().all(|g| g.glyph_id != 0),
             "all glyphs have valid ids"
@@ -350,7 +362,12 @@ mod tests {
         let hit = t1.elapsed();
         assert_eq!(g1.len(), g2.len(), "cached result matches fresh");
         eprintln!("[cache] miss={:.2?} hit={:.2?}", miss, hit);
-        assert!(hit <= miss, "cache hit ({:.2?}) not slower than miss ({:.2?})", hit, miss);
+        assert!(
+            hit <= miss,
+            "cache hit ({:.2?}) not slower than miss ({:.2?})",
+            hit,
+            miss
+        );
     }
 
     #[test]
