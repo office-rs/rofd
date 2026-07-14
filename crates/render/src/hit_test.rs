@@ -183,6 +183,7 @@ mod tests {
             stroke: Color::Rgb(0, 0, 0),
             fill: Some(Color::Rgb(255, 255, 255)),
             width: 2.0,
+            points: vec![],
         });
         assert!(hit_annotation(&a, (30.0, 20.0)));
         assert!(!hit_annotation(&a, (9.0, 20.0)));

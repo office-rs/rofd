@@ -94,6 +94,7 @@ fn shape_rect_roundtrips() {
             stroke: Color::Rgb(255, 0, 0),
             fill: Some(Color::Rgb(255, 255, 255)),
             width: 2.0,
+            points: vec![],
         },
         None,
     );

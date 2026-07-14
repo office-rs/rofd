@@ -310,7 +310,10 @@ fn map_type_subtype(ty: &str, sub: Option<&str>) -> AnnotationKind {
 fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
     let boundary = p.appearance_boundary;
     match kind {
-        AnnotationKind::Highlight | AnnotationKind::Underline | AnnotationKind::Strikeout => {
+        AnnotationKind::Highlight
+        | AnnotationKind::Underline
+        | AnnotationKind::Strikeout
+        | AnnotationKind::Squiggly => {
             let color = p
                 .objects
                 .iter()
@@ -391,6 +394,7 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
                 stroke: stroke.unwrap_or(Color::Rgb(0, 0, 0)),
                 fill,
                 width,
+                points: vec![],
             }
         }
         AnnotationKind::Note => {

@@ -11,6 +11,7 @@ pub enum AnnotationKind {
     Highlight,
     Underline,
     Strikeout,
+    Squiggly,
     Freehand,
     Shape(ShapeKind),
     Note,
@@ -36,6 +37,7 @@ pub enum AnnotationPayload {
         stroke: Color,
         fill: Option<Color>,
         width: f64,
+        points: Vec<Point>,
     },
     Note {
         rect: Rect,
@@ -192,8 +194,48 @@ mod tests {
                 stroke: Color::Rgb(0, 0, 0),
                 fill: Some(Color::Rgb(255, 255, 255)),
                 width: 2.0,
+                points: vec![],
             },
             AnnotationKind::Shape(ShapeKind::Rect),
+        );
+        assert_round_trips(&ann);
+    }
+
+    #[test]
+    fn squiggly_kind_round_trips_serde() {
+        let ann = base_ann(
+            AnnotationPayload::Markup {
+                quad_points: vec![Point { x: 0.0, y: 0.0 }, Point { x: 10.0, y: 4.0 }],
+                color: Color::Rgb(0, 164, 247),
+            },
+            AnnotationKind::Squiggly,
+        );
+        let s = serde_json::to_string(&ann).unwrap();
+        let back: Annotation = serde_json::from_str(&s).unwrap();
+        assert_eq!(ann, back);
+    }
+
+    #[test]
+    fn shape_polygon_with_points_round_trips() {
+        let ann = base_ann(
+            AnnotationPayload::Shape {
+                kind: ShapeKind::Polygon,
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 10.0,
+                    h: 10.0,
+                },
+                stroke: Color::Rgb(255, 0, 0),
+                fill: None,
+                width: 1.0,
+                points: vec![
+                    Point { x: 0.0, y: 0.0 },
+                    Point { x: 5.0, y: 10.0 },
+                    Point { x: 10.0, y: 0.0 },
+                ],
+            },
+            AnnotationKind::Shape(ShapeKind::Polygon),
         );
         assert_round_trips(&ann);
     }

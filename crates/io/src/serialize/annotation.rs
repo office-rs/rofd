@@ -90,11 +90,14 @@ fn kind_to_type_subtype(k: &AnnotationKind) -> (&'static str, Option<&'static st
         AnnotationKind::Highlight => ("Highlight", Some("Highlight")),
         AnnotationKind::Underline => ("Highlight", Some("Underline")),
         AnnotationKind::Strikeout => ("Highlight", Some("Strikeout")),
+        AnnotationKind::Squiggly => ("Highlight", Some("Squiggly")),
         AnnotationKind::Freehand => ("Path", Some("Freehand")),
         AnnotationKind::Shape(ShapeKind::Rect) => ("Path", Some("Rectangle")),
         AnnotationKind::Shape(ShapeKind::Ellipse) => ("Path", Some("Ellipse")),
         AnnotationKind::Shape(ShapeKind::Arrow) => ("Path", Some("Arrow")),
         AnnotationKind::Shape(ShapeKind::Line) => ("Path", Some("Line")),
+        AnnotationKind::Shape(ShapeKind::Polygon) => ("Path", Some("Polygon")),
+        AnnotationKind::Shape(ShapeKind::PolyLine) => ("Path", Some("PolyLine")),
         AnnotationKind::Note => ("Path", Some("Note")),
         AnnotationKind::TextBox => ("Path", Some("TextBox")),
         AnnotationKind::Stamp => ("Stamp", None),
@@ -140,6 +143,9 @@ fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload) -> String 
                 ShapeKind::Ellipse => ellipse_path(rect),
                 ShapeKind::Arrow => arrow_path(rect),
                 ShapeKind::Line => line_path(rect),
+                // v1 placeholder: Polygon/PolyLine use the rect bounding box;
+                // T3 will build the path from `points`.
+                ShapeKind::Polygon | ShapeKind::PolyLine => rect_path(rect),
             };
             format!(
                 "<ofd:Appearance Boundary=\"{} {} {} {}\">{}</ofd:Appearance>",

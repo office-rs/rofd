@@ -10,6 +10,8 @@ pub enum ShapeKind {
     Ellipse,
     Arrow,
     Line,
+    Polygon,
+    PolyLine,
 }
 
 /// Sticky-note icon variant.

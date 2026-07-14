@@ -134,6 +134,7 @@ mod tests {
             stroke: Color::Rgb(0, 0, 0),
             fill: None,
             width: 1.0,
+            points: vec![],
         };
         resize_payload(
             &mut p,
