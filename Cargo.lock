@@ -2026,6 +2026,8 @@ dependencies = [
  "masonry_winit",
  "rfd",
  "rofd-component",
+ "rofd-dom",
+ "rofd-io",
  "rofd-native-view",
  "winit",
  "xilem",

@@ -15,6 +15,7 @@
 //! chosen `.ofd`. A `task` view + `MessageProxy` wakes the app after load so the
 //! canvas repaints with the new document.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use masonry_winit::app::{AppDriver, MasonryState, MasonryUserEvent};
@@ -44,6 +45,41 @@ struct AppState {
     wake_proxy: SharedWakeProxy,
 }
 
+/// Save the editor's document to `current_file` (overwrite), or prompt a
+/// Save As dialog if no file is set. Resets modified on success. Errors
+/// print to stderr (v1: no status-bar UI wired).
+fn do_save(editor: &mut EditorApp) {
+    let bytes = match editor.save_ofd() {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("[ERROR] save failed: {e}");
+            return;
+        }
+    };
+    if let Some(path) = editor.current_file.clone() {
+        if let Err(e) = std::fs::write(&path, &bytes) {
+            eprintln!("[ERROR] write {}: {}", path.display(), e);
+            return;
+        }
+    } else {
+        // New document, no current_file -> Save As dialog.
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("OFD document", &["ofd"])
+            .set_file_name("untitled.ofd")
+            .save_file()
+        {
+            if let Err(e) = std::fs::write(&path, &bytes) {
+                eprintln!("[ERROR] write {}: {}", path.display(), e);
+                return;
+            }
+            editor.current_file = Some(path);
+        } else {
+            return; // user cancelled
+        }
+    }
+    editor.component.clear_modified();
+}
+
 fn app_logic(_app: &mut AppState) -> impl WidgetView<AppState> + use<> {
     let btn_open = text_button("Open", |app: &mut AppState| {
         if let Some(path) = FileDialog::new()
@@ -68,10 +104,19 @@ fn app_logic(_app: &mut AppState) -> impl WidgetView<AppState> + use<> {
     .border_width(0.0)
     .corner_radius(2.0);
 
-    let menu_bar =
-        sized_box(flex_row((btn_open,)).gap(xilem::masonry::layout::Length::const_px(2.0)))
-            .padding(Padding::from_vh(2.0, 4.0))
-            .background_color(Color::from_rgb8(240, 240, 240));
+    let btn_save = text_button("Save", |app: &mut AppState| {
+        let mut editor = app.editor.lock().unwrap();
+        do_save(&mut editor);
+    })
+    .padding(BTN_PAD)
+    .border_width(0.0)
+    .corner_radius(2.0);
+
+    let menu_bar = sized_box(
+        flex_row((btn_open, btn_save)).gap(xilem::masonry::layout::Length::const_px(2.0)),
+    )
+    .padding(Padding::from_vh(2.0, 4.0))
+    .background_color(Color::from_rgb8(240, 240, 240));
 
     // OFD canvas: a masonry Canvas widget whose paint closure builds the editor
     // scene each frame and replays it into the widget's imaging scene.
@@ -117,6 +162,7 @@ struct NativeApp {
     editor: SharedEditor,
     bridge: WinitEventBridge,
     canvas_widget_id: SharedCanvasId,
+    save_requested: Arc<AtomicBool>,
 }
 
 impl ApplicationHandler<MasonryUserEvent> for NativeApp {
@@ -173,6 +219,16 @@ impl ApplicationHandler<MasonryUserEvent> for NativeApp {
             if outcome.needs_repaint {
                 self.request_canvas_render();
             }
+        }
+
+        // Ctrl+S routed through component's on_save_request -> flag -> poll here.
+        // Polling after handle_event (rather than invoking do_save from inside
+        // the callback) sidesteps the EditorApp non-Send + &mut self borrow
+        // conflict: the callback only sets a flag, the save runs on the winit
+        // thread with a fresh lock.
+        if self.save_requested.swap(false, Ordering::SeqCst) {
+            let mut editor = self.editor.lock().unwrap();
+            do_save(&mut editor);
         }
 
         // Forward the original event to masonry (by value). For RedrawRequested
@@ -261,6 +317,19 @@ fn main() -> Result<(), winit::error::EventLoopError> {
     let canvas_widget_id: SharedCanvasId = Arc::new(Mutex::new(None));
     let wake_proxy: SharedWakeProxy = Arc::new(Mutex::new(None));
 
+    // Ctrl+S: the component fires on_save_request when the user presses the
+    // shortcut. The callback only sets an AtomicBool flag (Send + 'static);
+    // the NativeApp's window_event handler polls it and runs do_save on the
+    // winit thread. This avoids re-entrancy / &mut self borrow issues that
+    // would arise from doing the save directly inside the callback.
+    let save_requested: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    {
+        let flag = save_requested.clone();
+        editor.lock().unwrap().component.on_save_request(move || {
+            flag.store(true, Ordering::SeqCst);
+        });
+    }
+
     let app_state = AppState {
         editor: editor.clone(),
         canvas_widget_id: canvas_widget_id.clone(),
@@ -286,7 +355,50 @@ fn main() -> Result<(), winit::error::EventLoopError> {
         editor,
         bridge: WinitEventBridge::new(),
         canvas_widget_id,
+        save_requested,
     };
 
     event_loop.run_app(&mut app)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rofd_dom::OfdDocument;
+
+    #[test]
+    fn do_save_writes_to_current_file_and_clears_modified() {
+        let mut app = EditorApp::new(rofd_component::EditorConfig::new(Arc::new(vec![])));
+        // load a package (sets package)
+        let bytes = rofd_io::write_ofd(&OfdDocument::default()).unwrap();
+        app.load_ofd(&bytes).unwrap();
+        // set current_file to a temp file
+        let tmp = std::env::temp_dir().join(format!("rofd_c2_test_{}.ofd", std::process::id()));
+        app.current_file = Some(tmp.clone());
+        // make an annotation edit to set modified
+        app.set_clock("t".into(), 1);
+        app.component.create_annotation(
+            rofd_dom::AnnotationKind::Note,
+            rofd_dom::PageId::new("1"),
+            rofd_dom::AnnotationPayload::Note {
+                rect: rofd_dom::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 5.0,
+                    h: 5.0,
+                },
+                color: rofd_dom::Color::Rgb(0, 0, 0),
+                content: "x".into(),
+                icon: rofd_dom::NoteIcon::Note,
+            },
+        );
+        assert!(app.is_modified());
+        do_save(&mut app);
+        assert!(tmp.exists(), "file written");
+        assert!(!app.is_modified(), "clear_modified after save");
+        // written file re-parses
+        let written = std::fs::read(&tmp).unwrap();
+        rofd_io::parse_ofd(&written).expect("written file re-parses");
+        let _ = std::fs::remove_file(&tmp);
+    }
 }
