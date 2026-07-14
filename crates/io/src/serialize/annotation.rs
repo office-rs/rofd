@@ -11,7 +11,10 @@ use rofd_dom::{
     Annotation, AnnotationKind, AnnotationPayload, Color, PageId, PathData, Rect, ShapeKind,
 };
 
-use crate::annotation_geom::{arrow_path, ellipse_path, line_path, markup_line_path, rect_path};
+use crate::annotation_geom::{
+    arrow_path, ellipse_path, line_path, markup_line_path, polygon_path, polyline_path, rect_path,
+    squiggly_path,
+};
 use crate::dateutil::format_last_mod_date;
 
 /// Serialize one page's annotations to GB/T 33190 §15.2 `<PageAnnot>` XML.
@@ -70,6 +73,25 @@ fn serialize_one(a: &Annotation) -> String {
             angle
         ));
     }
+    // Polygon/PolyLine: Vertices Parameter (GB/T 33190 §15.2.3.5) carries the
+    // control points as "x y x y ..." so parse can reconstruct `points`.
+    if let AnnotationPayload::Shape {
+        points,
+        kind: ShapeKind::Polygon | ShapeKind::PolyLine,
+        ..
+    } = &a.payload
+    {
+        if !points.is_empty() {
+            let mut verts = String::new();
+            for p in points {
+                verts.push_str(&format!("{} {} ", p.x, p.y));
+            }
+            s.push_str(&format!(
+                "<ofd:Parameter Name=\"Vertices\">{}</ofd:Parameter>",
+                verts.trim_end()
+            ));
+        }
+    }
     s.push_str("</ofd:Parameters>");
     // Remark (Note content only).
     if matches!(a.kind, AnnotationKind::Note) {
@@ -99,7 +121,7 @@ fn kind_to_type_subtype(k: &AnnotationKind) -> (&'static str, Option<&'static st
         AnnotationKind::Shape(ShapeKind::Polygon) => ("Path", Some("Polygon")),
         AnnotationKind::Shape(ShapeKind::PolyLine) => ("Path", Some("PolyLine")),
         AnnotationKind::Note => ("Path", Some("Note")),
-        AnnotationKind::TextBox => ("Path", Some("TextBox")),
+        AnnotationKind::TextBox => ("FreeText", Some("FreeText")),
         AnnotationKind::Stamp => ("Stamp", None),
         AnnotationKind::Watermark => ("Watermark", None),
     }
@@ -117,6 +139,11 @@ fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload) -> String 
         (AnnotationKind::Strikeout, AnnotationPayload::Markup { quad_points, color }) => {
             markup_line_appearance(quad_points, color, false)
         }
+        (AnnotationKind::Squiggly, AnnotationPayload::Markup { quad_points, color }) => {
+            // Same boundary structure as Underline/Strikeout (so parse reconstructs
+            // the same quad_points), but the path is a wavy squiggly_path.
+            markup_squiggly_appearance(quad_points, color)
+        }
         (AnnotationKind::Freehand, AnnotationPayload::Freehand { path, color, width }) => {
             let r = path_bounds(path);
             format!(
@@ -126,6 +153,48 @@ fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload) -> String 
                 r.w,
                 r.h,
                 path_object_xml(&r, *color, None, *width, path)
+            )
+        }
+        (
+            AnnotationKind::Shape(ShapeKind::Polygon),
+            AnnotationPayload::Shape {
+                points,
+                rect,
+                stroke,
+                fill,
+                width,
+                ..
+            },
+        ) => {
+            let path = polygon_path(points);
+            format!(
+                "<ofd:Appearance Boundary=\"{} {} {} {}\">{}</ofd:Appearance>",
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                path_object_xml(rect, *stroke, *fill, *width, &path)
+            )
+        }
+        (
+            AnnotationKind::Shape(ShapeKind::PolyLine),
+            AnnotationPayload::Shape {
+                points,
+                rect,
+                stroke,
+                fill,
+                width,
+                ..
+            },
+        ) => {
+            let path = polyline_path(points);
+            format!(
+                "<ofd:Appearance Boundary=\"{} {} {} {}\">{}</ofd:Appearance>",
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                path_object_xml(rect, *stroke, *fill, *width, &path)
             )
         }
         (
@@ -143,8 +212,7 @@ fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload) -> String 
                 ShapeKind::Ellipse => ellipse_path(rect),
                 ShapeKind::Arrow => arrow_path(rect),
                 ShapeKind::Line => line_path(rect),
-                // v1 placeholder: Polygon/PolyLine use the rect bounding box;
-                // T3 will build the path from `points`.
+                // Polygon/PolyLine handled by their own arms above (with Vertices).
                 ShapeKind::Polygon | ShapeKind::PolyLine => rect_path(rect),
             };
             format!(
@@ -342,6 +410,30 @@ fn markup_line_appearance(
     s
 }
 
+/// Squiggly appearance: one wavy path per quad pair. The PathObject boundary
+/// matches `markup_line_appearance` (so parse reconstructs the same
+/// quad_points), but the AbbreviatedData uses `squiggly_path` (Q curves) for
+/// the wavy rendering (GB/T 33190 §15.2.3.4).
+fn markup_squiggly_appearance(quad_points: &[rofd_dom::Point], color: &Color) -> String {
+    let mut s = String::new();
+    for (p0, p1) in quad_point_pairs(quad_points) {
+        let r = Rect {
+            x: p0.x.min(p1.x),
+            y: p0.y.min(p1.y),
+            w: (p1.x - p0.x).abs(),
+            h: (p1.y - p0.y).abs(),
+        };
+        let path = squiggly_path(p0, p1);
+        s.push_str(&format!(
+            "<ofd:Appearance Boundary=\"{} {} {} {}\">",
+            r.x, r.y, r.w, r.h
+        ));
+        s.push_str(&path_object_xml(&r, *color, None, 0.5, &path));
+        s.push_str("</ofd:Appearance>");
+    }
+    s
+}
+
 /// Iterate quad_points as pairs (p0, p1). Each pair defines one quad rectangle.
 fn quad_point_pairs(
     quad_points: &[rofd_dom::Point],
@@ -420,7 +512,9 @@ fn path_to_abbrev(p: &PathData) -> String {
             rofd_dom::PathCommand::Z => {
                 s.push_str("Z ");
             }
-            rofd_dom::PathCommand::A(_, _, _, _, _, _) => {}
+            rofd_dom::PathCommand::A(a, b, c, d, e, f) => {
+                s.push_str(&format!("A {} {} {} {} {} {} ", a, b, c, d, e, f));
+            }
         }
     }
     s
@@ -461,6 +555,25 @@ mod tests {
                 PathCommand::L(10.0, 20.0),
                 PathCommand::C(1.0, 2.0, 3.0, 4.0, 5.0, 6.0),
                 PathCommand::Q(1.0, 2.0, 3.0, 4.0),
+                PathCommand::Z,
+            ],
+        };
+        let abbrev = path_to_abbrev(&pd);
+        let parsed = crate::abbreviated::parse_abbreviated(&abbrev);
+        assert_eq!(pd, parsed);
+    }
+
+    #[test]
+    fn path_to_abbrev_round_trips_arc_commands() {
+        // T3: A (arc) operators must round-trip (ellipse_path emits them).
+        // PathCommand::A has 6 params (rx, ry, rot, sweep, x, y).
+        let pd = PathData {
+            commands: vec![
+                PathCommand::M(5.0, 0.0),
+                PathCommand::A(5.0, 5.0, 0.0, 1.0, 0.0, 5.0),
+                PathCommand::A(5.0, 5.0, 0.0, 1.0, -5.0, 0.0),
+                PathCommand::A(5.0, 5.0, 0.0, 1.0, 0.0, -5.0),
+                PathCommand::A(5.0, 5.0, 0.0, 1.0, 5.0, 0.0),
                 PathCommand::Z,
             ],
         };
@@ -521,11 +634,14 @@ mod tests {
             AnnotationKind::Highlight,
             AnnotationKind::Underline,
             AnnotationKind::Strikeout,
+            AnnotationKind::Squiggly,
             AnnotationKind::Freehand,
             AnnotationKind::Shape(ShapeKind::Rect),
             AnnotationKind::Shape(ShapeKind::Ellipse),
             AnnotationKind::Shape(ShapeKind::Arrow),
             AnnotationKind::Shape(ShapeKind::Line),
+            AnnotationKind::Shape(ShapeKind::Polygon),
+            AnnotationKind::Shape(ShapeKind::PolyLine),
             AnnotationKind::Note,
             AnnotationKind::TextBox,
             AnnotationKind::Stamp,
@@ -539,6 +655,32 @@ mod tests {
                 assert!(sub.is_some(), "Subtype missing for {:?}", k);
             }
         }
+    }
+
+    #[test]
+    fn textbox_maps_to_freetext_type() {
+        // T3: TextBox serializes as Type=FreeText (was Path), matching real OFD
+        // and parse's ("FreeText", _) => TextBox arm.
+        let (ty, sub) = kind_to_type_subtype(&AnnotationKind::TextBox);
+        assert_eq!(ty, "FreeText");
+        assert_eq!(sub, Some("FreeText"));
+    }
+
+    #[test]
+    fn squiggly_polygon_polyline_type_subtype() {
+        // T3: verify the new kind arms produce the spec-correct (Type, Subtype).
+        assert_eq!(
+            kind_to_type_subtype(&AnnotationKind::Squiggly),
+            ("Highlight", Some("Squiggly"))
+        );
+        assert_eq!(
+            kind_to_type_subtype(&AnnotationKind::Shape(ShapeKind::Polygon)),
+            ("Path", Some("Polygon"))
+        );
+        assert_eq!(
+            kind_to_type_subtype(&AnnotationKind::Shape(ShapeKind::PolyLine)),
+            ("Path", Some("PolyLine"))
+        );
     }
 
     #[test]
