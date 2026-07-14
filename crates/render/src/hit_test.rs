@@ -144,24 +144,36 @@ pub fn hit_test(
 /// the annotation's page is not found or the payload has no geometry (e.g.
 /// empty Freehand path).
 ///
-/// The page-origin computation matches `composite.rs` exactly.
+/// The page-origin computation matches `composite.rs` exactly: Y starts at
+/// `page_gap - scroll.1` for page 0 and advances by `page_h + page_gap` per
+/// subsequent page. This is critical for multi-page docs - an annotation on
+/// page 1+ must use page 1+'s stacked Y origin, not page 0's.
 pub(crate) fn annotation_viewport_rect(
     doc: &OfdDocument,
     ann: &Annotation,
     vp: &Viewport,
 ) -> Option<Rect> {
-    let page = doc.pages.iter().find(|p| p.id == ann.page)?;
-    let page_w = page.physical_box.w * vp.zoom;
-    let page_x = ((vp.size.0 - page_w) / 2.0).max(0.0);
-    let page_origin = (page_x + vp.scroll.0, vp.page_gap - vp.scroll.1);
+    // Iterate pages mirroring composite's page-stacking loop to find the
+    // annotation's page and its accumulated Y origin.
+    let mut y = vp.page_gap - vp.scroll.1;
+    for page in &doc.pages {
+        let page_w = page.physical_box.w * vp.zoom;
+        let page_h = page.physical_box.h * vp.zoom;
+        if page.id == ann.page {
+            let page_x = ((vp.size.0 - page_w) / 2.0).max(0.0);
+            let page_origin = (page_x + vp.scroll.0, y);
 
-    let local = annotation_local_rect(ann)?;
-    Some(Rect {
-        x: page_origin.0 + local.x * vp.zoom,
-        y: page_origin.1 + local.y * vp.zoom,
-        w: local.w * vp.zoom,
-        h: local.h * vp.zoom,
-    })
+            let local = annotation_local_rect(ann)?;
+            return Some(Rect {
+                x: page_origin.0 + local.x * vp.zoom,
+                y: page_origin.1 + local.y * vp.zoom,
+                w: local.w * vp.zoom,
+                h: local.h * vp.zoom,
+            });
+        }
+        y += page_h + vp.page_gap;
+    }
+    None
 }
 
 /// Compute the page-local bounding rect of an annotation's payload.
@@ -578,6 +590,120 @@ mod tests {
         assert!(
             matches!(target, HitTarget::Annotation(_)),
             "without selection, corner falls through to annotation body, got {target:?}"
+        );
+    }
+
+    #[test]
+    fn hit_test_handle_on_page_1_uses_correct_y_origin() {
+        // Regression: annotation_viewport_rect and the handle hit-test must
+        // use the annotation's page's stacked Y origin, NOT page 0's.
+        //
+        // Two pages, each 100x100, gap 20, zoom 1, viewport 200x400.
+        //   page_x = ((200-100)/2).max(0) = 50.
+        //   Page 0 Y origin = 20 (page_gap - scroll.1).
+        //   Page 1 Y origin = 20 + 100 + 20 = 140.
+        // Annotation on page 1: rect (10,10) w=80 h=60.
+        //   NW corner viewport = (50+10, 140+10) = (60, 150).
+        //   SE corner viewport = (50+90, 140+70) = (140, 210).
+        //
+        // Before the fix, annotation_viewport_rect hardcoded page 0's Y (20),
+        // so the handle was tested at (60, 30) instead of (60, 150) - a click
+        // at (60, 150) would miss and fall through to the page body.
+        use rofd_dom::{AnnotationModel, AnnotationSelection, OfdDocument, Page};
+
+        let page0_id = PageId::new("P0");
+        let page1_id = PageId::new("P1");
+        let annotation = Annotation {
+            id: AnnotationId::from_int(1),
+            kind: AnnotationKind::Shape(ShapeKind::Rect),
+            page: page1_id.clone(),
+            creator: "t".into(),
+            created: 0,
+            modified: 0,
+            reply_to: None,
+            payload: AnnotationPayload::Shape {
+                kind: ShapeKind::Rect,
+                rect: Rect {
+                    x: 10.0,
+                    y: 10.0,
+                    w: 80.0,
+                    h: 60.0,
+                },
+                stroke: Color::Rgb(0, 0, 0),
+                fill: Some(Color::Rgb(255, 255, 255)),
+                width: 2.0,
+                points: vec![],
+            },
+        };
+        let mk_page = |id: PageId| Page {
+            id,
+            physical_box: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+            },
+            layers: vec![],
+            template: None,
+        };
+        let mut model = AnnotationModel::default();
+        model.insert(annotation.clone());
+        let doc = OfdDocument {
+            meta: Default::default(),
+            pages: vec![mk_page(page0_id), mk_page(page1_id)],
+            resources: Default::default(),
+            annotations: model,
+            max_unit_id: 0,
+        };
+        let vp = Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (200.0, 400.0),
+            page_gap: 20.0,
+        };
+        let selection = AnnotationSelection::Single(annotation.id.clone());
+
+        // Point on the NW corner handle of page 1's annotation.
+        // Correct Y origin (140) -> (60, 150). Buggy Y origin (20) -> (60, 30).
+        let target = hit_test(&doc, &vp, &selection, (60.0, 150.0));
+        assert_eq!(
+            target,
+            HitTarget::Handle(annotation.id.clone(), HandlePos::Nw),
+            "page 1 NW corner handle should be hit at its stacked Y origin (60, 150), got {target:?}"
+        );
+
+        // Point on the SE corner handle of page 1's annotation.
+        // Correct Y origin (140) -> (140, 210). Buggy Y origin (20) -> (140, 90).
+        let target = hit_test(&doc, &vp, &selection, (140.0, 210.0));
+        assert_eq!(
+            target,
+            HitTarget::Handle(annotation.id.clone(), HandlePos::Se),
+            "page 1 SE corner handle should be hit at its stacked Y origin (140, 210), got {target:?}"
+        );
+
+        // Sanity: clicking at the buggy position (60, 30) should NOT hit the
+        // page 1 annotation's handle (it's on page 0's area, which has no
+        // annotation). Before the fix this would erroneously return Handle.
+        let target = hit_test(&doc, &vp, &selection, (60.0, 30.0));
+        assert_ne!(
+            target,
+            HitTarget::Handle(annotation.id.clone(), HandlePos::Nw),
+            "page 1 handle should NOT be hit at page 0's Y origin (60, 30)"
+        );
+
+        // Direct unit-level check: annotation_viewport_rect returns the rect
+        // at page 1's Y origin, not page 0's.
+        let vr = annotation_viewport_rect(&doc, &annotation, &vp)
+            .expect("annotation_viewport_rect should find the annotation on page 1");
+        assert_eq!(
+            vr,
+            Rect {
+                x: 60.0,
+                y: 150.0,
+                w: 80.0,
+                h: 60.0
+            },
+            "annotation_viewport_rect should use page 1's stacked Y origin (150), not page 0's (30)"
         );
     }
 }
