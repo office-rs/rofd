@@ -239,3 +239,59 @@ fn parse_real_page_annot_underline_and_rectangle() {
         other => panic!("expected Shape, got {other:?}"),
     }
 }
+
+#[test]
+fn parse_freetext_typewriter_to_textbox() {
+    let xml = r#"<?xml version="1.0"?>
+<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Annot Type="FreeText" ID="1" Creator="flw" LastModDate="2026-07-14 19:00:00" Subtype="TypeWriter">
+    <ofd:Remark>文字批注</ofd:Remark>
+    <ofd:Appearance Boundary="10 10 50 10"><ofd:TextObject ID="2" Boundary="0 0 50 10" Font="F1" Size="5"><ofd:FillColor Value="13 13 13"/><ofd:TextCode X="0" Y="8">文字批注</ofd:TextCode></ofd:TextObject></ofd:Appearance>
+  </ofd:Annot>
+</ofd:PageAnnot>"#;
+    let anns =
+        rofd_io::parse::annotation::parse_page_annot(xml, &rofd_dom::PageId::new("1")).unwrap();
+    assert_eq!(anns.len(), 1);
+    assert!(matches!(anns[0].kind, rofd_dom::AnnotationKind::TextBox));
+    match &anns[0].payload {
+        rofd_dom::AnnotationPayload::TextBox { content, .. } => assert_eq!(content, "文字批注"),
+        other => panic!("expected TextBox, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_squiggly_is_not_degraded() {
+    let xml = r#"<?xml version="1.0"?>
+<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Annot Type="Highlight" ID="1" Creator="flw" LastModDate="2026-07-14 19:00:00" Subtype="Squiggly">
+    <ofd:Appearance Boundary="10 10 50 4"><ofd:PathObject ID="2" Boundary="0 0 50 4" LineWidth="0.2"><ofd:StrokeColor Value="0 164 247"/><ofd:AbbreviatedData>M 10 12 Q 11 11 12 12 Q 13 13 14 12 </ofd:AbbreviatedData></ofd:PathObject></ofd:Appearance>
+  </ofd:Annot>
+</ofd:PageAnnot>"#;
+    let anns =
+        rofd_io::parse::annotation::parse_page_annot(xml, &rofd_dom::PageId::new("1")).unwrap();
+    assert!(
+        matches!(anns[0].kind, rofd_dom::AnnotationKind::Squiggly),
+        "not degraded to Highlight"
+    );
+}
+
+#[test]
+fn parse_polygon_reads_vertices() {
+    let xml = r#"<?xml version="1.0"?>
+<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Annot Type="Path" ID="1" Creator="flw" LastModDate="2026-07-14 19:00:00" Subtype="Polygon">
+    <ofd:Parameters><ofd:Parameter Name="Vertices">0 0 5 10 10 0</ofd:Parameter></ofd:Parameters>
+    <ofd:Appearance Boundary="0 0 10 10"><ofd:PathObject ID="2" Boundary="0 0 10 10" LineWidth="0.35"><ofd:StrokeColor Value="255 0 0"/><ofd:AbbreviatedData>M 0 0 L 5 10 L 10 0 C </ofd:AbbreviatedData></ofd:PathObject></ofd:Appearance>
+  </ofd:Annot>
+</ofd:PageAnnot>"#;
+    let anns =
+        rofd_io::parse::annotation::parse_page_annot(xml, &rofd_dom::PageId::new("1")).unwrap();
+    assert!(matches!(
+        anns[0].kind,
+        rofd_dom::AnnotationKind::Shape(rofd_dom::ShapeKind::Polygon)
+    ));
+    match &anns[0].payload {
+        rofd_dom::AnnotationPayload::Shape { points, .. } => assert_eq!(points.len(), 3),
+        other => panic!("expected Shape, got {other:?}"),
+    }
+}

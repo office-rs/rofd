@@ -287,19 +287,20 @@ fn map_type_subtype(ty: &str, sub: Option<&str>) -> AnnotationKind {
     match (ty, sub) {
         (_, Some("Underline")) => AnnotationKind::Underline,
         (_, Some("Strikeout")) => AnnotationKind::Strikeout,
+        (_, Some("Squiggly")) => AnnotationKind::Squiggly,
         (_, Some("Freehand")) => AnnotationKind::Freehand,
         (_, Some("Rectangle")) => AnnotationKind::Shape(ShapeKind::Rect),
         (_, Some("Ellipse")) => AnnotationKind::Shape(ShapeKind::Ellipse),
         (_, Some("Arrow")) => AnnotationKind::Shape(ShapeKind::Arrow),
         (_, Some("Line")) => AnnotationKind::Shape(ShapeKind::Line),
+        (_, Some("Polygon")) => AnnotationKind::Shape(ShapeKind::Polygon),
+        (_, Some("PolyLine")) => AnnotationKind::Shape(ShapeKind::PolyLine),
         (_, Some("Note")) => AnnotationKind::Note,
         (_, Some("TextBox")) => AnnotationKind::TextBox,
+        ("FreeText", _) => AnnotationKind::TextBox,
         ("Stamp", _) => AnnotationKind::Stamp,
         ("Watermark", _) => AnnotationKind::Watermark,
-        // Squiggly maps to Highlight (no dedicated kind in v1 model).
-        (_, Some("Squiggly")) | ("Highlight", _) | (_, None) => AnnotationKind::Highlight,
-        // Unknown Subtype under Path -> Freehand (a path-like default);
-        // any other unknown -> Highlight (markup default).
+        ("Highlight", _) | (_, None) => AnnotationKind::Highlight,
         ("Path", _) => AnnotationKind::Freehand,
         _ => AnnotationKind::Highlight,
     }
@@ -394,7 +395,7 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
                 stroke: stroke.unwrap_or(Color::Rgb(0, 0, 0)),
                 fill,
                 width,
-                points: vec![],
+                points: parse_vertices(&p.params),
             }
         }
         AnnotationKind::Note => {
@@ -415,6 +416,9 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
             }
         }
         AnnotationKind::TextBox => {
+            // FreeText: content/font/size/color come from the Appearance
+            // TextObject. When no TextObject is present, fall back to the
+            // Remark text (some producers put the text only in <Remark>).
             let (content, font, size, color) = p
                 .objects
                 .iter()
@@ -428,7 +432,7 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
                     } => Some((content.clone(), font.clone(), *size, *fill)),
                     _ => None,
                 })
-                .unwrap_or_default();
+                .unwrap_or_else(|| (p.remark.clone(), String::new(), 0.0, None));
             AnnotationPayload::TextBox {
                 rect: boundary,
                 content,
@@ -520,6 +524,26 @@ fn parse_rect_attr(e: &BytesStart, name: &str) -> Rect {
         Some(s) => parse_rect_ws(&s),
         None => Rect::default(),
     }
+}
+
+/// Parse the `Vertices` Parameter (GB/T 33190 §15.2.3.5) into a list of
+/// points. The value is a flat whitespace-separated float list
+/// `"x y x y ..."`; an odd count or absent entry yields an empty vec.
+/// Used by Polygon/PolyLine Shape annotations.
+fn parse_vertices(params: &[(String, String)]) -> Vec<Point> {
+    params
+        .iter()
+        .find(|(k, _)| k == "Vertices")
+        .and_then(|(_, v)| {
+            let n: Vec<f64> = v
+                .split_whitespace()
+                .filter_map(|t| t.parse().ok())
+                .collect();
+            n.len()
+                .is_multiple_of(2)
+                .then(|| n.chunks(2).map(|c| Point { x: c[0], y: c[1] }).collect())
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
