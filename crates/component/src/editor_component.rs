@@ -103,6 +103,10 @@ impl EditorComponent {
     pub fn is_modified(&self) -> bool {
         self.modified
     }
+    /// Reset the modified flag (call after a successful save).
+    pub fn clear_modified(&mut self) {
+        self.modified = false;
+    }
     pub fn set_clock(&mut self, author: String, ts: i64) {
         self.editor.set_clock(author, ts);
     }
@@ -610,6 +614,21 @@ mod tests {
         } else {
             panic!("expected single selection");
         }
+    }
+
+    #[test]
+    fn clear_modified_resets_flag() {
+        let mut c = component_with_note();
+        // component_with_note() uses a direct editor call (bypasses
+        // after_annotation_change), so establish modified=true via a real
+        // component-level mutation before clearing.
+        let sel = c.editor.selection().clone();
+        if let rofd_editor::AnnotationSelection::Single(id) = sel {
+            c.move_annotation(&id, 1.0, 1.0);
+        }
+        assert!(c.is_modified(), "mutation sets modified");
+        c.clear_modified();
+        assert!(!c.is_modified(), "clear_modified resets");
     }
 
     #[test]
