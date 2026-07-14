@@ -222,6 +222,7 @@ mod tests {
                 stroke: Color::Rgb(0, 0, 0),
                 fill: Some(Color::Rgb(255, 255, 255)),
                 width: 2.0,
+                points: vec![],
             },
             AnnotationKind::Shape(ShapeKind::Rect),
         );

@@ -74,6 +74,7 @@ pub fn draw_annotations(
                 stroke,
                 fill,
                 width,
+                ..
             } => {
                 draw_shape(painter, *kind, rect, *stroke, *fill, *width, base);
             }
@@ -181,7 +182,13 @@ fn draw_shape(
     base: Affine,
 ) {
     let bez: BezPath = match kind {
-        ShapeKind::Rect | ShapeKind::Arrow | ShapeKind::Line => {
+        ShapeKind::Rect
+        | ShapeKind::Arrow
+        | ShapeKind::Line
+        | ShapeKind::Polygon
+        | ShapeKind::PolyLine => {
+            // v1 placeholder: Polygon/PolyLine use the rect bounding box;
+            // T4 will build the path from `points`.
             rofd_rect_to_kurbo(rect).to_path(SHAPE_TOLERANCE)
         }
         ShapeKind::Ellipse => {
@@ -448,6 +455,7 @@ mod tests {
                 stroke: Color::Rgb(0, 0, 0),
                 fill: Some(Color::Rgb(255, 255, 255)),
                 width: 2.0,
+                points: vec![],
             },
             AnnotationKind::Shape(ShapeKind::Rect),
         );
@@ -468,6 +476,7 @@ mod tests {
                 stroke: Color::Rgb(255, 0, 0),
                 fill: None,
                 width: 1.0,
+                points: vec![],
             },
             AnnotationKind::Shape(ShapeKind::Ellipse),
         );
@@ -488,6 +497,7 @@ mod tests {
                 stroke: Color::Rgb(0, 0, 0),
                 fill: None,
                 width: 1.0,
+                points: vec![],
             },
             AnnotationKind::Shape(ShapeKind::Arrow),
         );
@@ -651,6 +661,7 @@ mod tests {
                     stroke: Color::Rgb(0, 0, 0),
                     fill: Some(Color::Rgb(255, 255, 255)),
                     width: 2.0,
+                    points: vec![],
                 },
                 AnnotationKind::Shape(ShapeKind::Rect),
             ),
