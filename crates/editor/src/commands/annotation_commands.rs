@@ -11,8 +11,9 @@ impl Editor {
     pub fn create_annotation(
         &mut self, kind: AnnotationKind, page: PageId, payload: AnnotationPayload,
     ) -> AnnotationId {
-        // Placeholder: T2 rewrites this to allocate from max_unit_id + 1.
-        let id = AnnotationId::from_int(0);
+        let n = self.document.max_unit_id + 1;
+        self.document.max_unit_id = n;
+        let id = AnnotationId::from_int(n);
         let ann = Annotation {
             id: id.clone(), kind, page, creator: self.author.clone(),
             created: self.current_ts, modified: self.current_ts, reply_to: None, payload,
@@ -88,5 +89,68 @@ impl Editor {
             text_cursor_before: self.text_cursor.clone(),
             text_cursor_after: self.text_cursor.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rofd_dom::{AnnotationKind, AnnotationPayload, Color, NoteIcon, PageId, Rect};
+
+    fn editor_with_max_id(n: u64) -> Editor {
+        let mut e = Editor::new();
+        e.document.max_unit_id = n;
+        e.set_clock("tester".into(), 1_700_000_000_000);
+        e
+    }
+
+    #[test]
+    fn create_annotation_allocates_id_from_max_unit_id_plus_one() {
+        let mut e = editor_with_max_id(1500);
+        let id = e.create_annotation(
+            AnnotationKind::Note,
+            PageId::new("1"),
+            AnnotationPayload::Note {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 10.0,
+                    h: 10.0,
+                },
+                color: Color::Rgb(0, 0, 0),
+                content: "hi".into(),
+                icon: NoteIcon::Note,
+            },
+        );
+        assert_eq!(id.0, "1501", "new id = max_unit_id + 1");
+        assert_eq!(e.document().max_unit_id, 1501, "max_unit_id 自增");
+    }
+
+    #[test]
+    fn create_annotation_ids_monotonic_unique() {
+        let mut e = editor_with_max_id(100);
+        let a = e.create_annotation(
+            AnnotationKind::Note,
+            PageId::new("1"),
+            AnnotationPayload::Note {
+                rect: Rect::default(),
+                color: Color::Rgb(0, 0, 0),
+                content: "a".into(),
+                icon: NoteIcon::Note,
+            },
+        );
+        let b = e.create_annotation(
+            AnnotationKind::Note,
+            PageId::new("1"),
+            AnnotationPayload::Note {
+                rect: Rect::default(),
+                color: Color::Rgb(0, 0, 0),
+                content: "b".into(),
+                icon: NoteIcon::Note,
+            },
+        );
+        assert_ne!(a, b, "ids 唯一");
+        assert_eq!(a.0, "101");
+        assert_eq!(b.0, "102");
     }
 }
