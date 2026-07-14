@@ -64,7 +64,13 @@ mod tests {
 
     #[test]
     fn pathdata_round_trips_serde_json() {
-        let pd = PathData { commands: vec![PathCommand::M(1.0, 2.0), PathCommand::L(3.0, 4.0), PathCommand::Z] };
+        let pd = PathData {
+            commands: vec![
+                PathCommand::M(1.0, 2.0),
+                PathCommand::L(3.0, 4.0),
+                PathCommand::Z,
+            ],
+        };
         let s = serde_json::to_string(&pd).unwrap();
         let back: PathData = serde_json::from_str(&s).unwrap();
         assert_eq!(pd, back);

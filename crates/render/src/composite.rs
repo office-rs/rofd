@@ -105,9 +105,23 @@ impl RenderEngine {
 
             // Body + annotation, drawn directly with page_origin + zoom baked
             // into each draw call (no cached sub-scenes - see module docs).
-            draw_body(&mut painter, page, &doc.resources, fonts, page_origin, vp.zoom);
+            draw_body(
+                &mut painter,
+                page,
+                &doc.resources,
+                fonts,
+                page_origin,
+                vp.zoom,
+            );
             let anns = doc.annotations.for_page(&page.id);
-            draw_annotations(&mut painter, anns, &doc.resources, fonts, page_origin, vp.zoom);
+            draw_annotations(
+                &mut painter,
+                anns,
+                &doc.resources,
+                fonts,
+                page_origin,
+                vp.zoom,
+            );
 
             y += page_h + vp.page_gap;
         }

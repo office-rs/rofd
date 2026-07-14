@@ -15,7 +15,11 @@ pub struct EditorApp {
 
 impl EditorApp {
     pub fn new(config: EditorConfig) -> Self {
-        Self { component: EditorComponent::new(config), current_file: None, modified: false }
+        Self {
+            component: EditorComponent::new(config),
+            current_file: None,
+            modified: false,
+        }
     }
 
     pub fn load_ofd(&mut self, bytes: &[u8]) -> Result<(), String> {
@@ -38,7 +42,9 @@ impl EditorApp {
 
     pub fn handle_event(&mut self, event: &ViewEvent) -> EventOutcome {
         let outcome = self.component.handle_event(event);
-        if outcome.needs_repaint { self.modified = true; }
+        if outcome.needs_repaint {
+            self.modified = true;
+        }
         outcome
     }
 
@@ -51,12 +57,19 @@ impl EditorApp {
     /// Update the canvas dimensions (logical pixels). Drives the component's
     /// viewport size via a `Resize` event.
     pub fn set_size(&mut self, width: f64, height: f64) {
-        self.component.handle_event(&ViewEvent::Resize { width, height });
+        self.component
+            .handle_event(&ViewEvent::Resize { width, height });
     }
 
-    pub fn document(&self) -> &OfdDocument { self.component.document() }
-    pub fn is_modified(&self) -> bool { self.modified }
-    pub fn set_clock(&mut self, author: String, ts: i64) { self.component.set_clock(author, ts); }
+    pub fn document(&self) -> &OfdDocument {
+        self.component.document()
+    }
+    pub fn is_modified(&self) -> bool {
+        self.modified
+    }
+    pub fn set_clock(&mut self, author: String, ts: i64) {
+        self.component.set_clock(author, ts);
+    }
 }
 
 #[cfg(test)]

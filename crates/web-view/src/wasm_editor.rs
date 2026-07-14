@@ -57,8 +57,8 @@ mod wasm_impl {
     use rofd_io::{parse_ofd, write_ofd};
     use wasm_bindgen::prelude::*;
 
-    use crate::webgpu_render_target::WebGpuRenderTarget;
     use crate::wasm_editor::parse_key;
+    use crate::webgpu_render_target::WebGpuRenderTarget;
 
     /// JS callback slots. Each is an `Rc<RefCell<Option<Function>>>` so the
     /// Rust bridge closures (registered in [`WasmEditor::setup_bridge_callbacks`])
@@ -146,9 +146,16 @@ mod wasm_impl {
             alt: bool,
             meta: bool,
         ) -> Result<(), JsValue> {
-            let modifiers = Modifiers { shift, control: ctrl, alt, meta };
-            self.component
-                .handle_event(&ViewEvent::KeyDown { key: parse_key(key), modifiers });
+            let modifiers = Modifiers {
+                shift,
+                control: ctrl,
+                alt,
+                meta,
+            };
+            self.component.handle_event(&ViewEvent::KeyDown {
+                key: parse_key(key),
+                modifiers,
+            });
             Ok(())
         }
 
@@ -163,7 +170,12 @@ mod wasm_impl {
             alt: bool,
             meta: bool,
         ) -> Result<(), JsValue> {
-            let modifiers = Modifiers { shift, control: ctrl, alt, meta };
+            let modifiers = Modifiers {
+                shift,
+                control: ctrl,
+                alt,
+                meta,
+            };
             self.component.handle_event(&ViewEvent::PointerDown {
                 button: parse_mouse_button(button),
                 x,
@@ -195,7 +207,8 @@ mod wasm_impl {
 
         #[wasm_bindgen(js_name = handleMouseMove)]
         pub fn handle_mouse_move(&mut self, x: f64, y: f64) -> Result<(), JsValue> {
-            self.component.handle_event(&ViewEvent::PointerMove { x, y });
+            self.component
+                .handle_event(&ViewEvent::PointerMove { x, y });
             Ok(())
         }
 
@@ -302,9 +315,10 @@ mod wasm_impl {
         /// changes (e.g. to update a "modified" indicator).
         fn setup_bridge_callbacks(&mut self) {
             let on_change_js = self.callbacks.on_change.clone();
-            self.component.on_change(Box::new(move |_doc: &OfdDocument| {
-                call_js0(&on_change_js);
-            }));
+            self.component
+                .on_change(Box::new(move |_doc: &OfdDocument| {
+                    call_js0(&on_change_js);
+                }));
 
             let on_selection_change_js = self.callbacks.on_selection_change.clone();
             self.component

@@ -7,7 +7,7 @@
 //! they are tested first (topmost first = reverse doc order).
 
 use rofd_dom::{
-    Annotation, AnnotationId, AnnotationKind, AnnotationPayload, AnnotationModel, Color, FontId,
+    Annotation, AnnotationId, AnnotationKind, AnnotationModel, AnnotationPayload, Color, FontId,
     ImageId, NoteIcon, OfdDocument, Page, PageId, PathCommand, PathData, Point, Rect, ShapeKind,
 };
 use rofd_render::{hit_test, HitTarget, Viewport};
@@ -77,7 +77,15 @@ fn hit_test_center_of_page_returns_page() {
     // Page 100x100, viewport 200x200, zoom 1, no scroll, gap 20.
     // page_x = ((200-100)/2).max(0) = 50; page_y = 20.
     // Page rect: x[50,150], y[20,120]. Center = (100, 70).
-    let doc = doc_with_page_and_anns(Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }, vec![]);
+    let doc = doc_with_page_and_anns(
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+        },
+        vec![],
+    );
     let vp = Viewport {
         scroll: (0.0, 0.0),
         zoom: 1.0,
@@ -91,7 +99,15 @@ fn hit_test_center_of_page_returns_page() {
 /// A click outside every page returns Empty.
 #[test]
 fn hit_test_outside_pages_returns_empty() {
-    let doc = doc_with_page_and_anns(Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }, vec![]);
+    let doc = doc_with_page_and_anns(
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+        },
+        vec![],
+    );
     let vp = Viewport {
         scroll: (0.0, 0.0),
         zoom: 1.0,
@@ -100,7 +116,10 @@ fn hit_test_outside_pages_returns_empty() {
     };
     // (10,10) is above the page (page starts at y=20) and left of it (x starts
     // at 50).
-    assert!(matches!(hit_test(&doc, &vp, (10.0, 10.0)), HitTarget::Empty));
+    assert!(matches!(
+        hit_test(&doc, &vp, (10.0, 10.0)),
+        HitTarget::Empty
+    ));
 }
 
 /// scroll.0 shifts pages horizontally - a click that hits the page with scroll
@@ -110,7 +129,15 @@ fn hit_test_scroll_x_shifts_page_horizontally() {
     // Page 100x100, viewport 200x200, zoom 1, gap 20.
     // No scroll: page_x = 50, rect x[50,150].
     // scroll.0 = 100: page_origin.x = 50 + 100 = 150, rect x[150,250].
-    let doc = doc_with_page_and_anns(Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }, vec![]);
+    let doc = doc_with_page_and_anns(
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+        },
+        vec![],
+    );
     let vp_no_scroll = Viewport {
         scroll: (0.0, 0.0),
         zoom: 1.0,
@@ -129,14 +156,25 @@ fn hit_test_scroll_x_shifts_page_horizontally() {
         HitTarget::Page(PageId::new("P0"))
     );
     // Same point without scroll is off the page (page x is [50,150], 200 > 150).
-    assert!(matches!(hit_test(&doc, &vp_no_scroll, (200.0, 70.0)), HitTarget::Empty));
+    assert!(matches!(
+        hit_test(&doc, &vp_no_scroll, (200.0, 70.0)),
+        HitTarget::Empty
+    ));
 }
 
 /// scroll.1 shifts pages vertically - matching composite's `y = page_gap -
 /// scroll.1`.
 #[test]
 fn hit_test_scroll_y_shifts_page_vertically() {
-    let doc = doc_with_page_and_anns(Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }, vec![]);
+    let doc = doc_with_page_and_anns(
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+        },
+        vec![],
+    );
     // scroll.1 = 50 -> page_y = 20 - 50 = -30; rect y[-30, 70]. Center y = 20.
     let vp = Viewport {
         scroll: (0.0, 50.0),
@@ -159,7 +197,10 @@ fn hit_test_scroll_y_shifts_page_vertically() {
         size: (200.0, 200.0),
         page_gap: 20.0,
     };
-    assert!(matches!(hit_test(&doc, &vp_no_scroll, (100.0, 10.0)), HitTarget::Empty));
+    assert!(matches!(
+        hit_test(&doc, &vp_no_scroll, (100.0, 10.0)),
+        HitTarget::Empty
+    ));
 }
 
 /// zoom scales the page and its placement.
@@ -168,7 +209,15 @@ fn hit_test_zoom_scales_page() {
     // Page 100x100, viewport 400x400, zoom 2, gap 20.
     // page_w = 200, page_h = 200; page_x = ((400-200)/2).max(0) = 100.
     // page_y = 20. Rect x[100,300], y[20,220]. Center = (200, 120).
-    let doc = doc_with_page_and_anns(Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }, vec![]);
+    let doc = doc_with_page_and_anns(
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+        },
+        vec![],
+    );
     let vp = Viewport {
         scroll: (0.0, 0.0),
         zoom: 2.0,
@@ -185,10 +234,23 @@ fn hit_test_zoom_scales_page() {
 /// own center.
 #[test]
 fn hit_test_second_page_stacked_vertically() {
-    let mut doc = doc_with_page_and_anns(Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }, vec![]);
+    let mut doc = doc_with_page_and_anns(
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+        },
+        vec![],
+    );
     doc.pages.push(Page {
         id: PageId::new("P1"),
-        physical_box: Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 },
+        physical_box: Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+        },
         layers: vec![],
         template: None,
     });
@@ -224,7 +286,15 @@ fn hit_test_markup_annotation_hit_and_miss() {
         },
         AnnotationKind::Highlight,
     );
-    let doc = doc_with_page_and_anns(Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }, vec![ann]);
+    let doc = doc_with_page_and_anns(
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+        },
+        vec![ann],
+    );
     let vp = Viewport {
         scroll: (0.0, 0.0),
         zoom: 1.0,
@@ -233,7 +303,10 @@ fn hit_test_markup_annotation_hit_and_miss() {
     };
     // page_x=50, page_y=20. Local of viewport (60,30) = (10,10) -> inside quad.
     let hit = hit_test(&doc, &vp, (60.0, 30.0));
-    assert!(matches!(hit, HitTarget::Annotation(_)), "expected Annotation hit, got {hit:?}");
+    assert!(
+        matches!(hit, HitTarget::Annotation(_)),
+        "expected Annotation hit, got {hit:?}"
+    );
     // Just outside the quad (local (25,25)) falls through to Page.
     assert_eq!(
         hit_test(&doc, &vp, (75.0, 45.0)),
@@ -266,7 +339,12 @@ fn hit_test_topmost_annotation_wins() {
         AnnotationKind::Highlight,
     );
     let doc = doc_with_page_and_anns(
-        Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 },
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+        },
         vec![ann_first, ann_second],
     );
     let vp = Viewport {
@@ -287,7 +365,10 @@ fn hit_test_topmost_annotation_wins() {
                 .unwrap()
                 .id
                 .clone();
-            assert_eq!(id, second_id, "topmost (last in doc order) annotation should win");
+            assert_eq!(
+                id, second_id,
+                "topmost (last in doc order) annotation should win"
+            );
         }
         other => panic!("expected Annotation, got {other:?}"),
     }
@@ -321,18 +402,37 @@ fn hit_test_shape_annotation_rect_bbox() {
         &page_id,
         AnnotationPayload::Shape {
             kind: ShapeKind::Rect,
-            rect: Rect { x: 10.0, y: 10.0, w: 40.0, h: 20.0 },
+            rect: Rect {
+                x: 10.0,
+                y: 10.0,
+                w: 40.0,
+                h: 20.0,
+            },
             stroke: Color::Rgb(0, 0, 0),
             fill: Some(Color::Rgb(255, 255, 255)),
             width: 2.0,
         },
         AnnotationKind::Shape(ShapeKind::Rect),
     );
-    let doc = doc_with_page_and_anns(Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }, vec![ann]);
+    let doc = doc_with_page_and_anns(
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+        },
+        vec![ann],
+    );
     // Inside the rect bbox: local (30, 20).
-    assert!(matches!(hit_at_local(&doc, (30.0, 20.0)), HitTarget::Annotation(_)));
+    assert!(matches!(
+        hit_at_local(&doc, (30.0, 20.0)),
+        HitTarget::Annotation(_)
+    ));
     // Outside: local (5, 5).
-    assert_eq!(hit_at_local(&doc, (5.0, 5.0)), HitTarget::Page(PageId::new("P0")));
+    assert_eq!(
+        hit_at_local(&doc, (5.0, 5.0)),
+        HitTarget::Page(PageId::new("P0"))
+    );
 }
 
 #[test]
@@ -351,11 +451,25 @@ fn hit_test_freehand_annotation_bbox() {
         },
         AnnotationKind::Freehand,
     );
-    let doc = doc_with_page_and_anns(Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }, vec![ann]);
+    let doc = doc_with_page_and_anns(
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+        },
+        vec![ann],
+    );
     // Inside bbox: local (30, 30).
-    assert!(matches!(hit_at_local(&doc, (30.0, 30.0)), HitTarget::Annotation(_)));
+    assert!(matches!(
+        hit_at_local(&doc, (30.0, 30.0)),
+        HitTarget::Annotation(_)
+    ));
     // Outside bbox: local (5, 5).
-    assert_eq!(hit_at_local(&doc, (5.0, 5.0)), HitTarget::Page(PageId::new("P0")));
+    assert_eq!(
+        hit_at_local(&doc, (5.0, 5.0)),
+        HitTarget::Page(PageId::new("P0"))
+    );
 }
 
 #[test]
@@ -380,9 +494,20 @@ fn hit_test_freehand_with_curve_commands() {
         },
         AnnotationKind::Freehand,
     );
-    let doc = doc_with_page_and_anns(Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 }, vec![ann]);
+    let doc = doc_with_page_and_anns(
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 200.0,
+            h: 200.0,
+        },
+        vec![ann],
+    );
     // bbox should be x[10,70], y[10,70]. local (40,40) inside.
-    assert!(matches!(hit_at_local(&doc, (40.0, 40.0)), HitTarget::Annotation(_)));
+    assert!(matches!(
+        hit_at_local(&doc, (40.0, 40.0)),
+        HitTarget::Annotation(_)
+    ));
 }
 
 #[test]
@@ -392,15 +517,31 @@ fn hit_test_note_annotation_bbox() {
         "a1",
         &page_id,
         AnnotationPayload::Note {
-            rect: Rect { x: 10.0, y: 10.0, w: 40.0, h: 20.0 },
+            rect: Rect {
+                x: 10.0,
+                y: 10.0,
+                w: 40.0,
+                h: 20.0,
+            },
             color: Color::Rgb(255, 200, 0),
             content: "note".into(),
             icon: NoteIcon::Note,
         },
         AnnotationKind::Note,
     );
-    let doc = doc_with_page_and_anns(Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }, vec![ann]);
-    assert!(matches!(hit_at_local(&doc, (30.0, 20.0)), HitTarget::Annotation(_)));
+    let doc = doc_with_page_and_anns(
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+        },
+        vec![ann],
+    );
+    assert!(matches!(
+        hit_at_local(&doc, (30.0, 20.0)),
+        HitTarget::Annotation(_)
+    ));
 }
 
 #[test]
@@ -410,7 +551,12 @@ fn hit_test_textbox_annotation_bbox() {
         "a1",
         &page_id,
         AnnotationPayload::TextBox {
-            rect: Rect { x: 10.0, y: 10.0, w: 100.0, h: 30.0 },
+            rect: Rect {
+                x: 10.0,
+                y: 10.0,
+                w: 100.0,
+                h: 30.0,
+            },
             content: "hi".into(),
             font: FontId::new("F1"),
             size: 12.0,
@@ -418,8 +564,19 @@ fn hit_test_textbox_annotation_bbox() {
         },
         AnnotationKind::TextBox,
     );
-    let doc = doc_with_page_and_anns(Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 }, vec![ann]);
-    assert!(matches!(hit_at_local(&doc, (50.0, 25.0)), HitTarget::Annotation(_)));
+    let doc = doc_with_page_and_anns(
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 200.0,
+            h: 200.0,
+        },
+        vec![ann],
+    );
+    assert!(matches!(
+        hit_at_local(&doc, (50.0, 25.0)),
+        HitTarget::Annotation(_)
+    ));
 }
 
 #[test]
@@ -429,13 +586,29 @@ fn hit_test_stamp_annotation_bbox() {
         "a1",
         &page_id,
         AnnotationPayload::Stamp {
-            rect: Rect { x: 10.0, y: 10.0, w: 50.0, h: 50.0 },
+            rect: Rect {
+                x: 10.0,
+                y: 10.0,
+                w: 50.0,
+                h: 50.0,
+            },
             image: ImageId::new("I1"),
         },
         AnnotationKind::Stamp,
     );
-    let doc = doc_with_page_and_anns(Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 }, vec![ann]);
-    assert!(matches!(hit_at_local(&doc, (30.0, 30.0)), HitTarget::Annotation(_)));
+    let doc = doc_with_page_and_anns(
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 200.0,
+            h: 200.0,
+        },
+        vec![ann],
+    );
+    assert!(matches!(
+        hit_at_local(&doc, (30.0, 30.0)),
+        HitTarget::Annotation(_)
+    ));
 }
 
 #[test]
@@ -445,7 +618,12 @@ fn hit_test_watermark_annotation_bbox() {
         "a1",
         &page_id,
         AnnotationPayload::Watermark {
-            rect: Rect { x: 0.0, y: 0.0, w: 200.0, h: 100.0 },
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 100.0,
+            },
             content: "DRAFT".into(),
             opacity: 0.3,
             angle: 0.785,
@@ -455,8 +633,19 @@ fn hit_test_watermark_annotation_bbox() {
         },
         AnnotationKind::Watermark,
     );
-    let doc = doc_with_page_and_anns(Rect { x: 0.0, y: 0.0, w: 300.0, h: 300.0 }, vec![ann]);
-    assert!(matches!(hit_at_local(&doc, (100.0, 50.0)), HitTarget::Annotation(_)));
+    let doc = doc_with_page_and_anns(
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 300.0,
+            h: 300.0,
+        },
+        vec![ann],
+    );
+    assert!(matches!(
+        hit_at_local(&doc, (100.0, 50.0)),
+        HitTarget::Annotation(_)
+    ));
 }
 
 /// Markup with multiple quad pairs: any pair hit wins.
@@ -477,11 +666,28 @@ fn hit_test_markup_multiple_quad_pairs() {
         },
         AnnotationKind::Highlight,
     );
-    let doc = doc_with_page_and_anns(Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 }, vec![ann]);
+    let doc = doc_with_page_and_anns(
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 200.0,
+            h: 200.0,
+        },
+        vec![ann],
+    );
     // First pair: local (15, 15).
-    assert!(matches!(hit_at_local(&doc, (15.0, 15.0)), HitTarget::Annotation(_)));
+    assert!(matches!(
+        hit_at_local(&doc, (15.0, 15.0)),
+        HitTarget::Annotation(_)
+    ));
     // Second pair: local (55, 55).
-    assert!(matches!(hit_at_local(&doc, (55.0, 55.0)), HitTarget::Annotation(_)));
+    assert!(matches!(
+        hit_at_local(&doc, (55.0, 55.0)),
+        HitTarget::Annotation(_)
+    ));
     // Between pairs: local (35, 35) -> miss -> Page.
-    assert_eq!(hit_at_local(&doc, (35.0, 35.0)), HitTarget::Page(PageId::new("P0")));
+    assert_eq!(
+        hit_at_local(&doc, (35.0, 35.0)),
+        HitTarget::Page(PageId::new("P0"))
+    );
 }

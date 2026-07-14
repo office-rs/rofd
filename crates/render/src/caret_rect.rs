@@ -56,16 +56,24 @@ pub fn caret_rect(
     // Extract (content, font_id, size, rect) for text-bearing payloads.
     // Notes carry their own content; non-text payloads return None.
     let (content, font_id, size, rect) = match &ann.payload {
-        AnnotationPayload::TextBox { rect, content, font, size, .. } => {
-            (content.as_str(), font, *size, *rect)
-        }
+        AnnotationPayload::TextBox {
+            rect,
+            content,
+            font,
+            size,
+            ..
+        } => (content.as_str(), font, *size, *rect),
         AnnotationPayload::Note { rect, content, .. } => {
             // Notes: caret placed inside the popup rect using the note's text.
             (content.as_str(), &rofd_dom::FontId::default(), 12.0, *rect)
         }
-        AnnotationPayload::Watermark { rect, content, font, size, .. } => {
-            (content.as_str(), font, *size, *rect)
-        }
+        AnnotationPayload::Watermark {
+            rect,
+            content,
+            font,
+            size,
+            ..
+        } => (content.as_str(), font, *size, *rect),
         _ => return None,
     };
 
@@ -75,9 +83,10 @@ pub fn caret_rect(
     // Caret x (page-local) = the shaped glyph x at `offset`. For an offset at
     // or past the end of the run, place the caret at the last glyph's x (the
     // shaper's pen position for that glyph). For an empty run, x = 0.
-    let caret_x_local = glyphs.get(offset).map(|g| g.x).unwrap_or_else(|| {
-        glyphs.last().map(|g| g.x).unwrap_or(0.0)
-    });
+    let caret_x_local = glyphs
+        .get(offset)
+        .map(|g| g.x)
+        .unwrap_or_else(|| glyphs.last().map(|g| g.x).unwrap_or(0.0));
 
     // Walk pages to find the annotation's page and compute its viewport origin.
     // This mirrors composite.rs (scroll BOTH axes + centering + page_gap + zoom).
@@ -110,19 +119,23 @@ mod tests {
     use std::sync::Arc;
 
     use rofd_dom::{
-        Annotation, AnnotationKind, AnnotationPayload, AnnotationId, Color, FontId, NoteIcon,
+        Annotation, AnnotationId, AnnotationKind, AnnotationPayload, Color, FontId, NoteIcon,
         OfdDocument, Page, PageId, Rect, ShapeKind,
     };
 
     /// A minimal doc + FontStore for positive tests: one page + the TestFont
     /// registered as the default (so unknown FontIds still shape).
     fn doc_with_font() -> (OfdDocument, FontStore) {
-        let font_bytes =
-            include_bytes!("../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        let font_bytes = include_bytes!("../tests/fixtures/fonts/TestFont.ttf") as &[u8];
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
             id: PageId::new("P0"),
-            physical_box: Rect { x: 0.0, y: 0.0, w: 200.0, h: 300.0 },
+            physical_box: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 300.0,
+            },
             layers: vec![],
             template: None,
         });
@@ -131,7 +144,11 @@ mod tests {
     }
 
     /// Push an annotation onto page P0 and return its id.
-    fn push_ann(doc: &mut OfdDocument, payload: AnnotationPayload, kind: AnnotationKind) -> AnnotationId {
+    fn push_ann(
+        doc: &mut OfdDocument,
+        payload: AnnotationPayload,
+        kind: AnnotationKind,
+    ) -> AnnotationId {
         let id = AnnotationId::from_int(1);
         let ann = Annotation {
             id: id.clone(),
@@ -164,8 +181,7 @@ mod tests {
     fn caret_rect_none_for_non_text_annotation() {
         let doc = OfdDocument::default(); // no annotations
         let vp = vp();
-        let font_bytes =
-            include_bytes!("../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        let font_bytes = include_bytes!("../tests/fixtures/fonts/TestFont.ttf") as &[u8];
         let fonts = FontStore::from_resources(&doc.resources, Arc::new(font_bytes.to_vec()));
         let res = caret_rect(&doc, &vp, &fonts, &AnnotationId::default(), 0);
         assert!(res.is_none(), "empty doc (no annotation) -> None");
@@ -178,7 +194,10 @@ mod tests {
         let id = push_ann(
             &mut doc,
             AnnotationPayload::Markup {
-                quad_points: vec![rofd_dom::Point { x: 0.0, y: 0.0 }, rofd_dom::Point { x: 10.0, y: 10.0 }],
+                quad_points: vec![
+                    rofd_dom::Point { x: 0.0, y: 0.0 },
+                    rofd_dom::Point { x: 10.0, y: 10.0 },
+                ],
                 color: Color::Rgb(255, 255, 0),
             },
             AnnotationKind::Highlight,
@@ -194,7 +213,12 @@ mod tests {
             &mut doc,
             AnnotationPayload::Shape {
                 kind: ShapeKind::Rect,
-                rect: Rect { x: 0.0, y: 0.0, w: 40.0, h: 20.0 },
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 40.0,
+                    h: 20.0,
+                },
                 stroke: Color::Rgb(0, 0, 0),
                 fill: Some(Color::Rgb(255, 255, 255)),
                 width: 2.0,
@@ -214,7 +238,12 @@ mod tests {
         let id = push_ann(
             &mut doc,
             AnnotationPayload::TextBox {
-                rect: Rect { x: 10.0, y: 20.0, w: 100.0, h: 30.0 },
+                rect: Rect {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 100.0,
+                    h: 30.0,
+                },
                 content: "Hi".into(),
                 font: FontId::new("F1"),
                 size: 12.0,
@@ -233,7 +262,10 @@ mod tests {
 
         let res = caret_rect(&doc, &vp(), &fonts, &id, 0);
         let r = res.expect("TextBox -> Some caret rect");
-        assert_eq!(r.x, expected_x, "caret x = page_origin_x + (rect.x + glyph0.x) * zoom");
+        assert_eq!(
+            r.x, expected_x,
+            "caret x = page_origin_x + (rect.x + glyph0.x) * zoom"
+        );
         assert_eq!(r.y, expected_y, "caret y = page_origin_y + rect.y * zoom");
         assert_eq!(r.w, 1.0, "caret width = 1px * zoom");
         assert_eq!(r.h, 12.0, "caret height = size * zoom");
@@ -247,7 +279,12 @@ mod tests {
         let id = push_ann(
             &mut doc,
             AnnotationPayload::TextBox {
-                rect: Rect { x: 10.0, y: 20.0, w: 100.0, h: 30.0 },
+                rect: Rect {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 100.0,
+                    h: 30.0,
+                },
                 content: "Hi".into(),
                 font: FontId::new("F1"),
                 size: 12.0,
@@ -285,19 +322,32 @@ mod tests {
         let note_id = push_ann(
             &mut doc,
             AnnotationPayload::Note {
-                rect: Rect { x: 5.0, y: 5.0, w: 40.0, h: 20.0 },
+                rect: Rect {
+                    x: 5.0,
+                    y: 5.0,
+                    w: 40.0,
+                    h: 20.0,
+                },
                 color: Color::Rgb(255, 200, 0),
                 content: "note text".into(),
                 icon: NoteIcon::Note,
             },
             AnnotationKind::Note,
         );
-        assert!(caret_rect(&doc, &vp(), &fonts, &note_id, 0).is_some(), "Note -> Some");
+        assert!(
+            caret_rect(&doc, &vp(), &fonts, &note_id, 0).is_some(),
+            "Note -> Some"
+        );
 
         let wm_id = push_ann(
             &mut doc,
             AnnotationPayload::Watermark {
-                rect: Rect { x: 0.0, y: 0.0, w: 200.0, h: 100.0 },
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 200.0,
+                    h: 100.0,
+                },
                 content: "DRAFT".into(),
                 opacity: 0.3,
                 angle: 45.0,
@@ -307,14 +357,16 @@ mod tests {
             },
             AnnotationKind::Watermark,
         );
-        assert!(caret_rect(&doc, &vp(), &fonts, &wm_id, 0).is_some(), "Watermark -> Some");
+        assert!(
+            caret_rect(&doc, &vp(), &fonts, &wm_id, 0).is_some(),
+            "Watermark -> Some"
+        );
     }
 
     #[test]
     fn caret_rect_none_when_page_missing() {
         // Annotation references a page that isn't in doc.pages -> None.
-        let font_bytes =
-            include_bytes!("../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        let font_bytes = include_bytes!("../tests/fixtures/fonts/TestFont.ttf") as &[u8];
         let mut doc = OfdDocument::default();
         // No pages pushed, but an annotation claims page P0.
         let id = AnnotationId::from_int(1);
@@ -331,7 +383,12 @@ mod tests {
                 modified: 0,
                 reply_to: None,
                 payload: AnnotationPayload::TextBox {
-                    rect: Rect { x: 10.0, y: 20.0, w: 100.0, h: 30.0 },
+                    rect: Rect {
+                        x: 10.0,
+                        y: 20.0,
+                        w: 100.0,
+                        h: 30.0,
+                    },
                     content: "Hi".into(),
                     font: FontId::new("F1"),
                     size: 12.0,
@@ -340,6 +397,9 @@ mod tests {
             });
         let fonts = FontStore::from_resources(&doc.resources, Arc::new(font_bytes.to_vec()));
         let res = caret_rect(&doc, &vp(), &fonts, &id, 0);
-        assert!(res.is_none(), "annotation on a page not in doc.pages -> None");
+        assert!(
+            res.is_none(),
+            "annotation on a page not in doc.pages -> None"
+        );
     }
 }

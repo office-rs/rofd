@@ -53,6 +53,9 @@ mod tests {
         let bytes = Arc::new(vec![0u8, 1, 2]);
         r.font_data.insert(FontId::new("F1"), bytes.clone());
         let cloned = r.clone();
-        assert!(Arc::ptr_eq(r.font_data.get(&FontId::new("F1")).unwrap(), cloned.font_data.get(&FontId::new("F1")).unwrap()));
+        assert!(Arc::ptr_eq(
+            r.font_data.get(&FontId::new("F1")).unwrap(),
+            cloned.font_data.get(&FontId::new("F1")).unwrap()
+        ));
     }
 }

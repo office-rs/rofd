@@ -126,7 +126,13 @@ mod tests {
 
     #[test]
     fn textcode_carries_text() {
-        let tc = TextCode { glyph_ids: vec![], deltas: vec![], text: "Hello".into(), x: 0.0, y: 0.0 };
+        let tc = TextCode {
+            glyph_ids: vec![],
+            deltas: vec![],
+            text: "Hello".into(),
+            x: 0.0,
+            y: 0.0,
+        };
         assert_eq!(tc.text, "Hello");
     }
 }

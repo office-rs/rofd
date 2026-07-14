@@ -45,13 +45,34 @@ pub enum ViewEvent {
         y: f64,
         modifiers: Modifiers,
     },
-    PointerMove { x: f64, y: f64 },
-    PointerUp { button: MouseButton, x: f64, y: f64 },
-    KeyDown { key: Key, modifiers: Modifiers },
-    KeyUp { key: Key, modifiers: Modifiers },
-    Scroll { dx: f64, dy: f64 },
-    Zoom { factor: f64 },
-    Resize { width: f64, height: f64 },
+    PointerMove {
+        x: f64,
+        y: f64,
+    },
+    PointerUp {
+        button: MouseButton,
+        x: f64,
+        y: f64,
+    },
+    KeyDown {
+        key: Key,
+        modifiers: Modifiers,
+    },
+    KeyUp {
+        key: Key,
+        modifiers: Modifiers,
+    },
+    Scroll {
+        dx: f64,
+        dy: f64,
+    },
+    Zoom {
+        factor: f64,
+    },
+    Resize {
+        width: f64,
+        height: f64,
+    },
     FocusGained,
     FocusLost,
 }
@@ -68,7 +89,9 @@ mod tests {
 
     #[test]
     fn event_outcome_needs_repaint() {
-        let o = EventOutcome { needs_repaint: true };
+        let o = EventOutcome {
+            needs_repaint: true,
+        };
         assert!(o.needs_repaint);
     }
 

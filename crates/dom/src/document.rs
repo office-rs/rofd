@@ -33,7 +33,9 @@ mod tests {
     fn clone_shares_media_via_arc() {
         let mut doc = OfdDocument::default();
         let bytes = Arc::new(vec![1u8, 2, 3]);
-        doc.resources.images.insert(ImageId::new("I1"), bytes.clone());
+        doc.resources
+            .images
+            .insert(ImageId::new("I1"), bytes.clone());
         let cloned = doc.clone();
         let a = doc.resources.images.get(&ImageId::new("I1")).unwrap();
         let b = cloned.resources.images.get(&ImageId::new("I1")).unwrap();

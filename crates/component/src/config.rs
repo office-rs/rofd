@@ -8,6 +8,9 @@ pub struct EditorConfig {
 
 impl EditorConfig {
     pub fn new(default_font_bytes: Arc<Vec<u8>>) -> Self {
-        Self { default_font_bytes, page_gap: 20.0 }
+        Self {
+            default_font_bytes,
+            page_gap: 20.0,
+        }
     }
 }

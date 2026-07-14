@@ -24,7 +24,14 @@ mod tests {
 
     #[test]
     fn identity_ctm_is_identity() {
-        let id = Ctm { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: 0.0, f: 0.0 };
+        let id = Ctm {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: 0.0,
+            f: 0.0,
+        };
         assert_eq!(ctm_to_affine(&id), Affine::IDENTITY);
     }
 
@@ -32,7 +39,13 @@ mod tests {
     fn compose_with_no_ctm_is_translate_scale() {
         let a = compose_transform((10.0, 20.0), 2.0, None);
         // point (0,0) -> (10, 20); point (5,0) -> (10+10, 20) = (20,20)
-        assert_eq!(a * kurbo::Point::new(0.0, 0.0), kurbo::Point::new(10.0, 20.0));
-        assert_eq!(a * kurbo::Point::new(5.0, 0.0), kurbo::Point::new(20.0, 20.0));
+        assert_eq!(
+            a * kurbo::Point::new(0.0, 0.0),
+            kurbo::Point::new(10.0, 20.0)
+        );
+        assert_eq!(
+            a * kurbo::Point::new(5.0, 0.0),
+            kurbo::Point::new(20.0, 20.0)
+        );
     }
 }

@@ -39,7 +39,9 @@ impl PackageHandle {
     }
 
     pub fn annotation_entries(&self) -> impl Iterator<Item = &PkgEntry> {
-        self.entries.iter().filter(|e| e.kind == EntryKind::Annotation)
+        self.entries
+            .iter()
+            .filter(|e| e.kind == EntryKind::Annotation)
     }
 }
 

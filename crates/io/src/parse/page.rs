@@ -38,7 +38,15 @@ pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result
                 if e.name().local_name().as_ref() == b"PhysicalBox" {
                     in_physical_box = true;
                 } else {
-                    handle_element_start(&e, &mut current_layer, &mut current_text, &mut pending_text_delta, &mut pending_text_body, &mut in_text_code, &mut text_origin);
+                    handle_element_start(
+                        &e,
+                        &mut current_layer,
+                        &mut current_text,
+                        &mut pending_text_delta,
+                        &mut pending_text_body,
+                        &mut in_text_code,
+                        &mut text_origin,
+                    );
                 }
             }
             Ok(Event::Empty(e)) => {
@@ -51,9 +59,20 @@ pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result
                         Some("Background") => LayerType::Background,
                         _ => LayerType::Body,
                     };
-                    page.layers.push(Layer { layer_type: lt, objects: vec![] });
+                    page.layers.push(Layer {
+                        layer_type: lt,
+                        objects: vec![],
+                    });
                 } else {
-                    handle_element_start(&e, &mut current_layer, &mut current_text, &mut pending_text_delta, &mut pending_text_body, &mut in_text_code, &mut text_origin);
+                    handle_element_start(
+                        &e,
+                        &mut current_layer,
+                        &mut current_text,
+                        &mut pending_text_delta,
+                        &mut pending_text_body,
+                        &mut in_text_code,
+                        &mut text_origin,
+                    );
                 }
             }
             Ok(Event::Text(t)) => {
@@ -77,8 +96,15 @@ pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result
                     if let Some(t) = current_text.as_mut() {
                         let body = pending_text_body.take().unwrap_or_default();
                         // v1: glyph_ids left empty (no Glyph attr in common subset); deltas derived from DeltaX string
-                        let deltas = parse_delta_x(pending_text_delta.as_deref(), body.chars().count());
-                        t.codes.push(TextCode { glyph_ids: vec![], deltas, text: body, x: text_origin.0, y: text_origin.1 });
+                        let deltas =
+                            parse_delta_x(pending_text_delta.as_deref(), body.chars().count());
+                        t.codes.push(TextCode {
+                            glyph_ids: vec![],
+                            deltas,
+                            text: body,
+                            x: text_origin.0,
+                            y: text_origin.1,
+                        });
                     }
                     pending_text_delta = None;
                     in_text_code = false;
@@ -97,7 +123,13 @@ pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result
                 _ => {}
             },
             Ok(Event::Eof) => break,
-            Err(e) => return Err(OfdError::Xml { entry: "Page.xml".into(), loc: String::new(), source: e }),
+            Err(e) => {
+                return Err(OfdError::Xml {
+                    entry: "Page.xml".into(),
+                    loc: String::new(),
+                    source: e,
+                })
+            }
             _ => {}
         }
     }
@@ -121,7 +153,10 @@ fn handle_element_start(
                 Some("Background") => LayerType::Background,
                 _ => LayerType::Body,
             };
-            *current_layer = Some(Layer { layer_type: lt, objects: vec![] });
+            *current_layer = Some(Layer {
+                layer_type: lt,
+                objects: vec![],
+            });
         }
         b"TextObject" => {
             *current_text = Some(TextObject {
@@ -139,7 +174,9 @@ fn handle_element_start(
             if let Some(c) = attr(e, "Value").and_then(|v| parse_color_value(&v)) {
                 let local = e.name().local_name();
                 if local.as_ref() == b"FillColor" {
-                    if let Some(t) = current_text.as_mut() { t.fill = Some(c); }
+                    if let Some(t) = current_text.as_mut() {
+                        t.fill = Some(c);
+                    }
                 }
                 // Also apply to the last PathObject in the current layer:
                 // FillColor -> p.fill, StrokeColor -> p.stroke.
@@ -182,7 +219,9 @@ fn handle_element_start(
                     ctm: attr(e, "CTM").and_then(parse_ctm),
                     fill: None,
                     stroke: None,
-                    line_width: attr(e, "LineWidth").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                    line_width: attr(e, "LineWidth")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0.0),
                     data: PathData::default(),
                     draw_param: attr(e, "DrawParam").map(DrawParamId::new),
                 }));
@@ -194,23 +233,56 @@ fn handle_element_start(
 }
 
 fn parse_delta_x(s: Option<&str>, glyph_count: usize) -> Vec<(f32, f32)> {
-    let s = match s { Some(s) => s, None => return vec![(0.0, 0.0); glyph_count.max(1)] };
-    let nums: Vec<f32> = s.split_whitespace().filter_map(|t| t.parse().ok()).collect();
-    if nums.is_empty() { return vec![(0.0, 0.0); glyph_count.max(1)]; }
-    (0..glyph_count.max(1)).map(|i| (nums.get(i).copied().unwrap_or(0.0), 0.0)).collect()
+    let s = match s {
+        Some(s) => s,
+        None => return vec![(0.0, 0.0); glyph_count.max(1)],
+    };
+    let nums: Vec<f32> = s
+        .split_whitespace()
+        .filter_map(|t| t.parse().ok())
+        .collect();
+    if nums.is_empty() {
+        return vec![(0.0, 0.0); glyph_count.max(1)];
+    }
+    (0..glyph_count.max(1))
+        .map(|i| (nums.get(i).copied().unwrap_or(0.0), 0.0))
+        .collect()
 }
 
 fn parse_rect_attr(e: &BytesStart, name: &str) -> Rect {
     // OFD Boundary="x y w h"
-    let s = match attr(e, name) { Some(s) => s, None => return Rect::default() };
-    let n: Vec<f64> = s.split_whitespace().filter_map(|t| t.parse().ok()).collect();
-    Rect { x: n.first().copied().unwrap_or(0.0), y: n.get(1).copied().unwrap_or(0.0), w: n.get(2).copied().unwrap_or(0.0), h: n.get(3).copied().unwrap_or(0.0) }
+    let s = match attr(e, name) {
+        Some(s) => s,
+        None => return Rect::default(),
+    };
+    let n: Vec<f64> = s
+        .split_whitespace()
+        .filter_map(|t| t.parse().ok())
+        .collect();
+    Rect {
+        x: n.first().copied().unwrap_or(0.0),
+        y: n.get(1).copied().unwrap_or(0.0),
+        w: n.get(2).copied().unwrap_or(0.0),
+        h: n.get(3).copied().unwrap_or(0.0),
+    }
 }
 
 fn parse_ctm(s: String) -> Option<Ctm> {
-    let n: Vec<f64> = s.split_whitespace().filter_map(|t| t.parse().ok()).collect();
-    if n.len() != 6 { return None; }
-    Some(Ctm { a: n[0], b: n[1], c: n[2], d: n[3], e: n[4], f: n[5] })
+    let n: Vec<f64> = s
+        .split_whitespace()
+        .filter_map(|t| t.parse().ok())
+        .collect();
+    if n.len() != 6 {
+        return None;
+    }
+    Some(Ctm {
+        a: n[0],
+        b: n[1],
+        c: n[2],
+        d: n[3],
+        e: n[4],
+        f: n[5],
+    })
 }
 
 #[cfg(test)]
@@ -236,7 +308,12 @@ mod tests {
             PageId::new("P0"),
             xml,
             &DocHeader {
-                page_area: Some(Rect { x: 0.0, y: 0.0, w: 210.0, h: 297.0 }),
+                page_area: Some(Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 210.0,
+                    h: 297.0,
+                }),
                 pages: vec![],
                 meta: DocMeta::default(),
                 max_unit_id: 0,

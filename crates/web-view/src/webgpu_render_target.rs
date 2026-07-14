@@ -206,9 +206,11 @@ impl WebGpuRenderTarget {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("rofd blit"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("rofd blit"),
+            });
         self.blitter
             .copy(&self.device, &mut encoder, &self.target_view, &surface_view);
         self.queue.submit(std::iter::once(encoder.finish()));

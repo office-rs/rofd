@@ -43,7 +43,9 @@ mod tests {
         let fired = Arc::new(Mutex::new(false));
         let fired_clone = fired.clone();
         let cbs = Callbacks {
-            on_change: Some(Box::new(move |_doc| { *fired_clone.lock().unwrap() = true; })),
+            on_change: Some(Box::new(move |_doc| {
+                *fired_clone.lock().unwrap() = true;
+            })),
             ..Default::default()
         };
         let doc = OfdDocument::default();
@@ -56,7 +58,9 @@ mod tests {
         let fired = Arc::new(Mutex::new(false));
         let fired_clone = fired.clone();
         let cbs = Callbacks {
-            on_save_request: Some(Box::new(move || { *fired_clone.lock().unwrap() = true; })),
+            on_save_request: Some(Box::new(move || {
+                *fired_clone.lock().unwrap() = true;
+            })),
             ..Default::default()
         };
         (cbs.on_save_request.as_ref().unwrap())();

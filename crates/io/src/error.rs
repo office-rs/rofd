@@ -1,13 +1,22 @@
-use rofd_dom::OfdDocument;
 use crate::package::PackageHandle;
+use rofd_dom::OfdDocument;
 
 #[derive(Debug, thiserror::Error)]
 pub enum OfdError {
     #[error("zip error in {entry}: {source}")]
-    Zip { entry: String, #[source] source: zip::result::ZipError },
+    Zip {
+        entry: String,
+        #[source]
+        source: zip::result::ZipError,
+    },
 
     #[error("xml error in {entry} at {loc}: {source}")]
-    Xml { entry: String, loc: String, #[source] source: quick_xml::Error },
+    Xml {
+        entry: String,
+        loc: String,
+        #[source]
+        source: quick_xml::Error,
+    },
 
     #[error("schema error in {entry}: {reason}")]
     Schema { entry: String, reason: String },
@@ -38,9 +47,18 @@ impl std::fmt::Display for ResourceKind {
 
 #[derive(Debug, Clone)]
 pub enum OfdWarning {
-    MissingFeature { feature: String, entry: String },
-    SkippedObject { page: rofd_dom::PageId, reason: String },
-    FontSubstituted { requested: String, used: String },
+    MissingFeature {
+        feature: String,
+        entry: String,
+    },
+    SkippedObject {
+        page: rofd_dom::PageId,
+        reason: String,
+    },
+    FontSubstituted {
+        requested: String,
+        used: String,
+    },
 }
 
 pub struct LoadReport {
@@ -51,7 +69,11 @@ pub struct LoadReport {
 
 impl LoadReport {
     pub fn new(document: OfdDocument, package: PackageHandle, warnings: Vec<OfdWarning>) -> Self {
-        Self { document, package, warnings }
+        Self {
+            document,
+            package,
+            warnings,
+        }
     }
 }
 
@@ -61,7 +83,10 @@ mod tests {
 
     #[test]
     fn missing_feature_warning_displays_feature() {
-        let w = OfdWarning::MissingFeature { feature: "JBIG2".into(), entry: "Doc_0/Res/Img_0.xml".into() };
+        let w = OfdWarning::MissingFeature {
+            feature: "JBIG2".into(),
+            entry: "Doc_0/Res/Img_0.xml".into(),
+        };
         assert!(format!("{w:?}").contains("JBIG2"));
     }
 

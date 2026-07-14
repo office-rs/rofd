@@ -14,14 +14,29 @@ pub fn parse_font_res(font_xml: &str) -> Result<Vec<(FontId, FontRef, Option<Str
     let mut out = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Empty(e)) | Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"Font" => {
+            Ok(Event::Empty(e)) | Ok(Event::Start(e))
+                if e.name().local_name().as_ref() == b"Font" =>
+            {
                 let id = FontId::new(attr(&e, "ID").unwrap_or_default());
                 let family = attr(&e, "FontName");
                 let font_file = attr(&e, "FontFile");
-                out.push((id.clone(), FontRef { id, family_name: family }, font_file));
+                out.push((
+                    id.clone(),
+                    FontRef {
+                        id,
+                        family_name: family,
+                    },
+                    font_file,
+                ));
             }
             Ok(Event::Eof) => break,
-            Err(e) => return Err(OfdError::Xml { entry: "Font.xml".into(), loc: String::new(), source: e }),
+            Err(e) => {
+                return Err(OfdError::Xml {
+                    entry: "Font.xml".into(),
+                    loc: String::new(),
+                    source: e,
+                })
+            }
             _ => {}
         }
     }
@@ -67,7 +82,14 @@ pub fn parse_res(xml: &str) -> Result<ParsedRes, OfdError> {
                 b"DrawParam" => {
                     let id = DrawParamId::new(attr(&e, "ID").unwrap_or_default());
                     let line_width = attr(&e, "LineWidth").and_then(|s| s.parse().ok());
-                    cur_dp = Some((id, DrawParam { line_width, stroke: None, fill: None }));
+                    cur_dp = Some((
+                        id,
+                        DrawParam {
+                            line_width,
+                            stroke: None,
+                            fill: None,
+                        },
+                    ));
                 }
                 b"FillColor" => {
                     if let Some(c) = attr(&e, "Value").and_then(|v| parse_color_value(&v)) {
@@ -93,7 +115,14 @@ pub fn parse_res(xml: &str) -> Result<ParsedRes, OfdError> {
                     let id = FontId::new(attr(&e, "ID").unwrap_or_default());
                     let family = attr(&e, "FontName");
                     let font_file = attr(&e, "FontFile");
-                    out.fonts.push((id.clone(), FontRef { id, family_name: family }, font_file));
+                    out.fonts.push((
+                        id.clone(),
+                        FontRef {
+                            id,
+                            family_name: family,
+                        },
+                        font_file,
+                    ));
                 }
                 _ => {}
             },
@@ -119,7 +148,13 @@ pub fn parse_res(xml: &str) -> Result<ParsedRes, OfdError> {
                 _ => {}
             },
             Ok(Event::Eof) => break,
-            Err(e) => return Err(OfdError::Xml { entry: "Res.xml".into(), loc: String::new(), source: e }),
+            Err(e) => {
+                return Err(OfdError::Xml {
+                    entry: "Res.xml".into(),
+                    loc: String::new(),
+                    source: e,
+                })
+            }
             _ => {}
         }
     }
@@ -148,21 +183,37 @@ mod tests {
         assert_eq!(r.base_loc, "Res");
         assert_eq!(r.draw_params.len(), 2, "two DrawParams");
 
-        let dp5 = r.draw_params.iter().find(|(id, _)| id.0 == "5").expect("DrawParam 5");
+        let dp5 = r
+            .draw_params
+            .iter()
+            .find(|(id, _)| id.0 == "5")
+            .expect("DrawParam 5");
         assert_eq!(dp5.1.line_width, Some(2.5));
-        assert_eq!(dp5.1.fill, Some(Color::Rgb(0, 0, 0)), "FillColor Value parsed");
-        assert_eq!(dp5.1.stroke, Some(Color::Rgb(255, 0, 0)), "StrokeColor Value parsed");
+        assert_eq!(
+            dp5.1.fill,
+            Some(Color::Rgb(0, 0, 0)),
+            "FillColor Value parsed"
+        );
+        assert_eq!(
+            dp5.1.stroke,
+            Some(Color::Rgb(255, 0, 0)),
+            "StrokeColor Value parsed"
+        );
 
-        let dp149 = r.draw_params.iter().find(|(id, _)| id.0 == "149").expect("DrawParam 149");
+        let dp149 = r
+            .draw_params
+            .iter()
+            .find(|(id, _)| id.0 == "149")
+            .expect("DrawParam 149");
         assert!(dp149.1.line_width.is_none(), "LineWidth absent -> None");
         assert!(dp149.1.stroke.is_none(), "no StrokeColor -> None");
 
         assert_eq!(r.multimedias.len(), 1);
-        assert_eq!(r.multimedias[0].0.0, "147");
+        assert_eq!(r.multimedias[0].0 .0, "147");
         assert_eq!(r.multimedias[0].1, "abc.png", "MediaFile text captured");
 
         assert_eq!(r.fonts.len(), 1);
-        assert_eq!(r.fonts[0].0.0, "21");
+        assert_eq!(r.fonts[0].0 .0, "21");
         assert_eq!(r.fonts[0].1.family_name.as_deref(), Some("SimSun"));
         assert!(r.fonts[0].2.is_none(), "no FontFile -> None (system font)");
     }

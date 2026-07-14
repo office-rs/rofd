@@ -6,7 +6,10 @@ use crate::payload_util::{set_color, set_width};
 impl Editor {
     /// Set the primary color.
     pub fn set_annotation_color(&mut self, id: &AnnotationId, color: Color) {
-        let before = match self.document.annotations.find(id).cloned() { Some(a) => a, None => return };
+        let before = match self.document.annotations.find(id).cloned() {
+            Some(a) => a,
+            None => return,
+        };
         let mut after = before.clone();
         set_color(&mut after.payload, color);
         after.modified = self.current_ts;
@@ -15,7 +18,10 @@ impl Editor {
 
     /// Set the stroke width (Freehand/Shape).
     pub fn set_annotation_width(&mut self, id: &AnnotationId, width: f64) {
-        let before = match self.document.annotations.find(id).cloned() { Some(a) => a, None => return };
+        let before = match self.document.annotations.find(id).cloned() {
+            Some(a) => a,
+            None => return,
+        };
         let mut after = before.clone();
         set_width(&mut after.payload, width);
         after.modified = self.current_ts;
@@ -24,7 +30,10 @@ impl Editor {
 
     /// Insert text into a text annotation (TextBox/Note/Watermark) at char offset.
     pub fn insert_text(&mut self, id: &AnnotationId, offset: usize, chars: &str) {
-        let before = match self.document.annotations.find(id).cloned() { Some(a) => a, None => return };
+        let before = match self.document.annotations.find(id).cloned() {
+            Some(a) => a,
+            None => return,
+        };
         let mut after = before.clone();
         if let Some(content) = text_content_mut(&mut after.payload) {
             let off = offset.min(content.chars().count());
@@ -39,13 +48,18 @@ impl Editor {
 
     /// Delete `len` chars from a text annotation at char offset.
     pub fn delete_text(&mut self, id: &AnnotationId, offset: usize, len: usize) {
-        let before = match self.document.annotations.find(id).cloned() { Some(a) => a, None => return };
+        let before = match self.document.annotations.find(id).cloned() {
+            Some(a) => a,
+            None => return,
+        };
         let mut after = before.clone();
         if let Some(content) = text_content_mut(&mut after.payload) {
             let total = content.chars().count();
             let start = offset.min(total);
             let end = (offset + len).min(total);
-            let kept: String = content.chars().enumerate()
+            let kept: String = content
+                .chars()
+                .enumerate()
                 .filter(|(i, _)| *i < start || *i >= end)
                 .map(|(_, c)| c)
                 .collect();
@@ -57,7 +71,10 @@ impl Editor {
 
     /// Replace the whole text content.
     pub fn set_annotation_text(&mut self, id: &AnnotationId, text: &str) {
-        let before = match self.document.annotations.find(id).cloned() { Some(a) => a, None => return };
+        let before = match self.document.annotations.find(id).cloned() {
+            Some(a) => a,
+            None => return,
+        };
         let mut after = before.clone();
         if let Some(content) = text_content_mut(&mut after.payload) {
             *content = text.into();
@@ -69,14 +86,22 @@ impl Editor {
     /// Reply to an annotation (creates a Note with reply_to set).
     pub fn reply_to(&mut self, parent: &AnnotationId, content: &str) -> AnnotationId {
         // Find the parent's page so the reply lives on the same page.
-        let page = self.document.annotations.find(parent)
+        let page = self
+            .document
+            .annotations
+            .find(parent)
             .map(|a| a.page.clone())
             .unwrap_or_default();
         self.create_annotation(
             AnnotationKind::Note,
             page,
             AnnotationPayload::Note {
-                rect: Rect { x: 0.0, y: 0.0, w: 40.0, h: 20.0 },
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 40.0,
+                    h: 20.0,
+                },
                 color: Color::Rgb(255, 200, 0),
                 content: content.into(),
                 icon: NoteIcon::Comment,
@@ -123,16 +148,26 @@ fn text_content_mut(p: &mut AnnotationPayload) -> Option<&mut String> {
 #[cfg(test)]
 mod tests {
     use crate::editor::Editor;
-    use rofd_dom::{AnnotationId, AnnotationKind, AnnotationPayload, Color, NoteIcon, PageId, Rect};
+    use rofd_dom::{
+        AnnotationId, AnnotationKind, AnnotationPayload, Color, NoteIcon, PageId, Rect,
+    };
 
     fn note_editor(content: &str) -> (Editor, AnnotationId) {
         let mut e = Editor::new();
         e.set_clock("t".into(), 1);
         let id = e.create_annotation(
-            AnnotationKind::Note, PageId::new("P0"),
+            AnnotationKind::Note,
+            PageId::new("P0"),
             AnnotationPayload::Note {
-                rect: Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, color: Color::Rgb(0,0,0),
-                content: content.into(), icon: NoteIcon::Note,
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 10.0,
+                    h: 10.0,
+                },
+                color: Color::Rgb(0, 0, 0),
+                content: content.into(),
+                icon: NoteIcon::Note,
             },
         );
         (e, id)
