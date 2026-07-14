@@ -2,6 +2,80 @@
 mod fixtures;
 
 #[test]
+fn write_ofd_emits_standard_annotation_entry_and_document() {
+    use rofd_dom::*;
+    let mut doc = OfdDocument::default();
+    doc.pages.push(Page {
+        id: PageId::new("1"),
+        physical_box: Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 210.0,
+            h: 297.0,
+        },
+        layers: vec![],
+        template: None,
+    });
+    doc.max_unit_id = 101;
+    doc.annotations.by_page.insert(
+        PageId::new("1"),
+        vec![Annotation {
+            id: AnnotationId::from_int(101),
+            kind: AnnotationKind::Note,
+            page: PageId::new("1"),
+            creator: "t".into(),
+            created: 1_783_656_237_000,
+            modified: 1_783_656_237_000,
+            reply_to: None,
+            payload: AnnotationPayload::Note {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 10.0,
+                    h: 10.0,
+                },
+                color: Color::Rgb(0, 0, 0),
+                content: "x".into(),
+                icon: NoteIcon::Note,
+            },
+        }],
+    );
+    let bytes = rofd_io::write_ofd(&doc).unwrap();
+    let entries = rofd_io::zip_util::read_all_entries(&bytes).unwrap();
+    let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(
+        names.iter().any(|n| n.ends_with("Annots/Annotations.xml")),
+        "entry file exists: {:?}",
+        names
+    );
+    assert!(
+        names
+            .iter()
+            .any(|n| n.ends_with("Annots/Page_0/Annotation.xml")),
+        "per-page annot file exists: {:?}",
+        names
+    );
+    let doc_xml = std::str::from_utf8(
+        &entries
+            .iter()
+            .find(|(n, _)| n.ends_with("Document.xml"))
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    assert!(
+        doc_xml.contains("<ofd:Annotations>Annots/Annotations.xml</ofd:Annotations>"),
+        "Document.xml has Annotations loc: {}",
+        doc_xml
+    );
+    assert!(
+        doc_xml.contains("<ofd:MaxUnitID>101</ofd:MaxUnitID>"),
+        "Document.xml has MaxUnitID=101: {}",
+        doc_xml
+    );
+}
+
+#[test]
 fn write_ofd_round_trips_through_parse() {
     let original = fixtures::build_minimal_ofd();
     let report = rofd_io::parse_ofd(&original).unwrap();
