@@ -38,3 +38,8 @@ wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["HtmlCanvasElement", "Window", "Document", "Element", "Performance", "ResizeObserver", "ResizeObserverEntry", "KeyboardEvent", "MouseEvent", "WheelEvent", "EventTarget"] }
 js-sys = "0.3"
 console_error_panic_hook = "0.1"
+# chrono: `std` only (NOT `clock`) — `clock` pulls in SystemTime/Utc::now() which
+# (a) violates AGENTS.md §4.4 (library never reads system time) and (b) does not
+# build on wasm32-unknown-unknown. `std` provides from_timestamp_millis /
+# parse_from_str / format / and_utc / timestamp_millis / and_hms_opt — all dateutil needs.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
