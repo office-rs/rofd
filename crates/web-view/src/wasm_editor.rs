@@ -54,7 +54,7 @@ mod wasm_impl {
     use rofd_component::{EditorComponent, EditorConfig, Modifiers, MouseButton, ViewEvent};
     use rofd_dom::OfdDocument;
     use rofd_editor::{AnnotationSelection, TextCursor};
-    use rofd_io::{parse_ofd, write_ofd};
+    use rofd_io::{parse_ofd, save_ofd, write_ofd, PackageHandle};
     use wasm_bindgen::prelude::*;
 
     use crate::wasm_editor::parse_key;
@@ -83,6 +83,7 @@ mod wasm_impl {
         component: EditorComponent,
         render_target: WebGpuRenderTarget,
         callbacks: JsCallbacks,
+        package: Option<PackageHandle>,
     }
 
     #[wasm_bindgen]
@@ -247,18 +248,28 @@ mod wasm_impl {
 
         // ─── Document I/O ───────────────────────────────────────────────────
 
-        /// Load an OFD document from raw `.ofd` package bytes.
+        /// Load an OFD document from raw `.ofd` package bytes. Retains the
+        /// parsed `PackageHandle` so subsequent `saveOfd` calls can perform a
+        /// surgical save (preserving unmodelled body bytes byte-for-byte).
         #[wasm_bindgen(js_name = loadOfd)]
         pub fn load_ofd(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
-            let report = parse_ofd(bytes).map_err(|e| JsValue::from_str(&format!("{e}")))?;
+            let report =
+                parse_ofd(bytes).map_err(|e| JsValue::from_str(&format!("parse failed: {e}")))?;
+            self.package = Some(report.package);
             self.component.load_document(report.document);
             Ok(())
         }
 
-        /// Serialize the current document to OFD package bytes.
+        /// Serialize the current document to OFD package bytes. Surgical save
+        /// (preserves unmodelled body byte-for-byte) when a package was loaded;
+        /// full write otherwise.
         #[wasm_bindgen(js_name = saveOfd)]
         pub fn save_ofd(&self) -> Result<Vec<u8>, JsValue> {
-            write_ofd(self.component.document()).map_err(|e| JsValue::from_str(&format!("{e}")))
+            match &self.package {
+                Some(pkg) => save_ofd(self.component.document(), pkg),
+                None => write_ofd(self.component.document()),
+            }
+            .map_err(|e| JsValue::from_str(&format!("save failed: {e}")))
         }
 
         /// Whether there are undoable operations in the history.
@@ -302,6 +313,7 @@ mod wasm_impl {
                 component,
                 render_target,
                 callbacks: JsCallbacks::default(),
+                package: None,
             };
             editor.setup_bridge_callbacks();
             Ok(editor)
