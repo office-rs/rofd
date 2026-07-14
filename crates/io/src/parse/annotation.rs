@@ -71,7 +71,7 @@ pub fn parse_annotation_xml(xml: &str, page: &PageId) -> Result<Vec<Annotation>,
                         },
                     };
                     out.push(Annotation {
-                        id: AnnotationId::new(),
+                        id: AnnotationId::from_int(0),
                         kind: p.kind,
                         page: page.clone(),
                         creator: p.creator,

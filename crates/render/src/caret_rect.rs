@@ -132,7 +132,7 @@ mod tests {
 
     /// Push an annotation onto page P0 and return its id.
     fn push_ann(doc: &mut OfdDocument, payload: AnnotationPayload, kind: AnnotationKind) -> AnnotationId {
-        let id = AnnotationId::new();
+        let id = AnnotationId::from_int(1);
         let ann = Annotation {
             id: id.clone(),
             kind,
@@ -317,7 +317,7 @@ mod tests {
             include_bytes!("../tests/fixtures/fonts/TestFont.ttf") as &[u8];
         let mut doc = OfdDocument::default();
         // No pages pushed, but an annotation claims page P0.
-        let id = AnnotationId::new();
+        let id = AnnotationId::from_int(1);
         doc.annotations
             .by_page
             .entry(PageId::new("P0"))

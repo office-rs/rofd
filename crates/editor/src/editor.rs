@@ -118,7 +118,7 @@ mod tests {
 
     fn note_ann(id: &str) -> Annotation {
         Annotation {
-            id: AnnotationId(uuid::Uuid::parse_str(id).unwrap()),
+            id: AnnotationId::new(id),
             kind: AnnotationKind::Note, page: PageId::new("P0"),
             creator: "t".into(), created: 0, modified: 0, reply_to: None,
             payload: AnnotationPayload::Note {
@@ -131,7 +131,7 @@ mod tests {
     #[test]
     fn execute_undo_redo_via_transaction() {
         let mut e = Editor::new();
-        let ann = note_ann("00000000-0000-0000-0000-000000000021");
+        let ann = note_ann("21");
         let txn = Transaction {
             steps: vec![Box::new(InsertAnnotationStep { annotation: ann.clone() })],
             selection_before: AnnotationSelection::None,
@@ -150,7 +150,7 @@ mod tests {
     fn history_capacity_evicts_oldest() {
         let mut e = Editor::new();
         for i in 0..105u32 {
-            let ann = note_ann(&format!("00000000-0000-0000-0000-0000{:08x}", i));
+            let ann = note_ann(&format!("{}", i));
             let txn = Transaction {
                 steps: vec![Box::new(InsertAnnotationStep { annotation: ann })],
                 selection_before: AnnotationSelection::None,

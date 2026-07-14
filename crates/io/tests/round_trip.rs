@@ -43,7 +43,7 @@ fn load_annotate_save_preserves_body_and_keeps_annotation() {
     let mut doc = report.document.clone();
     use rofd_dom::*;
     doc.annotations.by_page.entry(PageId::new("P0")).or_default().push(Annotation {
-        id: AnnotationId::new(),
+        id: AnnotationId::from_int(100),
         kind: AnnotationKind::Note,
         page: PageId::new("P0"),
         creator: "李四".into(),

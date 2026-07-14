@@ -95,7 +95,7 @@ mod tests {
 
     fn base_ann(payload: AnnotationPayload, kind: AnnotationKind) -> Annotation {
         Annotation {
-            id: AnnotationId::new(),
+            id: AnnotationId::from_int(1),
             kind,
             page: PageId::new("P0"),
             creator: "张三".into(),
@@ -224,7 +224,7 @@ mod tests {
 
     fn sample_ann(id: &str, page: &str) -> Annotation {
         Annotation {
-            id: AnnotationId(uuid::Uuid::parse_str(id).unwrap()),
+            id: AnnotationId::new(id),
             kind: AnnotationKind::Note,
             page: PageId::new(page),
             creator: "tester".into(),
@@ -241,15 +241,15 @@ mod tests {
     #[test]
     fn find_returns_annotation_by_id() {
         let mut m = AnnotationModel::default();
-        let ann = sample_ann("00000000-0000-0000-0000-000000000001", "P0");
+        let ann = sample_ann("1", "P0");
         m.insert(ann.clone());
-        assert_eq!(m.find(&ann.id).map(|a| a.id.0), Some(ann.id.0));
+        assert_eq!(m.find(&ann.id).map(|a| a.id.0.clone()), Some(ann.id.0.clone()));
     }
 
     #[test]
     fn find_mut_allows_in_place_edit() {
         let mut m = AnnotationModel::default();
-        let ann = sample_ann("00000000-0000-0000-0000-000000000002", "P0");
+        let ann = sample_ann("2", "P0");
         m.insert(ann.clone());
         if let Some(a) = m.find_mut(&ann.id) {
             a.creator = "changed".into();
@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn insert_places_on_correct_page() {
         let mut m = AnnotationModel::default();
-        let ann = sample_ann("00000000-0000-0000-0000-000000000003", "P5");
+        let ann = sample_ann("3", "P5");
         m.insert(ann);
         assert_eq!(m.by_page.get(&PageId::new("P5")).unwrap().len(), 1);
     }
@@ -268,17 +268,17 @@ mod tests {
     #[test]
     fn remove_returns_and_deletes() {
         let mut m = AnnotationModel::default();
-        let ann = sample_ann("00000000-0000-0000-0000-000000000004", "P0");
+        let ann = sample_ann("4", "P0");
         m.insert(ann.clone());
         let removed = m.remove(&ann.id);
-        assert_eq!(removed.map(|a| a.id.0), Some(ann.id.0));
+        assert_eq!(removed.map(|a| a.id.0.clone()), Some(ann.id.0.clone()));
         assert!(m.find(&ann.id).is_none());
     }
 
     #[test]
     fn remove_missing_returns_none() {
         let mut m = AnnotationModel::default();
-        let id = AnnotationId::new();
+        let id = AnnotationId::from_int(2);
         assert!(m.remove(&id).is_none());
     }
 }
