@@ -239,6 +239,8 @@ mod tests {
                 page_area: Some(Rect { x: 0.0, y: 0.0, w: 210.0, h: 297.0 }),
                 pages: vec![],
                 meta: DocMeta::default(),
+                max_unit_id: 0,
+                annotations_loc: None,
             },
         )
         .expect("page parses");

@@ -61,6 +61,7 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
     let doc_xml = entry_str(&entries, &doc_root)?;
     let header = document::parse_document(&doc_xml)?;
     let mut doc = OfdDocument { meta, ..OfdDocument::default() };
+    doc.max_unit_id = header.max_unit_id;
     for pref in &header.pages {
         let page_path = join(&doc_root, &pref.base_loc);
         let page_xml = entry_str(&entries, &page_path)?;

@@ -132,3 +132,19 @@ fn parse_resolves_drawparam_and_multimedia_from_document_res() {
     assert_eq!(path.draw_param, Some(DrawParamId::new("5")));
     assert!(path.stroke.is_none(), "no inline StrokeColor -> None until render resolves");
 }
+
+#[test]
+fn parse_document_extracts_max_unit_id_and_annotations_loc() {
+    // Real-shaped Document.xml fragment: MaxUnitID lives inside CommonData;
+    // Annotations is a document-level element carrying the annotation entry path.
+    let doc_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Document xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:PageArea>
+  <ofd:MaxUnitID>1500</ofd:MaxUnitID></ofd:CommonData>
+  <ofd:Pages><ofd:Page ID="1" BaseLoc="Pages/Page_0/Content.xml"/></ofd:Pages>
+  <ofd:Annotations>Annots/Annotations.xml</ofd:Annotations>
+</ofd:Document>"#;
+    let header = rofd_io::parse::document::parse_document(doc_xml).unwrap();
+    assert_eq!(header.max_unit_id, 1500);
+    assert_eq!(header.annotations_loc.as_deref(), Some("Annots/Annotations.xml"));
+}
