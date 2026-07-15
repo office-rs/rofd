@@ -51,4 +51,10 @@ impl History {
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
     }
+
+    /// Number of completed (undoable) transactions on the `done` stack.
+    /// Useful for testing that a drag produces exactly one Transaction.
+    pub fn done_len(&self) -> usize {
+        self.done.len()
+    }
 }

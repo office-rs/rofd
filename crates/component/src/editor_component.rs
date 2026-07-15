@@ -29,6 +29,15 @@ pub enum Tool {
 ///
 /// `Create` covers rect-bounded kinds (Shape/Note/TextBox/...) and Freehand
 /// (accumulating a path). `Move`/`Resize` track the source annotation.
+///
+/// **Preview-based drag (one undo per drag):** during PointerMove, `Move`/
+/// `Resize` do NOT call `editor.move_annotation`/`resize_annotation` (which
+/// would push one Transaction per pixel, flooding history). Instead they
+/// update the in-progress preview geometry here; `drag_to_preview` renders a
+/// semi-transparent overlay at the would-be position. On PointerUp the
+/// component issues a single `editor.move_annotation`/`resize_annotation`
+/// call with the cumulative delta/final rect -> exactly one Transaction ->
+/// one undo restores the original.
 #[derive(Debug, Clone)]
 pub(crate) enum DragState {
     /// Creating a new annotation; `start`/`current` bound a rect, `path`
@@ -39,24 +48,34 @@ pub(crate) enum DragState {
         current: (f64, f64),
         path: Vec<(f64, f64)>,
     },
-    /// Moving an existing annotation; `last` is the previous pointer position
-    /// (viewport-space) for computing deltas. `moved` is true once any
-    /// PointerMove actually shifted the annotation (so PointerUp can skip
-    /// `on_change` for a pure click-without-drag).
+    /// Moving an existing annotation via a preview-based drag.
+    /// `before_rect` is the annotation's page-local rect captured at drag
+    /// start; `start`/`last` are the viewport-space pointer positions at drag
+    /// start and most-recent PointerMove. The cumulative page-local delta is
+    /// `(last - start) / zoom`; the preview rect = `before_rect` + that delta.
+    /// `moved` is true once any PointerMove shifted beyond the start point
+    /// (so PointerUp can skip the editor command for a pure
+    /// click-without-drag, avoiding a no-op Transaction).
     Move {
         id: rofd_dom::AnnotationId,
+        before_rect: Rect,
+        start: (f64, f64),
         last: (f64, f64),
         moved: bool,
     },
-    /// Resizing an existing annotation; `handle` identifies the dragged
-    /// handle, `anchor` is the opposite corner (fixed), `orig` is the
-    /// annotation's rect at drag start. `moved` is true once any PointerMove
-    /// actually resized the annotation.
+    /// Resizing an existing annotation via a preview-based drag. `handle`
+    /// identifies the dragged handle, `anchor` is the opposite corner (fixed),
+    /// `orig` is the annotation's rect at drag start (page-local), and
+    /// `current_local` is the most-recent pointer position in page-local
+    /// coordinates. The preview rect = `compute_resize(handle, anchor, orig,
+    /// current_local)`. `moved` is true once any PointerMove resized beyond
+    /// the start point.
     Resize {
         id: rofd_dom::AnnotationId,
         handle: HandlePos,
         anchor: (f64, f64),
         orig: Rect,
+        current_local: (f64, f64),
         moved: bool,
     },
 }
@@ -220,7 +239,10 @@ impl EditorComponent {
             self.font_store = Some(self.build_font_store());
         }
         let fonts = self.font_store.as_ref().expect("font_store initialized");
-        let drag_preview = self.drag.as_ref().and_then(drag_to_preview);
+        let drag_preview = self
+            .drag
+            .as_ref()
+            .and_then(|d| drag_to_preview(d, &self.viewport));
         self.render.composite(
             self.editor.document(),
             &self.viewport,
@@ -280,11 +302,24 @@ impl EditorComponent {
                                     .expect("selected annotation must exist");
                                 let orig = annotation_payload_rect(ann);
                                 let anchor = opposite_corner(&orig, &h);
+                                // current_local starts at the handle corner (no
+                                // resize until the pointer moves).
+                                let current_local = match &h {
+                                    HandlePos::Nw => (orig.x, orig.y),
+                                    HandlePos::Ne => (orig.x + orig.w, orig.y),
+                                    HandlePos::Sw => (orig.x, orig.y + orig.h),
+                                    HandlePos::Se => (orig.x + orig.w, orig.y + orig.h),
+                                    HandlePos::N => ((orig.x + orig.w) / 2.0, orig.y),
+                                    HandlePos::S => ((orig.x + orig.w) / 2.0, orig.y + orig.h),
+                                    HandlePos::E => (orig.x + orig.w, (orig.y + orig.h) / 2.0),
+                                    HandlePos::W => (orig.x, (orig.y + orig.h) / 2.0),
+                                };
                                 self.drag = Some(DragState::Resize {
                                     id: id.clone(),
                                     handle: h,
                                     anchor,
                                     orig,
+                                    current_local,
                                     moved: false,
                                 });
                             }
@@ -302,8 +337,19 @@ impl EditorComponent {
                                 }
                                 self.fire_selection_change();
                                 self.fire_cursor_change();
+                                // Capture the annotation's page-local rect at
+                                // drag start for the preview-based move.
+                                let ann = self
+                                    .editor
+                                    .document()
+                                    .annotations
+                                    .find(&id)
+                                    .expect("selected annotation must exist");
+                                let before_rect = annotation_payload_rect(ann);
                                 self.drag = Some(DragState::Move {
                                     id: id.clone(),
+                                    before_rect,
+                                    start: p,
                                     last: p,
                                     moved: false,
                                 });
@@ -329,23 +375,26 @@ impl EditorComponent {
                         *current = p;
                         path.push(p);
                     }
-                    Some(DragState::Move { id, last, moved }) => {
-                        // Convert viewport delta to page-local (divide by zoom).
-                        let zoom = self.viewport.zoom;
-                        let dx = (p.0 - last.0) / zoom;
-                        let dy = (p.1 - last.1) / zoom;
-                        self.editor.move_annotation(id, dx, dy);
+                    Some(DragState::Move { last, moved, .. }) => {
+                        // Preview-based: update `last` only; do NOT call
+                        // editor.move_annotation (would flood history with one
+                        // Transaction per pixel). The preview rect is computed
+                        // in drag_to_preview from before_rect + (last - start).
                         *last = p;
                         *moved = true;
                     }
                     Some(DragState::Resize {
                         id,
-                        handle,
-                        anchor,
-                        orig,
+                        handle: _,
+                        anchor: _,
+                        orig: _,
+                        current_local,
                         moved,
                     }) => {
-                        // Convert viewport point to page-local of the annotation's page.
+                        // Preview-based: convert the viewport point to
+                        // page-local and store it; do NOT call
+                        // editor.resize_annotation. The preview rect is
+                        // computed in drag_to_preview via compute_resize.
                         let ann = self.editor.document().annotations.find(id);
                         if let Some(ann) = ann {
                             if let Some(local) = viewport_to_page_local(
@@ -354,8 +403,7 @@ impl EditorComponent {
                                 &ann.page,
                                 p,
                             ) {
-                                let new_rect = compute_resize(handle, *anchor, *orig, local);
-                                self.editor.resize_annotation(id, new_rect);
+                                *current_local = local;
                                 *moved = true;
                             }
                         }
@@ -395,12 +443,52 @@ impl EditorComponent {
                             self.fire_annotation_interact(&id);
                             self.fire_selection_change();
                         }
-                        DragState::Move { moved, .. } | DragState::Resize { moved, .. } => {
-                            // Move/resize were applied in real-time during PointerMove.
-                            // Only fire on_change if the drag actually mutated the
-                            // annotation (skips a pure click-without-drag).
+                        DragState::Move {
+                            id,
+                            before_rect: _,
+                            start,
+                            last,
+                            moved,
+                        } => {
+                            // Preview-based drag commit: issue a single
+                            // editor.move_annotation with the cumulative
+                            // page-local delta (one Transaction -> one undo).
+                            // The annotation is still at its original position
+                            // (the document was not mutated during PointerMove),
+                            // so move_annotation reads the pre-drag rect.
                             if moved {
-                                self.after_annotation_change();
+                                let zoom = self.viewport.zoom;
+                                let dx = (last.0 - start.0) / zoom;
+                                let dy = (last.1 - start.1) / zoom;
+                                // Guard against a no-op (click-without-drag
+                                // where last == start but moved was set true
+                                // by a sub-pixel jitter): skip if delta is
+                                // negligible.
+                                if dx.abs() > f64::EPSILON || dy.abs() > f64::EPSILON {
+                                    self.editor.move_annotation(&id, dx, dy);
+                                    self.after_annotation_change();
+                                }
+                            }
+                        }
+                        DragState::Resize {
+                            id,
+                            handle,
+                            anchor,
+                            orig,
+                            current_local,
+                            moved,
+                        } => {
+                            // Preview-based drag commit: issue a single
+                            // editor.resize_annotation with the final rect
+                            // (one Transaction -> one undo).
+                            if moved {
+                                let final_rect =
+                                    compute_resize(&handle, anchor, orig, current_local);
+                                // Skip if the rect didn't actually change.
+                                if final_rect != orig {
+                                    self.editor.resize_annotation(&id, final_rect);
+                                    self.after_annotation_change();
+                                }
                             }
                         }
                     }
@@ -688,12 +776,13 @@ impl EditorComponent {
 /// Map an in-progress [`DragState`] to a renderable [`DragPreview`].
 ///
 /// For `Create`, the rect is the bounding box of `start`/`current` (for
-/// rect-bounded kinds) or the accumulated `path` (for Freehand). For
-/// `Move`/`Resize`, `None` is returned: the annotation's payload is updated
-/// in real-time during PointerMove (via `editor.move_annotation`/
-/// `resize_annotation`), so the normal render already shows it at the new
-/// position -- no separate preview overlay is needed.
-fn drag_to_preview(d: &DragState) -> Option<DragPreview> {
+/// rect-bounded kinds) or the accumulated `path` (for Freehand).
+///
+/// For `Move`/`Resize`, a semi-transparent preview overlay is returned showing
+/// the would-be position/rect. The actual annotation stays at its original
+/// position during the drag (the editor command is issued once on PointerUp),
+/// so this preview is what the user sees following the pointer.
+fn drag_to_preview(d: &DragState, vp: &Viewport) -> Option<DragPreview> {
     match d {
         DragState::Create {
             kind,
@@ -711,7 +800,43 @@ fn drag_to_preview(d: &DragState) -> Option<DragPreview> {
                 })
             }
         }
-        DragState::Move { .. } | DragState::Resize { .. } => None,
+        DragState::Move {
+            id,
+            before_rect,
+            start,
+            last,
+            ..
+        } => {
+            // Preview rect = before_rect translated by the cumulative
+            // page-local delta ((last - start) / zoom).
+            let zoom = vp.zoom;
+            let dx = (last.0 - start.0) / zoom;
+            let dy = (last.1 - start.1) / zoom;
+            let rect = Rect {
+                x: before_rect.x + dx,
+                y: before_rect.y + dy,
+                w: before_rect.w,
+                h: before_rect.h,
+            };
+            Some(DragPreview::Move {
+                id: id.clone(),
+                rect,
+            })
+        }
+        DragState::Resize {
+            id,
+            handle,
+            anchor,
+            orig,
+            current_local,
+            ..
+        } => {
+            let rect = compute_resize(handle, *anchor, *orig, *current_local);
+            Some(DragPreview::Resize {
+                id: id.clone(),
+                rect,
+            })
+        }
     }
 }
 
@@ -726,8 +851,8 @@ fn bbox(a: (f64, f64), b: (f64, f64)) -> Rect {
 
 // --- Default colors for create-drag (spec section 3.5) ---
 
-/// Default highlight color: yellow.
-const DEFAULT_HIGHLIGHT_COLOR: Color = Color::Rgb(255, 221, 0);
+/// Default highlight color: yellow (spec section 3.5; matches io parse fallback).
+const DEFAULT_HIGHLIGHT_COLOR: Color = Color::Rgb(255, 255, 0);
 /// Default underline/strikeout/squiggly color: blue.
 const DEFAULT_MARKUP_COLOR: Color = Color::Rgb(0, 0, 255);
 /// Default freehand color: black.
@@ -1355,6 +1480,166 @@ mod tests {
             }
         } else {
             panic!("expected single selection after move");
+        }
+    }
+
+    #[test]
+    fn move_then_single_undo_restores() {
+        let mut c = component_with_note();
+        // The note starts at rect (0,0,100,100). Record the undo depth before
+        // the drag: component_with_note() pushed one Transaction (the create).
+        let undo_before = c.editor.history_len();
+        // Click center to select + start move.
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 50.0,
+            modifiers: Modifiers::default(),
+        });
+        // Simulate a 100-pixel drag via many PointerMove events. With the
+        // old (per-pixel) approach this would push ~100 Transactions; with
+        // the preview-based approach it pushes ZERO during PointerMove.
+        for i in 1..=100 {
+            let v = 50.0 + i as f64;
+            c.handle_event(&ViewEvent::PointerMove { x: v, y: v });
+        }
+        // PointerUp commits a single move_annotation -> one Transaction.
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 150.0,
+            y: 150.0,
+        });
+        // Exactly one Transaction should have been added (drag = 1 undo step).
+        let undo_after = c.editor.history_len();
+        assert_eq!(
+            undo_after,
+            undo_before + 1,
+            "a drag move must push exactly one Transaction (got {} added)",
+            undo_after - undo_before
+        );
+        // The annotation should have moved by (100,100) -> (100,100,100,100).
+        let id = match c.editor.selection().clone() {
+            AnnotationSelection::Single(id) => id,
+            _ => panic!("expected single selection"),
+        };
+        let ann = c.editor.document().annotations.find(&id).unwrap();
+        match &ann.payload {
+            AnnotationPayload::Note { rect, .. } => {
+                assert_eq!(
+                    *rect,
+                    Rect {
+                        x: 100.0,
+                        y: 100.0,
+                        w: 100.0,
+                        h: 100.0
+                    },
+                    "rect moved by (100,100) after drag"
+                );
+            }
+            _ => panic!("expected Note payload"),
+        }
+        // ONE undo must restore the original rect (not 100 undos).
+        assert!(c.editor.undo(), "undo succeeds");
+        assert!(
+            !c.editor.can_undo() || c.editor.history_len() == undo_before,
+            "a single undo consumed the drag transaction"
+        );
+        let ann = c.editor.document().annotations.find(&id).unwrap();
+        match &ann.payload {
+            AnnotationPayload::Note { rect, .. } => {
+                assert_eq!(
+                    *rect,
+                    Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 100.0,
+                        h: 100.0
+                    },
+                    "one undo restores the original rect"
+                );
+            }
+            _ => panic!("expected Note payload"),
+        }
+    }
+
+    #[test]
+    fn resize_then_single_undo_restores() {
+        let mut c = component_with_note();
+        let undo_before = c.editor.history_len();
+        // Select the note (rect (0,0,100,100)) first.
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 50.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 50.0,
+        });
+        // Grab the Se handle (at (100,100)) and drag through many points.
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 100.0,
+            y: 100.0,
+            modifiers: Modifiers::default(),
+        });
+        for i in 1..=50 {
+            let v = 100.0 + i as f64;
+            c.handle_event(&ViewEvent::PointerMove { x: v, y: v });
+        }
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 150.0,
+            y: 150.0,
+        });
+        // Exactly one Transaction for the resize.
+        let undo_after = c.editor.history_len();
+        assert_eq!(
+            undo_after,
+            undo_before + 1,
+            "a drag resize must push exactly one Transaction (got {} added)",
+            undo_after - undo_before
+        );
+        let id = match c.editor.selection().clone() {
+            AnnotationSelection::Single(id) => id,
+            _ => panic!("expected single selection"),
+        };
+        // Se corner resize: anchor = Nw = (0,0), new rect = bbox((0,0),(150,150)).
+        let ann = c.editor.document().annotations.find(&id).unwrap();
+        match &ann.payload {
+            AnnotationPayload::Note { rect, .. } => {
+                assert_eq!(
+                    *rect,
+                    Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 150.0,
+                        h: 150.0
+                    },
+                    "rect resized to (0,0,150,150)"
+                );
+            }
+            _ => panic!("expected Note payload"),
+        }
+        // ONE undo restores the original rect.
+        assert!(c.editor.undo(), "undo succeeds");
+        let ann = c.editor.document().annotations.find(&id).unwrap();
+        match &ann.payload {
+            AnnotationPayload::Note { rect, .. } => {
+                assert_eq!(
+                    *rect,
+                    Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 100.0,
+                        h: 100.0
+                    },
+                    "one undo restores the original rect"
+                );
+            }
+            _ => panic!("expected Note payload"),
         }
     }
 
