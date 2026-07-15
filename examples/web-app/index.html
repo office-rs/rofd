@@ -7,10 +7,33 @@
     body { margin: 0; overflow: hidden; background: #E0E0E0; }
     #container { width: 100vw; height: 100vh; }
     #file-input { position: absolute; top: 10px; left: 10px; z-index: 10; }
+    #toolbar {
+      position: absolute;
+      top: 10px;
+      left: 220px;
+      z-index: 10;
+      display: flex;
+      gap: 4px;
+      background: #fff;
+      padding: 4px;
+      border-radius: 4px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+    #toolbar button {
+      padding: 4px 10px;
+      border: 1px solid #ccc;
+      background: #f5f5f5;
+      cursor: pointer;
+      font-size: 13px;
+      border-radius: 3px;
+    }
+    #toolbar button:hover { background: #e0e0e0; }
+    #toolbar button.active { background: #d0e8ff; border-color: #4a90d9; }
   </style>
 </head>
 <body>
   <input type="file" id="file-input" accept=".ofd" />
+  <div id="toolbar"></div>
   <div id="container"></div>
   <script type="module" src="/src/main.ts"></script>
 </body>

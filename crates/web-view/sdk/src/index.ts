@@ -55,6 +55,10 @@ interface WasmEditor {
   setOnSelectionChange(cb: (() => void) | null): void;
   setOnCursorChange(cb: (() => void) | null): void;
   setOnSaveRequest(cb: (() => void) | null): void;
+  setOnContextMenu(cb: ((x: number, y: number, annotationId: string | null) => void) | null): void;
+  setTool(kind: string): void;
+  deleteAnnotation(id: string): boolean;
+  deleteSelected(): number;
 }
 
 // --- public SDK types ---
@@ -75,6 +79,9 @@ export interface EditorConfig {
   onCursorChange?: () => void;
   /** Fired on Ctrl+S (the host should prompt for a path / trigger save). */
   onSaveRequest?: () => void;
+  /** Fired on right-click. `annotationId` is null when the click hit a page
+   * body or the desk background (no annotation to act on). */
+  onContextMenu?: (x: number, y: number, annotationId: string | null) => void;
 }
 
 // Default font CDN (jsDelivr - ICP-licensed China CDN nodes). Same fonts reditor
@@ -157,6 +164,7 @@ export class Editor {
     if (config?.onSelectionChange) wasmEditor.setOnSelectionChange(config.onSelectionChange);
     if (config?.onCursorChange) wasmEditor.setOnCursorChange(config.onCursorChange);
     if (config?.onSaveRequest) wasmEditor.setOnSaveRequest(config.onSaveRequest);
+    if (config?.onContextMenu) wasmEditor.setOnContextMenu(config.onContextMenu);
 
     // 7. Create wrapper + bind DOM events.
     const editor = new Editor(wasmEditor, canvas);
@@ -319,6 +327,24 @@ export class Editor {
   setClock(author: string, ts: number): void {
     // i64 maps to BigInt in wasm-bindgen; convert from JS number.
     this.wasm.setClock(author, BigInt(ts));
+  }
+
+  /** Set the active editing tool. `kind` is one of: "select", "highlight",
+   * "underline", "strikeout", "squiggly", "freehand", "rect". Unknown values
+   * fall back to "select". */
+  setTool(kind: string): void {
+    this.wasm.setTool(kind);
+  }
+
+  /** Delete the annotation with the given id string. Returns false if no
+   * annotation with that id exists. */
+  deleteAnnotation(id: string): boolean {
+    return this.wasm.deleteAnnotation(id);
+  }
+
+  /** Delete all currently-selected annotations. Returns the count deleted. */
+  deleteSelected(): number {
+    return this.wasm.deleteSelected();
   }
 }
 
