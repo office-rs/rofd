@@ -29,7 +29,7 @@
 ### 1.3 v1 功能面
 
 - **渲染保真度**：常见子集——基础 Text/Image/Path/Composite 对象 + CTM + 常见字体 + JPG/PNG。模板继承 / JBIG2 / 瓦片图 / 冷门特性按需补（v1 桩处理：能简单展开就展开，否则跳过 + warning）。
-- **批注类型**：标注笔迹（高亮 / 下划线 / 删除线 / 自由绘制）、图形批注（矩形 / 椭圆 / 箭头 / 直线 / 文本框）、便签评论（带回复线程）、印章水印（静态图章 / 水印）。
+- **批注类型**：标注笔迹（高亮 / 下划线 / 删除线 / 波浪线 / 自由绘制）、图形批注（矩形 / 椭圆 / 箭头 / 直线 / 多边形 / 折线 / 文本框）、便签评论（带回复线程）、印章水印（静态图章 / 水印）。**创建 UI 范围**对齐 WPS OFD 阅读器（高亮/下划线/删除线/波浪线/手写/矩形 6 种拖拽绘制）；其余类型 parse/render-only。io 用标准 Type(5 枚举)+Subtype 映射（详见 C1/C1.5 spec）。
 - **电子签名**：v1 只渲染已有签名/印章（只读显示），不做签名/验签，不引入国密。
 - **平台**：双平台 native 优先。Rust + Vello GPU + Parley 文字 + native（xilem/winit）+ WASM/WebGPU，三层缓存、命令/撤销、`EditorComponent` 门面。
 
@@ -76,8 +76,7 @@
                       │
 ┌─────────────────────▼───────────────────┐
 │  component  (EditorComponent 门面,       │
-│              ViewEvent, RenderTarget,    │
-│              Callbacks, 脏缓存)          │  同时依赖 io（load_ofd/save_ofd 便利方法）
+│              ViewEvent, RenderTarget,    │  **io-free**（load/save 在适配器层）
 └──┬───────┬──────────────────┬────────┘
    │       │                  │
 ┌──▼──────┐ ┌──▼────┐ ┌───────▼──────┐
@@ -121,6 +120,7 @@ pub struct OfdDocument {
     pub pages: Vec<Page>,               // body 页模型（editor 加载后只读；生成/D 可构造）
     pub resources: Resources,           // 字体/图片/DrawParam，Arc 共享
     pub annotations: AnnotationModel,   // 可变批注面（editor 唯一改这里）
+    pub max_unit_id: u64,               // GB/T 33190 CommonData/MaxUnitID（新 ID 从 max_unit_id+1 分配）
 }
 
 pub struct Page {
@@ -172,16 +172,16 @@ pub struct Annotation {
 }
 
 pub enum AnnotationKind {
-    Highlight, Underline, Strikeout,
-    Freehand, Shape(ShapeKind),         // Rect/Ellipse/Arrow/Line
+    Highlight, Underline, Strikeout, Squiggly,
+    Freehand, Shape(ShapeKind),         // Rect/Ellipse/Arrow/Line/Polygon/PolyLine
     Note, TextBox,
     Stamp, Watermark,
 }
 
 pub enum AnnotationPayload {
-    Markup   { quad_points: Vec<Point>, color: Color },                  // 高亮/下划线/删除线
+    Markup   { quad_points: Vec<Point>, color: Color },                  // 高亮/下划线/删除线/波浪线
     Freehand { path: PathData, color: Color, width: f32 },
-    Shape    { kind: ShapeKind, rect: Rect, stroke: Color, fill: Option<Color>, width: f32 },
+    Shape    { kind: ShapeKind, rect: Rect, stroke: Color, fill: Option<Color>, width: f32, points: Vec<Point> }, // points for Polygon/PolyLine
     Note     { rect: Rect, color: Color, content: String, icon: NoteIcon },
     TextBox  { rect: Rect, content: String, font: FontRef, size: f32, color: Color },
     Stamp    { rect: Rect, image: ImageRef },                            // 静态图片图章
@@ -191,7 +191,7 @@ pub enum AnnotationPayload {
 
 - **Appearance 不存模型**：批注渲染形（overlay 几何）由 render 从 `payload` 实时算，不预存——省冗余、编辑时天然一致。
 - **可变/可构造**：`pages` 在 editor 里只读是运行约定（io 的 save 逻辑编码"重写批注、保留 body 原样"保证），类型不限制；生成/D 直接构造 `Page`/`PageObject`。
-- **ID**：`ObjectId`/`PageId` 用 OFD ID 字符串 newtype；`AnnotationId` 用 uuid v4。
+- **ID**：`ObjectId`/`PageId` 用 OFD ID 字符串 newtype；`AnnotationId` 用 OFD ST_ID 整数字符串（从 `OfdDocument.max_unit_id+1` 分配，非 uuid）。
 
 ### 3.3 `rofd-io`：双路径 + 条目驱动手术刀
 
@@ -346,34 +346,39 @@ left/right = ±1 char（纯逻辑）；home/end = 行首/末（需 render line-m
 
 ## 6. component 门面 + 集成面 + 平台适配器
 
-### 6.1 `EditorComponent`
+### 6.1 `EditorComponent`（io-free）
+
+> **关键偏离 spec 原设想**：spec 原设想 `EditorComponent` 持有 `package` 并自带 `load_ofd`/`save_ofd`。**实际实现把 io 依赖下放到适配器层**（`EditorApp`/`WasmEditor` 持有 `PackageHandle`、调 `parse_ofd`/`save_ofd`），`EditorComponent` 保持 **io-free**（更易复用）。改 component 时不要往里塞 io 调用。
 
 ```rust
 pub struct EditorComponent {
     editor: Editor,
     render: RenderEngine,
-    package: Option<PackageHandle>,     // Some=从文件加载(surgical); None=生成/new(full)
-    cache: PageSceneCache,
     viewport: Viewport,
     callbacks: Callbacks,
     config: EditorConfig,
+    tool: Tool,                           // Select | Create(AnnotationKind)
+    drag: Option<DragState>,              // Create/Move/Resize 拖拽状态
+    // 无 package、无 cache（io-free）
 }
 
 impl EditorComponent {
-    #[cfg(not(target_arch = "wasm32"))] pub fn new_native(cfg: EditorConfig) -> Self;
-    #[cfg(target_arch = "wasm32")]     pub fn new_wasm(cfg: EditorConfig) -> Self;
-
-    pub fn load_ofd(&mut self, bytes: &[u8]) -> Result<Vec<OfdWarning>, OfdError>;
+    pub fn new(config: EditorConfig) -> Self;  // 非 cfg-gated（适配器层处理平台差异）
     pub fn load_document(&mut self, doc: OfdDocument);
     pub fn new_document(&mut self);
-    pub fn save_ofd(&self) -> Result<Vec<u8>, OfdError>;   // package 有->手术刀, 无->全量
     pub fn handle_event(&mut self, e: &ViewEvent) -> EventOutcome;
-    pub fn render(&mut self, target: &mut dyn RenderTarget);
+    pub fn build_scene(&mut self) -> Scene;     // 产出 imaging::record::Scene
     pub fn register_font(&mut self, data: Vec<u8>);
+    pub fn set_tool(&mut self, tool: Tool);
+    pub fn document(&self) -> &OfdDocument;     // 适配器层调 save_ofd 时用
+    pub fn is_modified(&self) -> bool;
+    pub fn clear_modified(&mut self);
+    // 10 callbacks: on_change/on_selection_change/on_cursor_change/on_save_request
+    //   + on_annotation_focus/on_annotation_interact/on_context_menu/on_page_change/on_zoom_change/on_warning
 }
 ```
 
-构造目标门控（`#[cfg]` 非 feature）。`save_ofd` 按 `package` 有无自动选手术刀/全量。
+`load_ofd`/`save_ofd` 在**适配器层**（`EditorApp`/`WasmEditor`）：`parse_ofd` -> `LoadReport{document, package, warnings}` -> `component.load_document(document)` + 适配器保留 `package`；`save_ofd` 按 `package` 有无选手术刀/全量。
 
 ### 6.2 `RenderTarget` trait
 
