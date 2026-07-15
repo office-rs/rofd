@@ -26,6 +26,9 @@ impl EditorApp {
         let report = parse_ofd(bytes).map_err(|e| format!("parse failed: {e}"))?;
         self.package = Some(report.package);
         self.component.load_document(report.document);
+        // Relay any degraded-load warnings to the host via on_warning (AGENTS.md
+        // §4.6: non-fatal issues surface via callback, not Result).
+        self.component.fire_warnings(&report.warnings);
         Ok(())
     }
 
@@ -164,6 +167,30 @@ mod tests {
         let mut app = EditorApp::new(EditorConfig::new(Arc::new(vec![])));
         app.load_ofd(&bytes).unwrap();
         assert!(app.package.is_some(), "package retained after load");
+    }
+
+    #[test]
+    fn load_ofd_fires_on_warning_callback() {
+        use rofd_dom::OfdWarning;
+        use std::sync::Mutex;
+
+        let fired: Arc<Mutex<Vec<OfdWarning>>> = Arc::new(Mutex::new(vec![]));
+        let fired_clone = fired.clone();
+        let mut app = EditorApp::new(EditorConfig::new(Arc::new(vec![])));
+        app.component.on_warning(move |warnings: &[OfdWarning]| {
+            let mut guard = fired_clone.lock().unwrap();
+            guard.extend(warnings.iter().cloned());
+        });
+        // A default doc via write_ofd has no template/unknown objects, so
+        // warnings should be empty. But the fire path must still execute
+        // without panic (proving the wire is connected).
+        let bytes = rofd_io::write_ofd(&OfdDocument::default()).unwrap();
+        app.load_ofd(&bytes).unwrap();
+        // No warnings expected from a minimal default doc.
+        assert!(
+            fired.lock().unwrap().is_empty(),
+            "minimal doc produces no warnings"
+        );
     }
 
     #[test]

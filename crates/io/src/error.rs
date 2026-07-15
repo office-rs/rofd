@@ -1,6 +1,12 @@
 use crate::package::PackageHandle;
 use rofd_dom::OfdDocument;
 
+// OfdWarning and ResourceKind are defined in rofd-dom (not io) so that both io
+// (parse) and rofd-component (on_warning callback) can reference them without
+// component depending on io (AGENTS.md §4.1). They are re-exported here for
+// backward compatibility.
+pub use rofd_dom::{OfdWarning, ResourceKind};
+
 #[derive(Debug, thiserror::Error)]
 pub enum OfdError {
     #[error("zip error in {entry}: {source}")]
@@ -28,47 +34,6 @@ pub enum OfdError {
     Io(#[from] std::io::Error),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ResourceKind {
-    Font,
-    Image,
-    DrawParam,
-}
-
-impl std::fmt::Display for ResourceKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ResourceKind::Font => write!(f, "font"),
-            ResourceKind::Image => write!(f, "image"),
-            ResourceKind::DrawParam => write!(f, "draw param"),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum OfdWarning {
-    MissingFeature {
-        feature: String,
-        entry: String,
-    },
-    SkippedObject {
-        page: rofd_dom::PageId,
-        reason: String,
-    },
-    FontSubstituted {
-        requested: String,
-        used: String,
-    },
-    /// A resource (image/font) referenced by the document is missing from the
-    /// package. Parse continues; the resource is simply unavailable. This is
-    /// the degraded-input path (AGENTS.md §4.6) - distinct from `OfdError::ResourceNotFound`
-    /// which is reserved for hard failures where a required structural entry is absent.
-    ResourceNotFound {
-        kind: ResourceKind,
-        id: String,
-    },
-}
-
 #[derive(Debug)]
 pub struct LoadReport {
     pub document: OfdDocument,
@@ -89,15 +54,6 @@ impl LoadReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn missing_feature_warning_displays_feature() {
-        let w = OfdWarning::MissingFeature {
-            feature: "JBIG2".into(),
-            entry: "Doc_0/Res/Img_0.xml".into(),
-        };
-        assert!(format!("{w:?}").contains("JBIG2"));
-    }
 
     #[test]
     fn load_report_carries_document_and_package() {
