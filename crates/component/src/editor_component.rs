@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use rofd_dom::{
-    AnnotationKind, AnnotationPayload, AnnotationSelection, Color, OfdDocument, PageId,
+    AnnotationKind, AnnotationPayload, AnnotationSelection, Color, OfdDocument, OfdWarning, PageId,
     PathCommand, PathData, Point, Rect,
 };
 use rofd_editor::{Editor, TextCursor};
@@ -865,6 +865,17 @@ impl EditorComponent {
         }
     }
 
+    /// Fire `on_warning` with the given warnings. Called by the adapter layer
+    /// (EditorApp/WasmEditor) after `parse_ofd` returns a `LoadReport` with
+    /// warnings - the component itself is io-free and never parses, so it never
+    /// generates warnings; it only relays them from the adapter (AGENTS.md §4.6:
+    /// degraded-input path surfaces to the host via callback).
+    pub fn fire_warnings(&self, warnings: &[OfdWarning]) {
+        if let Some(cb) = &self.callbacks.on_warning {
+            cb(warnings);
+        }
+    }
+
     /// Recompute the current visible page (the page whose viewport rect
     /// contains the viewport's vertical center) and, if it differs from
     /// `self.current_page`, update the field and fire `on_page_change`.
@@ -998,6 +1009,15 @@ impl EditorComponent {
     #[cfg(target_arch = "wasm32")]
     pub fn on_zoom_change(&mut self, cb: impl Fn(f64) + 'static) {
         self.callbacks.on_zoom_change = Some(Box::new(cb));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn on_warning(&mut self, cb: impl Fn(&[OfdWarning]) + 'static + Send) {
+        self.callbacks.on_warning = Some(Box::new(cb));
+    }
+    #[cfg(target_arch = "wasm32")]
+    pub fn on_warning(&mut self, cb: impl Fn(&[OfdWarning]) + 'static) {
+        self.callbacks.on_warning = Some(Box::new(cb));
     }
 }
 
@@ -1527,6 +1547,34 @@ mod tests {
         // Scroll doesn't change annotations -> no on_change. But it does need_repaint.
         c.handle_event(&ViewEvent::Scroll { dx: 1.0, dy: 0.0 });
         assert!(!*fired.lock().unwrap(), "scroll does not fire on_change");
+    }
+
+    #[test]
+    fn on_warning_fires_with_load_warnings() {
+        let fired = Arc::new(Mutex::new(false));
+        let f = fired.clone();
+        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        c.on_warning(move |_warnings| {
+            *f.lock().unwrap() = true;
+        });
+        // fire_warnings is the adapter's entry point for relaying LoadReport
+        // warnings (component itself never parses, so it never generates
+        // warnings). Test the fire path directly.
+        c.fire_warnings(&[OfdWarning::MissingFeature {
+            feature: "test".into(),
+            entry: "test".into(),
+        }]);
+        assert!(*fired.lock().unwrap());
+    }
+
+    #[test]
+    fn on_warning_does_not_fire_when_no_callback_set() {
+        let c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        // No callback set -> fire_warnings is a no-op (must not panic).
+        c.fire_warnings(&[OfdWarning::MissingFeature {
+            feature: "test".into(),
+            entry: "test".into(),
+        }]);
     }
 
     #[test]

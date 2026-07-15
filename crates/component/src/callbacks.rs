@@ -1,11 +1,12 @@
-use rofd_dom::{AnnotationId, OfdDocument};
+use rofd_dom::{AnnotationId, OfdDocument, OfdWarning};
 use rofd_editor::{AnnotationSelection, TextCursor};
 
-// The 9 callback types. on_change passes &OfdDocument; on_selection_change
+// The 10 callback types. on_change passes &OfdDocument; on_selection_change
 // passes &AnnotationSelection; on_cursor_change passes Option<&TextCursor>;
 // on_save_request passes (); on_annotation_focus/on_annotation_interact pass
 // &AnnotationId; on_context_menu passes ((f64,f64), ContextTarget);
-// on_page_change passes usize; on_zoom_change passes f64.
+// on_page_change passes usize; on_zoom_change passes f64; on_warning passes
+// &[OfdWarning].
 //
 // Target-gated `Send`: the host (Phase 4b native) requires `Send` callbacks. On native
 // targets the aliases below add `+ Send`; on wasm they do not (wasm is single-threaded).
@@ -28,6 +29,8 @@ pub type OnContextMenu = dyn Fn((f64, f64), ContextTarget) + Send;
 pub type OnPageChange = dyn Fn(usize) + Send;
 #[cfg(not(target_arch = "wasm32"))]
 pub type OnZoomChange = dyn Fn(f64) + Send;
+#[cfg(not(target_arch = "wasm32"))]
+pub type OnWarning = dyn Fn(&[OfdWarning]) + Send;
 
 #[cfg(target_arch = "wasm32")]
 pub type OnChange = dyn Fn(&OfdDocument);
@@ -47,6 +50,8 @@ pub type OnContextMenu = dyn Fn((f64, f64), ContextTarget);
 pub type OnPageChange = dyn Fn(usize);
 #[cfg(target_arch = "wasm32")]
 pub type OnZoomChange = dyn Fn(f64);
+#[cfg(target_arch = "wasm32")]
+pub type OnWarning = dyn Fn(&[OfdWarning]);
 
 /// What a right-click landed on, passed to `on_context_menu`. The host uses
 /// this to show a context menu tailored to the target (annotation actions vs.
@@ -78,6 +83,7 @@ pub struct Callbacks {
     pub on_context_menu: Option<Box<OnContextMenu>>,
     pub on_page_change: Option<Box<OnPageChange>>,
     pub on_zoom_change: Option<Box<OnZoomChange>>,
+    pub on_warning: Option<Box<OnWarning>>,
 }
 
 #[cfg(test)]
@@ -111,6 +117,24 @@ mod tests {
             ..Default::default()
         };
         (cbs.on_save_request.as_ref().unwrap())();
+        assert!(*fired.lock().unwrap());
+    }
+
+    #[test]
+    fn on_warning_fires_with_warnings() {
+        let fired = Arc::new(Mutex::new(false));
+        let fired_clone = fired.clone();
+        let cbs = Callbacks {
+            on_warning: Some(Box::new(move |_warnings: &[OfdWarning]| {
+                *fired_clone.lock().unwrap() = true;
+            })),
+            ..Default::default()
+        };
+        let warnings = [OfdWarning::MissingFeature {
+            feature: "test".into(),
+            entry: "test".into(),
+        }];
+        (cbs.on_warning.as_ref().unwrap())(&warnings);
         assert!(*fired.lock().unwrap());
     }
 }

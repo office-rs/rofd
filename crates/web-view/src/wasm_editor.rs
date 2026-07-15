@@ -289,6 +289,9 @@ mod wasm_impl {
                 parse_ofd(bytes).map_err(|e| JsValue::from_str(&format!("parse failed: {e}")))?;
             self.package = Some(report.package);
             self.component.load_document(report.document);
+            // Relay any degraded-load warnings to the host via on_warning
+            // (AGENTS.md §4.6: non-fatal issues surface via callback, not Result).
+            self.component.fire_warnings(&report.warnings);
             Ok(())
         }
 
