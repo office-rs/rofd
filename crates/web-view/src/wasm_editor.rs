@@ -12,7 +12,8 @@
 //!
 //! [`parse_key`] and its tests are NOT cfg-gated - pure Rust, run on native.
 
-use rofd_component::Key;
+use rofd_component::{Key, Tool};
+use rofd_dom::{AnnotationKind, ShapeKind};
 
 // ─── parse_key (native + wasm) ───────────────────────────────────────────────
 
@@ -44,6 +45,26 @@ pub fn parse_key(s: &str) -> Key {
     }
 }
 
+/// Map a JS-friendly tool-kind string to a [`Tool`]. Unknown strings fall
+/// back to [`Tool::Select`] (safe default). Mirrors the native-app's seven
+/// toolbar buttons: select / highlight / underline / strikeout / squiggly
+/// / freehand / rect.
+///
+/// Pure Rust (no wasm types) so it runs under `cargo test` on native, like
+/// [`parse_key`]. The WasmEditor's `setTool` method calls this.
+pub fn parse_tool_kind(kind: &str) -> Tool {
+    match kind {
+        "select" => Tool::Select,
+        "highlight" => Tool::Create(AnnotationKind::Highlight),
+        "underline" => Tool::Create(AnnotationKind::Underline),
+        "strikeout" => Tool::Create(AnnotationKind::Strikeout),
+        "squiggly" => Tool::Create(AnnotationKind::Squiggly),
+        "freehand" => Tool::Create(AnnotationKind::Freehand),
+        "rect" => Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)),
+        _ => Tool::Select,
+    }
+}
+
 // ─── WasmEditor (wasm32 only) ────────────────────────────────────────────────
 
 #[cfg(target_arch = "wasm32")]
@@ -51,13 +72,15 @@ mod wasm_impl {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use rofd_component::{EditorComponent, EditorConfig, Modifiers, MouseButton, ViewEvent};
-    use rofd_dom::OfdDocument;
-    use rofd_editor::{AnnotationSelection, TextCursor};
+    use rofd_component::{
+        ContextTarget, EditorComponent, EditorConfig, Modifiers, MouseButton, ViewEvent,
+    };
+    use rofd_dom::{AnnotationId, AnnotationSelection, OfdDocument};
+    use rofd_editor::TextCursor;
     use rofd_io::{parse_ofd, save_ofd, write_ofd, PackageHandle};
     use wasm_bindgen::prelude::*;
 
-    use crate::wasm_editor::parse_key;
+    use crate::wasm_editor::{parse_key, parse_tool_kind};
     use crate::webgpu_render_target::WebGpuRenderTarget;
 
     /// JS callback slots. Each is an `Rc<RefCell<Option<Function>>>` so the
@@ -70,6 +93,7 @@ mod wasm_impl {
         pub on_selection_change: Rc<RefCell<Option<js_sys::Function>>>,
         pub on_cursor_change: Rc<RefCell<Option<js_sys::Function>>>,
         pub on_save_request: Rc<RefCell<Option<js_sys::Function>>>,
+        pub on_context_menu: Rc<RefCell<Option<js_sys::Function>>>,
     }
 
     /// wasm-bindgen editor surface for the web.
@@ -134,6 +158,14 @@ mod wasm_impl {
         #[wasm_bindgen(js_name = setOnSaveRequest)]
         pub fn set_on_save_request(&mut self, callback: Option<js_sys::Function>) {
             *self.callbacks.on_save_request.borrow_mut() = callback;
+        }
+
+        /// Register the right-click context menu callback. JS receives
+        /// `(x, y, annotationId)` where `annotationId` is `null` when the
+        /// right-click hit a page body or the desk background (no annotation).
+        #[wasm_bindgen(js_name = setOnContextMenu)]
+        pub fn set_on_context_menu(&mut self, callback: Option<js_sys::Function>) {
+            *self.callbacks.on_context_menu.borrow_mut() = callback;
         }
 
         // ─── Event Handlers ─────────────────────────────────────────────────
@@ -289,6 +321,48 @@ mod wasm_impl {
         pub fn set_clock(&mut self, author: String, ts: i64) {
             self.component.set_clock(author, ts);
         }
+
+        /// Set the active editing tool. `kind` is a JS-friendly string:
+        /// `"select"` | `"highlight"` | `"underline"` | `"strikeout"` |
+        /// `"squiggly"` | `"freehand"` | `"rect"`. Unknown strings fall back
+        /// to `Select` (safe default). Mirrors the native-app's toolbar buttons.
+        #[wasm_bindgen(js_name = setTool)]
+        pub fn set_tool(&mut self, kind: &str) {
+            let tool = parse_tool_kind(kind);
+            self.component.set_tool(tool);
+        }
+
+        /// Delete the annotation with the given id string. Used by the
+        /// right-click context menu's "Delete" action. Returns `false` if no
+        /// annotation with that id exists (the editor's `delete_annotation` is
+        /// itself a no-op in that case, but this gives JS a success signal).
+        #[wasm_bindgen(js_name = deleteAnnotation)]
+        pub fn delete_annotation(&mut self, id: &str) -> bool {
+            let id = AnnotationId::new(id);
+            let exists = self.component.document().annotations.find(&id).is_some();
+            if !exists {
+                return false;
+            }
+            self.component.delete_annotation(&id);
+            true
+        }
+
+        /// Delete all currently-selected annotations. Returns the count
+        /// deleted. Mirrors the Delete-key path (handled in `handle_event`)
+        /// but exposed for programmatic use (e.g. a toolbar "Delete" button).
+        #[wasm_bindgen(js_name = deleteSelected)]
+        pub fn delete_selected(&mut self) -> u32 {
+            let ids: Vec<AnnotationId> = match self.component.selection() {
+                AnnotationSelection::None => vec![],
+                AnnotationSelection::Single(id) => vec![id.clone()],
+                AnnotationSelection::Multi(ids) => ids.clone(),
+            };
+            let count = ids.len() as u32;
+            for id in &ids {
+                self.component.delete_annotation(id);
+            }
+            count
+        }
     }
 
     impl WasmEditor {
@@ -348,6 +422,17 @@ mod wasm_impl {
             self.component.on_save_request(Box::new(move || {
                 call_js0(&on_save_request_js);
             }));
+
+            let on_context_menu_js = self.callbacks.on_context_menu.clone();
+            self.component.on_context_menu(Box::new(
+                move |point: (f64, f64), target: ContextTarget| {
+                    let id_str: Option<String> = match &target {
+                        ContextTarget::Annotation(id) => Some(id.0.clone()),
+                        ContextTarget::Page | ContextTarget::Empty => None,
+                    };
+                    call_js3(&on_context_menu_js, point.0, point.1, id_str);
+                },
+            ));
         }
     }
 
@@ -355,6 +440,24 @@ mod wasm_impl {
     fn call_js0(slot: &Rc<RefCell<Option<js_sys::Function>>>) {
         if let Some(ref js_fn) = *slot.borrow() {
             let _ = js_fn.call0(&JsValue::null());
+        }
+    }
+
+    /// Invoke a JS callback slot with three arguments: two f64s (the
+    /// right-click point) and an `Option<String>` (the annotation id, or null
+    /// for Page/Empty context targets). No-op if the slot is empty.
+    fn call_js3(slot: &Rc<RefCell<Option<js_sys::Function>>>, x: f64, y: f64, id: Option<String>) {
+        if let Some(ref js_fn) = *slot.borrow() {
+            let id_val = match id {
+                Some(s) => JsValue::from_str(&s),
+                None => JsValue::NULL,
+            };
+            let _ = js_fn.call3(
+                &JsValue::null(),
+                &JsValue::from_f64(x),
+                &JsValue::from_f64(y),
+                &id_val,
+            );
         }
     }
 
@@ -395,5 +498,49 @@ mod tests {
     fn parse_key_unknown() {
         assert_eq!(parse_key("F1"), Key::Unidentified);
         assert_eq!(parse_key(""), Key::Unidentified);
+    }
+
+    #[test]
+    fn parse_tool_kind_select() {
+        assert_eq!(parse_tool_kind("select"), Tool::Select);
+    }
+
+    #[test]
+    fn parse_tool_kind_markup_variants() {
+        assert_eq!(
+            parse_tool_kind("highlight"),
+            Tool::Create(AnnotationKind::Highlight)
+        );
+        assert_eq!(
+            parse_tool_kind("underline"),
+            Tool::Create(AnnotationKind::Underline)
+        );
+        assert_eq!(
+            parse_tool_kind("strikeout"),
+            Tool::Create(AnnotationKind::Strikeout)
+        );
+        assert_eq!(
+            parse_tool_kind("squiggly"),
+            Tool::Create(AnnotationKind::Squiggly)
+        );
+    }
+
+    #[test]
+    fn parse_tool_kind_freehand_and_rect() {
+        assert_eq!(
+            parse_tool_kind("freehand"),
+            Tool::Create(AnnotationKind::Freehand)
+        );
+        assert_eq!(
+            parse_tool_kind("rect"),
+            Tool::Create(AnnotationKind::Shape(ShapeKind::Rect))
+        );
+    }
+
+    #[test]
+    fn parse_tool_kind_unknown_falls_back_to_select() {
+        assert_eq!(parse_tool_kind("unknown"), Tool::Select);
+        assert_eq!(parse_tool_kind(""), Tool::Select);
+        assert_eq!(parse_tool_kind("SELECT"), Tool::Select); // case-sensitive
     }
 }
