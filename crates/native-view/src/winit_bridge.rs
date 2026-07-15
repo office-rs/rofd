@@ -1,4 +1,4 @@
-use rofd_component::{Key, Modifiers, MouseButton, ViewEvent};
+use rofd_component::{Key, Modifiers, MouseButton, ScrollDirection, ViewEvent};
 
 /// Transient winit translation state. NOT a field on EditorApp (keeps EditorApp
 /// framework-agnostic). The Host owns both and passes &mut EditorApp into handle_window_event.
@@ -90,9 +90,19 @@ impl WinitEventBridge {
                     winit::event::MouseScrollDelta::PixelDelta(p) => (p.x, p.y),
                 };
                 if self.modifiers.control {
-                    Some(ViewEvent::Zoom {
-                        factor: if dy > 0.0 { 1.1 } else { 0.9 },
-                    })
+                    let factor = if dy > 0.0 { 1.1 } else { 0.9 };
+                    // ZoomAt anchors on the cursor so the content under it
+                    // stays put. Falls back to plain Zoom (center-agnostic)
+                    // when the canvas origin is unknown (cursor outside canvas
+                    // or origin not yet pushed by the host).
+                    if let Some((cx, cy)) = self.canvas_local_cursor() {
+                        Some(ViewEvent::ZoomAt {
+                            factor,
+                            center: (cx, cy),
+                        })
+                    } else {
+                        Some(ViewEvent::Zoom { factor })
+                    }
                 } else {
                     Some(ViewEvent::Scroll { dx, dy: -dy })
                 }
@@ -104,6 +114,13 @@ impl WinitEventBridge {
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state != winit::event::ElementState::Pressed {
                     return None;
+                }
+                // PageUp/PageDown scroll by one page height (ScrollPage), not a
+                // generic KeyDown: the component's handle_key doesn't act on
+                // these keys, so routing them as ScrollPage gives them an effect
+                // (viewport scroll by page_h + page_gap).
+                if let Some(direction) = page_scroll_direction(&event.physical_key) {
+                    return Some(ViewEvent::ScrollPage { direction });
                 }
                 let key = winit_key_to_rofd(&event.physical_key, &event.text);
                 Some(ViewEvent::KeyDown {
@@ -184,6 +201,22 @@ fn winit_key_to_rofd(
     }
 }
 
+/// If `key` is PageUp/PageDown, return the corresponding scroll direction
+/// (used to emit `ViewEvent::ScrollPage` instead of a no-op `KeyDown`).
+/// Returns `None` for all other keys.
+fn page_scroll_direction(key: &winit::keyboard::PhysicalKey) -> Option<ScrollDirection> {
+    use winit::keyboard::{KeyCode, PhysicalKey};
+    if let PhysicalKey::Code(code) = key {
+        match code {
+            KeyCode::PageUp => Some(ScrollDirection::Up),
+            KeyCode::PageDown => Some(ScrollDirection::Down),
+            _ => None,
+        }
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,5 +271,90 @@ mod tests {
         bridge.update_modifiers(&state);
         assert!(bridge.modifiers.control);
         assert!(!bridge.modifiers.shift);
+    }
+
+    #[test]
+    fn page_scroll_direction_maps_page_up_down() {
+        use winit::keyboard::{KeyCode, PhysicalKey};
+        assert_eq!(
+            page_scroll_direction(&PhysicalKey::Code(KeyCode::PageUp)),
+            Some(ScrollDirection::Up)
+        );
+        assert_eq!(
+            page_scroll_direction(&PhysicalKey::Code(KeyCode::PageDown)),
+            Some(ScrollDirection::Down)
+        );
+        // Non-paging keys return None (fall through to KeyDown).
+        assert_eq!(
+            page_scroll_direction(&PhysicalKey::Code(KeyCode::ArrowUp)),
+            None
+        );
+        assert_eq!(
+            page_scroll_direction(&PhysicalKey::Code(KeyCode::Enter)),
+            None
+        );
+    }
+
+    #[test]
+    fn ctrl_wheel_emits_zoomat_at_cursor() {
+        use winit::event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent};
+        let mut bridge = WinitEventBridge::new();
+        // Ctrl held + cursor at logical (30, 40) with canvas origin (0,0).
+        bridge.update_modifiers(&winit::keyboard::ModifiersState::CONTROL);
+        bridge.set_cursor(30.0, 40.0);
+        bridge.set_canvas_origin(0.0, 0.0);
+
+        let ev = WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(0.0, 1.0), // scroll up
+            phase: TouchPhase::Moved,
+        };
+        match bridge.translate(&ev) {
+            Some(ViewEvent::ZoomAt { factor, center }) => {
+                assert!(factor > 1.0, "scroll up zooms in");
+                assert_eq!(center, (30.0, 40.0));
+            }
+            other => panic!("expected ZoomAt, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn wheel_without_ctrl_emits_scroll() {
+        use winit::event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent};
+        let mut bridge = WinitEventBridge::new();
+        // No modifiers -> plain Scroll.
+        bridge.set_cursor(30.0, 40.0);
+        bridge.set_canvas_origin(0.0, 0.0);
+
+        let ev = WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(0.0, 1.0),
+            phase: TouchPhase::Moved,
+        };
+        match bridge.translate(&ev) {
+            Some(ViewEvent::Scroll { .. }) => {}
+            other => panic!("expected Scroll without Ctrl, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn ctrl_wheel_without_canvas_origin_falls_back_to_zoom() {
+        use winit::event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent};
+        let mut bridge = WinitEventBridge::new();
+        bridge.update_modifiers(&winit::keyboard::ModifiersState::CONTROL);
+        // Deliberately do NOT set_canvas_origin -> cursor local unknown.
+        bridge.set_cursor(30.0, 40.0);
+
+        let ev = WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(0.0, -1.0), // scroll down
+            phase: TouchPhase::Moved,
+        };
+        match bridge.translate(&ev) {
+            Some(ViewEvent::Zoom { factor }) => {
+                assert!(factor < 1.0, "scroll down zooms out");
+            }
+            other => panic!("expected Zoom fallback, got {:?}", other),
+        }
     }
 }
