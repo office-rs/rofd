@@ -7,17 +7,22 @@ use rofd_dom::{
 };
 
 use crate::abbreviated::parse_abbreviated;
-use crate::error::OfdError;
+use crate::error::{OfdError, OfdWarning};
 use crate::parse::attr;
 use crate::parse::document::DocHeader;
 use crate::parse::{parse_color_value, parse_rect_ws};
 
-pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result<Page, OfdError> {
+pub fn parse_page(
+    page_id: PageId,
+    page_xml: &str,
+    header: &DocHeader,
+    warnings: &mut Vec<OfdWarning>,
+) -> Result<Page, OfdError> {
     let mut reader = Reader::from_str(page_xml);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut page = Page {
-        id: page_id,
+        id: page_id.clone(),
         physical_box: header.page_area.unwrap_or_default(),
         layers: vec![],
         template: None,
@@ -35,8 +40,14 @@ pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                if e.name().local_name().as_ref() == b"PhysicalBox" {
+                let local = e.name().local_name();
+                if local.as_ref() == b"PhysicalBox" {
                     in_physical_box = true;
+                } else if local.as_ref() == b"Template" {
+                    // GB/T 33190 §7.5: <ofd:Template> references a template
+                    // page. v1 does not expand templates; capture a marker so
+                    // parse_ofd can emit a MissingFeature warning.
+                    page.template = Some(String::new());
                 } else {
                     handle_element_start(
                         &e,
@@ -46,6 +57,8 @@ pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result
                         &mut pending_text_body,
                         &mut in_text_code,
                         &mut text_origin,
+                        &page_id,
+                        warnings,
                     );
                 }
             }
@@ -63,6 +76,8 @@ pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result
                         layer_type: lt,
                         objects: vec![],
                     });
+                } else if local.as_ref() == b"Template" {
+                    page.template = Some(String::new());
                 } else {
                     handle_element_start(
                         &e,
@@ -72,6 +87,8 @@ pub fn parse_page(page_id: PageId, page_xml: &str, header: &DocHeader) -> Result
                         &mut pending_text_body,
                         &mut in_text_code,
                         &mut text_origin,
+                        &page_id,
+                        warnings,
                     );
                 }
             }
@@ -145,6 +162,8 @@ fn handle_element_start(
     pending_text_body: &mut Option<String>,
     in_text_code: &mut bool,
     text_origin: &mut (f64, f64),
+    page_id: &PageId,
+    warnings: &mut Vec<OfdWarning>,
 ) {
     match e.name().local_name().as_ref() {
         b"Layer" => {
@@ -228,7 +247,17 @@ fn handle_element_start(
             }
         }
         b"AbbreviatedData" => { /* text captured in Text event */ }
-        _ => {}
+        // Structural/container elements that are expected but have no direct
+        // object representation - silently pass through (not unknown objects).
+        b"Area" | b"Content" | b"Page" => {}
+        _ => {
+            // Unknown element -> skip + warning (not fatal, AGENTS.md §4.6).
+            let name = String::from_utf8_lossy(e.name().local_name().as_ref()).into_owned();
+            warnings.push(OfdWarning::SkippedObject {
+                page: page_id.clone(),
+                reason: format!("unknown element <{name}>"),
+            });
+        }
     }
 }
 
@@ -319,6 +348,7 @@ mod tests {
                 max_unit_id: 0,
                 annotations_loc: None,
             },
+            &mut Vec::new(),
         )
         .expect("page parses");
         let body = page

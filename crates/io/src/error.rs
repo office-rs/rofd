@@ -59,8 +59,17 @@ pub enum OfdWarning {
         requested: String,
         used: String,
     },
+    /// A resource (image/font) referenced by the document is missing from the
+    /// package. Parse continues; the resource is simply unavailable. This is
+    /// the degraded-input path (AGENTS.md §4.6) - distinct from `OfdError::ResourceNotFound`
+    /// which is reserved for hard failures where a required structural entry is absent.
+    ResourceNotFound {
+        kind: ResourceKind,
+        id: String,
+    },
 }
 
+#[derive(Debug)]
 pub struct LoadReport {
     pub document: OfdDocument,
     pub package: PackageHandle,
