@@ -81,6 +81,28 @@ async function main(): Promise<void> {
         console.log(`[context-menu] right-click on page/desk at (${x.toFixed(0)}, ${y.toFixed(0)}) (no action)`);
       }
     },
+    // Degraded-load warnings (non-fatal parse issues). v1: log to console.
+    onWarning: (warnings) => {
+      for (const w of warnings) {
+        console.warn(`[rofd] ${w}`);
+      }
+    },
+    // Annotation gained editing focus (e.g. double-click FreeText). v1: log.
+    onAnnotationFocus: (annotationId) => {
+      console.log(`[annotation-focus] ${annotationId}`);
+    },
+    // Annotation single-click interaction (e.g. select highlight). v1: log.
+    onAnnotationInteract: (annotationId) => {
+      console.log(`[annotation-interact] ${annotationId}`);
+    },
+    // Visible page changed (scroll/zoom past boundary). v1: log.
+    onPageChange: (pageIndex) => {
+      console.log(`[page-change] page ${pageIndex}`);
+    },
+    // Zoom changed. v1: log.
+    onZoomChange: (zoom) => {
+      console.log(`[zoom-change] ${(zoom * 100).toFixed(0)}%`);
+    },
   });
   editor.setClock('rofd', Date.now());
 

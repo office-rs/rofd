@@ -44,6 +44,8 @@ interface WasmEditor {
   handleMouseMove(x: number, y: number): void;
   handleMouseScroll(dx: number, dy: number): void;
   handleZoom(factor: number): void;
+  handleScrollPage(direction: 'up' | 'down'): void;
+  handleZoomAt(factor: number, cx: number, cy: number): void;
   handleFocusGained(): void;
   handleFocusLost(): void;
   loadOfd(bytes: Uint8Array): void;
@@ -56,6 +58,11 @@ interface WasmEditor {
   setOnCursorChange(cb: (() => void) | null): void;
   setOnSaveRequest(cb: (() => void) | null): void;
   setOnContextMenu(cb: ((x: number, y: number, annotationId: string | null) => void) | null): void;
+  setOnWarning(cb: ((warnings: string[]) => void) | null): void;
+  setOnAnnotationFocus(cb: ((annotationId: string) => void) | null): void;
+  setOnAnnotationInteract(cb: ((annotationId: string) => void) | null): void;
+  setOnPageChange(cb: ((pageIndex: number) => void) | null): void;
+  setOnZoomChange(cb: ((zoom: number) => void) | null): void;
   setTool(kind: string): void;
   deleteAnnotation(id: string): boolean;
   deleteSelected(): number;
@@ -82,6 +89,21 @@ export interface EditorConfig {
   /** Fired on right-click. `annotationId` is null when the click hit a page
    * body or the desk background (no annotation to act on). */
   onContextMenu?: (x: number, y: number, annotationId: string | null) => void;
+  /** Fired after `loadOfd` when the parser encountered non-fatal issues
+   * (degraded load). Receives an array of human-readable warning strings. */
+  onWarning?: (warnings: string[]) => void;
+  /** Fired when an annotation gains editing focus (e.g. double-click a
+   * FreeText to enter text-edit mode). Receives the annotation id. */
+  onAnnotationFocus?: (annotationId: string) => void;
+  /** Fired on a single-click interaction with an annotation (e.g. selecting
+   * a highlight). Receives the annotation id. */
+  onAnnotationInteract?: (annotationId: string) => void;
+  /** Fired when the page at the viewport's vertical center changes (scrolling
+   * or zooming past a page boundary). Receives the 0-based page index. */
+  onPageChange?: (pageIndex: number) => void;
+  /** Fired when the viewport zoom changes. Receives the new zoom factor
+   * (1.0 = 100%). Only fires when the zoom actually differs. */
+  onZoomChange?: (zoom: number) => void;
 }
 
 // Default font CDN (jsDelivr - ICP-licensed China CDN nodes). Same fonts reditor
@@ -165,6 +187,11 @@ export class Editor {
     if (config?.onCursorChange) wasmEditor.setOnCursorChange(config.onCursorChange);
     if (config?.onSaveRequest) wasmEditor.setOnSaveRequest(config.onSaveRequest);
     if (config?.onContextMenu) wasmEditor.setOnContextMenu(config.onContextMenu);
+    if (config?.onWarning) wasmEditor.setOnWarning(config.onWarning);
+    if (config?.onAnnotationFocus) wasmEditor.setOnAnnotationFocus(config.onAnnotationFocus);
+    if (config?.onAnnotationInteract) wasmEditor.setOnAnnotationInteract(config.onAnnotationInteract);
+    if (config?.onPageChange) wasmEditor.setOnPageChange(config.onPageChange);
+    if (config?.onZoomChange) wasmEditor.setOnZoomChange(config.onZoomChange);
 
     // 7. Create wrapper + bind DOM events.
     const editor = new Editor(wasmEditor, canvas);
@@ -207,7 +234,17 @@ export class Editor {
       'keydown',
       (e: KeyboardEvent) => {
         e.preventDefault();
-        this.wasm.handleKeyDown(e.key, e.shiftKey, e.ctrlKey, e.altKey, e.metaKey);
+        // PageUp/PageDown scroll by one page height (ScrollPage), not a
+        // generic KeyDown: the component's handle_key doesn't act on these
+        // keys, so routing them as ScrollPage gives them an effect (viewport
+        // scroll by page_h + page_gap). Mirrors the native winit bridge.
+        if (e.key === 'PageUp') {
+          this.wasm.handleScrollPage('up');
+        } else if (e.key === 'PageDown') {
+          this.wasm.handleScrollPage('down');
+        } else {
+          this.wasm.handleKeyDown(e.key, e.shiftKey, e.ctrlKey, e.altKey, e.metaKey);
+        }
       },
       opts,
     );
@@ -264,7 +301,11 @@ export class Editor {
       (e: WheelEvent) => {
         e.preventDefault();
         if (e.ctrlKey || e.metaKey) {
-          this.wasm.handleZoom(e.deltaY > 0 ? 0.9 : 1.1);
+          // Ctrl+wheel: zoom anchored to the cursor position (device px).
+          const rect = this.canvas.getBoundingClientRect();
+          const cx = (e.clientX - rect.left) * dpr();
+          const cy = (e.clientY - rect.top) * dpr();
+          this.wasm.handleZoomAt(e.deltaY > 0 ? 0.9 : 1.1, cx, cy);
         } else {
           this.wasm.handleMouseScroll(e.deltaX, e.deltaY);
         }
@@ -345,6 +386,19 @@ export class Editor {
   /** Delete all currently-selected annotations. Returns the count deleted. */
   deleteSelected(): number {
     return this.wasm.deleteSelected();
+  }
+
+  /** Scroll by one page height. `direction` is "up" or "down". Intended for
+   * PageUp/PageDown keys. */
+  handleScrollPage(direction: 'up' | 'down'): void {
+    this.wasm.handleScrollPage(direction);
+  }
+
+  /** Zoom by `factor` while keeping the `(cx, cy)` viewport point (device
+   * pixels) anchored to the same document position. Intended for Ctrl+wheel
+   * zoom (cursor position = center). */
+  handleZoomAt(factor: number, cx: number, cy: number): void {
+    this.wasm.handleZoomAt(factor, cx, cy);
   }
 }
 
