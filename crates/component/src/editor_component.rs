@@ -304,13 +304,26 @@ impl EditorComponent {
                                 }
                                 self.fire_annotation_interact(&id);
                                 self.fire_selection_change();
-                                // Set up resize drag: orig + anchor in page-local.
+                                // Markup/Freehand annotations are not resizable
+                                // (they have no meaningful rect to drag-handle).
+                                // Select only and skip the Resize drag setup so
+                                // PointerUp doesn't commit a phantom Transaction.
                                 let ann = self
                                     .editor
                                     .document()
                                     .annotations
                                     .find(&id)
                                     .expect("selected annotation must exist");
+                                if matches!(
+                                    &ann.payload,
+                                    AnnotationPayload::Markup { .. }
+                                        | AnnotationPayload::Freehand { .. }
+                                ) {
+                                    return EventOutcome {
+                                        needs_repaint: true,
+                                    };
+                                }
+                                // Set up resize drag: orig + anchor in page-local.
                                 let orig = annotation_payload_rect(ann);
                                 let anchor = opposite_corner(&orig, &h);
                                 // current_local starts at the handle corner (no
@@ -577,8 +590,13 @@ impl EditorComponent {
                 }
             }
             ViewEvent::Zoom { factor } => {
+                let old_zoom = self.viewport.zoom;
                 self.viewport.zoom *= factor;
-                self.fire_zoom_change(self.viewport.zoom);
+                // Only fire on_zoom_change if the zoom actually changed (a
+                // factor of 1.0 is a no-op). ZoomAt already has this guard (T2).
+                if (self.viewport.zoom - old_zoom).abs() > f64::EPSILON {
+                    self.fire_zoom_change(self.viewport.zoom);
+                }
                 // Zoom can also shift which page is at the viewport center
                 // (page heights scale with zoom), so re-check page change.
                 self.maybe_fire_page_change();
@@ -880,9 +898,8 @@ impl EditorComponent {
     /// contains the viewport's vertical center) and, if it differs from
     /// `self.current_page`, update the field and fire `on_page_change`.
     ///
-    /// The page-stacking geometry mirrors `composite.rs` / `hit_test`:
-    /// Y starts at `page_gap - scroll.1` and advances by `page_h + page_gap`
-    /// per page. The viewport center Y is `size.1 / 2`.
+    /// The page-stacking geometry is computed via [`rofd_render::page_origin`]
+    /// (the shared helper). The viewport center Y is `size.1 / 2`.
     fn maybe_fire_page_change(&mut self) {
         let new_page = self.visible_page_index();
         if new_page != self.current_page {
@@ -896,30 +913,34 @@ impl EditorComponent {
     /// Compute the index of the page whose viewport rect contains the
     /// viewport's vertical center. Returns `None` if the document has no
     /// pages or no page spans the center line.
+    ///
+    /// Uses [`rofd_render::page_origin`] (the shared page-stacking helper) for
+    /// the viewport Y geometry.
     fn visible_page_index(&self) -> Option<usize> {
         let doc = self.editor.document();
         if doc.pages.is_empty() {
             return None;
         }
         let center_y = self.viewport.size.1 / 2.0;
-        let mut y = self.viewport.page_gap - self.viewport.scroll.1;
+        // Pass 1: find a page whose viewport rect spans the center line.
         for (i, page) in doc.pages.iter().enumerate() {
             let page_h = page.physical_box.h * self.viewport.zoom;
-            if center_y >= y && center_y < y + page_h {
-                return Some(i);
+            if let Some((_, origin_y)) = rofd_render::page_origin(doc, &self.viewport, i) {
+                if center_y >= origin_y && center_y < origin_y + page_h {
+                    return Some(i);
+                }
             }
-            y += page_h + self.viewport.page_gap;
         }
-        // Center is in a gap or past the last page: fall back to the last page
-        // whose top is above the center (the most-recently-scrolled-past page).
-        let mut y = self.viewport.page_gap - self.viewport.scroll.1;
+        // Pass 2 (fallback): center is in a gap or past the last page - return
+        // the last page whose top is above the center (the most-recently-
+        // scrolled-past page).
         let mut last_above: Option<usize> = None;
-        for (i, page) in doc.pages.iter().enumerate() {
-            let page_h = page.physical_box.h * self.viewport.zoom;
-            if y <= center_y {
-                last_above = Some(i);
+        for (i, _page) in doc.pages.iter().enumerate() {
+            if let Some((_, origin_y)) = rofd_render::page_origin(doc, &self.viewport, i) {
+                if origin_y <= center_y {
+                    last_above = Some(i);
+                }
             }
-            y += page_h + self.viewport.page_gap;
         }
         last_above
     }
@@ -1273,48 +1294,41 @@ fn build_create_payload(
 }
 
 /// Find the page whose viewport rect contains `point`, returning its [`PageId`].
-/// Mirrors the page-stacking loop in composite.rs: Y starts at
-/// `page_gap - scroll.1` and advances by `page_h + page_gap` per page.
+/// Uses [`rofd_render::page_origin`] (the shared page-stacking helper) for the
+/// viewport geometry.
 fn current_page_id(doc: &OfdDocument, vp: &Viewport, point: (f64, f64)) -> PageId {
-    let mut y = vp.page_gap - vp.scroll.1;
-    for page in &doc.pages {
-        let page_w = page.physical_box.w * vp.zoom;
-        let page_h = page.physical_box.h * vp.zoom;
-        let page_x = ((vp.size.0 - page_w) / 2.0).max(0.0);
-        let origin_x = page_x + vp.scroll.0;
-        if point.0 >= origin_x
-            && point.0 <= origin_x + page_w
-            && point.1 >= y
-            && point.1 <= y + page_h
-        {
-            return page.id.clone();
+    for (i, page) in doc.pages.iter().enumerate() {
+        if let Some((origin_x, origin_y)) = rofd_render::page_origin(doc, vp, i) {
+            let page_w = page.physical_box.w * vp.zoom;
+            let page_h = page.physical_box.h * vp.zoom;
+            if point.0 >= origin_x
+                && point.0 <= origin_x + page_w
+                && point.1 >= origin_y
+                && point.1 <= origin_y + page_h
+            {
+                return page.id.clone();
+            }
         }
-        y += page_h + vp.page_gap;
     }
     // Fallback: first page if any, else a default PageId.
     doc.pages.first().map(|p| p.id.clone()).unwrap_or_default()
 }
 
 /// Convert a viewport-space point to page-local coordinates for a specific page.
-/// Returns `None` if the page is not found. Mirrors the page-stacking loop.
+/// Returns `None` if the page is not found. Uses [`rofd_render::page_origin`]
+/// (the shared page-stacking helper) for the viewport geometry.
 fn viewport_to_page_local(
     doc: &OfdDocument,
     vp: &Viewport,
     page_id: &PageId,
     point: (f64, f64),
 ) -> Option<(f64, f64)> {
-    let mut y = vp.page_gap - vp.scroll.1;
-    for page in &doc.pages {
-        let page_w = page.physical_box.w * vp.zoom;
-        let page_h = page.physical_box.h * vp.zoom;
-        if page.id == *page_id {
-            let page_x = ((vp.size.0 - page_w) / 2.0).max(0.0);
-            let origin_x = page_x + vp.scroll.0;
-            return Some(((point.0 - origin_x) / vp.zoom, (point.1 - y) / vp.zoom));
-        }
-        y += page_h + vp.page_gap;
-    }
-    None
+    let page_idx = doc.pages.iter().position(|p| p.id == *page_id)?;
+    let (origin_x, origin_y) = rofd_render::page_origin(doc, vp, page_idx)?;
+    Some((
+        (point.0 - origin_x) / vp.zoom,
+        (point.1 - origin_y) / vp.zoom,
+    ))
 }
 
 /// Extract the page-local bounding [`Rect`] from an annotation's payload.
@@ -1460,7 +1474,7 @@ mod tests {
     use crate::event::{Key, Modifiers, MouseButton, ScrollDirection, ViewEvent};
     use rofd_dom::{
         AnnotationKind, AnnotationPayload, AnnotationSelection, Color, Layer, NoteIcon,
-        OfdDocument, Page, PageId, Rect, ShapeKind,
+        OfdDocument, Page, PageId, PathCommand, PathData, Point, Rect, ShapeKind,
     };
     use std::sync::Mutex;
 
@@ -2059,6 +2073,188 @@ mod tests {
         }
     }
 
+    /// Build a component with one page (P0, 200x200) and a Highlight (Markup)
+    /// annotation covering the full page. Viewport: zoom=1, size=(0,0), gap=0,
+    /// scroll=(0,0) so page origin is (0,0) and viewport coords == page-local.
+    /// Used to test the resize guard for Markup annotations.
+    fn component_with_markup() -> EditorComponent {
+        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        c.set_clock("t".into(), 1);
+        let mut doc = OfdDocument::default();
+        doc.pages.push(Page {
+            id: PageId::new("P0"),
+            physical_box: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 200.0,
+            },
+            layers: vec![Layer::default()],
+            template: None,
+        });
+        c.load_document(doc);
+        c.editor.create_annotation(
+            AnnotationKind::Highlight,
+            PageId::new("P0"),
+            AnnotationPayload::Markup {
+                // Quad pair spanning (10,10)-(100,100) -> bbox (10,10,90,90).
+                quad_points: vec![Point { x: 10.0, y: 10.0 }, Point { x: 100.0, y: 100.0 }],
+                color: Color::Rgb(255, 255, 0),
+            },
+        );
+        c.viewport = rofd_render::Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (0.0, 0.0),
+            page_gap: 0.0,
+        };
+        c
+    }
+
+    /// Resize guard: clicking a handle on a Markup (Highlight) annotation must
+    /// NOT enter Resize. The annotation is not resizable, so no DragState::Resize
+    /// should be set up, and a subsequent PointerUp must not push a Transaction.
+    #[test]
+    fn markup_handle_down_does_not_enter_resize() {
+        let mut c = component_with_markup();
+        let undo_before = c.editor.history_len();
+        // Select the markup by clicking inside it (at (50,50) -- inside the
+        // (10,10)-(100,100) bbox).
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 50.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 50.0,
+        });
+        // Now the markup is selected. Its viewport rect is (10,10,90,90) (bbox
+        // of the quad pair at zoom 1, page origin (0,0)). The Se handle is at
+        // (100,100). Click on it.
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 100.0,
+            y: 100.0,
+            modifiers: Modifiers::default(),
+        });
+        // No DragState::Resize should have been set up.
+        assert!(
+            c.drag.is_none(),
+            "Markup handle must not enter Resize (drag should be None)"
+        );
+        // Move + Up should not push a Transaction (no resize happened).
+        c.handle_event(&ViewEvent::PointerMove { x: 120.0, y: 120.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 120.0,
+            y: 120.0,
+        });
+        assert_eq!(
+            c.editor.history_len(),
+            undo_before,
+            "Markup handle drag must not push a Transaction (no phantom resize)"
+        );
+        // The annotation's quad_points should be unchanged.
+        if let AnnotationSelection::Single(id) = c.editor.selection() {
+            let ann = c.editor.document().annotations.find(id).unwrap();
+            match &ann.payload {
+                AnnotationPayload::Markup { quad_points, .. } => {
+                    assert_eq!(
+                        quad_points.len(),
+                        2,
+                        "Markup quad_points unchanged after handle drag"
+                    );
+                }
+                _ => panic!("expected Markup payload"),
+            }
+        }
+    }
+
+    /// Build a component with one page (P0, 200x200) and a Freehand annotation.
+    /// Viewport: zoom=1, size=(0,0), gap=0, scroll=(0,0) so page origin is (0,0).
+    fn component_with_freehand() -> EditorComponent {
+        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        c.set_clock("t".into(), 1);
+        let mut doc = OfdDocument::default();
+        doc.pages.push(Page {
+            id: PageId::new("P0"),
+            physical_box: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 200.0,
+            },
+            layers: vec![Layer::default()],
+            template: None,
+        });
+        c.load_document(doc);
+        c.editor.create_annotation(
+            AnnotationKind::Freehand,
+            PageId::new("P0"),
+            AnnotationPayload::Freehand {
+                path: PathData {
+                    // M(10,10) L(100,100) -> bbox (10,10,90,90).
+                    commands: vec![PathCommand::M(10.0, 10.0), PathCommand::L(100.0, 100.0)],
+                },
+                color: Color::Rgb(0, 0, 255),
+                width: 1.5,
+            },
+        );
+        c.viewport = rofd_render::Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (0.0, 0.0),
+            page_gap: 0.0,
+        };
+        c
+    }
+
+    /// Resize guard: clicking a handle on a Freehand annotation must NOT enter
+    /// Resize. Same logic as the Markup test.
+    #[test]
+    fn freehand_handle_down_does_not_enter_resize() {
+        let mut c = component_with_freehand();
+        let undo_before = c.editor.history_len();
+        // Select the freehand by clicking inside its bbox (at (50,50)).
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 50.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 50.0,
+        });
+        // The freehand bbox is (10,10,90,90). Se handle at (100,100). Click it.
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 100.0,
+            y: 100.0,
+            modifiers: Modifiers::default(),
+        });
+        assert!(
+            c.drag.is_none(),
+            "Freehand handle must not enter Resize (drag should be None)"
+        );
+        // Move + Up should not push a Transaction.
+        c.handle_event(&ViewEvent::PointerMove { x: 120.0, y: 120.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 120.0,
+            y: 120.0,
+        });
+        assert_eq!(
+            c.editor.history_len(),
+            undo_before,
+            "Freehand handle drag must not push a Transaction (no phantom resize)"
+        );
+    }
+
     #[test]
     fn annotation_focus_and_interact_fire_on_select() {
         let focus_fired = Arc::new(Mutex::new(false));
@@ -2334,6 +2530,23 @@ mod tests {
             *fired.lock().unwrap(),
             Some(rofd_render::PX_PER_MM * 2.0),
             "zoom_change fired with new zoom value"
+        );
+    }
+
+    /// Zoom guard: a Zoom event with factor=1.0 (no-op) must NOT fire
+    /// on_zoom_change. Only an actual zoom change should fire the callback.
+    #[test]
+    fn zoom_no_change_does_not_fire_zoom_change() {
+        let fired = Arc::new(Mutex::new(false));
+        let f = fired.clone();
+        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        c.on_zoom_change(move |_z| {
+            *f.lock().unwrap() = true;
+        });
+        c.handle_event(&ViewEvent::Zoom { factor: 1.0 });
+        assert!(
+            !*fired.lock().unwrap(),
+            "zoom_change must not fire when factor=1.0 (no zoom change)"
         );
     }
 

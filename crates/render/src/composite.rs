@@ -39,6 +39,33 @@ use crate::hit_test::{annotation_viewport_rect, HANDLE_SIZE};
 use crate::text::FontStore;
 use crate::viewport::Viewport;
 
+/// Compute the viewport-space origin (page_x, page_y) of the page at index
+/// `page_idx`.
+///
+/// This is the single source of truth for the page-stacking geometry: pages are
+/// centered horizontally within the viewport (`((size - page_w) / 2).max(0)`,
+/// offset by `scroll.0`) and stacked vertically with `page_gap` between them
+/// (first page's Y = `page_gap - scroll.1`, each subsequent page advances by
+/// `page_h + page_gap` where `page_h = physical_box.h * zoom`).
+///
+/// Returns `None` if `page_idx` is out of bounds (or a preceding page is
+/// missing - cannot happen for a valid `Vec` index, but the `?` keeps it
+/// robust). All callers (composite, hit_test, caret_rect, annotation_viewport_rect,
+/// draw_drag_preview, and the component's current_page_id / viewport_to_page_local
+/// / visible_page_index) must use this helper rather than re-deriving the loop,
+/// so the geometry stays consistent across the codebase.
+pub fn page_origin(doc: &OfdDocument, vp: &Viewport, page_idx: usize) -> Option<(f64, f64)> {
+    let page = doc.pages.get(page_idx)?;
+    let page_w = page.physical_box.w * vp.zoom;
+    let page_x = ((vp.size.0 - page_w) / 2.0).max(0.0) + vp.scroll.0;
+    let mut y = vp.page_gap - vp.scroll.1;
+    for i in 0..page_idx {
+        let h = doc.pages.get(i)?.physical_box.h * vp.zoom;
+        y += h + vp.page_gap;
+    }
+    Some((page_x, y))
+}
+
 /// In-progress drag visualization. Passed by the component (T2/T3) during a
 /// pointer drag so the user sees a live preview of the annotation being
 /// created, moved, or resized.
@@ -129,57 +156,35 @@ impl RenderEngine {
         painter.fill_rect(bg, gray);
 
         // Stack pages vertically, centered horizontally, offset by scroll.
-        let mut y = vp.page_gap - vp.scroll.1;
-        for page in &doc.pages {
+        // page_origin is the single source of truth for the stacking geometry;
+        // cull off-screen pages to avoid shaping/drawing pages the user can't
+        // see (critical for multi-page docs - shaping dominates render time).
+        for (i, page) in doc.pages.iter().enumerate() {
+            let Some(origin) = page_origin(doc, vp, i) else {
+                continue;
+            };
             let page_w = page.physical_box.w * vp.zoom;
             let page_h = page.physical_box.h * vp.zoom;
-            let page_x = ((vp.size.0 - page_w) / 2.0).max(0.0);
-            let page_origin = (page_x + vp.scroll.0, y);
 
-            // Cull off-screen pages: skip pages fully above the viewport
-            // (scrolled past) and stop once a page starts below it. This avoids
-            // shaping/drawing pages the user can't see - critical for
-            // multi-page docs (shaping dominates render time). The page-origin
-            // math matches hit_test.rs exactly.
-            if page_origin.1 + page_h < 0.0 {
-                y += page_h + vp.page_gap;
+            // Cull: skip pages fully above the viewport (scrolled past) and
+            // stop once a page starts below it.
+            if origin.1 + page_h < 0.0 {
                 continue;
             }
-            if page_origin.1 > vp.size.1 {
+            if origin.1 > vp.size.1 {
                 break;
             }
 
             // White page background.
             let white = Color::from_rgba8(0xFF, 0xFF, 0xFF, 0xFF);
-            let page_rect = Rect::new(
-                page_origin.0,
-                page_origin.1,
-                page_origin.0 + page_w,
-                page_origin.1 + page_h,
-            );
+            let page_rect = Rect::new(origin.0, origin.1, origin.0 + page_w, origin.1 + page_h);
             painter.fill_rect(page_rect, white);
 
             // Body + annotation, drawn directly with page_origin + zoom baked
             // into each draw call (no cached sub-scenes - see module docs).
-            draw_body(
-                &mut painter,
-                page,
-                &doc.resources,
-                fonts,
-                page_origin,
-                vp.zoom,
-            );
+            draw_body(&mut painter, page, &doc.resources, fonts, origin, vp.zoom);
             let anns = doc.annotations.for_page(&page.id);
-            draw_annotations(
-                &mut painter,
-                anns,
-                &doc.resources,
-                fonts,
-                page_origin,
-                vp.zoom,
-            );
-
-            y += page_h + vp.page_gap;
+            draw_annotations(&mut painter, anns, &doc.resources, fonts, origin, vp.zoom);
         }
 
         // Selection overlay: draw 8 handles + a frame on the selected
@@ -249,10 +254,9 @@ fn draw_selection_overlay(painter: &mut Painter<Scene>, vr: RofdRect) {
 /// - `Move`/`Resize`: stroked page-local rect transformed to viewport coords,
 ///   using the annotation's page's stacked Y origin (NOT page 0's).
 ///
-/// The Y-origin computation mirrors `composite`'s page-stacking loop: Y starts
-/// at `page_gap - scroll.1` for page 0 and advances by `page_h + page_gap` per
-/// subsequent page. This is critical for multi-page docs - a drag preview for
-/// an annotation on page 1+ must use page 1+'s Y origin.
+/// The page origin is computed via [`page_origin`] (the shared page-stacking
+/// helper), so multi-page docs use the correct stacked Y origin for an
+/// annotation on page 1+.
 fn draw_drag_preview(
     painter: &mut Painter<Scene>,
     preview: &DragPreview,
@@ -263,35 +267,20 @@ fn draw_drag_preview(
         DragPreview::Create { rect, .. }
         | DragPreview::Move { rect, .. }
         | DragPreview::Resize { rect, .. } => {
-            // For Move/Resize, find the annotation's page so we use the
+            // For Move/Resize, find the annotation's page index so we use the
             // correct stacked Y origin. For Create (no annotation id), fall
-            // back to the first page (page 0's origin is correct for page 0).
-            let target_page_id = match preview {
-                DragPreview::Move { id, .. } | DragPreview::Resize { id, .. } => {
-                    doc.annotations.find(id).map(|a| a.page.clone())
-                }
-                _ => None,
+            // back to page 0 (its origin is correct for page 0).
+            let target_page_idx = match preview {
+                DragPreview::Move { id, .. } | DragPreview::Resize { id, .. } => doc
+                    .annotations
+                    .find(id)
+                    .and_then(|a| doc.pages.iter().position(|p| p.id == a.page)),
+                _ => Some(0), // Create: first page
             };
 
-            // Iterate pages mirroring composite's page-stacking loop to find
-            // the target page and its accumulated Y origin.
-            let mut y = vp.page_gap - vp.scroll.1;
-            let mut found_page = None;
-            for page in &doc.pages {
-                let page_w = page.physical_box.w * vp.zoom;
-                let page_h = page.physical_box.h * vp.zoom;
-                let is_target = match &target_page_id {
-                    Some(pid) => &page.id == pid,
-                    None => found_page.is_none(), // Create: first page
-                };
-                if is_target {
-                    let page_x = ((vp.size.0 - page_w) / 2.0).max(0.0);
-                    found_page = Some((page_x + vp.scroll.0, y));
-                    break;
-                }
-                y += page_h + vp.page_gap;
-            }
-            let Some((origin_x, origin_y)) = found_page else {
+            let Some((origin_x, origin_y)) =
+                target_page_idx.and_then(|idx| page_origin(doc, vp, idx))
+            else {
                 return;
             };
 
@@ -523,5 +512,127 @@ mod tests {
             page_gap: 20.0,
         };
         let _scene = engine.composite(&doc, &vp, &fonts, &AnnotationSelection::None, None);
+    }
+
+    // --- page_origin helper tests ---
+
+    /// Build a doc with `n` pages, each 100x100, ids "P0".."P{n-1}".
+    fn doc_with_n_pages(n: usize) -> OfdDocument {
+        let mut doc = OfdDocument::default();
+        for i in 0..n {
+            doc.pages.push(Page {
+                id: PageId::new(format!("P{i}")),
+                physical_box: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 100.0,
+                    h: 100.0,
+                },
+                layers: vec![],
+                template: None,
+            });
+        }
+        doc
+    }
+
+    #[test]
+    fn page_origin_none_for_empty_doc() {
+        let doc = OfdDocument::default();
+        let vp = Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (200.0, 200.0),
+            page_gap: 20.0,
+        };
+        assert!(page_origin(&doc, &vp, 0).is_none(), "empty doc -> None");
+    }
+
+    #[test]
+    fn page_origin_none_for_out_of_bounds() {
+        let doc = doc_with_n_pages(2);
+        let vp = Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (200.0, 200.0),
+            page_gap: 20.0,
+        };
+        assert!(
+            page_origin(&doc, &vp, 2).is_none(),
+            "idx 2 of 2-page doc -> None"
+        );
+    }
+
+    #[test]
+    fn page_origin_page_zero_no_scroll() {
+        // Page 100x100, viewport 200x200, gap 20, zoom 1, scroll (0,0).
+        // page_x = ((200-100)/2).max(0) + 0 = 50. page_y = 20 - 0 = 20.
+        let doc = doc_with_n_pages(1);
+        let vp = Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (200.0, 200.0),
+            page_gap: 20.0,
+        };
+        let (x, y) = page_origin(&doc, &vp, 0).expect("page 0 exists");
+        assert!((x - 50.0).abs() < 1e-9, "page_x centered = 50, got {x}");
+        assert!(
+            (y - 20.0).abs() < 1e-9,
+            "page_y = gap - scroll = 20, got {y}"
+        );
+    }
+
+    #[test]
+    fn page_origin_page_one_stacked_y() {
+        // Two pages 100x100, gap 20, zoom 1, scroll (0,0).
+        // Page 0: y = 20. Page 1: y = 20 + 100 + 20 = 140.
+        let doc = doc_with_n_pages(2);
+        let vp = Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (200.0, 400.0),
+            page_gap: 20.0,
+        };
+        let (_, y0) = page_origin(&doc, &vp, 0).expect("page 0");
+        let (_, y1) = page_origin(&doc, &vp, 1).expect("page 1");
+        assert!((y0 - 20.0).abs() < 1e-9, "page 0 y = 20, got {y0}");
+        assert!((y1 - 140.0).abs() < 1e-9, "page 1 y = 140, got {y1}");
+    }
+
+    #[test]
+    fn page_origin_respects_scroll_and_zoom() {
+        // Two pages 100x100, gap 20, zoom 2, scroll (10, 30).
+        // page_w = 200, page_x = ((200-200)/2).max(0) + 10 = 10.
+        // Page 0: y = 20 - 30 = -10. Page 1: y = -10 + (100*2) + 20 = 210.
+        let doc = doc_with_n_pages(2);
+        let vp = Viewport {
+            scroll: (10.0, 30.0),
+            zoom: 2.0,
+            size: (200.0, 600.0),
+            page_gap: 20.0,
+        };
+        let (x0, y0) = page_origin(&doc, &vp, 0).expect("page 0");
+        let (x1, y1) = page_origin(&doc, &vp, 1).expect("page 1");
+        assert!((x0 - 10.0).abs() < 1e-9, "page_x = 10, got {x0}");
+        assert!((y0 - (-10.0)).abs() < 1e-9, "page 0 y = -10, got {y0}");
+        assert!(
+            (x1 - 10.0).abs() < 1e-9,
+            "page 1 x = 10 (same centering), got {x1}"
+        );
+        assert!((y1 - 210.0).abs() < 1e-9, "page 1 y = 210, got {y1}");
+    }
+
+    #[test]
+    fn page_origin_x_never_negative() {
+        // Viewport narrower than page -> ((size - page_w)/2).max(0) = 0.
+        // Page 100 wide, viewport 50, zoom 1 -> page_x = 0 + scroll.0.
+        let doc = doc_with_n_pages(1);
+        let vp = Viewport {
+            scroll: (5.0, 0.0),
+            zoom: 1.0,
+            size: (50.0, 200.0),
+            page_gap: 20.0,
+        };
+        let (x, _) = page_origin(&doc, &vp, 0).expect("page 0");
+        assert!((x - 5.0).abs() < 1e-9, "page_x = 0 + scroll.0 = 5, got {x}");
     }
 }
