@@ -8,6 +8,6 @@ pub mod render_target;
 
 pub use callbacks::{Callbacks, ContextTarget};
 pub use config::EditorConfig;
-pub use editor_component::EditorComponent;
+pub use editor_component::{EditorComponent, Tool};
 pub use event::{EventOutcome, Key, Modifiers, MouseButton, ViewEvent};
 pub use render_target::RenderTarget;
