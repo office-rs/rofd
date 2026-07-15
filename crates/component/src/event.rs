@@ -37,6 +37,12 @@ pub struct EventOutcome {
     pub needs_repaint: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollDirection {
+    Up,
+    Down,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ViewEvent {
     PointerDown {
@@ -75,6 +81,23 @@ pub enum ViewEvent {
     },
     FocusGained,
     FocusLost,
+    /// Scroll by one page height (Up/Down). The delta is
+    /// `page_h * zoom + page_gap` in viewport pixels.
+    ScrollPage {
+        direction: ScrollDirection,
+    },
+    /// Zoom by `factor` while keeping the `center` point (viewport px)
+    /// anchored to the same document position. Adjusts `scroll` so the
+    /// content under the cursor stays put.
+    ZoomAt {
+        factor: f64,
+        center: (f64, f64),
+    },
+    /// IME composition commit: insert `text` at the text cursor (multi-char).
+    /// Falls through as a no-op when no text cursor is set.
+    Ime {
+        text: String,
+    },
 }
 
 #[cfg(test)]
