@@ -100,14 +100,15 @@ pub fn polyline_path(points: &[Point]) -> PathData {
 }
 
 /// Squiggly (wavy) path between two quad_points, using Q quadratic curves that
-/// alternate above and below the baseline. The amplitude is half the quad's
-/// height; 20 steps span the p0->p1 x-range. Used by the Squiggly Markup
-/// appearance (GB/T 33190 §15.2.3.4).
+/// alternate above and below the baseline. The amplitude is a fixed 1.0
+/// page-local unit, matching `render::annotation_scene::SQUIGGLY_AMPLITUDE` so
+/// the serialized wave shape matches the rendered wave. 20 steps span the
+/// p0->p1 x-range. Used by the Squiggly Markup appearance (GB/T 33190 §15.2.3.4).
 pub fn squiggly_path(p0: Point, p1: Point) -> PathData {
     let mut cmds = vec![PathCommand::M(p0.x, p0.y)];
     let steps = 20;
     let dx = (p1.x - p0.x) / steps as f64;
-    let amp = (p1.y - p0.y).abs() / 2.0;
+    let amp = 1.0;
     for i in 0..steps {
         let x0 = p0.x + dx * i as f64;
         let x1 = p0.x + dx * (i as f64 + 1.0);
@@ -260,6 +261,33 @@ mod tests {
                 matches!(c, PathCommand::Q(_, _, _, _)),
                 "expected Q, got {c:?}"
             );
+        }
+    }
+
+    #[test]
+    fn squiggly_path_uses_fixed_amplitude_matching_render() {
+        // io's squiggly_path amplitude must equal render's
+        // SQUIGGLY_AMPLITUDE (1.0) so the serialized wave matches the
+        // rendered wave. The first Q's control point (y_mid) should be
+        // baseline - 1.0 (i=0 is even -> above).
+        let baseline_y = 4.0;
+        let p = squiggly_path(
+            Point {
+                x: 0.0,
+                y: baseline_y,
+            },
+            Point { x: 40.0, y: 8.0 },
+        );
+        match &p.commands[1] {
+            PathCommand::Q(_, y_mid, _, _) => {
+                assert!(
+                    (*y_mid - (baseline_y - 1.0)).abs() < 1e-10,
+                    "expected amp=1.0 (y_mid={}), got {}",
+                    baseline_y - 1.0,
+                    y_mid
+                );
+            }
+            _ => panic!("expected Q as second command"),
         }
     }
 

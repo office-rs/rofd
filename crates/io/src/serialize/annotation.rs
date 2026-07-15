@@ -513,7 +513,11 @@ fn path_to_abbrev(p: &PathData) -> String {
                 s.push_str("Z ");
             }
             rofd_dom::PathCommand::A(a, b, c, d, e, f) => {
-                s.push_str(&format!("A {} {} {} {} {} {} ", a, b, c, d, e, f));
+                // GB/T 33190 A arc has 7 params (rx ry rot large-arc-flag
+                // sweep-flag x y). PathCommand::A carries 6 (rx ry rot sweep x
+                // y), dropping large-arc-flag (quarter arcs are always
+                // small-arc -> emit 0). So emit "A rx ry rot 0 sweep x y".
+                s.push_str(&format!("A {} {} {} 0 {} {} {} ", a, b, c, d, e, f));
             }
         }
     }
@@ -566,7 +570,8 @@ mod tests {
     #[test]
     fn path_to_abbrev_round_trips_arc_commands() {
         // T3: A (arc) operators must round-trip (ellipse_path emits them).
-        // PathCommand::A has 6 params (rx, ry, rot, sweep, x, y).
+        // PathCommand::A has 6 params (rx, ry, rot, sweep, x, y); the wire
+        // format has 7 (large-arc-flag inserted as 0). See GB/T 33190 §8.2.
         let pd = PathData {
             commands: vec![
                 PathCommand::M(5.0, 0.0),
@@ -580,6 +585,73 @@ mod tests {
         let abbrev = path_to_abbrev(&pd);
         let parsed = crate::abbreviated::parse_abbreviated(&abbrev);
         assert_eq!(pd, parsed);
+    }
+
+    #[test]
+    fn path_to_abbrev_emits_7_values_per_arc() {
+        // GB/T 33190 interop: the A operator must emit 7 values
+        // (rx ry rot large-arc-flag sweep x y). ellipse_path produces 4 A
+        // commands, so the AbbreviatedData must have 4*7 = 28 numeric tokens
+        // following each "A" letter.
+        let pd = PathData {
+            commands: vec![PathCommand::A(5.0, 5.0, 0.0, 1.0, 0.0, 5.0)],
+        };
+        let abbrev = path_to_abbrev(&pd);
+        // "A 5 5 0 0 1 0 5 " -> after "A", 7 numeric tokens.
+        let toks: Vec<&str> = abbrev.split_whitespace().collect();
+        assert_eq!(toks[0], "A");
+        assert_eq!(toks.len(), 8); // "A" + 7 values
+                                   // large-arc-flag (4th value) must be 0.
+        let large_arc: f64 = toks[4].parse().unwrap();
+        assert!(
+            (large_arc - 0.0).abs() < 1e-10,
+            "large-arc-flag should be 0, got {large_arc}"
+        );
+        // The 6-field PathCommand (rx ry rot sweep x y) maps to values
+        // [1,2,3,5,6,7] (skipping index 4 = large-arc-flag).
+        assert!((toks[1].parse::<f64>().unwrap() - 5.0).abs() < 1e-10); // rx
+        assert!((toks[2].parse::<f64>().unwrap() - 5.0).abs() < 1e-10); // ry
+        assert!((toks[3].parse::<f64>().unwrap() - 0.0).abs() < 1e-10); // rot
+        assert!((toks[5].parse::<f64>().unwrap() - 1.0).abs() < 1e-10); // sweep
+        assert!((toks[6].parse::<f64>().unwrap() - 0.0).abs() < 1e-10); // x
+        assert!((toks[7].parse::<f64>().unwrap() - 5.0).abs() < 1e-10); // y
+    }
+
+    #[test]
+    fn ellipse_serialization_has_7_value_arcs() {
+        // An ellipse_path produces 4 A commands; each must emit 7 values
+        // (28 numeric tokens total across the 4 A operators).
+        use rofd_dom::Rect;
+        let r = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 10.0,
+            h: 10.0,
+        };
+        let path = crate::annotation_geom::ellipse_path(&r);
+        let abbrev = path_to_abbrev(&path);
+        let toks: Vec<&str> = abbrev.split_whitespace().collect();
+        // M + 2 values, then 4 * (A + 7 values), then Z.
+        // = 1 + 2 + 4 * 8 + 1 = 36
+        assert_eq!(toks.len(), 36);
+        // Each "A" is followed by exactly 7 numeric tokens.
+        let mut i = 0;
+        let mut arc_count = 0;
+        while i < toks.len() {
+            if toks[i] == "A" {
+                arc_count += 1;
+                // The next 7 tokens must all be numeric (parse as f64).
+                for j in 1..=7 {
+                    toks[i + j].parse::<f64>().unwrap_or_else(|_| {
+                        panic!("A operand {} ({:?}) not numeric", j, toks[i + j])
+                    });
+                }
+                i += 8;
+            } else {
+                i += 1;
+            }
+        }
+        assert_eq!(arc_count, 4, "ellipse should emit 4 A arcs");
     }
 
     #[test]

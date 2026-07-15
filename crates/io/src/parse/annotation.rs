@@ -417,22 +417,43 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
         }
         AnnotationKind::TextBox => {
             // FreeText: content/font/size/color come from the Appearance
-            // TextObject. When no TextObject is present, fall back to the
-            // Remark text (some producers put the text only in <Remark>).
-            let (content, font, size, color) = p
-                .objects
-                .iter()
-                .find_map(|o| match o {
-                    AppearanceObject::Text {
-                        content,
-                        font,
-                        size,
-                        fill,
-                        ..
-                    } => Some((content.clone(), font.clone(), *size, *fill)),
-                    _ => None,
-                })
-                .unwrap_or_else(|| (p.remark.clone(), String::new(), 0.0, None));
+            // TextObject(s). Multi-line FreeText annotations may carry one
+            // TextObject per line; concatenate ALL of their contents (joined
+            // by newlines) so no line is dropped. Font/size/color come from
+            // the first TextObject (producers use the same style across
+            // lines in a single annotation). When no TextObject is present,
+            // fall back to the Remark text (some producers put the text only
+            // in <Remark>).
+            let mut content = String::new();
+            let mut font = String::new();
+            let mut size = 0.0;
+            let mut color = None;
+            let mut first = true;
+            for o in &p.objects {
+                if let AppearanceObject::Text {
+                    content: c,
+                    font: fnt,
+                    size: sz,
+                    fill,
+                    ..
+                } = o
+                {
+                    if first {
+                        font = fnt.clone();
+                        size = *sz;
+                        color = *fill;
+                        first = false;
+                    } else if !content.is_empty() {
+                        // Join lines with a newline separator.
+                        content.push('\n');
+                    }
+                    content.push_str(c);
+                }
+            }
+            if first {
+                // No TextObject found: fall back to Remark.
+                content = p.remark.clone();
+            }
             AnnotationPayload::TextBox {
                 rect: boundary,
                 content,
@@ -614,6 +635,89 @@ mod tests {
                 assert_eq!(rect.x, 1.0);
             }
             other => panic!("expected Note, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn freetext_single_textobject_captures_content() {
+        let xml = r#"<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Annot Type="FreeText" ID="10" Subtype="FreeText">
+    <ofd:Appearance Boundary="0 0 100 30">
+      <ofd:TextObject ID="t0" Boundary="0 0 100 30" Font="F1" Size="12">
+        <ofd:FillColor Value="0 0 0"/>
+        <ofd:TextCode X="0" Y="12">one line</ofd:TextCode>
+      </ofd:TextObject>
+    </ofd:Appearance>
+  </ofd:Annot>
+</ofd:PageAnnot>"#;
+        let anns = parse_page_annot(xml, &PageId::new("1")).unwrap();
+        match &anns[0].payload {
+            AnnotationPayload::TextBox {
+                content,
+                font,
+                size,
+                color,
+                ..
+            } => {
+                assert_eq!(content, "one line");
+                assert_eq!(font.0, "F1");
+                assert!((size - 12.0).abs() < 1e-10);
+                assert!(matches!(color, Color::Rgb(0, 0, 0)));
+            }
+            other => panic!("expected TextBox, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn freetext_multi_textobject_concatenates_all_lines() {
+        // The real sample's FreeText (文本框) carries 2 TextObjects (one per
+        // line). build_payload must concatenate BOTH, not just the first.
+        let xml = r#"<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Annot Type="FreeText" ID="11" Subtype="FreeText">
+    <ofd:Appearance Boundary="0 0 100 60">
+      <ofd:TextObject ID="t0" Boundary="0 0 100 30" Font="F1" Size="12">
+        <ofd:FillColor Value="0 0 0"/>
+        <ofd:TextCode X="0" Y="12">first line</ofd:TextCode>
+      </ofd:TextObject>
+      <ofd:TextObject ID="t1" Boundary="0 30 100 30" Font="F1" Size="12">
+        <ofd:FillColor Value="0 0 0"/>
+        <ofd:TextCode X="0" Y="12">second line</ofd:TextCode>
+      </ofd:TextObject>
+    </ofd:Appearance>
+  </ofd:Annot>
+</ofd:PageAnnot>"#;
+        let anns = parse_page_annot(xml, &PageId::new("1")).unwrap();
+        assert_eq!(anns.len(), 1);
+        match &anns[0].payload {
+            AnnotationPayload::TextBox {
+                content,
+                font,
+                size,
+                ..
+            } => {
+                // Both lines must be present, joined by a newline.
+                assert_eq!(content, "first line\nsecond line");
+                assert_eq!(font.0, "F1");
+                assert!((size - 12.0).abs() < 1e-10);
+            }
+            other => panic!("expected TextBox, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn freetext_no_textobject_falls_back_to_remark() {
+        let xml = r#"<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Annot Type="FreeText" ID="12" Subtype="FreeText">
+    <ofd:Remark>fallback text</ofd:Remark>
+    <ofd:Appearance Boundary="0 0 100 30"/>
+  </ofd:Annot>
+</ofd:PageAnnot>"#;
+        let anns = parse_page_annot(xml, &PageId::new("1")).unwrap();
+        match &anns[0].payload {
+            AnnotationPayload::TextBox { content, .. } => {
+                assert_eq!(content, "fallback text");
+            }
+            other => panic!("expected TextBox, got {other:?}"),
         }
     }
 }
