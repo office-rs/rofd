@@ -1,13 +1,62 @@
 use std::sync::Arc;
 
-use rofd_dom::{AnnotationSelection, OfdDocument};
+use rofd_dom::{AnnotationKind, AnnotationSelection, OfdDocument, Rect};
 use rofd_editor::{Editor, TextCursor};
-use rofd_render::{FontStore, RenderEngine, Scene, Viewport, PX_PER_MM};
+use rofd_render::{DragPreview, FontStore, HandlePos, RenderEngine, Scene, Viewport, PX_PER_MM};
 
 use crate::callbacks::Callbacks;
 use crate::config::EditorConfig;
 use crate::event::EventOutcome;
 use crate::render_target::RenderTarget;
+
+/// The active editing tool. The host selects a tool (e.g. via a toolbar) and
+/// the component uses it to interpret pointer drags (T3 wires the drag logic).
+///
+/// `Select` clicks select/drag existing annotations; `Create` begins a new
+/// annotation of the given [`AnnotationKind`] on the next pointer drag.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Tool {
+    Select,
+    Create(AnnotationKind),
+}
+
+/// In-progress pointer drag state. Internal to the component - T3's
+/// PointerDown/Move/Up handlers create/update/clear this, and `build_scene`
+/// maps it to a [`DragPreview`] for live rendering.
+///
+/// `Create` covers rect-bounded kinds (Shape/Note/TextBox/...) and Freehand
+/// (accumulating a path). `Move`/`Resize` track the source annotation.
+//
+// Variants are not constructed until T3 wires pointer drag handling; `dead_code`
+// is allowed here intentionally so the mapping in `drag_to_preview` can be
+// defined now and exercised by T3.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) enum DragState {
+    /// Creating a new annotation; `start`/`current` bound a rect, `path`
+    /// accumulates Freehand points (viewport-space).
+    Create {
+        kind: AnnotationKind,
+        start: (f64, f64),
+        current: (f64, f64),
+        path: Vec<(f64, f64)>,
+    },
+    /// Moving an existing annotation; `last` is the previous pointer position
+    /// (viewport-space) for computing deltas.
+    Move {
+        id: rofd_dom::AnnotationId,
+        last: (f64, f64),
+    },
+    /// Resizing an existing annotation; `handle` identifies the dragged
+    /// handle, `anchor` is the opposite corner (fixed), `orig` is the
+    /// annotation's rect at drag start.
+    Resize {
+        id: rofd_dom::AnnotationId,
+        handle: HandlePos,
+        anchor: (f64, f64),
+        orig: Rect,
+    },
+}
 
 pub struct EditorComponent {
     pub(crate) editor: Editor,
@@ -23,6 +72,10 @@ pub struct EditorComponent {
     pub(crate) registered_font_bytes: Vec<Arc<Vec<u8>>>,
     pub(crate) callbacks: Callbacks,
     pub(crate) modified: bool,
+    /// Active editing tool (Select or Create{kind}). Defaults to `Select`.
+    pub(crate) tool: Tool,
+    /// In-progress pointer drag, if any. `None` when no drag is active.
+    pub(crate) drag: Option<DragState>,
 }
 
 impl EditorComponent {
@@ -40,6 +93,8 @@ impl EditorComponent {
             registered_font_bytes: Vec::new(),
             callbacks: Callbacks::default(),
             modified: false,
+            tool: Tool::Select,
+            drag: None,
         }
     }
 
@@ -111,6 +166,13 @@ impl EditorComponent {
         self.editor.set_clock(author, ts);
     }
 
+    /// Set the active editing tool. Switching tools cancels any in-progress
+    /// drag (clears `drag`).
+    pub fn set_tool(&mut self, tool: Tool) {
+        self.tool = tool;
+        self.drag = None;
+    }
+
     // Command pass-throughs. The host calls these for programmatic annotation
     // manipulation; handle_event is for keyboard/mouse. Both paths go through
     // after_annotation_change -> on_change.
@@ -155,12 +217,13 @@ impl EditorComponent {
             self.font_store = Some(self.build_font_store());
         }
         let fonts = self.font_store.as_ref().expect("font_store initialized");
+        let drag_preview = self.drag.as_ref().and_then(drag_to_preview);
         self.render.composite(
             self.editor.document(),
             &self.viewport,
             fonts,
-            &AnnotationSelection::None,
-            None,
+            self.editor.selection(),
+            drag_preview.as_ref(),
         )
     }
 
@@ -181,7 +244,7 @@ impl EditorComponent {
                 let target = rofd_render::hit_test(
                     self.editor.document(),
                     &self.viewport,
-                    &AnnotationSelection::None,
+                    self.editor.selection(),
                     (*x, *y),
                 );
                 match target {
@@ -444,6 +507,51 @@ impl EditorComponent {
     }
 }
 
+/// Map an in-progress [`DragState`] to a renderable [`DragPreview`].
+///
+/// For `Create`, the rect is the bounding box of `start`/`current` (for
+/// rect-bounded kinds) or the accumulated `path` (for Freehand). For
+/// `Move`/`Resize`, the rect is the annotation's current page-local rect
+/// (looked up from the document) offset/sized by the drag.
+///
+/// In T2 no drag is ever started (T3 adds PointerDown/Move/Up), so this always
+/// receives `None` in practice; the mapping is defined here so T3 only needs to
+/// set `drag` and the preview flows through `build_scene`.
+fn drag_to_preview(d: &DragState) -> Option<DragPreview> {
+    match d {
+        DragState::Create {
+            kind,
+            start,
+            current,
+            path,
+        } => {
+            if *kind == AnnotationKind::Freehand {
+                Some(DragPreview::CreateFreehand { path: path.clone() })
+            } else {
+                let rect = bbox(*start, *current);
+                Some(DragPreview::Create {
+                    kind: kind.clone(),
+                    rect,
+                })
+            }
+        }
+        // Move/Resize preview the annotation's rect; the actual rect lookup is
+        // wired in T3 (which has the document + the live delta). Returning None
+        // here is safe: until T3, drag is always None, so this branch is
+        // unreachable.
+        DragState::Move { .. } | DragState::Resize { .. } => None,
+    }
+}
+
+/// Bounding box of two points as a [`Rect`] (x/y = min, w/h = delta).
+fn bbox(a: (f64, f64), b: (f64, f64)) -> Rect {
+    let x = a.0.min(b.0);
+    let y = a.1.min(b.1);
+    let w = (a.0 - b.0).abs();
+    let h = (a.1 - b.1).abs();
+    Rect { x, y, w, h }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -485,7 +593,7 @@ mod tests {
     }
 
     use crate::event::{Key, Modifiers, ViewEvent};
-    use rofd_dom::{AnnotationKind, AnnotationPayload, Color, NoteIcon, PageId, Rect};
+    use rofd_dom::{AnnotationKind, AnnotationPayload, Color, NoteIcon, PageId, Rect, ShapeKind};
     use std::sync::Mutex;
 
     fn component_with_note() -> EditorComponent {
@@ -655,5 +763,15 @@ mod tests {
             c.editor.selection(),
             rofd_editor::AnnotationSelection::None
         ));
+    }
+
+    #[test]
+    fn set_tool_changes_tool_state() {
+        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        assert!(matches!(c.tool, Tool::Select));
+        c.set_tool(Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)));
+        assert!(matches!(c.tool, Tool::Create(_)));
+        c.set_tool(Tool::Select);
+        assert!(matches!(c.tool, Tool::Select));
     }
 }
