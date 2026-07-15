@@ -11,7 +11,7 @@ use quick_xml::events::BytesStart;
 
 use rofd_dom::{Color, OfdDocument, Rect};
 
-use crate::error::{LoadReport, OfdError, OfdWarning};
+use crate::error::{LoadReport, OfdError, OfdWarning, ResourceKind};
 use crate::package::{EntryKind, PackageHandle, PkgEntry};
 use crate::zip_util::read_all_entries;
 
@@ -82,7 +82,7 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
     for pref in &header.pages {
         let page_path = join(&doc_root, &pref.base_loc);
         let page_xml = entry_str(&entries, &page_path)?;
-        let page = page::parse_page(pref.id.clone(), &page_xml, &header)?;
+        let page = page::parse_page(pref.id.clone(), &page_xml, &header, &mut warnings)?;
         // Template handling: if page.template is Some, emit warning (v1 doesn't expand).
         if page.template.is_some() {
             warnings.push(OfdWarning::MissingFeature {
@@ -119,9 +119,15 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
                 };
                 if let Some(fe) = entries.iter().find(|x| x.name == path) {
                     doc.resources.images.insert(id, fe.bytes.clone());
+                } else {
+                    warnings.push(OfdWarning::ResourceNotFound {
+                        kind: ResourceKind::Image,
+                        id: id.0.clone(),
+                    });
                 }
             }
             for (id, fref, font_file) in parsed.fonts {
+                let family_name = fref.family_name.clone();
                 doc.resources.fonts.insert(id.clone(), fref);
                 if let Some(rel) = font_file {
                     let path = if base_dir.is_empty() {
@@ -131,6 +137,11 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
                     };
                     if let Some(fe) = entries.iter().find(|x| x.name == path) {
                         doc.resources.font_data.insert(id, fe.bytes.clone());
+                    } else {
+                        warnings.push(OfdWarning::FontSubstituted {
+                            requested: family_name.unwrap_or_else(|| id.0.clone()),
+                            used: "default".into(),
+                        });
                     }
                 }
             }
@@ -142,6 +153,7 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
             let xml = String::from_utf8_lossy(&e.bytes).into_owned();
             let font_dir = e.name.rsplit_once('/').map(|(d, _)| d).unwrap_or(""); // .../Res
             for (id, fref, font_file) in resource::parse_font_res(&xml)? {
+                let family_name = fref.family_name.clone();
                 doc.resources.fonts.insert(id.clone(), fref);
                 if let Some(rel) = font_file {
                     // FontFile is relative to the Res dir.
@@ -152,6 +164,11 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
                     };
                     if let Some(fe) = entries.iter().find(|x| x.name == font_path) {
                         doc.resources.font_data.insert(id, fe.bytes.clone());
+                    } else {
+                        warnings.push(OfdWarning::FontSubstituted {
+                            requested: family_name.unwrap_or_else(|| id.0.clone()),
+                            used: "default".into(),
+                        });
                     }
                 }
             }
