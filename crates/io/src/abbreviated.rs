@@ -44,14 +44,18 @@ pub fn parse_abbreviated(s: &str) -> PathData {
                 cmds.push(PathCommand::Q(a, b, c, d));
             }
             "A" => {
-                let (a, n) = f(i);
-                let (b, n) = f(n);
-                let (c, n) = f(n);
-                let (d, n) = f(n);
-                let (e, n) = f(n);
-                let (g, n) = f(n);
+                // GB/T 33190 A arc has 7 params (rx ry rot large-arc-flag
+                // sweep-flag x y). PathCommand::A carries 6 (rx ry rot sweep x
+                // y), so skip the 4th (large-arc-flag) when parsing.
+                let (rx, n) = f(i);
+                let (ry, n) = f(n);
+                let (rot, n) = f(n);
+                let (_large_arc, n) = f(n); // skipped: quarter arcs are small-arc
+                let (sweep, n) = f(n);
+                let (x, n) = f(n);
+                let (y, n) = f(n);
                 i = n;
-                cmds.push(PathCommand::A(a, b, c, d, e, g));
+                cmds.push(PathCommand::A(rx, ry, rot, sweep, x, y));
             }
             "Z" | "S" => {
                 cmds.push(PathCommand::Z);
