@@ -56,6 +56,11 @@ impl Editor {
     pub fn can_redo(&self) -> bool {
         self.history.can_redo()
     }
+    /// Number of undoable transactions on the history stack. Mainly for
+    /// testing (e.g. asserting a drag pushes exactly one Transaction).
+    pub fn history_len(&self) -> usize {
+        self.history.done_len()
+    }
 
     /// Select a single annotation by id.
     pub fn select(&mut self, id: AnnotationId) {
