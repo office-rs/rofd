@@ -103,8 +103,9 @@ pub fn hit_test(
         }
     }
 
+    let origins = crate::composite::page_origins(doc, vp);
     for (i, page) in doc.pages.iter().enumerate() {
-        let Some((origin_x, origin_y)) = crate::composite::page_origin(doc, vp, i) else {
+        let Some(&(origin_x, origin_y)) = origins.get(i) else {
             continue;
         };
         let page_w = page.physical_box.w * vp.zoom;
@@ -165,7 +166,7 @@ pub(crate) fn annotation_viewport_rect(
 /// - `Markup`: the bounding box of all quad-point pairs.
 /// - `Freehand`: the bounding box of all path control/end points. Returns
 ///   `None` if the path is empty.
-fn annotation_local_rect(ann: &Annotation) -> Option<Rect> {
+pub fn annotation_local_rect(ann: &Annotation) -> Option<Rect> {
     match &ann.payload {
         AnnotationPayload::Markup { quad_points, .. } => {
             let (minx, miny, maxx, maxy) =

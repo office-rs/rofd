@@ -27,14 +27,11 @@ pub enum OfdError {
     #[error("schema error in {entry}: {reason}")]
     Schema { entry: String, reason: String },
 
-    #[error("resource not found: {kind} {id}")]
-    ResourceNotFound { kind: ResourceKind, id: String },
-
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LoadReport {
     pub document: OfdDocument,
     pub package: PackageHandle,
