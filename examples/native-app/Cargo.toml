@@ -6,11 +6,11 @@ edition = "2021"
 [dependencies]
 rofd-native-view = { workspace = true }
 rofd-component = { workspace = true }
+rofd-dom = { workspace = true }
 winit = { workspace = true }
 xilem = { workspace = true }
 masonry_winit = { workspace = true }
 rfd = { workspace = true }
 
 [dev-dependencies]
-rofd-dom = { workspace = true }
 rofd-io = { workspace = true }

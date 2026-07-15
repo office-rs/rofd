@@ -20,6 +20,8 @@ use std::sync::{Arc, Mutex};
 
 use masonry_winit::app::{AppDriver, MasonryState, MasonryUserEvent};
 use rfd::FileDialog;
+use rofd_component::{ContextTarget, Tool};
+use rofd_dom::{AnnotationId, AnnotationKind, ShapeKind};
 use rofd_native_view::{EditorApp, WinitEventBridge};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -37,6 +39,22 @@ const BTN_PAD: Padding = Padding::from_vh(0.0, 6.0);
 type SharedEditor = Arc<Mutex<EditorApp>>;
 type SharedCanvasId = Arc<Mutex<Option<WidgetId>>>;
 type SharedWakeProxy = Arc<Mutex<Option<MessageProxy<()>>>>;
+/// Right-click target stashed by the `on_context_menu` callback (flag-poll
+/// pattern, mirroring `save_requested`). When non-empty, the `window_event`
+/// handler deletes the annotation and clears it.
+type SharedContextMenu = Arc<Mutex<Option<AnnotationId>>>;
+
+/// Build a toolbar tool button. On click it sets the component's active tool
+/// to `tool`. Mirrors the `btn_open`/`btn_save` pattern (text_button + padding
+/// + border + corner radius).
+fn tool_button(label: &'static str, tool: Tool) -> impl WidgetView<AppState> + use<> {
+    text_button(label, move |app: &mut AppState| {
+        app.editor.lock().unwrap().component.set_tool(tool.clone());
+    })
+    .padding(BTN_PAD)
+    .border_width(0.0)
+    .corner_radius(2.0)
+}
 
 /// Combined application state for the xilem view.
 struct AppState {
@@ -112,11 +130,34 @@ fn app_logic(_app: &mut AppState) -> impl WidgetView<AppState> + use<> {
     .border_width(0.0)
     .corner_radius(2.0);
 
-    let menu_bar = sized_box(
-        flex_row((btn_open, btn_save)).gap(xilem::masonry::layout::Length::const_px(2.0)),
-    )
-    .padding(Padding::from_vh(2.0, 4.0))
-    .background_color(Color::from_rgb8(240, 240, 240));
+    let file_row =
+        flex_row((btn_open, btn_save)).gap(xilem::masonry::layout::Length::const_px(2.0));
+
+    // Tool buttons: Select + 6 create tools (Highlight/Underline/Strikeout/
+    // Squiggly/Freehand/Rect). Clicking a button sets the component's active
+    // tool; the next pointer drag creates (or selects) accordingly.
+    let btn_select = tool_button("选择", Tool::Select);
+    let btn_highlight = tool_button("高亮", Tool::Create(AnnotationKind::Highlight));
+    let btn_underline = tool_button("下划线", Tool::Create(AnnotationKind::Underline));
+    let btn_strikeout = tool_button("删除线", Tool::Create(AnnotationKind::Strikeout));
+    let btn_squiggly = tool_button("波浪线", Tool::Create(AnnotationKind::Squiggly));
+    let btn_freehand = tool_button("手写", Tool::Create(AnnotationKind::Freehand));
+    let btn_rect = tool_button("矩形", Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)));
+
+    let tool_row = flex_row((
+        btn_select,
+        btn_highlight,
+        btn_underline,
+        btn_strikeout,
+        btn_squiggly,
+        btn_freehand,
+        btn_rect,
+    ))
+    .gap(xilem::masonry::layout::Length::const_px(2.0));
+
+    let menu_bar = sized_box(flex_col((file_row, tool_row)))
+        .padding(Padding::from_vh(2.0, 4.0))
+        .background_color(Color::from_rgb8(240, 240, 240));
 
     // OFD canvas: a masonry Canvas widget whose paint closure builds the editor
     // scene each frame and replays it into the widget's imaging scene.
@@ -163,6 +204,9 @@ struct NativeApp {
     bridge: WinitEventBridge,
     canvas_widget_id: SharedCanvasId,
     save_requested: Arc<AtomicBool>,
+    /// Right-click target stashed by `on_context_menu` (flag-poll pattern).
+    /// When non-empty, `window_event` deletes the annotation and clears it.
+    context_menu_target: SharedContextMenu,
 }
 
 impl ApplicationHandler<MasonryUserEvent> for NativeApp {
@@ -229,6 +273,19 @@ impl ApplicationHandler<MasonryUserEvent> for NativeApp {
         if self.save_requested.swap(false, Ordering::SeqCst) {
             let mut editor = self.editor.lock().unwrap();
             do_save(&mut editor);
+        }
+
+        // Right-click Delete: the component's on_context_menu callback stashes
+        // the right-clicked annotation id (flag-poll, like save_requested).
+        // Here we poll and delete it. Page/Empty targets are just logged in
+        // the callback (no delete). This complements the Delete key (handled
+        // in component handle_event).
+        let target = self.context_menu_target.lock().unwrap().take();
+        if let Some(id) = target {
+            let mut editor = self.editor.lock().unwrap();
+            editor.component.delete_annotation(&id);
+            drop(editor);
+            self.request_canvas_render();
         }
 
         // Forward the original event to masonry (by value). For RedrawRequested
@@ -330,6 +387,42 @@ fn main() -> Result<(), winit::error::EventLoopError> {
         });
     }
 
+    // Right-click: the component fires on_context_menu on PointerDown Right
+    // (T4). The callback only stashes the target annotation id into a shared
+    // mutex (flag-poll, like save_requested); the NativeApp's window_event
+    // handler polls it and runs delete_annotation. Page/Empty targets are
+    // logged to stderr (no delete). This avoids re-entrancy / &mut self
+    // borrow issues that would arise from deleting inside the callback.
+    let context_menu_target: SharedContextMenu = Arc::new(Mutex::new(None));
+    {
+        let target = context_menu_target.clone();
+        editor
+            .lock()
+            .unwrap()
+            .component
+            .on_context_menu(move |point, ctx| match ctx {
+                ContextTarget::Annotation(id) => {
+                    eprintln!(
+                        "[context-menu] right-click on annotation {} at ({:.0}, {:.0}) -> Delete",
+                        id.0, point.0, point.1
+                    );
+                    *target.lock().unwrap() = Some(id);
+                }
+                ContextTarget::Page => {
+                    eprintln!(
+                        "[context-menu] right-click on page at ({:.0}, {:.0}) (no action)",
+                        point.0, point.1
+                    );
+                }
+                ContextTarget::Empty => {
+                    eprintln!(
+                        "[context-menu] right-click on desk at ({:.0}, {:.0}) (no action)",
+                        point.0, point.1
+                    );
+                }
+            });
+    }
+
     let app_state = AppState {
         editor: editor.clone(),
         canvas_widget_id: canvas_widget_id.clone(),
@@ -356,6 +449,7 @@ fn main() -> Result<(), winit::error::EventLoopError> {
         bridge: WinitEventBridge::new(),
         canvas_widget_id,
         save_requested,
+        context_menu_target,
     };
 
     event_loop.run_app(&mut app)
