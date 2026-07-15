@@ -20,7 +20,7 @@ pub mod viewport;
 pub use annotation_scene::draw_annotations;
 pub use body_scene::draw_body;
 pub use caret_rect::caret_rect;
-pub use composite::{DragPreview, RenderEngine};
+pub use composite::{page_origin, DragPreview, RenderEngine};
 pub use ctm::{compose_transform, ctm_to_affine};
 pub use hit_test::{hit_test, HandlePos, HitTarget};
 pub use image::decode_image;

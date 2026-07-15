@@ -5,11 +5,11 @@
 //! rectangle in viewport (device-pixel) space - the rectangle the editor
 //! paints as the text cursor.
 //!
-//! The viewport transform mirrors [`crate::composite::RenderEngine::composite`]
-//! exactly (centering + scroll on both axes + `page_gap` + `zoom`), so the
-//! caret aligns with the rendered glyph run. Glyph x positions come from
-//! [`FontStore::shape`] (the shaper's natural advances); the caret height is
-//! the font `size` scaled by `zoom`.
+//! The viewport transform uses [`crate::composite::page_origin`] (the shared
+//! page-stacking helper: centering + scroll on both axes + `page_gap` +
+//! `zoom`), so the caret aligns with the rendered glyph run. Glyph x positions
+//! come from [`FontStore::shape`] (the shaper's natural advances); the caret
+//! height is the font `size` scaled by `zoom`.
 //!
 //! Non-text annotations ([`Markup`] / [`Freehand`] / [`Shape`] / [`Stamp`])
 //! return `None` - they have no caret.
@@ -30,11 +30,9 @@ use crate::viewport::Viewport;
 /// Returns `None` when the annotation isn't found, isn't a text annotation
 /// (`TextBox`/`Note`/`Watermark`), or its page isn't in the document.
 ///
-/// The viewport transform matches `composite.rs`:
-/// - `page_x = ((vp.size.0 - page_w) / 2.0).max(0.0)` (centered, never negative)
-/// - `page_origin = (page_x + vp.scroll.0, y)` where `y` starts at
-///   `vp.page_gap - vp.scroll.1` and advances by `page_h + vp.page_gap`
-/// - `page_w = physical_box.w * zoom`, `page_h = physical_box.h * zoom`
+/// The viewport transform uses [`crate::composite::page_origin`] (the shared
+/// page-stacking helper: centering + scroll on both axes + `page_gap` +
+/// `zoom`).
 ///
 /// The caret x is the shaped glyph's x at `offset` (page-local), scaled by
 /// `zoom` and offset by the annotation rect's x + the page origin. The caret
@@ -88,29 +86,19 @@ pub fn caret_rect(
         .map(|g| g.x)
         .unwrap_or_else(|| glyphs.last().map(|g| g.x).unwrap_or(0.0));
 
-    // Walk pages to find the annotation's page and compute its viewport origin.
-    // This mirrors composite.rs (scroll BOTH axes + centering + page_gap + zoom).
-    let mut y = vp.page_gap - vp.scroll.1;
-    for page in &doc.pages {
-        let page_w = page.physical_box.w * vp.zoom;
-        let page_h = page.physical_box.h * vp.zoom;
-        let page_x = ((vp.size.0 - page_w) / 2.0).max(0.0);
+    // Find the annotation's page index and compute its viewport origin via the
+    // shared page_origin helper (same geometry as composite.rs).
+    let page_idx = doc.pages.iter().position(|p| p.id == ann.page)?;
+    let (origin_x, origin_y) = crate::composite::page_origin(doc, vp, page_idx)?;
 
-        if page.id == ann.page {
-            let vx = page_x + vp.scroll.0 + (rect.x + caret_x_local as f64) * vp.zoom;
-            let vy = y + rect.y * vp.zoom;
-            return Some(Rect {
-                x: vx,
-                y: vy,
-                w: 1.0 * vp.zoom,
-                h: size * vp.zoom,
-            });
-        }
-
-        y += page_h + vp.page_gap;
-    }
-
-    None
+    let vx = origin_x + (rect.x + caret_x_local as f64) * vp.zoom;
+    let vy = origin_y + rect.y * vp.zoom;
+    Some(Rect {
+        x: vx,
+        y: vy,
+        w: 1.0 * vp.zoom,
+        h: size * vp.zoom,
+    })
 }
 
 #[cfg(test)]

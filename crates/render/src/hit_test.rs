@@ -1,12 +1,11 @@
 //! Hit-test: convert a viewport pixel point to a [`HitTarget`].
 //!
-//! Pure geometry - no vello/parley. The page-origin computation mirrors
-//! [`crate::composite::RenderEngine::composite`] exactly (centering + scroll on
-//! both axes + `page_gap` + `zoom`), so that a click lands on whatever is
-//! rendered at that pixel. Annotations render above the body, so they are
-//! tested first; within a page, annotations are tested topmost-first (reverse
-//! document order), matching painter's order (later annotations paint over
-//! earlier ones).
+//! Pure geometry - no vello/parley. The page-origin computation uses
+//! [`crate::composite::page_origin`] (the shared page-stacking helper), so a
+//! click lands on whatever is rendered at that pixel. Annotations render above
+//! the body, so they are tested first; within a page, annotations are tested
+//! topmost-first (reverse document order), matching painter's order (later
+//! annotations paint over earlier ones).
 //!
 //! When an annotation is selected, its 8 resize handles (4 corners + 4 edge
 //! midpoints) are tested first - before the annotation body - so that a click
@@ -78,13 +77,9 @@ const HIT_PAD: f64 = 4.0;
 /// [`HitTarget::Handle(id, pos)`]. Otherwise the annotation body / page / empty
 /// logic runs as usual.
 ///
-/// The page-origin computation matches `composite.rs`:
-/// - `page_x = ((vp.size.0 - page_w) / 2.0).max(0.0)` (centered, never negative)
-/// - `page_origin = (page_x + vp.scroll.0, y)` where `y` starts at
-///   `vp.page_gap - vp.scroll.1` and advances by `page_h + vp.page_gap`
-/// - `page_w = physical_box.w * zoom`, `page_h = physical_box.h * zoom`
-///
-/// Page-local coordinates are `(point - page_origin) / zoom`.
+/// The page-origin is computed via [`crate::composite::page_origin`] (the
+/// shared page-stacking helper): centering + scroll on both axes + `page_gap`
+/// + `zoom`. Page-local coordinates are `(point - page_origin) / zoom`.
 pub fn hit_test(
     doc: &OfdDocument,
     vp: &Viewport,
@@ -108,16 +103,14 @@ pub fn hit_test(
         }
     }
 
-    let mut y = vp.page_gap - vp.scroll.1;
-    for page in &doc.pages {
+    for (i, page) in doc.pages.iter().enumerate() {
+        let Some((origin_x, origin_y)) = crate::composite::page_origin(doc, vp, i) else {
+            continue;
+        };
         let page_w = page.physical_box.w * vp.zoom;
         let page_h = page.physical_box.h * vp.zoom;
-        let page_x = ((vp.size.0 - page_w) / 2.0).max(0.0);
-        let origin_x = page_x + vp.scroll.0;
-        let origin_y = y;
 
         if px < origin_x || px > origin_x + page_w || py < origin_y || py > origin_y + page_h {
-            y += page_h + vp.page_gap;
             continue;
         }
 
@@ -144,36 +137,25 @@ pub fn hit_test(
 /// the annotation's page is not found or the payload has no geometry (e.g.
 /// empty Freehand path).
 ///
-/// The page-origin computation matches `composite.rs` exactly: Y starts at
-/// `page_gap - scroll.1` for page 0 and advances by `page_h + page_gap` per
-/// subsequent page. This is critical for multi-page docs - an annotation on
-/// page 1+ must use page 1+'s stacked Y origin, not page 0's.
+/// The page origin is computed via [`crate::composite::page_origin`] (the
+/// shared page-stacking helper), so multi-page docs use the correct stacked Y
+/// origin for an annotation on page 1+.
 pub(crate) fn annotation_viewport_rect(
     doc: &OfdDocument,
     ann: &Annotation,
     vp: &Viewport,
 ) -> Option<Rect> {
-    // Iterate pages mirroring composite's page-stacking loop to find the
-    // annotation's page and its accumulated Y origin.
-    let mut y = vp.page_gap - vp.scroll.1;
-    for page in &doc.pages {
-        let page_w = page.physical_box.w * vp.zoom;
-        let page_h = page.physical_box.h * vp.zoom;
-        if page.id == ann.page {
-            let page_x = ((vp.size.0 - page_w) / 2.0).max(0.0);
-            let page_origin = (page_x + vp.scroll.0, y);
+    // Find the annotation's page index, then use the shared page_origin helper.
+    let page_idx = doc.pages.iter().position(|p| p.id == ann.page)?;
+    let (origin_x, origin_y) = crate::composite::page_origin(doc, vp, page_idx)?;
 
-            let local = annotation_local_rect(ann)?;
-            return Some(Rect {
-                x: page_origin.0 + local.x * vp.zoom,
-                y: page_origin.1 + local.y * vp.zoom,
-                w: local.w * vp.zoom,
-                h: local.h * vp.zoom,
-            });
-        }
-        y += page_h + vp.page_gap;
-    }
-    None
+    let local = annotation_local_rect(ann)?;
+    Some(Rect {
+        x: origin_x + local.x * vp.zoom,
+        y: origin_y + local.y * vp.zoom,
+        w: local.w * vp.zoom,
+        h: local.h * vp.zoom,
+    })
 }
 
 /// Compute the page-local bounding rect of an annotation's payload.
