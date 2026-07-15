@@ -160,12 +160,17 @@ impl EditorComponent {
         self.editor.load_document(doc);
         self.font_store = Some(self.build_font_store());
         self.modified = false;
+        // Reset the visible-page cache: a newly loaded document may have a
+        // different page count/layout, so the stale index must not persist
+        // (it is recomputed on the next Scroll/Resize via maybe_fire_page_change).
+        self.current_page = None;
     }
 
     pub fn new_document(&mut self) {
         self.editor.load_document(OfdDocument::default());
         self.font_store = Some(self.build_font_store());
         self.modified = false;
+        self.current_page = None;
     }
 
     pub fn document(&self) -> &OfdDocument {
@@ -248,7 +253,7 @@ impl EditorComponent {
         let drag_preview = self
             .drag
             .as_ref()
-            .and_then(|d| drag_to_preview(d, &self.viewport));
+            .and_then(|d| drag_to_preview(self.editor.document(), d, &self.viewport));
         self.render.composite(
             self.editor.document(),
             &self.viewport,
@@ -465,9 +470,38 @@ impl EditorComponent {
                             current,
                             path,
                         } => {
-                            let payload = build_create_payload(&kind, start, current, &path);
-                            let page =
-                                current_page_id(self.editor.document(), &self.viewport, current);
+                            // Resolve the page from the viewport-space `current`
+                            // point, then convert start/current/path (viewport)
+                            // to page-local before building the payload. The
+                            // default zoom is PX_PER_MM (~3.78), so without this
+                            // conversion created annotations would have
+                            // viewport-space geometry baked in (wrong by the
+                            // zoom factor + page origin). Mirrors how Move
+                            // (divides delta by zoom) and Resize (uses
+                            // viewport_to_page_local) already convert.
+                            let doc = self.editor.document();
+                            let page = current_page_id(doc, &self.viewport, current);
+                            let start_local =
+                                viewport_to_page_local(doc, &self.viewport, &page, start);
+                            let current_local =
+                                viewport_to_page_local(doc, &self.viewport, &page, current);
+                            let (start_l, current_l) = match (start_local, current_local) {
+                                (Some(s), Some(c)) => (s, c),
+                                // Page not found (empty doc): fall back to
+                                // raw viewport coords so a degenerate doc
+                                // does not panic. current_page_id already
+                                // returns a default PageId in this case.
+                                _ => (start, current),
+                            };
+                            let path_local: Vec<(f64, f64)> = path
+                                .iter()
+                                .map(|&p| {
+                                    viewport_to_page_local(doc, &self.viewport, &page, p)
+                                        .unwrap_or(p)
+                                })
+                                .collect();
+                            let payload =
+                                build_create_payload(&kind, start_l, current_l, &path_local);
                             let id = self.editor.create_annotation(kind.clone(), page, payload);
                             self.editor.select(id.clone());
                             self.set_tool(Tool::Select);
@@ -915,14 +949,20 @@ impl EditorComponent {
 
 /// Map an in-progress [`DragState`] to a renderable [`DragPreview`].
 ///
-/// For `Create`, the rect is the bounding box of `start`/`current` (for
-/// rect-bounded kinds) or the accumulated `path` (for Freehand).
+/// For `Create`, the rect is the page-local bounding box of `start`/`current`
+/// (for rect-bounded kinds) or the accumulated viewport-space `path` (for
+/// Freehand, passed through as viewport-space to match
+/// `DragPreview::CreateFreehand`).
 ///
 /// For `Move`/`Resize`, a semi-transparent preview overlay is returned showing
 /// the would-be position/rect. The actual annotation stays at its original
 /// position during the drag (the editor command is issued once on PointerUp),
 /// so this preview is what the user sees following the pointer.
-fn drag_to_preview(d: &DragState, vp: &Viewport) -> Option<DragPreview> {
+///
+/// `doc` is required to resolve the target page for the viewport->page-local
+/// conversion of `Create` rect-bounded previews (so `draw_drag_preview`'s
+/// page-local transform maps the preview back under the cursor).
+fn drag_to_preview(doc: &OfdDocument, d: &DragState, vp: &Viewport) -> Option<DragPreview> {
     match d {
         DragState::Create {
             kind,
@@ -933,7 +973,17 @@ fn drag_to_preview(d: &DragState, vp: &Viewport) -> Option<DragPreview> {
             if *kind == AnnotationKind::Freehand {
                 Some(DragPreview::CreateFreehand { path: path.clone() })
             } else {
-                let rect = bbox(*start, *current);
+                // Resolve the page from the viewport-space `current` point
+                // (same page-selection logic as the PointerUp handler), then
+                // convert start/current to page-local so the rect is in the
+                // coordinate space `draw_drag_preview` expects for
+                // `DragPreview::Create` (page-local, transformed back to
+                // viewport by * zoom + page origin).
+                let page = current_page_id(doc, vp, *current);
+                let start_local = viewport_to_page_local(doc, vp, &page, *start).unwrap_or(*start);
+                let current_local =
+                    viewport_to_page_local(doc, vp, &page, *current).unwrap_or(*current);
+                let rect = bbox(start_local, current_local);
                 Some(DragPreview::Create {
                     kind: kind.clone(),
                     rect,
@@ -1581,6 +1631,79 @@ mod tests {
         }
     }
 
+    /// Regression test for C3 review finding I1: at zoom != 1, a create-drag
+    /// must store page-local geometry (viewport / zoom), not raw viewport
+    /// pixels. Without the conversion the annotation rect would be off by the
+    /// zoom factor (e.g. 2x too large at zoom=2).
+    ///
+    /// Setup: page P0 200x200 at origin, zoom=2.0, scroll=(0,0), page_gap=0,
+    /// viewport size 0 (so page origin is (0,0)). Drag from viewport (40,40)
+    /// to (140,140). Page-local = viewport / 2 = (20,20) -> (70,70), so the
+    /// annotation rect should be bbox((20,20),(70,70)) = (20,20,50,50).
+    #[test]
+    fn create_rect_via_drag_converts_to_page_local_at_non_unit_zoom() {
+        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        c.set_clock("t".into(), 1);
+        let mut doc = OfdDocument::default();
+        doc.pages.push(Page {
+            id: PageId::new("P0"),
+            physical_box: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 200.0,
+            },
+            layers: vec![Layer::default()],
+            template: None,
+        });
+        c.load_document(doc);
+        // zoom=2.0, size=(0,0) -> page origin (0,0); page-local = viewport / 2.
+        c.viewport = rofd_render::Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 2.0,
+            size: (0.0, 0.0),
+            page_gap: 0.0,
+        };
+        c.set_tool(Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)));
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 40.0,
+            y: 40.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerMove { x: 140.0, y: 140.0 });
+        let outcome = c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 140.0,
+            y: 140.0,
+        });
+        assert!(outcome.needs_repaint);
+        assert!(
+            matches!(c.editor.selection(), AnnotationSelection::Single(_)),
+            "new rect selected"
+        );
+        if let AnnotationSelection::Single(id) = c.editor.selection() {
+            let ann = c.editor.document().annotations.find(id).unwrap();
+            match &ann.payload {
+                AnnotationPayload::Shape { rect, .. } => {
+                    // page-local = (40/2, 40/2) -> (140/2, 140/2) = (20,20)->(70,70)
+                    // bbox = (20,20,50,50). NOT the viewport-space (40,40,100,100).
+                    assert_eq!(
+                        *rect,
+                        Rect {
+                            x: 20.0,
+                            y: 20.0,
+                            w: 50.0,
+                            h: 50.0
+                        },
+                        "create-drag rect must be page-local (viewport / zoom), not viewport-space"
+                    );
+                }
+                _ => panic!("expected Shape payload"),
+            }
+        }
+    }
+
     #[test]
     fn move_annotation_via_drag() {
         let mut c = component_with_note();
@@ -2032,6 +2155,67 @@ mod tests {
             *fired.lock().unwrap(),
             0,
             "no page_change when page unchanged"
+        );
+    }
+
+    /// Regression test for C3 review finding I2: `load_document` and
+    /// `new_document` must reset `current_page` to `None`. Otherwise, after a
+    /// scroll establishes `current_page = Some(1)` on a multi-page doc, loading
+    /// a new (single-page or empty) document leaves a stale index that would
+    /// suppress the next legitimate `on_page_change` fire (the new doc's page 0
+    /// differs from the stale `Some(1)` but the recomputation must start from a
+    /// clean slate, not a stale one).
+    #[test]
+    fn load_document_resets_current_page() {
+        let mut c = component_with_two_pages();
+        // Establish a non-None current_page by scrolling to page 1.
+        c.handle_event(&ViewEvent::Scroll { dx: 0.0, dy: 200.0 });
+        assert_eq!(c.current_page, Some(1), "scrolled to page 1");
+
+        let fired = Arc::new(Mutex::new(None));
+        let f = fired.clone();
+        c.on_page_change(move |idx| {
+            *f.lock().unwrap() = Some(idx);
+        });
+
+        // Load a fresh single-page document.
+        let mut doc = OfdDocument::default();
+        doc.pages.push(Page {
+            id: PageId::new("P0"),
+            physical_box: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 200.0,
+            },
+            layers: vec![Layer::default()],
+            template: None,
+        });
+        c.load_document(doc);
+        assert_eq!(
+            c.current_page, None,
+            "load_document resets current_page to None"
+        );
+
+        // A subsequent Scroll that lands on page 0 must fire on_page_change
+        // (proving the stale Some(1) did not suppress it).
+        c.handle_event(&ViewEvent::Scroll { dx: 0.0, dy: 0.0 });
+        assert_eq!(
+            *fired.lock().unwrap(),
+            Some(0),
+            "page_change fires for page 0 after load reset current_page"
+        );
+    }
+
+    #[test]
+    fn new_document_resets_current_page() {
+        let mut c = component_with_two_pages();
+        c.handle_event(&ViewEvent::Scroll { dx: 0.0, dy: 200.0 });
+        assert_eq!(c.current_page, Some(1), "scrolled to page 1");
+        c.new_document();
+        assert_eq!(
+            c.current_page, None,
+            "new_document resets current_page to None"
         );
     }
 
