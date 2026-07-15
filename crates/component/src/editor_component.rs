@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use rofd_dom::{AnnotationKind, AnnotationSelection, OfdDocument, Rect};
+use rofd_dom::{
+    AnnotationKind, AnnotationPayload, AnnotationSelection, Color, OfdDocument, PageId,
+    PathCommand, PathData, Point, Rect,
+};
 use rofd_editor::{Editor, TextCursor};
 use rofd_render::{DragPreview, FontStore, HandlePos, RenderEngine, Scene, Viewport, PX_PER_MM};
 
@@ -26,11 +29,6 @@ pub enum Tool {
 ///
 /// `Create` covers rect-bounded kinds (Shape/Note/TextBox/...) and Freehand
 /// (accumulating a path). `Move`/`Resize` track the source annotation.
-//
-// Variants are not constructed until T3 wires pointer drag handling; `dead_code`
-// is allowed here intentionally so the mapping in `drag_to_preview` can be
-// defined now and exercised by T3.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) enum DragState {
     /// Creating a new annotation; `start`/`current` bound a rect, `path`
@@ -42,19 +40,24 @@ pub(crate) enum DragState {
         path: Vec<(f64, f64)>,
     },
     /// Moving an existing annotation; `last` is the previous pointer position
-    /// (viewport-space) for computing deltas.
+    /// (viewport-space) for computing deltas. `moved` is true once any
+    /// PointerMove actually shifted the annotation (so PointerUp can skip
+    /// `on_change` for a pure click-without-drag).
     Move {
         id: rofd_dom::AnnotationId,
         last: (f64, f64),
+        moved: bool,
     },
     /// Resizing an existing annotation; `handle` identifies the dragged
     /// handle, `anchor` is the opposite corner (fixed), `orig` is the
-    /// annotation's rect at drag start.
+    /// annotation's rect at drag start. `moved` is true once any PointerMove
+    /// actually resized the annotation.
     Resize {
         id: rofd_dom::AnnotationId,
         handle: HandlePos,
         anchor: (f64, f64),
         orig: Rect,
+        moved: bool,
     },
 }
 
@@ -233,40 +236,180 @@ impl EditorComponent {
     }
 
     pub fn handle_event(&mut self, event: &crate::event::ViewEvent) -> EventOutcome {
-        use crate::event::ViewEvent;
+        use crate::event::{MouseButton, ViewEvent};
         match event {
             ViewEvent::PointerDown {
-                button: crate::event::MouseButton::Left,
+                button: MouseButton::Left,
                 x,
                 y,
                 ..
             } => {
-                let target = rofd_render::hit_test(
-                    self.editor.document(),
-                    &self.viewport,
-                    self.editor.selection(),
-                    (*x, *y),
-                );
-                match target {
-                    rofd_render::HitTarget::Annotation(id) => {
-                        self.editor.select(id.clone());
-                        if let Some(len) = self.text_content_len(&id) {
-                            self.editor.set_cursor(id.clone(), len);
-                        }
-                        self.fire_selection_change();
-                        self.fire_cursor_change();
-                        EventOutcome {
-                            needs_repaint: true,
+                let p = (*x, *y);
+                match &self.tool {
+                    Tool::Create(kind) => {
+                        // Start a create-drag. The payload is built on PointerUp.
+                        self.drag = Some(DragState::Create {
+                            kind: kind.clone(),
+                            start: p,
+                            current: p,
+                            path: vec![p],
+                        });
+                    }
+                    Tool::Select => {
+                        let target = rofd_render::hit_test(
+                            self.editor.document(),
+                            &self.viewport,
+                            self.editor.selection(),
+                            p,
+                        );
+                        match target {
+                            rofd_render::HitTarget::Handle(id, h) => {
+                                let was_selected = self.editor.selection().contains(&id);
+                                if !was_selected {
+                                    self.editor.select(id.clone());
+                                    self.fire_annotation_focus(&id);
+                                }
+                                self.fire_annotation_interact(&id);
+                                self.fire_selection_change();
+                                // Set up resize drag: orig + anchor in page-local.
+                                let ann = self
+                                    .editor
+                                    .document()
+                                    .annotations
+                                    .find(&id)
+                                    .expect("selected annotation must exist");
+                                let orig = annotation_payload_rect(ann);
+                                let anchor = opposite_corner(&orig, &h);
+                                self.drag = Some(DragState::Resize {
+                                    id: id.clone(),
+                                    handle: h,
+                                    anchor,
+                                    orig,
+                                    moved: false,
+                                });
+                            }
+                            rofd_render::HitTarget::Annotation(id)
+                            | rofd_render::HitTarget::AnnotationText(id, _) => {
+                                let was_selected = self.editor.selection().contains(&id);
+                                self.editor.select(id.clone());
+                                if !was_selected {
+                                    self.fire_annotation_focus(&id);
+                                }
+                                self.fire_annotation_interact(&id);
+                                // For text annotations, position cursor at end.
+                                if let Some(len) = self.text_content_len(&id) {
+                                    self.editor.set_cursor(id.clone(), len);
+                                }
+                                self.fire_selection_change();
+                                self.fire_cursor_change();
+                                self.drag = Some(DragState::Move {
+                                    id: id.clone(),
+                                    last: p,
+                                    moved: false,
+                                });
+                            }
+                            _ => {
+                                // Page or Empty: clear selection + cursor.
+                                self.editor.clear_selection();
+                                self.editor.clear_cursor();
+                                self.fire_selection_change();
+                                self.fire_cursor_change();
+                            }
                         }
                     }
-                    _ => {
-                        self.editor.clear_selection();
-                        self.editor.clear_cursor();
-                        self.fire_selection_change();
-                        self.fire_cursor_change();
-                        EventOutcome {
-                            needs_repaint: true,
+                }
+                EventOutcome {
+                    needs_repaint: true,
+                }
+            }
+            ViewEvent::PointerMove { x, y } => {
+                let p = (*x, *y);
+                match &mut self.drag {
+                    Some(DragState::Create { current, path, .. }) => {
+                        *current = p;
+                        path.push(p);
+                    }
+                    Some(DragState::Move { id, last, moved }) => {
+                        // Convert viewport delta to page-local (divide by zoom).
+                        let zoom = self.viewport.zoom;
+                        let dx = (p.0 - last.0) / zoom;
+                        let dy = (p.1 - last.1) / zoom;
+                        self.editor.move_annotation(id, dx, dy);
+                        *last = p;
+                        *moved = true;
+                    }
+                    Some(DragState::Resize {
+                        id,
+                        handle,
+                        anchor,
+                        orig,
+                        moved,
+                    }) => {
+                        // Convert viewport point to page-local of the annotation's page.
+                        let ann = self.editor.document().annotations.find(id);
+                        if let Some(ann) = ann {
+                            if let Some(local) = viewport_to_page_local(
+                                self.editor.document(),
+                                &self.viewport,
+                                &ann.page,
+                                p,
+                            ) {
+                                let new_rect = compute_resize(handle, *anchor, *orig, local);
+                                self.editor.resize_annotation(id, new_rect);
+                                *moved = true;
+                            }
                         }
+                    }
+                    None => {}
+                }
+                if self.drag.is_some() {
+                    EventOutcome {
+                        needs_repaint: true,
+                    }
+                } else {
+                    EventOutcome {
+                        needs_repaint: false,
+                    }
+                }
+            }
+            ViewEvent::PointerUp {
+                button: MouseButton::Left,
+                ..
+            } => {
+                if let Some(drag) = self.drag.take() {
+                    match drag {
+                        DragState::Create {
+                            kind,
+                            start,
+                            current,
+                            path,
+                        } => {
+                            let payload = build_create_payload(&kind, start, current, &path);
+                            let page =
+                                current_page_id(self.editor.document(), &self.viewport, current);
+                            let id = self.editor.create_annotation(kind.clone(), page, payload);
+                            self.editor.select(id.clone());
+                            self.set_tool(Tool::Select);
+                            self.after_annotation_change();
+                            self.fire_annotation_focus(&id);
+                            self.fire_annotation_interact(&id);
+                            self.fire_selection_change();
+                        }
+                        DragState::Move { moved, .. } | DragState::Resize { moved, .. } => {
+                            // Move/resize were applied in real-time during PointerMove.
+                            // Only fire on_change if the drag actually mutated the
+                            // annotation (skips a pure click-without-drag).
+                            if moved {
+                                self.after_annotation_change();
+                            }
+                        }
+                    }
+                    EventOutcome {
+                        needs_repaint: true,
+                    }
+                } else {
+                    EventOutcome {
+                        needs_repaint: false,
                     }
                 }
             }
@@ -467,6 +610,20 @@ impl EditorComponent {
         }
     }
 
+    // Called when an annotation is first selected (focused) or interacted with
+    // (any PointerDown on it). T3 wires these in the PointerDown handler.
+    fn fire_annotation_focus(&self, id: &rofd_dom::AnnotationId) {
+        if let Some(cb) = &self.callbacks.on_annotation_focus {
+            cb(id);
+        }
+    }
+
+    fn fire_annotation_interact(&self, id: &rofd_dom::AnnotationId) {
+        if let Some(cb) = &self.callbacks.on_annotation_interact {
+            cb(id);
+        }
+    }
+
     // Callback setters. Each emits two cfg-gated copies: `+ Send` on native
     // (the host in Phase 4b stores callbacks across threads) and plain on wasm
     // (single-threaded). This mirrors the `Send`-gating in `callbacks.rs`.
@@ -505,18 +662,37 @@ impl EditorComponent {
     pub fn on_save_request(&mut self, cb: impl Fn() + 'static) {
         self.callbacks.on_save_request = Some(Box::new(cb));
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn on_annotation_focus(&mut self, cb: impl Fn(&rofd_dom::AnnotationId) + 'static + Send) {
+        self.callbacks.on_annotation_focus = Some(Box::new(cb));
+    }
+    #[cfg(target_arch = "wasm32")]
+    pub fn on_annotation_focus(&mut self, cb: impl Fn(&rofd_dom::AnnotationId) + 'static) {
+        self.callbacks.on_annotation_focus = Some(Box::new(cb));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn on_annotation_interact(
+        &mut self,
+        cb: impl Fn(&rofd_dom::AnnotationId) + 'static + Send,
+    ) {
+        self.callbacks.on_annotation_interact = Some(Box::new(cb));
+    }
+    #[cfg(target_arch = "wasm32")]
+    pub fn on_annotation_interact(&mut self, cb: impl Fn(&rofd_dom::AnnotationId) + 'static) {
+        self.callbacks.on_annotation_interact = Some(Box::new(cb));
+    }
 }
 
 /// Map an in-progress [`DragState`] to a renderable [`DragPreview`].
 ///
 /// For `Create`, the rect is the bounding box of `start`/`current` (for
 /// rect-bounded kinds) or the accumulated `path` (for Freehand). For
-/// `Move`/`Resize`, the rect is the annotation's current page-local rect
-/// (looked up from the document) offset/sized by the drag.
-///
-/// In T2 no drag is ever started (T3 adds PointerDown/Move/Up), so this always
-/// receives `None` in practice; the mapping is defined here so T3 only needs to
-/// set `drag` and the preview flows through `build_scene`.
+/// `Move`/`Resize`, `None` is returned: the annotation's payload is updated
+/// in real-time during PointerMove (via `editor.move_annotation`/
+/// `resize_annotation`), so the normal render already shows it at the new
+/// position -- no separate preview overlay is needed.
 fn drag_to_preview(d: &DragState) -> Option<DragPreview> {
     match d {
         DragState::Create {
@@ -535,10 +711,6 @@ fn drag_to_preview(d: &DragState) -> Option<DragPreview> {
                 })
             }
         }
-        // Move/Resize preview the annotation's rect; the actual rect lookup is
-        // wired in T3 (which has the document + the live delta). Returning None
-        // here is safe: until T3, drag is always None, so this branch is
-        // unreachable.
         DragState::Move { .. } | DragState::Resize { .. } => None,
     }
 }
@@ -550,6 +722,310 @@ fn bbox(a: (f64, f64), b: (f64, f64)) -> Rect {
     let w = (a.0 - b.0).abs();
     let h = (a.1 - b.1).abs();
     Rect { x, y, w, h }
+}
+
+// --- Default colors for create-drag (spec section 3.5) ---
+
+/// Default highlight color: yellow.
+const DEFAULT_HIGHLIGHT_COLOR: Color = Color::Rgb(255, 221, 0);
+/// Default underline/strikeout/squiggly color: blue.
+const DEFAULT_MARKUP_COLOR: Color = Color::Rgb(0, 0, 255);
+/// Default freehand color: black.
+const DEFAULT_FREEHAND_COLOR: Color = Color::Rgb(0, 0, 0);
+/// Default shape (Rect) stroke color: red.
+const DEFAULT_SHAPE_COLOR: Color = Color::Rgb(255, 0, 0);
+/// Default freehand stroke width.
+const DEFAULT_FREEHAND_WIDTH: f64 = 1.5;
+/// Default shape stroke width.
+const DEFAULT_SHAPE_WIDTH: f64 = 2.0;
+
+/// Compute the new rect when dragging a resize handle.
+///
+/// `handle` identifies the dragged handle, `anchor` is the fixed opposite
+/// corner/edge (page-local), `orig` is the annotation's rect at drag start
+/// (page-local), and `point` is the current pointer position (page-local).
+///
+/// Corner handles (Nw/Ne/Sw/Se): the new rect is the bounding box of `anchor`
+/// and `point`.
+///
+/// Edge handles (N/S/E/W): the opposite edge stays fixed, and the dragged edge
+/// moves to `point`. For example, dragging the E (east) edge fixes x/y/h and
+/// sets w = point.x - orig.x; dragging the N (north) edge fixes x/w and sets
+/// y = point.y, h = orig.y + orig.h - point.y.
+fn compute_resize(handle: &HandlePos, anchor: (f64, f64), orig: Rect, point: (f64, f64)) -> Rect {
+    match handle {
+        HandlePos::Nw | HandlePos::Ne | HandlePos::Sw | HandlePos::Se => {
+            // Corner: new rect = bbox(anchor, point).
+            bbox(anchor, point)
+        }
+        HandlePos::E => Rect {
+            x: orig.x,
+            y: orig.y,
+            w: point.0 - orig.x,
+            h: orig.h,
+        },
+        HandlePos::W => Rect {
+            x: point.0,
+            y: orig.y,
+            w: orig.x + orig.w - point.0,
+            h: orig.h,
+        },
+        HandlePos::S => Rect {
+            x: orig.x,
+            y: orig.y,
+            w: orig.w,
+            h: point.1 - orig.y,
+        },
+        HandlePos::N => Rect {
+            x: orig.x,
+            y: point.1,
+            w: orig.w,
+            h: orig.y + orig.h - point.1,
+        },
+    }
+}
+
+/// Build the [`AnnotationPayload`] for a newly created annotation from the
+/// drag geometry.
+///
+/// - Markup (Highlight/Underline/Strikeout/Squiggly): quad_points = [start, current].
+/// - Freehand: path from accumulated `path` points (M + L commands).
+/// - Shape (Rect): rect = bbox(start, current).
+fn build_create_payload(
+    kind: &AnnotationKind,
+    start: (f64, f64),
+    current: (f64, f64),
+    path: &[(f64, f64)],
+) -> AnnotationPayload {
+    match kind {
+        AnnotationKind::Highlight => AnnotationPayload::Markup {
+            quad_points: vec![
+                Point {
+                    x: start.0,
+                    y: start.1,
+                },
+                Point {
+                    x: current.0,
+                    y: current.1,
+                },
+            ],
+            color: DEFAULT_HIGHLIGHT_COLOR,
+        },
+        AnnotationKind::Underline | AnnotationKind::Strikeout | AnnotationKind::Squiggly => {
+            AnnotationPayload::Markup {
+                quad_points: vec![
+                    Point {
+                        x: start.0,
+                        y: start.1,
+                    },
+                    Point {
+                        x: current.0,
+                        y: current.1,
+                    },
+                ],
+                color: DEFAULT_MARKUP_COLOR,
+            }
+        }
+        AnnotationKind::Freehand => {
+            let commands = path
+                .iter()
+                .enumerate()
+                .map(|(i, &(x, y))| {
+                    if i == 0 {
+                        PathCommand::M(x, y)
+                    } else {
+                        PathCommand::L(x, y)
+                    }
+                })
+                .collect();
+            AnnotationPayload::Freehand {
+                path: PathData { commands },
+                color: DEFAULT_FREEHAND_COLOR,
+                width: DEFAULT_FREEHAND_WIDTH,
+            }
+        }
+        AnnotationKind::Shape(shape_kind) => AnnotationPayload::Shape {
+            kind: *shape_kind,
+            rect: bbox(start, current),
+            stroke: DEFAULT_SHAPE_COLOR,
+            fill: None,
+            width: DEFAULT_SHAPE_WIDTH,
+            points: vec![],
+        },
+        // Note/TextBox/Stamp/Watermark: use bbox as rect with minimal defaults.
+        // The host can refine via property panels later.
+        AnnotationKind::Note => AnnotationPayload::Note {
+            rect: bbox(start, current),
+            color: Color::Rgb(255, 200, 0),
+            content: String::new(),
+            icon: rofd_dom::NoteIcon::Note,
+        },
+        AnnotationKind::TextBox => AnnotationPayload::TextBox {
+            rect: bbox(start, current),
+            content: String::new(),
+            font: rofd_dom::FontId::new(""),
+            size: 12.0,
+            color: Color::Rgb(0, 0, 0),
+        },
+        AnnotationKind::Stamp => AnnotationPayload::Stamp {
+            rect: bbox(start, current),
+            image: rofd_dom::ImageId::new(""),
+        },
+        AnnotationKind::Watermark => AnnotationPayload::Watermark {
+            rect: bbox(start, current),
+            content: String::new(),
+            opacity: 0.3,
+            angle: 45.0,
+            font: rofd_dom::FontId::new(""),
+            size: 48.0,
+            color: Color::Rgb(200, 200, 200),
+        },
+    }
+}
+
+/// Find the page whose viewport rect contains `point`, returning its [`PageId`].
+/// Mirrors the page-stacking loop in composite.rs: Y starts at
+/// `page_gap - scroll.1` and advances by `page_h + page_gap` per page.
+fn current_page_id(doc: &OfdDocument, vp: &Viewport, point: (f64, f64)) -> PageId {
+    let mut y = vp.page_gap - vp.scroll.1;
+    for page in &doc.pages {
+        let page_w = page.physical_box.w * vp.zoom;
+        let page_h = page.physical_box.h * vp.zoom;
+        let page_x = ((vp.size.0 - page_w) / 2.0).max(0.0);
+        let origin_x = page_x + vp.scroll.0;
+        if point.0 >= origin_x
+            && point.0 <= origin_x + page_w
+            && point.1 >= y
+            && point.1 <= y + page_h
+        {
+            return page.id.clone();
+        }
+        y += page_h + vp.page_gap;
+    }
+    // Fallback: first page if any, else a default PageId.
+    doc.pages.first().map(|p| p.id.clone()).unwrap_or_default()
+}
+
+/// Convert a viewport-space point to page-local coordinates for a specific page.
+/// Returns `None` if the page is not found. Mirrors the page-stacking loop.
+fn viewport_to_page_local(
+    doc: &OfdDocument,
+    vp: &Viewport,
+    page_id: &PageId,
+    point: (f64, f64),
+) -> Option<(f64, f64)> {
+    let mut y = vp.page_gap - vp.scroll.1;
+    for page in &doc.pages {
+        let page_w = page.physical_box.w * vp.zoom;
+        let page_h = page.physical_box.h * vp.zoom;
+        if page.id == *page_id {
+            let page_x = ((vp.size.0 - page_w) / 2.0).max(0.0);
+            let origin_x = page_x + vp.scroll.0;
+            return Some(((point.0 - origin_x) / vp.zoom, (point.1 - y) / vp.zoom));
+        }
+        y += page_h + vp.page_gap;
+    }
+    None
+}
+
+/// Extract the page-local bounding [`Rect`] from an annotation's payload.
+///
+/// - Rect-bearing payloads (Note/TextBox/Stamp/Watermark/Shape): the payload's
+///   `rect` field directly.
+/// - Markup: the bounding box of all quad points.
+/// - Freehand: the bounding box of all path control/end points (empty path ->
+///   zero-size rect at origin).
+fn annotation_payload_rect(ann: &rofd_dom::Annotation) -> Rect {
+    match &ann.payload {
+        AnnotationPayload::Shape { rect, .. }
+        | AnnotationPayload::Note { rect, .. }
+        | AnnotationPayload::TextBox { rect, .. }
+        | AnnotationPayload::Stamp { rect, .. }
+        | AnnotationPayload::Watermark { rect, .. } => *rect,
+        AnnotationPayload::Markup { quad_points, .. } => {
+            if quad_points.is_empty() {
+                return Rect::default();
+            }
+            let (minx, miny, maxx, maxy) = quad_points.iter().fold(
+                (
+                    f64::INFINITY,
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                    f64::NEG_INFINITY,
+                ),
+                |(minx, miny, maxx, maxy), p| {
+                    (minx.min(p.x), miny.min(p.y), maxx.max(p.x), maxy.max(p.y))
+                },
+            );
+            Rect {
+                x: minx,
+                y: miny,
+                w: maxx - minx,
+                h: maxy - miny,
+            }
+        }
+        AnnotationPayload::Freehand { path, .. } => {
+            if path.commands.is_empty() {
+                return Rect::default();
+            }
+            let (minx, miny, maxx, maxy) = path.commands.iter().fold(
+                (
+                    f64::INFINITY,
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                    f64::NEG_INFINITY,
+                ),
+                |acc, cmd| {
+                    let pts = path_command_points(cmd);
+                    pts.into_iter()
+                        .fold(acc, |(minx, miny, maxx, maxy), (px, py)| {
+                            (minx.min(px), miny.min(py), maxx.max(px), maxy.max(py))
+                        })
+                },
+            );
+            Rect {
+                x: minx,
+                y: miny,
+                w: maxx - minx,
+                h: maxy - miny,
+            }
+        }
+    }
+}
+
+/// Extract all (x, y) control/end points from a [`PathCommand`] for bbox.
+fn path_command_points(cmd: &PathCommand) -> Vec<(f64, f64)> {
+    match cmd {
+        PathCommand::M(x, y) | PathCommand::L(x, y) => vec![(*x, *y)],
+        PathCommand::C(x1, y1, x2, y2, x, y) => vec![(*x1, *y1), (*x2, *y2), (*x, *y)],
+        PathCommand::Q(x1, y1, x, y) => vec![(*x1, *y1), (*x, *y)],
+        PathCommand::A(_, _, _, _, x, y) => vec![(*x, *y)],
+        PathCommand::Z => vec![],
+    }
+}
+
+/// Compute the corner/point opposite to a handle on a rect (page-local).
+///
+/// For corner handles (Nw/Ne/Sw/Se), this is the diagonally opposite corner.
+/// For edge handles (N/S/E/W), this is the midpoint of the opposite edge --
+/// used as the fixed anchor during resize.
+fn opposite_corner(rect: &Rect, handle: &HandlePos) -> (f64, f64) {
+    let x0 = rect.x;
+    let y0 = rect.y;
+    let x1 = rect.x + rect.w;
+    let y1 = rect.y + rect.h;
+    let cx = (x0 + x1) / 2.0;
+    let cy = (y0 + y1) / 2.0;
+    match handle {
+        HandlePos::Nw => (x1, y1), // opposite = Se
+        HandlePos::Ne => (x0, y1), // opposite = Sw
+        HandlePos::Sw => (x1, y0), // opposite = Ne
+        HandlePos::Se => (x0, y0), // opposite = Nw
+        HandlePos::N => (cx, y1),  // opposite edge = S midpoint
+        HandlePos::S => (cx, y0),  // opposite edge = N midpoint
+        HandlePos::E => (x0, cy),  // opposite edge = W midpoint
+        HandlePos::W => (x1, cy),  // opposite edge = E midpoint
+    }
 }
 
 #[cfg(test)]
@@ -592,13 +1068,32 @@ mod tests {
         assert_eq!(rt.drawn, 1);
     }
 
-    use crate::event::{Key, Modifiers, ViewEvent};
-    use rofd_dom::{AnnotationKind, AnnotationPayload, Color, NoteIcon, PageId, Rect, ShapeKind};
+    use crate::event::{Key, Modifiers, MouseButton, ViewEvent};
+    use rofd_dom::{
+        AnnotationKind, AnnotationPayload, AnnotationSelection, Color, Layer, NoteIcon,
+        OfdDocument, Page, PageId, Rect, ShapeKind,
+    };
     use std::sync::Mutex;
 
     fn component_with_note() -> EditorComponent {
         let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
         c.set_clock("t".into(), 1);
+        // Insert a page P0 so hit_test / current_page_id can resolve. physical_box
+        // starts at (0,0); with size=(0,0) + page_gap=0 + zoom=1, the page origin
+        // is (0,0) so page-local coords == viewport coords (simplifies test points).
+        let mut doc = OfdDocument::default();
+        doc.pages.push(Page {
+            id: PageId::new("P0"),
+            physical_box: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 200.0,
+            },
+            layers: vec![Layer::default()],
+            template: None,
+        });
+        c.load_document(doc);
         c.editor.create_annotation(
             AnnotationKind::Note,
             PageId::new("P0"),
@@ -618,8 +1113,8 @@ mod tests {
         c.viewport = rofd_render::Viewport {
             scroll: (0.0, 0.0),
             zoom: 1.0,
-            size: (800.0, 600.0),
-            page_gap: 20.0,
+            size: (0.0, 0.0),
+            page_gap: 0.0,
         };
         c
     }
@@ -773,5 +1268,218 @@ mod tests {
         assert!(matches!(c.tool, Tool::Create(_)));
         c.set_tool(Tool::Select);
         assert!(matches!(c.tool, Tool::Select));
+    }
+
+    #[test]
+    fn create_rect_via_drag() {
+        let mut c = component_with_note();
+        c.set_tool(Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)));
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 10.0,
+            y: 10.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 60.0 });
+        let outcome = c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 60.0,
+        });
+        assert!(outcome.needs_repaint);
+        assert!(
+            matches!(c.editor.selection(), AnnotationSelection::Single(_)),
+            "new rect selected"
+        );
+        assert!(
+            matches!(c.tool, Tool::Select),
+            "tool back to Select after create"
+        );
+        // Verify the annotation was created with the expected rect.
+        if let AnnotationSelection::Single(id) = c.editor.selection() {
+            let ann = c.editor.document().annotations.find(id).unwrap();
+            match &ann.payload {
+                AnnotationPayload::Shape { rect, .. } => {
+                    // bbox((10,10),(50,60)) = (10,10,40,50)
+                    assert_eq!(
+                        *rect,
+                        Rect {
+                            x: 10.0,
+                            y: 10.0,
+                            w: 40.0,
+                            h: 50.0
+                        }
+                    );
+                }
+                _ => panic!("expected Shape payload"),
+            }
+        }
+    }
+
+    #[test]
+    fn move_annotation_via_drag() {
+        let mut c = component_with_note();
+        // The note is at rect (0,0,100,100). Click at (50,50) -- the center,
+        // away from the 8px handle hit radius -- to select + start move.
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 50.0,
+            modifiers: Modifiers::default(),
+        });
+        // Drag to (60,60) -> dx=10, dy=10 (page-local == viewport at zoom=1).
+        c.handle_event(&ViewEvent::PointerMove { x: 60.0, y: 60.0 });
+        let outcome = c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 60.0,
+            y: 60.0,
+        });
+        assert!(outcome.needs_repaint);
+        // The note's rect should have moved by (10,10): (10,10,100,100).
+        if let AnnotationSelection::Single(id) = c.editor.selection() {
+            let ann = c.editor.document().annotations.find(id).unwrap();
+            match &ann.payload {
+                AnnotationPayload::Note { rect, .. } => {
+                    assert_eq!(
+                        *rect,
+                        Rect {
+                            x: 10.0,
+                            y: 10.0,
+                            w: 100.0,
+                            h: 100.0
+                        },
+                        "rect moved by (10,10)"
+                    );
+                }
+                _ => panic!("expected Note payload"),
+            }
+        } else {
+            panic!("expected single selection after move");
+        }
+    }
+
+    #[test]
+    fn resize_annotation_via_se_handle_drag() {
+        let mut c = component_with_note();
+        // The note is at rect (0,0,100,100). First select it by clicking center.
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 50.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 50.0,
+        });
+        // Now the Se handle is at (100,100). Click on it (within 8px radius)
+        // and drag to (120,130) to resize.
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 100.0,
+            y: 100.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerMove { x: 120.0, y: 130.0 });
+        let outcome = c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 120.0,
+            y: 130.0,
+        });
+        assert!(outcome.needs_repaint);
+        // Se corner resize: anchor = Nw = (0,0), new rect = bbox((0,0),(120,130)).
+        if let AnnotationSelection::Single(id) = c.editor.selection() {
+            let ann = c.editor.document().annotations.find(id).unwrap();
+            match &ann.payload {
+                AnnotationPayload::Note { rect, .. } => {
+                    assert_eq!(
+                        *rect,
+                        Rect {
+                            x: 0.0,
+                            y: 0.0,
+                            w: 120.0,
+                            h: 130.0
+                        },
+                        "rect resized to (0,0,120,130)"
+                    );
+                }
+                _ => panic!("expected Note payload"),
+            }
+        }
+    }
+
+    #[test]
+    fn annotation_focus_and_interact_fire_on_select() {
+        let focus_fired = Arc::new(Mutex::new(false));
+        let interact_fired = Arc::new(Mutex::new(false));
+        let ff = focus_fired.clone();
+        let if_ = interact_fired.clone();
+        let mut c = component_with_note();
+        // component_with_note leaves the annotation selected (from setup).
+        // Clear selection so the first click is a "first select".
+        c.editor.clear_selection();
+        c.on_annotation_focus(move |_| {
+            *ff.lock().unwrap() = true;
+        });
+        c.on_annotation_interact(move |_| {
+            *if_.lock().unwrap() = true;
+        });
+        // Click center of the annotation to select it (first time -> focus + interact).
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 50.0,
+            modifiers: Modifiers::default(),
+        });
+        assert!(*focus_fired.lock().unwrap(), "focus fires on first select");
+        assert!(
+            *interact_fired.lock().unwrap(),
+            "interact fires on pointer down"
+        );
+        // Reset and click again -- already selected, so focus should NOT fire
+        // but interact SHOULD.
+        *focus_fired.lock().unwrap() = false;
+        *interact_fired.lock().unwrap() = false;
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 50.0,
+        });
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 50.0,
+            modifiers: Modifiers::default(),
+        });
+        assert!(
+            !*focus_fired.lock().unwrap(),
+            "focus does not fire on re-select"
+        );
+        assert!(
+            *interact_fired.lock().unwrap(),
+            "interact fires on every pointer down"
+        );
+    }
+
+    #[test]
+    fn click_without_drag_does_not_set_modified() {
+        let mut c = component_with_note();
+        // Click center of the annotation and release without moving.
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 50.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 50.0,
+        });
+        assert!(
+            !c.is_modified(),
+            "click without drag should not set modified"
+        );
     }
 }

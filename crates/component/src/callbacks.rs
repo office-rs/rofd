@@ -1,8 +1,9 @@
-use rofd_dom::OfdDocument;
+use rofd_dom::{AnnotationId, OfdDocument};
 use rofd_editor::{AnnotationSelection, TextCursor};
 
-// The 4 callback types. on_change passes &OfdDocument; on_selection_change passes
-// &AnnotationSelection; on_cursor_change passes Option<&TextCursor>; on_save_request passes ().
+// The 6 callback types. on_change passes &OfdDocument; on_selection_change passes
+// &AnnotationSelection; on_cursor_change passes Option<&TextCursor>; on_save_request passes ();
+// on_annotation_focus/on_annotation_interact pass &AnnotationId.
 //
 // Target-gated `Send`: the host (Phase 4b native) requires `Send` callbacks. On native
 // targets the aliases below add `+ Send`; on wasm they do not (wasm is single-threaded).
@@ -15,6 +16,10 @@ pub type OnSelectionChange = dyn Fn(&AnnotationSelection) + Send;
 pub type OnCursorChange = dyn Fn(Option<&TextCursor>) + Send;
 #[cfg(not(target_arch = "wasm32"))]
 pub type OnSaveRequest = dyn Fn() + Send;
+#[cfg(not(target_arch = "wasm32"))]
+pub type OnAnnotationFocus = dyn Fn(&AnnotationId) + Send;
+#[cfg(not(target_arch = "wasm32"))]
+pub type OnAnnotationInteract = dyn Fn(&AnnotationId) + Send;
 
 #[cfg(target_arch = "wasm32")]
 pub type OnChange = dyn Fn(&OfdDocument);
@@ -24,6 +29,10 @@ pub type OnSelectionChange = dyn Fn(&AnnotationSelection);
 pub type OnCursorChange = dyn Fn(Option<&TextCursor>);
 #[cfg(target_arch = "wasm32")]
 pub type OnSaveRequest = dyn Fn();
+#[cfg(target_arch = "wasm32")]
+pub type OnAnnotationFocus = dyn Fn(&AnnotationId);
+#[cfg(target_arch = "wasm32")]
+pub type OnAnnotationInteract = dyn Fn(&AnnotationId);
 
 #[derive(Default)]
 pub struct Callbacks {
@@ -31,6 +40,8 @@ pub struct Callbacks {
     pub on_selection_change: Option<Box<OnSelectionChange>>,
     pub on_cursor_change: Option<Box<OnCursorChange>>,
     pub on_save_request: Option<Box<OnSaveRequest>>,
+    pub on_annotation_focus: Option<Box<OnAnnotationFocus>>,
+    pub on_annotation_interact: Option<Box<OnAnnotationInteract>>,
 }
 
 #[cfg(test)]
