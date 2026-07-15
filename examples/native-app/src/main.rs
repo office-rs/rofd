@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use masonry_winit::app::{AppDriver, MasonryState, MasonryUserEvent};
 use rfd::FileDialog;
-use rofd_component::{ContextTarget, Tool};
+use rofd_component::{ContextTarget, Tool, ViewEvent};
 use rofd_dom::{AnnotationId, AnnotationKind, ShapeKind};
 use rofd_native_view::{EditorApp, WinitEventBridge};
 use winit::application::ApplicationHandler;
@@ -252,6 +252,21 @@ impl ApplicationHandler<MasonryUserEvent> for NativeApp {
                 self.bridge.set_scale_factor(*scale_factor);
             }
             _ => {}
+        }
+
+        // IME: winit delivers composition commits as WindowEvent::Ime(Commit).
+        // Only Commit is mapped (insert text at the text cursor); Preedit /
+        // Enabled / Disabled are ignored in v1 (no inline preedit rendering).
+        // Handled here rather than in bridge.translate because the commit text
+        // is an owned String extracted from the event.
+        if let WindowEvent::Ime(winit::event::Ime::Commit(text)) = &ev {
+            let view_event = ViewEvent::Ime { text: text.clone() };
+            let mut editor = self.editor.lock().unwrap();
+            let outcome = editor.handle_event(&view_event);
+            drop(editor);
+            if outcome.needs_repaint {
+                self.request_canvas_render();
+            }
         }
 
         // Route input to the editor (canvas-local coords). The bridge drops
