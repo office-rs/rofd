@@ -6,7 +6,7 @@ pub mod editor_component;
 pub mod event;
 pub mod render_target;
 
-pub use callbacks::Callbacks;
+pub use callbacks::{Callbacks, ContextTarget};
 pub use config::EditorConfig;
 pub use editor_component::EditorComponent;
 pub use event::{EventOutcome, Key, Modifiers, MouseButton, ViewEvent};

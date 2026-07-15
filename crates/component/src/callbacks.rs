@@ -1,9 +1,11 @@
 use rofd_dom::{AnnotationId, OfdDocument};
 use rofd_editor::{AnnotationSelection, TextCursor};
 
-// The 6 callback types. on_change passes &OfdDocument; on_selection_change passes
-// &AnnotationSelection; on_cursor_change passes Option<&TextCursor>; on_save_request passes ();
-// on_annotation_focus/on_annotation_interact pass &AnnotationId.
+// The 9 callback types. on_change passes &OfdDocument; on_selection_change
+// passes &AnnotationSelection; on_cursor_change passes Option<&TextCursor>;
+// on_save_request passes (); on_annotation_focus/on_annotation_interact pass
+// &AnnotationId; on_context_menu passes ((f64,f64), ContextTarget);
+// on_page_change passes usize; on_zoom_change passes f64.
 //
 // Target-gated `Send`: the host (Phase 4b native) requires `Send` callbacks. On native
 // targets the aliases below add `+ Send`; on wasm they do not (wasm is single-threaded).
@@ -20,6 +22,12 @@ pub type OnSaveRequest = dyn Fn() + Send;
 pub type OnAnnotationFocus = dyn Fn(&AnnotationId) + Send;
 #[cfg(not(target_arch = "wasm32"))]
 pub type OnAnnotationInteract = dyn Fn(&AnnotationId) + Send;
+#[cfg(not(target_arch = "wasm32"))]
+pub type OnContextMenu = dyn Fn((f64, f64), ContextTarget) + Send;
+#[cfg(not(target_arch = "wasm32"))]
+pub type OnPageChange = dyn Fn(usize) + Send;
+#[cfg(not(target_arch = "wasm32"))]
+pub type OnZoomChange = dyn Fn(f64) + Send;
 
 #[cfg(target_arch = "wasm32")]
 pub type OnChange = dyn Fn(&OfdDocument);
@@ -33,6 +41,31 @@ pub type OnSaveRequest = dyn Fn();
 pub type OnAnnotationFocus = dyn Fn(&AnnotationId);
 #[cfg(target_arch = "wasm32")]
 pub type OnAnnotationInteract = dyn Fn(&AnnotationId);
+#[cfg(target_arch = "wasm32")]
+pub type OnContextMenu = dyn Fn((f64, f64), ContextTarget);
+#[cfg(target_arch = "wasm32")]
+pub type OnPageChange = dyn Fn(usize);
+#[cfg(target_arch = "wasm32")]
+pub type OnZoomChange = dyn Fn(f64);
+
+/// What a right-click landed on, passed to `on_context_menu`. The host uses
+/// this to show a context menu tailored to the target (annotation actions vs.
+/// page actions vs. nothing).
+///
+/// This is a component-level type (not dom): it collapses render's
+/// `HitTarget` (Annotation/AnnotationText/Handle/Page/Empty) into the three
+/// categories a context menu cares about. `Handle` maps to `Annotation` (the
+/// user right-clicked on a selected annotation's resize grip -- still an
+/// annotation context).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ContextTarget {
+    /// Right-click hit an annotation (or its selection handle).
+    Annotation(AnnotationId),
+    /// Right-click hit a page body (no annotation under the cursor).
+    Page,
+    /// Right-click hit the desk background (no page under the cursor).
+    Empty,
+}
 
 #[derive(Default)]
 pub struct Callbacks {
@@ -42,6 +75,9 @@ pub struct Callbacks {
     pub on_save_request: Option<Box<OnSaveRequest>>,
     pub on_annotation_focus: Option<Box<OnAnnotationFocus>>,
     pub on_annotation_interact: Option<Box<OnAnnotationInteract>>,
+    pub on_context_menu: Option<Box<OnContextMenu>>,
+    pub on_page_change: Option<Box<OnPageChange>>,
+    pub on_zoom_change: Option<Box<OnZoomChange>>,
 }
 
 #[cfg(test)]

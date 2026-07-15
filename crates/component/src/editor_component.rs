@@ -7,7 +7,7 @@ use rofd_dom::{
 use rofd_editor::{Editor, TextCursor};
 use rofd_render::{DragPreview, FontStore, HandlePos, RenderEngine, Scene, Viewport, PX_PER_MM};
 
-use crate::callbacks::Callbacks;
+use crate::callbacks::{Callbacks, ContextTarget};
 use crate::config::EditorConfig;
 use crate::event::EventOutcome;
 use crate::render_target::RenderTarget;
@@ -98,6 +98,11 @@ pub struct EditorComponent {
     pub(crate) tool: Tool,
     /// In-progress pointer drag, if any. `None` when no drag is active.
     pub(crate) drag: Option<DragState>,
+    /// The index of the currently visible page (the page containing the
+    /// viewport's vertical center), or `None` if no page is visible / no
+    /// document loaded. Updated after Scroll/Resize; when it changes,
+    /// `on_page_change` fires. T4.
+    pub(crate) current_page: Option<usize>,
 }
 
 impl EditorComponent {
@@ -117,6 +122,7 @@ impl EditorComponent {
             modified: false,
             tool: Tool::Select,
             drag: None,
+            current_page: None,
         }
     }
 
@@ -368,6 +374,33 @@ impl EditorComponent {
                     needs_repaint: true,
                 }
             }
+            ViewEvent::PointerDown {
+                button: MouseButton::Right,
+                x,
+                y,
+                ..
+            } => {
+                // Right-click: hit-test to determine the context target and
+                // fire on_context_menu. Does NOT change selection -- the host
+                // shows a context menu (annotation actions vs page actions).
+                let target = rofd_render::hit_test(
+                    self.editor.document(),
+                    &self.viewport,
+                    self.editor.selection(),
+                    (*x, *y),
+                );
+                let ct = match target {
+                    rofd_render::HitTarget::Annotation(id)
+                    | rofd_render::HitTarget::AnnotationText(id, _)
+                    | rofd_render::HitTarget::Handle(id, _) => ContextTarget::Annotation(id),
+                    rofd_render::HitTarget::Page(_) => ContextTarget::Page,
+                    rofd_render::HitTarget::Empty => ContextTarget::Empty,
+                };
+                self.fire_context_menu((*x, *y), ct);
+                EventOutcome {
+                    needs_repaint: false,
+                }
+            }
             ViewEvent::PointerMove { x, y } => {
                 let p = (*x, *y);
                 match &mut self.drag {
@@ -504,18 +537,24 @@ impl EditorComponent {
             ViewEvent::Scroll { dx, dy } => {
                 self.viewport.scroll.0 += dx;
                 self.viewport.scroll.1 += dy;
+                self.maybe_fire_page_change();
                 EventOutcome {
                     needs_repaint: true,
                 }
             }
             ViewEvent::Zoom { factor } => {
                 self.viewport.zoom *= factor;
+                self.fire_zoom_change(self.viewport.zoom);
+                // Zoom can also shift which page is at the viewport center
+                // (page heights scale with zoom), so re-check page change.
+                self.maybe_fire_page_change();
                 EventOutcome {
                     needs_repaint: true,
                 }
             }
             ViewEvent::Resize { width, height } => {
                 self.viewport.size = (*width, *height);
+                self.maybe_fire_page_change();
                 EventOutcome {
                     needs_repaint: true,
                 }
@@ -712,6 +751,80 @@ impl EditorComponent {
         }
     }
 
+    // T4: context_menu / page_change / zoom_change fire helpers.
+
+    /// Fire `on_context_menu` with the right-click point and target. Called
+    /// from the right-click (PointerDown Right) handler.
+    fn fire_context_menu(&self, point: (f64, f64), target: ContextTarget) {
+        if let Some(cb) = &self.callbacks.on_context_menu {
+            cb(point, target);
+        }
+    }
+
+    /// Fire `on_page_change` with the new visible page index. Called from
+    /// `maybe_fire_page_change` when the current page actually changes.
+    fn fire_page_change(&self, idx: usize) {
+        if let Some(cb) = &self.callbacks.on_page_change {
+            cb(idx);
+        }
+    }
+
+    /// Fire `on_zoom_change` with the new zoom factor. Called from the Zoom
+    /// event handler after `self.viewport.zoom` is updated.
+    fn fire_zoom_change(&self, zoom: f64) {
+        if let Some(cb) = &self.callbacks.on_zoom_change {
+            cb(zoom);
+        }
+    }
+
+    /// Recompute the current visible page (the page whose viewport rect
+    /// contains the viewport's vertical center) and, if it differs from
+    /// `self.current_page`, update the field and fire `on_page_change`.
+    ///
+    /// The page-stacking geometry mirrors `composite.rs` / `hit_test`:
+    /// Y starts at `page_gap - scroll.1` and advances by `page_h + page_gap`
+    /// per page. The viewport center Y is `size.1 / 2`.
+    fn maybe_fire_page_change(&mut self) {
+        let new_page = self.visible_page_index();
+        if new_page != self.current_page {
+            self.current_page = new_page;
+            if let Some(idx) = new_page {
+                self.fire_page_change(idx);
+            }
+        }
+    }
+
+    /// Compute the index of the page whose viewport rect contains the
+    /// viewport's vertical center. Returns `None` if the document has no
+    /// pages or no page spans the center line.
+    fn visible_page_index(&self) -> Option<usize> {
+        let doc = self.editor.document();
+        if doc.pages.is_empty() {
+            return None;
+        }
+        let center_y = self.viewport.size.1 / 2.0;
+        let mut y = self.viewport.page_gap - self.viewport.scroll.1;
+        for (i, page) in doc.pages.iter().enumerate() {
+            let page_h = page.physical_box.h * self.viewport.zoom;
+            if center_y >= y && center_y < y + page_h {
+                return Some(i);
+            }
+            y += page_h + self.viewport.page_gap;
+        }
+        // Center is in a gap or past the last page: fall back to the last page
+        // whose top is above the center (the most-recently-scrolled-past page).
+        let mut y = self.viewport.page_gap - self.viewport.scroll.1;
+        let mut last_above: Option<usize> = None;
+        for (i, page) in doc.pages.iter().enumerate() {
+            let page_h = page.physical_box.h * self.viewport.zoom;
+            if y <= center_y {
+                last_above = Some(i);
+            }
+            y += page_h + self.viewport.page_gap;
+        }
+        last_above
+    }
+
     // Callback setters. Each emits two cfg-gated copies: `+ Send` on native
     // (the host in Phase 4b stores callbacks across threads) and plain on wasm
     // (single-threaded). This mirrors the `Send`-gating in `callbacks.rs`.
@@ -770,6 +883,33 @@ impl EditorComponent {
     #[cfg(target_arch = "wasm32")]
     pub fn on_annotation_interact(&mut self, cb: impl Fn(&rofd_dom::AnnotationId) + 'static) {
         self.callbacks.on_annotation_interact = Some(Box::new(cb));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn on_context_menu(&mut self, cb: impl Fn((f64, f64), ContextTarget) + 'static + Send) {
+        self.callbacks.on_context_menu = Some(Box::new(cb));
+    }
+    #[cfg(target_arch = "wasm32")]
+    pub fn on_context_menu(&mut self, cb: impl Fn((f64, f64), ContextTarget) + 'static) {
+        self.callbacks.on_context_menu = Some(Box::new(cb));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn on_page_change(&mut self, cb: impl Fn(usize) + 'static + Send) {
+        self.callbacks.on_page_change = Some(Box::new(cb));
+    }
+    #[cfg(target_arch = "wasm32")]
+    pub fn on_page_change(&mut self, cb: impl Fn(usize) + 'static) {
+        self.callbacks.on_page_change = Some(Box::new(cb));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn on_zoom_change(&mut self, cb: impl Fn(f64) + 'static + Send) {
+        self.callbacks.on_zoom_change = Some(Box::new(cb));
+    }
+    #[cfg(target_arch = "wasm32")]
+    pub fn on_zoom_change(&mut self, cb: impl Fn(f64) + 'static) {
+        self.callbacks.on_zoom_change = Some(Box::new(cb));
     }
 }
 
@@ -1765,6 +1905,149 @@ mod tests {
         assert!(
             !c.is_modified(),
             "click without drag should not set modified"
+        );
+    }
+
+    // --- T4: context_menu / page_change / zoom_change callbacks ---
+
+    #[test]
+    fn right_click_fires_context_menu() {
+        let fired = Arc::new(Mutex::new(None));
+        let f = fired.clone();
+        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        c.on_context_menu(move |point, target| {
+            *f.lock().unwrap() = Some((point, format!("{target:?}")));
+        });
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Right,
+            x: 10.0,
+            y: 20.0,
+            modifiers: Modifiers::default(),
+        });
+        assert!(fired.lock().unwrap().is_some(), "context_menu fired");
+    }
+
+    #[test]
+    fn right_click_on_annotation_fires_annotation_target() {
+        let fired = Arc::new(Mutex::new(None));
+        let f = fired.clone();
+        let mut c = component_with_note();
+        c.on_context_menu(move |_point, target| {
+            *f.lock().unwrap() = Some(format!("{target:?}"));
+        });
+        // Click center of the note annotation (rect 0,0,100,100 at zoom=1).
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Right,
+            x: 50.0,
+            y: 50.0,
+            modifiers: Modifiers::default(),
+        });
+        let got = fired.lock().unwrap().clone().expect("context_menu fired");
+        assert!(
+            got.starts_with("Annotation("),
+            "expected ContextTarget::Annotation, got {got}"
+        );
+    }
+
+    #[test]
+    fn right_click_does_not_change_selection() {
+        let mut c = component_with_note();
+        // Ensure nothing is selected first (component_with_note leaves it
+        // selected from setup; clear to make the assertion clear).
+        c.editor.clear_selection();
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Right,
+            x: 50.0,
+            y: 50.0,
+            modifiers: Modifiers::default(),
+        });
+        assert!(
+            matches!(c.editor.selection(), AnnotationSelection::None),
+            "right-click must not change selection"
+        );
+    }
+
+    /// Build a component with two stacked pages so scrolling can move the
+    /// visible page from page 0 to page 1. Page physical_box 200x200 mm,
+    /// zoom=1, page_gap=0, viewport size 200x200 (exactly one page tall).
+    fn component_with_two_pages() -> EditorComponent {
+        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        c.set_clock("t".into(), 1);
+        let mut doc = OfdDocument::default();
+        for id in ["P0", "P1"] {
+            doc.pages.push(Page {
+                id: PageId::new(id),
+                physical_box: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 200.0,
+                    h: 200.0,
+                },
+                layers: vec![Layer::default()],
+                template: None,
+            });
+        }
+        c.load_document(doc);
+        c.viewport = rofd_render::Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (200.0, 200.0),
+            page_gap: 0.0,
+        };
+        c
+    }
+
+    #[test]
+    fn scroll_fires_page_change() {
+        let fired = Arc::new(Mutex::new(None));
+        let f = fired.clone();
+        let mut c = component_with_two_pages();
+        c.on_page_change(move |idx| {
+            *f.lock().unwrap() = Some(idx);
+        });
+        // Scroll down by 200px (one full page height) -> page 1 becomes visible.
+        c.handle_event(&ViewEvent::Scroll { dx: 0.0, dy: 200.0 });
+        assert_eq!(
+            *fired.lock().unwrap(),
+            Some(1),
+            "page_change fired with idx=1"
+        );
+    }
+
+    #[test]
+    fn page_change_does_not_fire_when_page_unchanged() {
+        let fired = Arc::new(Mutex::new(0));
+        let f = fired.clone();
+        let mut c = component_with_two_pages();
+        c.on_page_change(move |_idx| {
+            *f.lock().unwrap() += 1;
+        });
+        // Prime current_page to match the viewport (in real usage a Resize
+        // event establishes this before any Scroll). The test sets viewport
+        // directly, so also set current_page directly.
+        c.current_page = Some(0);
+        // Tiny scroll that stays on page 0 (viewport center still within page 0).
+        c.handle_event(&ViewEvent::Scroll { dx: 0.0, dy: 10.0 });
+        assert_eq!(
+            *fired.lock().unwrap(),
+            0,
+            "no page_change when page unchanged"
+        );
+    }
+
+    #[test]
+    fn zoom_fires_zoom_change() {
+        let fired = Arc::new(Mutex::new(None));
+        let f = fired.clone();
+        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        c.on_zoom_change(move |z| {
+            *f.lock().unwrap() = Some(z);
+        });
+        c.handle_event(&ViewEvent::Zoom { factor: 2.0 });
+        assert_eq!(
+            *fired.lock().unwrap(),
+            Some(rofd_render::PX_PER_MM * 2.0),
+            "zoom_change fired with new zoom value"
         );
     }
 }
