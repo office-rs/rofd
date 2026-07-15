@@ -269,7 +269,7 @@ impl EditorComponent {
     }
 
     pub fn handle_event(&mut self, event: &crate::event::ViewEvent) -> EventOutcome {
-        use crate::event::{MouseButton, ViewEvent};
+        use crate::event::{MouseButton, ScrollDirection, ViewEvent};
         match event {
             ViewEvent::PointerDown {
                 button: MouseButton::Left,
@@ -591,6 +591,60 @@ impl EditorComponent {
                 self.maybe_fire_page_change();
                 EventOutcome {
                     needs_repaint: true,
+                }
+            }
+            ViewEvent::ScrollPage { direction } => {
+                let page_h = self
+                    .editor
+                    .document()
+                    .pages
+                    .first()
+                    .map(|p| p.physical_box.h * self.viewport.zoom)
+                    .unwrap_or(0.0);
+                let delta = page_h + self.viewport.page_gap;
+                self.viewport.scroll.1 += match direction {
+                    ScrollDirection::Down => delta,
+                    ScrollDirection::Up => -delta,
+                };
+                self.maybe_fire_page_change();
+                EventOutcome {
+                    needs_repaint: true,
+                }
+            }
+            ViewEvent::ZoomAt { factor, center } => {
+                let old_zoom = self.viewport.zoom;
+                self.viewport.zoom *= factor;
+                // Adjust scroll so the `center` viewport point maps to the
+                // same document position before and after zoom. Derivation:
+                // doc_pos = (viewport_pt - scroll) / old_zoom; after zoom,
+                // viewport_pt = doc_pos * new_zoom + new_scroll. Solving for
+                // new_scroll: new_scroll = center - (center - old_scroll) *
+                // (new_zoom / old_zoom).
+                let ratio = self.viewport.zoom / old_zoom;
+                self.viewport.scroll.0 = center.0 - (center.0 - self.viewport.scroll.0) * ratio;
+                self.viewport.scroll.1 = center.1 - (center.1 - self.viewport.scroll.1) * ratio;
+                if (self.viewport.zoom - old_zoom).abs() > f64::EPSILON {
+                    self.fire_zoom_change(self.viewport.zoom);
+                }
+                self.maybe_fire_page_change();
+                EventOutcome {
+                    needs_repaint: true,
+                }
+            }
+            ViewEvent::Ime { text } => {
+                if let Some(cursor) = self.editor.text_cursor().cloned() {
+                    let new_off = cursor.offset + text.chars().count();
+                    self.editor
+                        .insert_text(&cursor.annotation, cursor.offset, text);
+                    self.editor.set_cursor(cursor.annotation.clone(), new_off);
+                    self.after_annotation_change();
+                    self.fire_cursor_change();
+                    return EventOutcome {
+                        needs_repaint: true,
+                    };
+                }
+                EventOutcome {
+                    needs_repaint: false,
                 }
             }
             ViewEvent::KeyDown { key, modifiers } => self.handle_key(key, modifiers),
@@ -1383,7 +1437,7 @@ mod tests {
         assert_eq!(rt.drawn, 1);
     }
 
-    use crate::event::{Key, Modifiers, MouseButton, ViewEvent};
+    use crate::event::{Key, Modifiers, MouseButton, ScrollDirection, ViewEvent};
     use rofd_dom::{
         AnnotationKind, AnnotationPayload, AnnotationSelection, Color, Layer, NoteIcon,
         OfdDocument, Page, PageId, Rect, ShapeKind,
@@ -2232,6 +2286,109 @@ mod tests {
             *fired.lock().unwrap(),
             Some(rofd_render::PX_PER_MM * 2.0),
             "zoom_change fired with new zoom value"
+        );
+    }
+
+    // --- C4 Task 2: ScrollPage / ZoomAt / Ime ---
+
+    #[test]
+    fn scroll_page_moves_by_page_height() {
+        let mut c = component_with_note();
+        c.viewport.size = (800.0, 600.0);
+        let page_h = c.editor.document().pages[0].physical_box.h * c.viewport.zoom;
+        let outcome = c.handle_event(&ViewEvent::ScrollPage {
+            direction: ScrollDirection::Down,
+        });
+        assert!(outcome.needs_repaint);
+        assert!(
+            (c.viewport.scroll.1 - page_h - c.viewport.page_gap).abs() < 0.01,
+            "scrolled down one page"
+        );
+    }
+
+    #[test]
+    fn scroll_page_up_moves_negative() {
+        let mut c = component_with_note();
+        c.viewport.size = (800.0, 600.0);
+        // Start with some downward scroll so Up has a visible effect.
+        c.viewport.scroll.1 = 500.0;
+        let page_h = c.editor.document().pages[0].physical_box.h * c.viewport.zoom;
+        let outcome = c.handle_event(&ViewEvent::ScrollPage {
+            direction: ScrollDirection::Up,
+        });
+        assert!(outcome.needs_repaint);
+        assert!(
+            (c.viewport.scroll.1 - (500.0 - page_h - c.viewport.page_gap)).abs() < 0.01,
+            "scrolled up one page from 500"
+        );
+    }
+
+    #[test]
+    fn zoom_at_keeps_center_point_stable() {
+        let mut c = component_with_note();
+        c.viewport.zoom = 1.0;
+        c.viewport.scroll = (100.0, 100.0);
+        let center = (400.0, 300.0);
+        let outcome = c.handle_event(&ViewEvent::ZoomAt {
+            factor: 2.0,
+            center,
+        });
+        assert!(outcome.needs_repaint);
+        // zoom doubled
+        assert!((c.viewport.zoom - 2.0).abs() < 0.01);
+        // center point should map to the same document position:
+        // new_scroll = center - (center - old_scroll) * (new_zoom / old_zoom)
+        let ratio = 2.0 / 1.0;
+        let expected_x = center.0 - (center.0 - 100.0) * ratio;
+        let expected_y = center.1 - (center.1 - 100.0) * ratio;
+        assert!(
+            (c.viewport.scroll.0 - expected_x).abs() < 0.01,
+            "scroll.x adjusted for center anchor"
+        );
+        assert!(
+            (c.viewport.scroll.1 - expected_y).abs() < 0.01,
+            "scroll.y adjusted for center anchor"
+        );
+    }
+
+    #[test]
+    fn ime_inserts_text_at_cursor() {
+        let mut c = component_with_note();
+        // Select the note (set cursor at offset 2, end of "hi").
+        let id = match c.editor.selection().clone() {
+            rofd_editor::AnnotationSelection::Single(id) => id,
+            _ => panic!("expected single selection from component_with_note"),
+        };
+        c.editor.set_cursor(id.clone(), 2);
+        let outcome = c.handle_event(&ViewEvent::Ime {
+            text: "你好".into(),
+        });
+        assert!(outcome.needs_repaint);
+        let ann = c.editor.document().annotations.find(&id).unwrap();
+        match &ann.payload {
+            rofd_dom::AnnotationPayload::Note { content, .. } => {
+                assert!(
+                    content == "hi你好",
+                    "note content should be 'hi你好', got '{content}'"
+                );
+            }
+            _ => panic!("expected Note payload"),
+        }
+        // Cursor should have advanced by the char count of the inserted text.
+        let cursor = c.editor.text_cursor().expect("cursor still set");
+        assert_eq!(cursor.offset, 4, "cursor advanced by 2 chars (4 = 2 + 2)");
+    }
+
+    #[test]
+    fn ime_without_cursor_does_nothing() {
+        let mut c = component_with_note();
+        c.editor.clear_cursor();
+        let outcome = c.handle_event(&ViewEvent::Ime {
+            text: "你好".into(),
+        });
+        assert!(
+            !outcome.needs_repaint,
+            "Ime without cursor should not need repaint"
         );
     }
 
