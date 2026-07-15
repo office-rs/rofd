@@ -2050,4 +2050,292 @@ mod tests {
             "zoom_change fired with new zoom value"
         );
     }
+
+    // --- C3 Task 7: end-to-end integration smoke test ---
+
+    /// Build a component with one page (P0, 200x200 at origin) and a viewport
+    /// where viewport coords == page-local coords (zoom=1, no scroll/gap, size
+    /// 0 so page origin is (0,0)). No annotation yet -- the smoke test creates
+    /// one via drag. (Mirrors `component_with_note`'s viewport setup.)
+    fn component_with_page() -> EditorComponent {
+        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        c.set_clock("tester".into(), 1_700_000_000_000);
+        let mut doc = OfdDocument::default();
+        doc.pages.push(Page {
+            id: PageId::new("P0"),
+            physical_box: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 200.0,
+            },
+            layers: vec![Layer::default()],
+            template: None,
+        });
+        c.load_document(doc);
+        c.viewport = rofd_render::Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (0.0, 0.0),
+            page_gap: 0.0,
+        };
+        c
+    }
+
+    /// C3 smoke test: chain every interactive annotation operation in one flow.
+    ///
+    /// create (drag) -> select -> move (drag) -> resize (handle drag) ->
+    /// delete (Delete key) -> undo (Ctrl+Z). Each step asserts the annotation's
+    /// existence and geometry, proving the Tool/DragState state machine,
+    /// hit_test handle routing, preview-based drag commit, and history all
+    /// compose correctly end-to-end.
+    #[test]
+    fn c3_smoke_create_select_move_resize_delete_undo() {
+        let mut c = component_with_page();
+
+        // --- Step 1: CREATE via drag (set_tool Create + PointerDown/Move/Up).
+        // Drag from (20,20) to (80,80) -> bbox = (20,20,60,60). ---
+        c.set_tool(Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)));
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 20.0,
+            y: 20.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerMove { x: 80.0, y: 80.0 });
+        let create_outcome = c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 80.0,
+            y: 80.0,
+        });
+        assert!(create_outcome.needs_repaint, "create needs repaint");
+        assert!(
+            matches!(c.tool, Tool::Select),
+            "tool reverts to Select after create"
+        );
+        let id = match c.editor.selection() {
+            AnnotationSelection::Single(id) => id.clone(),
+            _ => panic!("expected single selection after create"),
+        };
+        let ann = c
+            .editor
+            .document()
+            .annotations
+            .find(&id)
+            .expect("annotation exists after create");
+        match &ann.payload {
+            AnnotationPayload::Shape { rect, .. } => {
+                assert_eq!(
+                    *rect,
+                    Rect {
+                        x: 20.0,
+                        y: 20.0,
+                        w: 60.0,
+                        h: 60.0
+                    },
+                    "created rect = bbox((20,20),(80,80))"
+                );
+            }
+            _ => panic!("expected Shape payload"),
+        }
+
+        // --- Step 2: SELECT (deselect then re-select via PointerDown on body).
+        // Click empty page at (150,150) to deselect, then click body at (50,50). ---
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 150.0,
+            y: 150.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 150.0,
+            y: 150.0,
+        });
+        assert!(
+            matches!(c.editor.selection(), AnnotationSelection::None),
+            "deselected after clicking empty area"
+        );
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 50.0,
+            modifiers: Modifiers::default(),
+        });
+        assert!(
+            matches!(c.editor.selection(), AnnotationSelection::Single(_)),
+            "re-selected by clicking annotation body"
+        );
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 50.0,
+        });
+
+        // --- Step 3: MOVE via drag (PointerDown on body + Move + Up).
+        // Click center (50,50), drag to (60,60) -> dx=10, dy=10.
+        // Expected rect: (30,30,60,60). ---
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 50.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerMove { x: 60.0, y: 60.0 });
+        let move_outcome = c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 60.0,
+            y: 60.0,
+        });
+        assert!(move_outcome.needs_repaint, "move needs repaint");
+        let ann = c
+            .editor
+            .document()
+            .annotations
+            .find(&id)
+            .expect("annotation still exists after move");
+        match &ann.payload {
+            AnnotationPayload::Shape { rect, .. } => {
+                assert_eq!(
+                    *rect,
+                    Rect {
+                        x: 30.0,
+                        y: 30.0,
+                        w: 60.0,
+                        h: 60.0
+                    },
+                    "rect moved by (10,10) -> (30,30,60,60)"
+                );
+            }
+            _ => panic!("expected Shape payload"),
+        }
+
+        // --- Step 4: RESIZE via Se handle drag.
+        // After move, rect is (30,30,60,60); Se handle at (90,90).
+        // Drag to (100,100) -> new rect = bbox(Nw(30,30),(100,100))
+        //                              = (30,30,70,70). ---
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 90.0,
+            y: 90.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerMove { x: 100.0, y: 100.0 });
+        let resize_outcome = c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 100.0,
+            y: 100.0,
+        });
+        assert!(resize_outcome.needs_repaint, "resize needs repaint");
+        let ann = c
+            .editor
+            .document()
+            .annotations
+            .find(&id)
+            .expect("annotation still exists after resize");
+        match &ann.payload {
+            AnnotationPayload::Shape { rect, .. } => {
+                assert_eq!(
+                    *rect,
+                    Rect {
+                        x: 30.0,
+                        y: 30.0,
+                        w: 70.0,
+                        h: 70.0
+                    },
+                    "rect resized via Se handle -> (30,30,70,70)"
+                );
+            }
+            _ => panic!("expected Shape payload"),
+        }
+
+        // --- Step 5: DELETE via Delete key (selection is still the annotation). ---
+        assert!(
+            matches!(c.editor.selection(), AnnotationSelection::Single(_)),
+            "annotation selected before delete"
+        );
+        let delete_outcome = c.handle_event(&ViewEvent::KeyDown {
+            key: Key::Delete,
+            modifiers: Modifiers::default(),
+        });
+        assert!(delete_outcome.needs_repaint, "delete needs repaint");
+        assert!(
+            c.editor.document().annotations.find(&id).is_none(),
+            "annotation gone after delete"
+        );
+        assert!(
+            matches!(c.editor.selection(), AnnotationSelection::None),
+            "selection cleared after delete"
+        );
+
+        // --- Step 6: UNDO via Ctrl+Z -> annotation restored. ---
+        let undo_outcome = c.handle_event(&ViewEvent::KeyDown {
+            key: Key::Char('z'),
+            modifiers: Modifiers {
+                control: true,
+                ..Default::default()
+            },
+        });
+        assert!(undo_outcome.needs_repaint, "undo needs repaint");
+        let ann = c
+            .editor
+            .document()
+            .annotations
+            .find(&id)
+            .expect("annotation restored after undo of delete");
+        match &ann.payload {
+            AnnotationPayload::Shape { rect, .. } => {
+                assert_eq!(
+                    *rect,
+                    Rect {
+                        x: 30.0,
+                        y: 30.0,
+                        w: 70.0,
+                        h: 70.0
+                    },
+                    "undo restores the annotation with its pre-delete rect"
+                );
+            }
+            _ => panic!("expected Shape payload"),
+        }
+    }
+
+    /// After the full smoke flow (create + delete + undo), rendering must not
+    /// panic and must produce exactly one scene (no stale drag state, no crash
+    /// on the restored annotation).
+    #[test]
+    fn c3_smoke_render_after_full_flow() {
+        let mut c = component_with_page();
+        c.set_tool(Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)));
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 20.0,
+            y: 20.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerMove { x: 80.0, y: 80.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 80.0,
+            y: 80.0,
+        });
+        c.handle_event(&ViewEvent::KeyDown {
+            key: Key::Delete,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::KeyDown {
+            key: Key::Char('z'),
+            modifiers: Modifiers {
+                control: true,
+                ..Default::default()
+            },
+        });
+        let mut rt = MockRenderTarget {
+            drawn: 0,
+            w: 200.0,
+            h: 200.0,
+        };
+        c.render(&mut rt);
+        assert_eq!(rt.drawn, 1, "render drew exactly one scene");
+    }
 }
