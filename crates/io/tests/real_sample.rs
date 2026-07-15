@@ -20,12 +20,12 @@ fn real_sample_parses_and_surgically_saves() {
 
     let report = rofd_io::parse_ofd(&bytes).expect("parse_ofd succeeds on real sample");
 
-    // 4 annotations on PageID "1": Underline, Strikeout, Squiggly (->Highlight), Rectangle.
+    // 4 annotations on PageID "1": Underline, Strikeout, Squiggly, Rectangle.
     let anns = report.document.annotations.for_page(&PageId::new("1"));
     assert_eq!(
         anns.len(),
         4,
-        "4 annots (Underline/Strikeout/Squiggly->Highlight/Rectangle)"
+        "4 annots (Underline/Strikeout/Squiggly/Rectangle)"
     );
     assert!(
         anns.iter()
@@ -39,8 +39,8 @@ fn real_sample_parses_and_surgically_saves() {
     );
     assert!(
         anns.iter()
-            .any(|a| matches!(a.kind, AnnotationKind::Highlight)),
-        "Highlight present (Squiggly degrades to Highlight)"
+            .any(|a| matches!(a.kind, AnnotationKind::Squiggly)),
+        "Squiggly present (parsed natively, not degraded to Highlight)"
     );
     assert!(
         anns.iter()
