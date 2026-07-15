@@ -73,9 +73,10 @@ mod wasm_impl {
     use std::rc::Rc;
 
     use rofd_component::{
-        ContextTarget, EditorComponent, EditorConfig, Modifiers, MouseButton, ViewEvent,
+        ContextTarget, EditorComponent, EditorConfig, Modifiers, MouseButton, ScrollDirection,
+        ViewEvent,
     };
-    use rofd_dom::{AnnotationId, AnnotationSelection, OfdDocument};
+    use rofd_dom::{AnnotationId, AnnotationSelection, OfdDocument, OfdWarning};
     use rofd_editor::TextCursor;
     use rofd_io::{parse_ofd, save_ofd, write_ofd, PackageHandle};
     use wasm_bindgen::prelude::*;
@@ -94,6 +95,11 @@ mod wasm_impl {
         pub on_cursor_change: Rc<RefCell<Option<js_sys::Function>>>,
         pub on_save_request: Rc<RefCell<Option<js_sys::Function>>>,
         pub on_context_menu: Rc<RefCell<Option<js_sys::Function>>>,
+        pub on_warning: Rc<RefCell<Option<js_sys::Function>>>,
+        pub on_annotation_focus: Rc<RefCell<Option<js_sys::Function>>>,
+        pub on_annotation_interact: Rc<RefCell<Option<js_sys::Function>>>,
+        pub on_page_change: Rc<RefCell<Option<js_sys::Function>>>,
+        pub on_zoom_change: Rc<RefCell<Option<js_sys::Function>>>,
     }
 
     /// wasm-bindgen editor surface for the web.
@@ -166,6 +172,48 @@ mod wasm_impl {
         #[wasm_bindgen(js_name = setOnContextMenu)]
         pub fn set_on_context_menu(&mut self, callback: Option<js_sys::Function>) {
             *self.callbacks.on_context_menu.borrow_mut() = callback;
+        }
+
+        /// Register the degraded-load warning callback. JS receives an array
+        /// of warning strings (one per `OfdWarning`, human-readable). Fired by
+        /// `loadOfd` after `parse_ofd` returns non-fatal warnings
+        /// (AGENTS.md §4.6: degraded input surfaces via callback, not Result).
+        #[wasm_bindgen(js_name = setOnWarning)]
+        pub fn set_on_warning(&mut self, callback: Option<js_sys::Function>) {
+            *self.callbacks.on_warning.borrow_mut() = callback;
+        }
+
+        /// Register the annotation-focus callback. JS receives the annotation
+        /// id string. Fired when an annotation gains editing focus (e.g. a
+        /// FreeText annotation is double-clicked to enter text-edit mode).
+        #[wasm_bindgen(js_name = setOnAnnotationFocus)]
+        pub fn set_on_annotation_focus(&mut self, callback: Option<js_sys::Function>) {
+            *self.callbacks.on_annotation_focus.borrow_mut() = callback;
+        }
+
+        /// Register the annotation-interact callback. JS receives the
+        /// annotation id string. Fired on a single-click interaction with an
+        /// annotation (e.g. selecting a highlight).
+        #[wasm_bindgen(js_name = setOnAnnotationInteract)]
+        pub fn set_on_annotation_interact(&mut self, callback: Option<js_sys::Function>) {
+            *self.callbacks.on_annotation_interact.borrow_mut() = callback;
+        }
+
+        /// Register the page-change callback. JS receives the 0-based page
+        /// index. Fired when the page at the viewport's vertical center
+        /// changes (scrolling or zooming past a page boundary).
+        #[wasm_bindgen(js_name = setOnPageChange)]
+        pub fn set_on_page_change(&mut self, callback: Option<js_sys::Function>) {
+            *self.callbacks.on_page_change.borrow_mut() = callback;
+        }
+
+        /// Register the zoom-change callback. JS receives the new zoom factor
+        /// (1.0 = 100%). Fired when the viewport zoom changes (Zoom/ZoomAt
+        /// events), but only when the zoom actually differs (guard against
+        /// no-op zooms).
+        #[wasm_bindgen(js_name = setOnZoomChange)]
+        pub fn set_on_zoom_change(&mut self, callback: Option<js_sys::Function>) {
+            *self.callbacks.on_zoom_change.borrow_mut() = callback;
         }
 
         // ─── Event Handlers ─────────────────────────────────────────────────
@@ -263,6 +311,37 @@ mod wasm_impl {
         #[wasm_bindgen(js_name = handleZoom)]
         pub fn handle_zoom(&mut self, factor: f64) -> Result<(), JsValue> {
             self.component.handle_event(&ViewEvent::Zoom { factor });
+            Ok(())
+        }
+
+        /// Scroll by one page height. `direction` is `"up"` or `"down"`
+        /// (case-insensitive); any other value falls back to `"down"` (safe
+        /// default that scrolls toward the end of the document). Maps to
+        /// `ViewEvent::ScrollPage`, which moves the viewport by
+        /// `page_h * zoom + page_gap` and fires `on_page_change` if the
+        /// visible page changed. Intended for PageUp/PageDown keys.
+        #[wasm_bindgen(js_name = handleScrollPage)]
+        pub fn handle_scroll_page(&mut self, direction: &str) -> Result<(), JsValue> {
+            let dir = match direction.to_ascii_lowercase().as_str() {
+                "up" => ScrollDirection::Up,
+                _ => ScrollDirection::Down,
+            };
+            self.component
+                .handle_event(&ViewEvent::ScrollPage { direction: dir });
+            Ok(())
+        }
+
+        /// Zoom by `factor` while keeping the `(cx, cy)` viewport point
+        /// anchored to the same document position. `cx`/`cy` are in device
+        /// pixels (same coordinate space as mouse events). Maps to
+        /// `ViewEvent::ZoomAt`, which adjusts the scroll so the content under
+        /// the cursor stays put. Intended for Ctrl+wheel zoom (cursor = center).
+        #[wasm_bindgen(js_name = handleZoomAt)]
+        pub fn handle_zoom_at(&mut self, factor: f64, cx: f64, cy: f64) -> Result<(), JsValue> {
+            self.component.handle_event(&ViewEvent::ZoomAt {
+                factor,
+                center: (cx, cy),
+            });
             Ok(())
         }
 
@@ -436,6 +515,36 @@ mod wasm_impl {
                     call_js3(&on_context_menu_js, point.0, point.1, id_str);
                 },
             ));
+
+            let on_warning_js = self.callbacks.on_warning.clone();
+            self.component
+                .on_warning(Box::new(move |warnings: &[OfdWarning]| {
+                    let msgs: Vec<String> = warnings.iter().map(warning_to_string).collect();
+                    call_js1_str_array(&on_warning_js, &msgs);
+                }));
+
+            let on_annotation_focus_js = self.callbacks.on_annotation_focus.clone();
+            self.component
+                .on_annotation_focus(Box::new(move |id: &AnnotationId| {
+                    call_js1_str(&on_annotation_focus_js, &id.0);
+                }));
+
+            let on_annotation_interact_js = self.callbacks.on_annotation_interact.clone();
+            self.component
+                .on_annotation_interact(Box::new(move |id: &AnnotationId| {
+                    call_js1_str(&on_annotation_interact_js, &id.0);
+                }));
+
+            let on_page_change_js = self.callbacks.on_page_change.clone();
+            self.component
+                .on_page_change(Box::new(move |page_idx: usize| {
+                    call_js1_f64(&on_page_change_js, page_idx as f64);
+                }));
+
+            let on_zoom_change_js = self.callbacks.on_zoom_change.clone();
+            self.component.on_zoom_change(Box::new(move |zoom: f64| {
+                call_js1_f64(&on_zoom_change_js, zoom);
+            }));
         }
     }
 
@@ -461,6 +570,58 @@ mod wasm_impl {
                 &JsValue::from_f64(y),
                 &id_val,
             );
+        }
+    }
+
+    /// Invoke a JS callback slot with a single string argument. No-op if the
+    /// slot is empty. Used by `on_annotation_focus` / `on_annotation_interact`
+    /// (annotation id string).
+    fn call_js1_str(slot: &Rc<RefCell<Option<js_sys::Function>>>, s: &str) {
+        if let Some(ref js_fn) = *slot.borrow() {
+            let _ = js_fn.call1(&JsValue::null(), &JsValue::from_str(s));
+        }
+    }
+
+    /// Invoke a JS callback slot with a single f64 argument. No-op if the
+    /// slot is empty. Used by `on_page_change` (page index) and `on_zoom_change`
+    /// (zoom factor). Page indices are passed as f64 because wasm-bindgen has
+    /// no direct `usize` -> JS mapping; JS receives an integer-valued number.
+    fn call_js1_f64(slot: &Rc<RefCell<Option<js_sys::Function>>>, val: f64) {
+        if let Some(ref js_fn) = *slot.borrow() {
+            let _ = js_fn.call1(&JsValue::null(), &JsValue::from_f64(val));
+        }
+    }
+
+    /// Invoke a JS callback slot with a single array-of-strings argument. No-op
+    /// if the slot is empty. Used by `on_warning` (array of human-readable
+    /// warning messages).
+    fn call_js1_str_array(slot: &Rc<RefCell<Option<js_sys::Function>>>, msgs: &[String]) {
+        if let Some(ref js_fn) = *slot.borrow() {
+            let arr = js_sys::Array::new();
+            for m in msgs {
+                arr.push(&JsValue::from_str(m));
+            }
+            let _ = js_fn.call1(&JsValue::null(), &arr);
+        }
+    }
+
+    /// Format an [`OfdWarning`] as a human-readable string for JS consumption.
+    /// `OfdWarning` has no `Display` impl, so we format each variant explicitly
+    /// (the `Debug` derive is too Rust-y for a JS-facing message).
+    fn warning_to_string(w: &OfdWarning) -> String {
+        match w {
+            OfdWarning::MissingFeature { feature, entry } => {
+                format!("missing feature '{feature}' in {entry} (skipped)")
+            }
+            OfdWarning::SkippedObject { page, reason } => {
+                format!("skipped object on page {}: {reason}", page.0)
+            }
+            OfdWarning::FontSubstituted { requested, used } => {
+                format!("font '{requested}' not found; substituted with '{used}'")
+            }
+            OfdWarning::ResourceNotFound { kind, id } => {
+                format!("missing {kind} resource: {id}")
+            }
         }
     }
 
