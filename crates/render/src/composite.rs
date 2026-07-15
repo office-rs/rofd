@@ -66,6 +66,26 @@ pub fn page_origin(doc: &OfdDocument, vp: &Viewport, page_idx: usize) -> Option<
     Some((page_x, y))
 }
 
+/// Compute all page origins in one pass (O(n)).
+///
+/// Equivalent to calling [`page_origin`] for every page index, but avoids the
+/// O(n²) re-loop that results from calling `page_origin(i)` inside a full-page
+/// loop (each call re-walks 0..i). Use this in full-page iteration (composite,
+/// hit_test, visible_page_index); use [`page_origin`] for single-page lookups
+/// (caret_rect, annotation_viewport_rect, viewport_to_page_local) where O(n)
+/// per call is fine.
+pub fn page_origins(doc: &OfdDocument, vp: &Viewport) -> Vec<(f64, f64)> {
+    let mut origins = Vec::with_capacity(doc.pages.len());
+    let mut y = vp.page_gap - vp.scroll.1;
+    for page in &doc.pages {
+        let page_w = page.physical_box.w * vp.zoom;
+        let page_x = ((vp.size.0 - page_w) / 2.0).max(0.0) + vp.scroll.0;
+        origins.push((page_x, y));
+        y += page.physical_box.h * vp.zoom + vp.page_gap;
+    }
+    origins
+}
+
 /// In-progress drag visualization. Passed by the component (T2/T3) during a
 /// pointer drag so the user sees a live preview of the annotation being
 /// created, moved, or resized.
@@ -156,11 +176,13 @@ impl RenderEngine {
         painter.fill_rect(bg, gray);
 
         // Stack pages vertically, centered horizontally, offset by scroll.
-        // page_origin is the single source of truth for the stacking geometry;
-        // cull off-screen pages to avoid shaping/drawing pages the user can't
-        // see (critical for multi-page docs - shaping dominates render time).
+        // page_origins computes all origins in one O(n) pass (avoids the O(n²)
+        // re-loop from calling page_origin(i) per page). Cull off-screen pages
+        // to avoid shaping/drawing pages the user can't see (critical for
+        // multi-page docs - shaping dominates render time).
+        let origins = page_origins(doc, vp);
         for (i, page) in doc.pages.iter().enumerate() {
-            let Some(origin) = page_origin(doc, vp, i) else {
+            let Some(&origin) = origins.get(i) else {
                 continue;
             };
             let page_w = page.physical_box.w * vp.zoom;

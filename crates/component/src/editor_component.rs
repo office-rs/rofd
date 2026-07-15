@@ -308,12 +308,14 @@ impl EditorComponent {
                                 // (they have no meaningful rect to drag-handle).
                                 // Select only and skip the Resize drag setup so
                                 // PointerUp doesn't commit a phantom Transaction.
-                                let ann = self
-                                    .editor
-                                    .document()
-                                    .annotations
-                                    .find(&id)
-                                    .expect("selected annotation must exist");
+                                let Some(ann) = self.editor.document().annotations.find(&id) else {
+                                    // Annotation vanished between hit-test and
+                                    // lookup (should not happen for a valid
+                                    // selection). No-op repaint to refresh handles.
+                                    return EventOutcome {
+                                        needs_repaint: true,
+                                    };
+                                };
                                 if matches!(
                                     &ann.payload,
                                     AnnotationPayload::Markup { .. }
@@ -324,7 +326,8 @@ impl EditorComponent {
                                     };
                                 }
                                 // Set up resize drag: orig + anchor in page-local.
-                                let orig = annotation_payload_rect(ann);
+                                let orig =
+                                    rofd_render::annotation_local_rect(ann).unwrap_or_default();
                                 let anchor = opposite_corner(&orig, &h);
                                 // current_local starts at the handle corner (no
                                 // resize until the pointer moves).
@@ -363,13 +366,16 @@ impl EditorComponent {
                                 self.fire_cursor_change();
                                 // Capture the annotation's page-local rect at
                                 // drag start for the preview-based move.
-                                let ann = self
-                                    .editor
-                                    .document()
-                                    .annotations
-                                    .find(&id)
-                                    .expect("selected annotation must exist");
-                                let before_rect = annotation_payload_rect(ann);
+                                let Some(ann) = self.editor.document().annotations.find(&id) else {
+                                    // Annotation vanished between hit-test and
+                                    // lookup (should not happen for a valid
+                                    // selection). No-op repaint to refresh state.
+                                    return EventOutcome {
+                                        needs_repaint: true,
+                                    };
+                                };
+                                let before_rect =
+                                    rofd_render::annotation_local_rect(ann).unwrap_or_default();
                                 self.drag = Some(DragState::Move {
                                     id: id.clone(),
                                     before_rect,
@@ -898,8 +904,8 @@ impl EditorComponent {
     /// contains the viewport's vertical center) and, if it differs from
     /// `self.current_page`, update the field and fire `on_page_change`.
     ///
-    /// The page-stacking geometry is computed via [`rofd_render::page_origin`]
-    /// (the shared helper). The viewport center Y is `size.1 / 2`.
+    /// The page-stacking geometry is computed via [`rofd_render::page_origins`]
+    /// (the shared batch helper). The viewport center Y is `size.1 / 2`.
     fn maybe_fire_page_change(&mut self) {
         let new_page = self.visible_page_index();
         if new_page != self.current_page {
@@ -914,18 +920,21 @@ impl EditorComponent {
     /// viewport's vertical center. Returns `None` if the document has no
     /// pages or no page spans the center line.
     ///
-    /// Uses [`rofd_render::page_origin`] (the shared page-stacking helper) for
-    /// the viewport Y geometry.
+    /// Uses [`rofd_render::page_origins`] (the shared page-stacking batch
+    /// helper) for the viewport Y geometry.
     fn visible_page_index(&self) -> Option<usize> {
         let doc = self.editor.document();
         if doc.pages.is_empty() {
             return None;
         }
         let center_y = self.viewport.size.1 / 2.0;
+        // Compute all origins in one O(n) pass (avoids O(n²) from per-page
+        // page_origin calls in both passes below).
+        let origins = rofd_render::page_origins(doc, &self.viewport);
         // Pass 1: find a page whose viewport rect spans the center line.
         for (i, page) in doc.pages.iter().enumerate() {
             let page_h = page.physical_box.h * self.viewport.zoom;
-            if let Some((_, origin_y)) = rofd_render::page_origin(doc, &self.viewport, i) {
+            if let Some(&(_, origin_y)) = origins.get(i) {
                 if center_y >= origin_y && center_y < origin_y + page_h {
                     return Some(i);
                 }
@@ -936,7 +945,7 @@ impl EditorComponent {
         // scrolled-past page).
         let mut last_above: Option<usize> = None;
         for (i, _page) in doc.pages.iter().enumerate() {
-            if let Some((_, origin_y)) = rofd_render::page_origin(doc, &self.viewport, i) {
+            if let Some(&(_, origin_y)) = origins.get(i) {
                 if origin_y <= center_y {
                     last_above = Some(i);
                 }
@@ -1294,11 +1303,12 @@ fn build_create_payload(
 }
 
 /// Find the page whose viewport rect contains `point`, returning its [`PageId`].
-/// Uses [`rofd_render::page_origin`] (the shared page-stacking helper) for the
-/// viewport geometry.
+/// Uses [`rofd_render::page_origins`] (the shared page-stacking batch helper)
+/// for the viewport geometry.
 fn current_page_id(doc: &OfdDocument, vp: &Viewport, point: (f64, f64)) -> PageId {
+    let origins = rofd_render::page_origins(doc, vp);
     for (i, page) in doc.pages.iter().enumerate() {
-        if let Some((origin_x, origin_y)) = rofd_render::page_origin(doc, vp, i) {
+        if let Some(&(origin_x, origin_y)) = origins.get(i) {
             let page_w = page.physical_box.w * vp.zoom;
             let page_h = page.physical_box.h * vp.zoom;
             if point.0 >= origin_x
@@ -1329,82 +1339,6 @@ fn viewport_to_page_local(
         (point.0 - origin_x) / vp.zoom,
         (point.1 - origin_y) / vp.zoom,
     ))
-}
-
-/// Extract the page-local bounding [`Rect`] from an annotation's payload.
-///
-/// - Rect-bearing payloads (Note/TextBox/Stamp/Watermark/Shape): the payload's
-///   `rect` field directly.
-/// - Markup: the bounding box of all quad points.
-/// - Freehand: the bounding box of all path control/end points (empty path ->
-///   zero-size rect at origin).
-fn annotation_payload_rect(ann: &rofd_dom::Annotation) -> Rect {
-    match &ann.payload {
-        AnnotationPayload::Shape { rect, .. }
-        | AnnotationPayload::Note { rect, .. }
-        | AnnotationPayload::TextBox { rect, .. }
-        | AnnotationPayload::Stamp { rect, .. }
-        | AnnotationPayload::Watermark { rect, .. } => *rect,
-        AnnotationPayload::Markup { quad_points, .. } => {
-            if quad_points.is_empty() {
-                return Rect::default();
-            }
-            let (minx, miny, maxx, maxy) = quad_points.iter().fold(
-                (
-                    f64::INFINITY,
-                    f64::INFINITY,
-                    f64::NEG_INFINITY,
-                    f64::NEG_INFINITY,
-                ),
-                |(minx, miny, maxx, maxy), p| {
-                    (minx.min(p.x), miny.min(p.y), maxx.max(p.x), maxy.max(p.y))
-                },
-            );
-            Rect {
-                x: minx,
-                y: miny,
-                w: maxx - minx,
-                h: maxy - miny,
-            }
-        }
-        AnnotationPayload::Freehand { path, .. } => {
-            if path.commands.is_empty() {
-                return Rect::default();
-            }
-            let (minx, miny, maxx, maxy) = path.commands.iter().fold(
-                (
-                    f64::INFINITY,
-                    f64::INFINITY,
-                    f64::NEG_INFINITY,
-                    f64::NEG_INFINITY,
-                ),
-                |acc, cmd| {
-                    let pts = path_command_points(cmd);
-                    pts.into_iter()
-                        .fold(acc, |(minx, miny, maxx, maxy), (px, py)| {
-                            (minx.min(px), miny.min(py), maxx.max(px), maxy.max(py))
-                        })
-                },
-            );
-            Rect {
-                x: minx,
-                y: miny,
-                w: maxx - minx,
-                h: maxy - miny,
-            }
-        }
-    }
-}
-
-/// Extract all (x, y) control/end points from a [`PathCommand`] for bbox.
-fn path_command_points(cmd: &PathCommand) -> Vec<(f64, f64)> {
-    match cmd {
-        PathCommand::M(x, y) | PathCommand::L(x, y) => vec![(*x, *y)],
-        PathCommand::C(x1, y1, x2, y2, x, y) => vec![(*x1, *y1), (*x2, *y2), (*x, *y)],
-        PathCommand::Q(x1, y1, x, y) => vec![(*x1, *y1), (*x, *y)],
-        PathCommand::A(_, _, _, _, x, y) => vec![(*x, *y)],
-        PathCommand::Z => vec![],
-    }
 }
 
 /// Compute the corner/point opposite to a handle on a rect (page-local).

@@ -277,15 +277,24 @@ impl ApplicationHandler<MasonryUserEvent> for NativeApp {
 
         // Right-click Delete: the component's on_context_menu callback stashes
         // the right-clicked annotation id (flag-poll, like save_requested).
-        // Here we poll and delete it. Page/Empty targets are just logged in
-        // the callback (no delete). This complements the Delete key (handled
-        // in component handle_event).
+        // Here we poll, confirm via a Yes/No dialog, then delete. Page/Empty
+        // targets are just logged in the callback (no delete). This complements
+        // the Delete key (handled in component handle_event, which deletes
+        // immediately without confirm).
         let target = self.context_menu_target.lock().unwrap().take();
         if let Some(id) = target {
-            let mut editor = self.editor.lock().unwrap();
-            editor.component.delete_annotation(&id);
-            drop(editor);
-            self.request_canvas_render();
+            // Confirm before deleting (mirrors web-app's confirm() dialog).
+            let confirmed = rfd::MessageDialog::new()
+                .set_title("Delete")
+                .set_description("Delete this annotation?")
+                .set_buttons(rfd::MessageButtons::YesNo)
+                .show();
+            if confirmed == rfd::MessageDialogResult::Yes {
+                let mut editor = self.editor.lock().unwrap();
+                editor.component.delete_annotation(&id);
+                drop(editor);
+                self.request_canvas_render();
+            }
         }
 
         // Forward the original event to masonry (by value). For RedrawRequested

@@ -110,8 +110,8 @@ examples/web-app ─► web-view ───────────┘           
 `rofd-render` 产出 backend-agnostic 的 `imaging::record::Scene`（来自 forest-rs/imaging）。native 侧用 `Painter::replay` 回放进 masonry canvas；web 侧用 `imaging_vello::VelloSceneSink` 转 `vello::Scene` 再渲染。**改 render 时用 imaging Painter API（fill/stroke/glyphs/draw_image）**，不要直接构造 `vello::Scene`。imaging 无 transform-aware 子场景回放，需把 `page_origin + zoom + CTM` 烘焙进每个 draw call（不缓存 body/annotation 子场景）。
 
 ### 4.6 错误显式分层，绝不静默吞
-- 硬错（ZIP 损坏/XML 畸形/缺资源）→ `Result<_, OfdError>`（结构化 enum：`Zip`/`Xml`/`Schema`/`ResourceNotFound`/`Io`）。
-- 可降级问题（模板未展开/JBIG2/未知对象/字体替换）→ `OfdWarning`，继续加载，经 `on_warning` 回调上抛。
+- 硬错（ZIP 损坏/XML 畸形）→ `Result<_, OfdError>`（结构化 enum：`Zip`/`Xml`/`Schema`/`Io`）。
+- 可降级问题（模板未展开/JBIG2/未知对象/字体替换/缺资源）→ `OfdWarning`，继续加载，经 `on_warning` 回调上抛。
 - 所有 `?` 带 context；无裸 `unwrap`/`ignore`；输入校验在 io 边界 fail-fast。
 
 ### 4.7 没有 `Format` trait
