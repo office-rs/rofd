@@ -13,3 +13,4 @@ agent.*
 # 真实 OFD 样本含敏感数据，不入库（仅本地持有）
 test/ru-yuan-ji-lu.ofd
 /docs/《国家板式文档规范》33190-2016-gbt-cd-300.pdf
+/.codegraph/
