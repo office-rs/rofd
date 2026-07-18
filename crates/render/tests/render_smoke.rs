@@ -11,9 +11,9 @@
 use std::sync::Arc;
 
 use imaging::kurbo::Rect as KurboRect;
-use imaging::record::Scene;
+use imaging::record::{Command, Draw, Scene};
 use imaging::Painter;
-use rofd_dom::AnnotationSelection;
+use rofd_dom::{AnnotationSelection, PageObject};
 use rofd_render::{
     draw_annotations, draw_body, hit_test, FontStore, RenderEngine, Viewport, PX_PER_MM,
 };
@@ -199,4 +199,61 @@ fn real_ofd_parses_and_composites() {
         PX_PER_MM,
     );
     let _ = body_scene;
+}
+
+/// Parses the real `test/sample.ofd` (if present locally) and verifies body
+/// text renders by the document glyph IDs (the glyph-by-ID path), not parley
+/// shape (which returns .notdef on the cmap-less subset font and vanishes the
+/// text). Ignored: the fixture is gitignored. Run with `--ignored sample_ofd`.
+#[test]
+#[ignore = "requires the real OFD at ../../test/sample.ofd"]
+fn sample_ofd_body_text_renders_by_glyph_ids() {
+    let bytes = std::fs::read("../../test/sample.ofd").expect("sample present");
+    let report = rofd_io::parse_ofd(&bytes).expect("sample parses");
+    let page0 = &report.document.pages[0];
+    let first_text = page0
+        .layers
+        .iter()
+        .flat_map(|l| {
+            l.objects.iter().filter_map(|o| match o {
+                PageObject::Text(t) => Some(t),
+                _ => None,
+            })
+        })
+        .next()
+        .expect("page 0 has a body TextObject");
+    let expected_ids = first_text.codes[0].glyph_ids.clone();
+    assert!(!expected_ids.is_empty(), "TextCode has glyph_ids");
+
+    // Empty default font: body text must resolve the document font
+    // (font_4_4.ttf, in resources) and draw by glyph_ids.
+    let fonts = FontStore::from_resources(&report.document.resources, Arc::new(vec![]));
+    let mut scene = Scene::new();
+    let mut painter = Painter::new(&mut scene);
+    draw_body(
+        &mut painter,
+        page0,
+        &report.document.resources,
+        &fonts,
+        (0.0, 0.0),
+        PX_PER_MM,
+    );
+
+    // A glyph run whose IDs equal the first TextCode's glyph_ids must exist
+    // (the glyph-by-ID path). If shape were used instead, the GlyphRun would
+    // carry .notdef (id 0) because font_4_4.ttf has no cmap.
+    let found = scene.commands().iter().any(|cmd| {
+        if let Command::Draw(id) = cmd {
+            if let Draw::GlyphRun(gr) = scene.draw_op(*id) {
+                let ids: Vec<u32> = gr.glyphs.iter().map(|g| g.id).collect();
+                return ids == expected_ids;
+            }
+        }
+        false
+    });
+    assert!(
+        found,
+        "body text must draw by glyph_ids {:?} (glyph-by-ID path, not shape)",
+        expected_ids
+    );
 }
