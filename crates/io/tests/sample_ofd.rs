@@ -138,3 +138,45 @@ fn sample_ofd_parses_all_14_annotation_types() {
         assert_eq!(o.1, s.1, "body {} byte-identical", name);
     }
 }
+
+#[test]
+#[ignore = "needs local test/sample.ofd (gitignored)"]
+fn sample_ofd_markup_quad_points_at_page_coordinates() {
+    // Regression for "markup annotations pile up at top-left": every Markup
+    // annotation (Highlight/Underline/Strikeout/Squiggly) on page 0 must carry
+    // quad_points in page coordinates, not collapsed to (0,0). The sample's
+    // highlighted text sits at x≈31.75mm, so every quad point's x must be > 30.
+    let bytes = std::fs::read("../../test/sample.ofd").expect("sample present");
+    let report = rofd_io::parse_ofd(&bytes).expect("parse succeeds");
+    let p0 = report.document.annotations.for_page(&PageId::new("1"));
+    let markups: Vec<_> = p0
+        .iter()
+        .filter(|a| {
+            matches!(
+                a.kind,
+                AnnotationKind::Highlight
+                    | AnnotationKind::Underline
+                    | AnnotationKind::Strikeout
+                    | AnnotationKind::Squiggly
+            )
+        })
+        .collect();
+    assert!(!markups.is_empty(), "page 0 has markup annots");
+    for a in &markups {
+        let quad_points = match &a.payload {
+            AnnotationPayload::Markup { quad_points, .. } => quad_points,
+            _ => panic!("{:?} should be a Markup payload", a.kind),
+        };
+        assert!(!quad_points.is_empty(), "{:?} has quad_points", a.kind);
+        for (i, p) in quad_points.iter().enumerate() {
+            assert!(
+                p.x > 30.0,
+                "{:?} quad[{}].x = {} should be > 30 (page coord near x=31.75), \
+                 not 0 (top-left collapse bug)",
+                a.kind,
+                i,
+                p.x
+            );
+        }
+    }
+}
