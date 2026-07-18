@@ -68,7 +68,7 @@ const FONT_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 #[allow(dead_code)]
 const FONT_XML_WITH_FILE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <ofd:Res xmlns:ofd="http://www.ofdspec.org/2016">
-  <ofd:Font ID="F1" FontName="NotoSans" FontFile="Font_1.ttf"/>
+  <ofd:Font ID="F1" FontName="NotoSans"><ofd:FontFile>Font_1.ttf</ofd:FontFile></ofd:Font>
 </ofd:Res>"#;
 
 /// Page with a PathObject + ImageObject that reference a DrawParam / MultiMedia
@@ -144,7 +144,7 @@ const DOCUMENT_RES_MISSING_IMAGE_XML: &str = r#"<?xml version="1.0" encoding="UT
 /// the ZIP). Exercises the FontSubstituted warning path.
 const FONT_XML_MISSING_FILE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <ofd:Res xmlns:ofd="http://www.ofdspec.org/2016">
-  <ofd:Font ID="F1" FontName="NotoSans" FontFile="missing.ttf"/>
+  <ofd:Font ID="F1" FontName="NotoSans"><ofd:FontFile>missing.ttf</ofd:FontFile></ofd:Font>
 </ofd:Res>"#;
 
 /// Malformed XML (bare `<` in text content) used for the bad-XML error test.

@@ -12,22 +12,35 @@ pub fn parse_font_res(font_xml: &str) -> Result<Vec<(FontId, FontRef, Option<Str
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut out = Vec::new();
+    let mut in_font_file = false;
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Empty(e)) | Ok(Event::Start(e))
-                if e.name().local_name().as_ref() == b"Font" =>
-            {
-                let id = FontId::new(attr(&e, "ID").unwrap_or_default());
-                let family = attr(&e, "FontName");
-                let font_file = attr(&e, "FontFile");
-                out.push((
-                    id.clone(),
-                    FontRef {
-                        id,
-                        family_name: family,
-                    },
-                    font_file,
-                ));
+            Ok(Event::Empty(e)) | Ok(Event::Start(e)) => match e.name().local_name().as_ref() {
+                b"Font" => {
+                    let id = FontId::new(attr(&e, "ID").unwrap_or_default());
+                    let family = attr(&e, "FontName");
+                    // FontFile is a child element, captured via in_font_file.
+                    out.push((
+                        id.clone(),
+                        FontRef {
+                            id,
+                            family_name: family,
+                        },
+                        None,
+                    ));
+                }
+                b"FontFile" => in_font_file = true,
+                _ => {}
+            },
+            Ok(Event::Text(t)) => {
+                if in_font_file {
+                    if let Some(last) = out.last_mut() {
+                        last.2 = Some(t.unescape().map(|c| c.into_owned()).unwrap_or_default());
+                    }
+                }
+            }
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == b"FontFile" => {
+                in_font_file = false;
             }
             Ok(Event::Eof) => break,
             Err(e) => {
@@ -75,6 +88,7 @@ pub fn parse_res(xml: &str) -> Result<ParsedRes, OfdError> {
     let mut cur_dp: Option<(DrawParamId, DrawParam)> = None;
     let mut cur_mm: Option<(ImageId, String, String)> = None; // id, media_file, format
     let mut in_media_file = false;
+    let mut in_font_file = false;
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => match e.name().local_name().as_ref() {
@@ -114,22 +128,28 @@ pub fn parse_res(xml: &str) -> Result<ParsedRes, OfdError> {
                 b"Font" => {
                     let id = FontId::new(attr(&e, "ID").unwrap_or_default());
                     let family = attr(&e, "FontName");
-                    let font_file = attr(&e, "FontFile");
+                    // FontFile is a child element (<FontFile>path</FontFile>),
+                    // captured via in_font_file below - NOT an attribute.
                     out.fonts.push((
                         id.clone(),
                         FontRef {
                             id,
                             family_name: family,
                         },
-                        font_file,
+                        None,
                     ));
                 }
+                b"FontFile" => in_font_file = true,
                 _ => {}
             },
             Ok(Event::Text(t)) => {
                 if in_media_file {
                     if let Some((_, media_file, _)) = cur_mm.as_mut() {
                         *media_file = t.unescape().map(|c| c.into_owned()).unwrap_or_default();
+                    }
+                } else if in_font_file {
+                    if let Some(last) = out.fonts.last_mut() {
+                        last.2 = Some(t.unescape().map(|c| c.into_owned()).unwrap_or_default());
                     }
                 }
             }
@@ -140,6 +160,7 @@ pub fn parse_res(xml: &str) -> Result<ParsedRes, OfdError> {
                     }
                 }
                 b"MediaFile" => in_media_file = false,
+                b"FontFile" => in_font_file = false,
                 b"MultiMedia" => {
                     if let Some(mm) = cur_mm.take() {
                         out.multimedias.push(mm);
@@ -216,5 +237,46 @@ mod tests {
         assert_eq!(r.fonts[0].0 .0, "21");
         assert_eq!(r.fonts[0].1.family_name.as_deref(), Some("SimSun"));
         assert!(r.fonts[0].2.is_none(), "no FontFile -> None (system font)");
+    }
+
+    #[test]
+    fn parse_res_font_file_is_child_element_text() {
+        // GB/T 33190 §7.6: FontFile is a child element (<FontFile>path</FontFile>),
+        // not an attribute. sample.ofd's PublicRes.xml uses this form; parsing
+        // it as an attribute returns None and the font bytes never load.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Res xmlns:ofd="http://www.ofdspec.org/2016" BaseLoc="Res">
+  <ofd:Fonts>
+    <ofd:Font ID="4" FontName="SimSun">
+      <ofd:FontFile>font_4_4.ttf</ofd:FontFile>
+    </ofd:Font>
+  </ofd:Fonts>
+</ofd:Res>"#;
+        let r = parse_res(xml).unwrap();
+        assert_eq!(r.fonts.len(), 1);
+        assert_eq!(r.fonts[0].0 .0, "4");
+        assert_eq!(
+            r.fonts[0].2.as_deref(),
+            Some("font_4_4.ttf"),
+            "FontFile child-element text captured"
+        );
+    }
+
+    #[test]
+    fn parse_font_res_font_file_is_child_element_text() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Res xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Font ID="4" FontName="SimSun">
+    <ofd:FontFile>font_4_4.ttf</ofd:FontFile>
+  </ofd:Font>
+</ofd:Res>"#;
+        let fonts = parse_font_res(xml).unwrap();
+        assert_eq!(fonts.len(), 1);
+        assert_eq!(fonts[0].0 .0, "4");
+        assert_eq!(
+            fonts[0].2.as_deref(),
+            Some("font_4_4.ttf"),
+            "FontFile child-element text captured"
+        );
     }
 }
