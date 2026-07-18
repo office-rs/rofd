@@ -170,7 +170,32 @@ fn draw_markup(
                         .transform(base)
                         .draw();
                 }
+                AnnotationKind::Underline => {
+                    // 底线: a straight line at the quad pair's bottom edge
+                    // (NOT a filled rect, which would cover the text).
+                    let y = p0.y.max(p1.y);
+                    let mut path = BezPath::new();
+                    path.move_to((p0.x.min(p1.x), y));
+                    path.line_to((p0.x.max(p1.x), y));
+                    painter
+                        .stroke(&path, &Stroke::new(1.0), peniko_color)
+                        .transform(base)
+                        .draw();
+                }
+                AnnotationKind::Strikeout => {
+                    // 中线: a straight line through the quad pair's vertical
+                    // midpoint (NOT a filled rect, which would cover the text).
+                    let y = (p0.y + p1.y) / 2.0;
+                    let mut path = BezPath::new();
+                    path.move_to((p0.x.min(p1.x), y));
+                    path.line_to((p0.x.max(p1.x), y));
+                    painter
+                        .stroke(&path, &Stroke::new(1.0), peniko_color)
+                        .transform(base)
+                        .draw();
+                }
                 _ => {
+                    // Highlight: 半透明填充矩形 (文字透过高亮可见).
                     // kurbo::Rect is corner-based: (x0, y0, x1, y1). Use min/max
                     // so the rectangle is well-formed regardless of point order.
                     let rect = KurboRect::new(
@@ -952,5 +977,66 @@ mod tests {
         assert_eq!(k.y0, 20.0);
         assert_eq!(k.x1, 110.0); // x + w
         assert_eq!(k.y1, 50.0); // y + h
+    }
+
+    fn count_fills_strokes(scene: &Scene) -> (usize, usize) {
+        use imaging::record::{Command, Draw};
+        let mut fills = 0;
+        let mut strokes = 0;
+        for cmd in scene.commands() {
+            if let Command::Draw(id) = cmd {
+                match scene.draw_op(*id) {
+                    Draw::Fill { .. } => fills += 1,
+                    Draw::Stroke { .. } => strokes += 1,
+                    _ => {}
+                }
+            }
+        }
+        (fills, strokes)
+    }
+
+    #[test]
+    fn underline_strokes_line_not_fills_rect() {
+        // Underline must stroke a bottom line, NOT fill the quad rect (which
+        // covers the text - the "long rectangle blocking text" bug). build()
+        // paints one desk-bg fill, so the only fill allowed is that desk bg.
+        let ann = ann(
+            AnnotationPayload::Markup {
+                quad_points: vec![Point { x: 10.0, y: 10.0 }, Point { x: 50.0, y: 14.0 }],
+                color: Color::Rgb(0, 239, 89),
+            },
+            AnnotationKind::Underline,
+        );
+        let scene = build(&[ann]);
+        let (fills, strokes) = count_fills_strokes(&scene);
+        assert_eq!(
+            fills, 1,
+            "Underline must not add a fill (only desk bg expected), got {fills}"
+        );
+        assert!(
+            strokes >= 1,
+            "Underline must stroke a bottom line, got {strokes}"
+        );
+    }
+
+    #[test]
+    fn strikeout_strokes_midline_not_fills_rect() {
+        let ann = ann(
+            AnnotationPayload::Markup {
+                quad_points: vec![Point { x: 10.0, y: 10.0 }, Point { x: 50.0, y: 14.0 }],
+                color: Color::Rgb(255, 0, 0),
+            },
+            AnnotationKind::Strikeout,
+        );
+        let scene = build(&[ann]);
+        let (fills, strokes) = count_fills_strokes(&scene);
+        assert_eq!(
+            fills, 1,
+            "Strikeout must not add a fill (only desk bg expected), got {fills}"
+        );
+        assert!(
+            strokes >= 1,
+            "Strikeout must stroke a midline, got {strokes}"
+        );
     }
 }
