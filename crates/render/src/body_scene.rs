@@ -73,16 +73,20 @@ fn draw_text(
     page_origin: (f64, f64),
     zoom: f64,
 ) {
-    // Fill: inline first, then DrawParam fallback (GB/T 33190).
-    let fill = match t.fill.or_else(|| {
-        t.draw_param
-            .as_ref()
-            .and_then(|id| res.draw_params.get(id))
-            .and_then(|d| d.fill)
-    }) {
-        Some(c) => to_peniko(c),
-        None => return,
-    };
+    // Fill: inline first, then DrawParam fallback (GB/T 33190 §8.3.2). Default
+    // black when neither is present - OFD text without an explicit FillColor
+    // renders black (sample.ofd's TextObjects omit FillColor entirely, and the
+    // old `None => return` skipped them, so no body text drew at all).
+    let fill = t
+        .fill
+        .or_else(|| {
+            t.draw_param
+                .as_ref()
+                .and_then(|id| res.draw_params.get(id))
+                .and_then(|d| d.fill)
+        })
+        .unwrap_or(rofd_dom::Color::Rgb(0, 0, 0));
+    let fill = to_peniko(fill);
     let affine = compose_object_transform(page_origin, zoom, t.boundary, t.ctm.as_ref());
 
     for code in &t.codes {
