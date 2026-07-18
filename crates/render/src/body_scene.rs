@@ -26,7 +26,7 @@ use peniko::{Fill, Style};
 use rofd_dom::{ImageObject, Page, PageObject, PathObject, Resources, TextObject};
 
 use crate::color::to_peniko;
-use crate::ctm::compose_transform;
+use crate::ctm::compose_object_transform;
 use crate::image::decode_image;
 use crate::path::path_to_bezpath;
 use crate::text::FontStore;
@@ -83,7 +83,7 @@ fn draw_text(
         Some(c) => to_peniko(c),
         None => return,
     };
-    let affine = compose_transform(page_origin, zoom, t.ctm.as_ref());
+    let affine = compose_object_transform(page_origin, zoom, t.boundary, t.ctm.as_ref());
 
     for code in &t.codes {
         // Shape with the document font (reuses the store's FontContext). The
@@ -142,7 +142,7 @@ fn draw_path(
     zoom: f64,
 ) {
     let bez = path_to_bezpath(&p.data);
-    let affine = compose_transform(page_origin, zoom, p.ctm.as_ref());
+    let affine = compose_object_transform(page_origin, zoom, p.boundary, p.ctm.as_ref());
     // Resolve colors/width: inline first, then DrawParam fallback (GB/T 33190).
     let dp = p.draw_param.as_ref().and_then(|id| res.draw_params.get(id));
     let fill = p.fill.or_else(|| dp.and_then(|d| d.fill));
@@ -200,9 +200,13 @@ fn draw_image_obj(
     } else {
         1.0
     };
-    let place = Affine::translate((i.boundary.x, i.boundary.y))
-        * Affine::scale_non_uniform(scale_x, scale_y);
-    let affine = compose_transform(page_origin, zoom, i.ctm.as_ref()) * place;
+    // Place the image scaled to the boundary w/h; the boundary origin translation
+    // is folded into `compose_object_transform` (consistent with text/path), so
+    // `place` only carries the pixel->mm scale. `draw_image` fills a rect
+    // (0, 0, img.width, img.height) in the image's natural pixel dimensions, so
+    // place maps that rect onto (boundary.w, boundary.h).
+    let place = Affine::scale_non_uniform(scale_x, scale_y);
+    let affine = compose_object_transform(page_origin, zoom, i.boundary, i.ctm.as_ref()) * place;
     painter.draw_image(&img, affine);
 }
 
