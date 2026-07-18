@@ -48,6 +48,11 @@ const MARKUP_ALPHA: f32 = 96.0 / 255.0;
 /// 1.0 matches the visual weight of a typical squiggly underline.
 const SQUIGGLY_AMPLITUDE: f64 = 1.0;
 
+/// Stroke width (page-local mm) for Underline/Strikeout/Squiggly markup lines.
+/// sample.ofd uses 0.2-0.25mm; the old 1.0mm drew ~4px bars at 100% zoom that
+/// looked like blocking rectangles. 0.3mm ~ 1.1px at 96 DPI.
+const MARKUP_LINE_WIDTH: f64 = 0.3;
+
 /// Tolerance for converting kurbo shapes (Rect/Ellipse) to BezPath. kurbo
 /// subdivides curves until they deviate from the true curve by less than this;
 /// `1e-3` is the kurbo standard. A tolerance of 0.0 would never converge for
@@ -164,9 +169,23 @@ fn draw_markup(
             let (p0, p1) = (chunk[0], chunk[1]);
             match kind {
                 AnnotationKind::Squiggly => {
-                    let path = squiggly_path(p0, p1);
+                    // 波浪线 baseline 在 quad 底部 (文字下方), NOT p0.y (which
+                    // is the Appearance.Boundary top -> drew on the text top).
+                    let baseline_y = p0.y.max(p1.y);
+                    let x0 = p0.x.min(p1.x);
+                    let x1 = p0.x.max(p1.x);
+                    let path = squiggly_path(
+                        rofd_dom::Point {
+                            x: x0,
+                            y: baseline_y,
+                        },
+                        rofd_dom::Point {
+                            x: x1,
+                            y: baseline_y,
+                        },
+                    );
                     painter
-                        .stroke(&path, &Stroke::new(1.0), peniko_color)
+                        .stroke(&path, &Stroke::new(MARKUP_LINE_WIDTH), peniko_color)
                         .transform(base)
                         .draw();
                 }
@@ -178,7 +197,7 @@ fn draw_markup(
                     path.move_to((p0.x.min(p1.x), y));
                     path.line_to((p0.x.max(p1.x), y));
                     painter
-                        .stroke(&path, &Stroke::new(1.0), peniko_color)
+                        .stroke(&path, &Stroke::new(MARKUP_LINE_WIDTH), peniko_color)
                         .transform(base)
                         .draw();
                 }
@@ -190,7 +209,7 @@ fn draw_markup(
                     path.move_to((p0.x.min(p1.x), y));
                     path.line_to((p0.x.max(p1.x), y));
                     painter
-                        .stroke(&path, &Stroke::new(1.0), peniko_color)
+                        .stroke(&path, &Stroke::new(MARKUP_LINE_WIDTH), peniko_color)
                         .transform(base)
                         .draw();
                 }
@@ -1038,5 +1057,49 @@ mod tests {
             strokes >= 1,
             "Strikeout must stroke a midline, got {strokes}"
         );
+    }
+
+    #[test]
+    fn squiggly_strokes_wavy_line_not_fills_rect() {
+        let ann = ann(
+            AnnotationPayload::Markup {
+                quad_points: vec![Point { x: 10.0, y: 10.0 }, Point { x: 50.0, y: 14.0 }],
+                color: Color::Rgb(0, 164, 247),
+            },
+            AnnotationKind::Squiggly,
+        );
+        let scene = build(&[ann]);
+        let (fills, strokes) = count_fills_strokes(&scene);
+        assert_eq!(
+            fills, 1,
+            "Squiggly must not add a fill (only desk bg expected), got {fills}"
+        );
+        assert!(
+            strokes >= 1,
+            "Squiggly must stroke a wavy line, got {strokes}"
+        );
+    }
+
+    #[test]
+    fn squiggly_path_baseline_is_p0_y() {
+        // draw_markup passes the quad bottom (max y) as p0.y; squiggly_path
+        // must use p0.y as the wave baseline so the wave sits at the text
+        // bottom, not the top (the "wave drew on the text top" bug).
+        use imaging::kurbo::PathSeg;
+        let p0 = Point { x: 0.0, y: 14.0 };
+        let p1 = Point { x: 40.0, y: 10.0 };
+        let path = squiggly_path(p0, p1);
+        // First segment is a Quad whose start = move_to point = (p0.x, p0.y).
+        let first = path.segments().next();
+        match first {
+            Some(PathSeg::Quad(q)) => {
+                assert!(
+                    (q.p0.y - 14.0).abs() < 1e-9,
+                    "baseline = p0.y = 14 (quad bottom), got {}",
+                    q.p0.y
+                );
+            }
+            _ => panic!("expected Quad as first segment"),
+        }
     }
 }
