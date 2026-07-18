@@ -323,36 +323,24 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
                     _ => None,
                 })
                 .unwrap_or(Color::Rgb(255, 255, 0));
-            // Quad points from each path object's boundary corners.
-            let quad: Vec<Point> = p
-                .objects
-                .iter()
-                .filter_map(|o| match o {
-                    AppearanceObject::Path { boundary: r, .. } => Some([
-                        Point { x: r.x, y: r.y },
-                        Point {
-                            x: r.x + r.w,
-                            y: r.y + r.h,
-                        },
-                    ]),
-                    _ => None,
-                })
-                .flatten()
-                .collect();
-            let quad_points = if quad.is_empty() {
-                vec![
-                    Point {
-                        x: boundary.x,
-                        y: boundary.y,
-                    },
-                    Point {
-                        x: boundary.x + boundary.w,
-                        y: boundary.y + boundary.h,
-                    },
-                ]
-            } else {
-                quad
-            };
+            // Markup quad_points = Appearance.Boundary diagonal (page coords).
+            // Appearance.Boundary is consistently page-space across producers
+            // (e.g. sample.ofd "31.99 26.44 14.355 3.4"). The internal
+            // PathObject.Boundary is NOT a reliable source: rofd serializes it
+            // as page-space (the quad diagonal) while other producers write it
+            // object-local ("0 0 w h"), so reading it would either double-offset
+            // (rofd) or collapse to (0,0) (sample.ofd). v1 carries a single quad
+            // pair; multi-pair markups collapse to the appearance bbox.
+            let quad_points = vec![
+                Point {
+                    x: boundary.x,
+                    y: boundary.y,
+                },
+                Point {
+                    x: boundary.x + boundary.w,
+                    y: boundary.y + boundary.h,
+                },
+            ];
             AnnotationPayload::Markup { quad_points, color }
         }
         AnnotationKind::Freehand => {
@@ -718,6 +706,42 @@ mod tests {
                 assert_eq!(content, "fallback text");
             }
             other => panic!("expected TextBox, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn markup_quad_points_use_appearance_boundary_not_path_local() {
+        // sample.ofd Highlight: Appearance.Boundary is the page-space rect,
+        // PathObject.Boundary is "0 0 w h" (object-local, origin 0,0). quad_points
+        // must land at the Appearance.Boundary page position, not collapse to (0,0).
+        let xml = r#"<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Annot Type="Highlight" ID="77" Subtype="Highlight">
+    <ofd:Appearance Boundary="31.9928 26.4436 14.355 3.4025">
+      <ofd:PathObject ID="79" CTM="1 0 0 1 -31.9928 -26.4436" Boundary="0 0 14.355 3.4025" Fill="true">
+        <ofd:FillColor Value="255 221 0"/>
+        <ofd:AbbreviatedData>M 31.9928 26.4436 L 46.3478 26.4436 L 46.3478 29.8462 L 31.9928 29.8462 C</ofd:AbbreviatedData>
+      </ofd:PathObject>
+    </ofd:Appearance>
+  </ofd:Annot>
+</ofd:PageAnnot>"#;
+        let anns = parse_page_annot(xml, &PageId::new("1")).unwrap();
+        match &anns[0].payload {
+            AnnotationPayload::Markup { quad_points, .. } => {
+                assert_eq!(quad_points.len(), 2);
+                // p0 = appearance_boundary.origin + path.boundary.origin = (31.99, 26.44)
+                assert!(
+                    (quad_points[0].x - 31.9928).abs() < 1e-6,
+                    "p0.x = 31.9928, got {} (old bug: 0)",
+                    quad_points[0].x
+                );
+                assert!(
+                    (quad_points[0].y - 26.4436).abs() < 1e-6,
+                    "p0.y = 26.4436, got {} (old bug: 0)",
+                    quad_points[0].y
+                );
+                assert!(quad_points[0].x > 30.0, "must NOT collapse to x=0");
+            }
+            other => panic!("expected Markup, got {other:?}"),
         }
     }
 }
