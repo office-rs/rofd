@@ -14,7 +14,7 @@
 //! carries vertices, and the surgical save leaves every body `Content.xml`
 //! byte-identical.
 
-use rofd_dom::{AnnotationKind, AnnotationPayload, PageId, ShapeKind};
+use rofd_dom::{AnnotationKind, AnnotationPayload, PageId, PageObject, ShapeKind};
 
 #[test]
 #[ignore = "needs local test/sample.ofd (gitignored)"]
@@ -179,4 +179,52 @@ fn sample_ofd_markup_quad_points_at_page_coordinates() {
             );
         }
     }
+}
+
+#[test]
+#[ignore = "needs local test/sample.ofd (gitignored)"]
+fn sample_ofd_body_text_objects_parse_not_skipped() {
+    // CGTransform/Glyphs are unknown elements -> SkippedObject warnings, but
+    // the enclosing TextObject must still parse (TextCode text + deltas + CTM
+    // + Boundary captured). If this regresses, every body TextObject vanishes
+    // and the page renders blank.
+    let bytes = std::fs::read("../../test/sample.ofd").expect("sample present");
+    let report = rofd_io::parse_ofd(&bytes).expect("parse succeeds");
+    let page0 = &report.document.pages[0];
+    let text_objects: Vec<_> = page0
+        .layers
+        .iter()
+        .flat_map(|l| {
+            l.objects.iter().filter_map(|o| match o {
+                PageObject::Text(t) => Some(t),
+                _ => None,
+            })
+        })
+        .collect();
+    assert!(
+        !text_objects.is_empty(),
+        "page 0 body TextObjects must parse (CGTransform/Glyphs are warnings, not skips)"
+    );
+    let first = &text_objects[0];
+    assert!(!first.codes.is_empty(), "first TextObject has a TextCode");
+    assert!(
+        !first.codes[0].text.is_empty(),
+        "first TextCode carries text (got {:?})",
+        first.codes[0].text
+    );
+    // CGTransform/Glyphs must populate glyph_ids (subset font has no cmap;
+    // render draws by these IDs). "高亮测试" -> 4 glyph IDs.
+    assert!(
+        !first.codes[0].glyph_ids.is_empty(),
+        "first TextCode has glyph_ids from CGTransform/Glyphs (got {:?})",
+        first.codes[0].glyph_ids
+    );
+    assert_eq!(first.codes[0].glyph_ids.len(), 4, "高亮测试 -> 4 glyph IDs");
+    // CTM + Boundary must survive - the boundary-origin render fix depends on them.
+    assert!(first.ctm.is_some(), "first TextObject CTM preserved");
+    assert!(
+        first.boundary.x > 30.0,
+        "first TextObject Boundary.x preserved (got {:?})",
+        first.boundary
+    );
 }
