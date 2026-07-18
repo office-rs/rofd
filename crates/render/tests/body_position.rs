@@ -32,6 +32,93 @@ fn first_glyph_transform(scene: &Scene) -> Option<imaging::kurbo::Affine> {
     None
 }
 
+/// Find the first glyph run in `scene`, if any (for asserting glyph IDs).
+fn first_glyph_run(scene: &Scene) -> Option<&imaging::record::GlyphRun> {
+    for cmd in scene.commands() {
+        if let Command::Draw(id) = cmd {
+            if let Draw::GlyphRun(gr) = scene.draw_op(*id) {
+                return Some(gr);
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn text_glyph_ids_used_when_present() {
+    // When TextCode.glyph_ids is non-empty (CGTransform/Glyphs from a subset
+    // font with no cmap), draw_text must draw by those IDs directly - not shape
+    // (shape needs a cmap and returns .notdef on subset fonts, vanishing the
+    // text). The GlyphRun's glyph IDs must equal TextCode.glyph_ids.
+    let fonts = font_store();
+    // Use real TestFont glyph IDs (via shape) so the draw call stays in range -
+    // the point is to verify the glyph_ids path is taken, not to render a
+    // specific glyph outline.
+    let (_, shaped) = fonts.shape(&FontId::new("F1"), "test", 12.0);
+    let valid_ids: Vec<u32> = shaped.iter().map(|g| g.glyph_id).collect();
+    assert_eq!(valid_ids.len(), 4, "TestFont shapes 'test' to 4 glyphs");
+
+    let text = TextObject {
+        id: ObjectId::new("t1"),
+        boundary: Rect {
+            x: 31.75,
+            y: 26.3149,
+            w: 17.583,
+            h: 3.6829,
+        },
+        ctm: Some(Ctm {
+            a: 0.0176,
+            b: 0.0,
+            c: 0.0,
+            d: 0.0176,
+            e: 0.0,
+            f: 0.0,
+        }),
+        font: FontId::new("F1"),
+        size: 209.0,
+        fill: Some(rofd_dom::Color::Rgb(0, 0, 0)),
+        codes: vec![TextCode {
+            glyph_ids: valid_ids.clone(),
+            deltas: vec![(10.0, 0.0); 4],
+            text: "test".into(),
+            x: 0.0,
+            y: 179.5313,
+        }],
+        draw_param: None,
+    };
+    let page = Page {
+        id: PageId::new("P0"),
+        physical_box: Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 210.0,
+            h: 297.0,
+        },
+        layers: vec![Layer {
+            layer_type: LayerType::Body,
+            objects: vec![PageObject::Text(text)],
+        }],
+        template: None,
+    };
+    let mut scene = Scene::new();
+    let mut painter = Painter::new(&mut scene);
+    draw_body(
+        &mut painter,
+        &page,
+        &rofd_dom::Resources::default(),
+        &fonts,
+        (0.0, 0.0),
+        1.0,
+    );
+
+    let gr = first_glyph_run(&scene).expect("a glyph run drawn from glyph_ids");
+    let ids: Vec<u32> = gr.glyphs.iter().map(|g| g.id).collect();
+    assert_eq!(
+        ids, valid_ids,
+        "GlyphRun uses TextCode.glyph_ids (not shape)"
+    );
+}
+
 #[test]
 fn text_glyph_transform_includes_boundary_origin() {
     // Mirrors sample.ofd's TextObject: CTM=scale(0.0176) (no translation),
