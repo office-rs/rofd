@@ -218,7 +218,7 @@ pub struct PackageHandle { /* io 内部不透明：原始条目字节(Arc) + nam
 
 ### 4.1 渲染模型：paper-on-desk + 离散分页
 
-灰底视口 `#E0E0E0`，白页居中竖向堆叠，可滚动。每页尺寸来自 `Page.physical_box`，整体按 `zoom` 缩放。最终变换 = `viewport(平移+zoom) × page_origin × object_ctm`。
+灰底视口 `#E0E0E0`，白页居中竖向堆叠，可滚动。每页尺寸来自 `Page.physical_box`，整体按 `zoom` 缩放。最终变换 = `viewport(平移+zoom) × page_origin × translate(boundary) × object_ctm`（OFD §8.1：对象局部坐标—TextCode X/Y、AbbreviatedData 路径点—先经对象 CTM，再加对象 `Boundary` 原点平移到页面坐标；漏掉 `translate(boundary)` 会使 CTM 无平移分量的对象，如 `0.0176 0 0 0.0176 0 0` 配 `TextCode X=0`，全部塌缩到页面左上角）。
 
 ### 4.2 场景构建：body 稳定 + 批注 overlay
 
