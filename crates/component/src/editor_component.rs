@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use rofd_dom::{
     AnnotationKind, AnnotationPayload, AnnotationSelection, Color, OfdDocument, OfdWarning, PageId,
-    PathCommand, PathData, Point, Rect,
+    PathCommand, PathData, Point, Rect, ShapeKind,
 };
 use rofd_editor::{Editor, TextCursor};
 use rofd_render::{DragPreview, FontStore, HandlePos, RenderEngine, Scene, Viewport, PX_PER_MM};
@@ -1076,6 +1076,22 @@ fn drag_to_preview(doc: &OfdDocument, d: &DragState, vp: &Viewport) -> Option<Dr
         } => {
             if *kind == AnnotationKind::Freehand {
                 Some(DragPreview::CreateFreehand { path: path.clone() })
+            } else if matches!(
+                kind,
+                AnnotationKind::Shape(ShapeKind::Line) | AnnotationKind::Shape(ShapeKind::Arrow)
+            ) {
+                // Line/Arrow are defined by their endpoints, not their bbox -
+                // carry the page-local start/current so the preview draws the
+                // actual drawn diagonal (the bbox would lose it).
+                let page = current_page_id(doc, vp, *current);
+                let start_local = viewport_to_page_local(doc, vp, &page, *start).unwrap_or(*start);
+                let current_local =
+                    viewport_to_page_local(doc, vp, &page, *current).unwrap_or(*current);
+                Some(DragPreview::CreateLine {
+                    kind: kind.clone(),
+                    start: start_local,
+                    current: current_local,
+                })
             } else {
                 // Resolve the page from the viewport-space `current` point
                 // (same page-selection logic as the PointerUp handler), then
@@ -1209,7 +1225,10 @@ fn compute_resize(handle: &HandlePos, anchor: (f64, f64), orig: Rect, point: (f6
 ///
 /// - Markup (Highlight/Underline/Strikeout/Squiggly): quad_points = [start, current].
 /// - Freehand: path from accumulated `path` points (M + L commands).
-/// - Shape (Rect): rect = bbox(start, current).
+/// - Shape: rect = bbox(start, current). Line/Arrow additionally store
+///   `points = [start, current]` so the draw direction (and arrowhead
+///   position) is preserved - the bbox alone loses which diagonal was drawn.
+///   Rect/Ellipse store empty `points` (no endpoint direction).
 fn build_create_payload(
     kind: &AnnotationKind,
     start: (f64, f64),
@@ -1263,14 +1282,34 @@ fn build_create_payload(
                 width: DEFAULT_FREEHAND_WIDTH,
             }
         }
-        AnnotationKind::Shape(shape_kind) => AnnotationPayload::Shape {
-            kind: *shape_kind,
-            rect: bbox(start, current),
-            stroke: DEFAULT_SHAPE_COLOR,
-            fill: None,
-            width: DEFAULT_SHAPE_WIDTH,
-            points: vec![],
-        },
+        AnnotationKind::Shape(shape_kind) => {
+            // Line/Arrow carry their two endpoints in `points` (direction =
+            // start -> current; the arrowhead sits at `current`). The bbox
+            // `rect` alone loses which diagonal was drawn, so the endpoints
+            // are required for correct rendering. Rect/Ellipse have no
+            // endpoint direction -> empty points.
+            let points = match shape_kind {
+                ShapeKind::Line | ShapeKind::Arrow => vec![
+                    Point {
+                        x: start.0,
+                        y: start.1,
+                    },
+                    Point {
+                        x: current.0,
+                        y: current.1,
+                    },
+                ],
+                _ => vec![],
+            };
+            AnnotationPayload::Shape {
+                kind: *shape_kind,
+                rect: bbox(start, current),
+                stroke: DEFAULT_SHAPE_COLOR,
+                fill: None,
+                width: DEFAULT_SHAPE_WIDTH,
+                points,
+            }
+        }
         // Note/TextBox/Stamp/Watermark: use bbox as rect with minimal defaults.
         // The host can refine via property panels later.
         AnnotationKind::Note => AnnotationPayload::Note {
@@ -1666,6 +1705,97 @@ mod tests {
             match &ann.payload {
                 AnnotationPayload::Shape { rect, .. } => {
                     // bbox((10,10),(50,60)) = (10,10,40,50)
+                    assert_eq!(
+                        *rect,
+                        Rect {
+                            x: 10.0,
+                            y: 10.0,
+                            w: 40.0,
+                            h: 50.0
+                        }
+                    );
+                }
+                _ => panic!("expected Shape payload"),
+            }
+        }
+    }
+
+    #[test]
+    fn create_line_via_drag_populates_points() {
+        // A Line drag must store the start/current endpoints in `points`
+        // (direction = start -> current), NOT just the bbox rect. The rect
+        // loses which diagonal was drawn, so without `points` a TR->BL drag
+        // would render as the wrong line.
+        let mut c = component_with_note();
+        c.set_tool(Tool::Create(AnnotationKind::Shape(ShapeKind::Line)));
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 10.0,
+            y: 10.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 60.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 60.0,
+        });
+        if let AnnotationSelection::Single(id) = c.editor.selection() {
+            let ann = c.editor.document().annotations.find(id).unwrap();
+            match &ann.payload {
+                AnnotationPayload::Shape { points, rect, .. } => {
+                    assert_eq!(
+                        *points,
+                        vec![Point { x: 10.0, y: 10.0 }, Point { x: 50.0, y: 60.0 },],
+                        "Line points must be [start, current] (direction preserved)"
+                    );
+                    // rect is still the bbox (used for hit-test/handles).
+                    assert_eq!(
+                        *rect,
+                        Rect {
+                            x: 10.0,
+                            y: 10.0,
+                            w: 40.0,
+                            h: 50.0
+                        }
+                    );
+                }
+                _ => panic!("expected Shape payload"),
+            }
+        }
+    }
+
+    #[test]
+    fn create_arrow_via_drag_preserves_reverse_direction() {
+        // Dragging BR -> TL must store points = [BR, TL] (arrowhead at TL),
+        // even though the bbox is the same as a TL -> BR drag. This is the
+        // case that a rect-only model gets backwards.
+        let mut c = component_with_note();
+        c.set_tool(Tool::Create(AnnotationKind::Shape(ShapeKind::Arrow)));
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 60.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerMove { x: 10.0, y: 10.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 10.0,
+            y: 10.0,
+        });
+        if let AnnotationSelection::Single(id) = c.editor.selection() {
+            let ann = c.editor.document().annotations.find(id).unwrap();
+            match &ann.payload {
+                AnnotationPayload::Shape { points, rect, .. } => {
+                    assert_eq!(
+                        *points,
+                        vec![
+                            Point { x: 50.0, y: 60.0 },
+                            Point { x: 10.0, y: 10.0 },
+                        ],
+                        "Arrow points must be [start, current] = [BR, TL] (reverse direction preserved)"
+                    );
                     assert_eq!(
                         *rect,
                         Rect {

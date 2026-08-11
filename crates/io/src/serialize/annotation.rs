@@ -12,8 +12,8 @@ use rofd_dom::{
 };
 
 use crate::annotation_geom::{
-    arrow_path, ellipse_path, line_path, markup_line_path, polygon_path, polyline_path, rect_path,
-    squiggly_path,
+    arrow_path, arrow_path_points, ellipse_path, line_path, line_path_points, markup_line_path,
+    polygon_path, polyline_path, rect_path, squiggly_path,
 };
 use crate::dateutil::format_last_mod_date;
 
@@ -73,11 +73,14 @@ fn serialize_one(a: &Annotation) -> String {
             angle
         ));
     }
-    // Polygon/PolyLine: Vertices Parameter (GB/T 33190 §15.2.3.5) carries the
-    // control points as "x y x y ..." so parse can reconstruct `points`.
+    // Polygon/PolyLine/Line/Arrow: Vertices Parameter (GB/T 33190 §15.2.3.5)
+    // carries the control points as "x y x y ..." so parse can reconstruct
+    // `points`. Line/Arrow store their two endpoints here so the drawn
+    // direction (and arrowhead position) survives save/reload - the bbox
+    // `rect` alone loses which diagonal was drawn.
     if let AnnotationPayload::Shape {
         points,
-        kind: ShapeKind::Polygon | ShapeKind::PolyLine,
+        kind: ShapeKind::Polygon | ShapeKind::PolyLine | ShapeKind::Line | ShapeKind::Arrow,
         ..
     } = &a.payload
     {
@@ -204,14 +207,18 @@ fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload) -> String 
                 stroke,
                 fill,
                 width,
+                points,
                 ..
             },
         ) => {
             let path = match sk {
                 ShapeKind::Rect => rect_path(rect),
                 ShapeKind::Ellipse => ellipse_path(rect),
-                ShapeKind::Arrow => arrow_path(rect),
-                ShapeKind::Line => line_path(rect),
+                // Direction-aware: when endpoints are stored, emit the actual
+                // p0 -> p1 geometry (object-local) so other OFD readers also
+                // see the drawn direction; fall back to the bbox diagonal.
+                ShapeKind::Arrow => arrow_path_from(rect, points),
+                ShapeKind::Line => line_path_from(rect, points),
                 // Polygon/PolyLine handled by their own arms above (with Vertices).
                 ShapeKind::Polygon | ShapeKind::PolyLine => rect_path(rect),
             };
@@ -450,6 +457,38 @@ fn quad_point_pairs(
 // ---------------------------------------------------------------------------
 // Geometry / formatting helpers
 // ---------------------------------------------------------------------------
+
+/// Build a Line's AbbreviatedData path from stored endpoints (object-local)
+/// when available, falling back to the rect's TL->BR diagonal when only the
+/// bbox is known (legacy/external OFD).
+fn line_path_from(rect: &Rect, points: &[rofd_dom::Point]) -> PathData {
+    if let (Some(p0), Some(p1)) = (points.first(), points.get(1)) {
+        line_path_points(to_object_local(p0, rect), to_object_local(p1, rect))
+    } else {
+        line_path(rect)
+    }
+}
+
+/// Build an Arrow's AbbreviatedData path (shaft + filled head) from stored
+/// endpoints (object-local) when available, falling back to the rect's
+/// TL->BR diagonal + head when only the bbox is known.
+fn arrow_path_from(rect: &Rect, points: &[rofd_dom::Point]) -> PathData {
+    if let (Some(p0), Some(p1)) = (points.first(), points.get(1)) {
+        arrow_path_points(to_object_local(p0, rect), to_object_local(p1, rect), rect)
+    } else {
+        arrow_path(rect)
+    }
+}
+
+/// Convert a page-local point to object-local (relative to the PathObject
+/// Boundary origin). OFD AbbreviatedData is relative to the object boundary,
+/// so endpoints stored in page-local coords must be shifted before emission.
+fn to_object_local(p: &rofd_dom::Point, rect: &Rect) -> rofd_dom::Point {
+    rofd_dom::Point {
+        x: p.x - rect.x,
+        y: p.y - rect.y,
+    }
+}
 
 /// Compute the bounding rect of a PathData (min/max of M/L points).
 fn path_bounds(p: &PathData) -> Rect {

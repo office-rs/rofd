@@ -27,13 +27,15 @@
 
 use std::sync::Arc;
 
-use imaging::kurbo::{Rect, Stroke};
+use imaging::kurbo::{Affine, BezPath, Rect, Stroke};
 use imaging::peniko::Color;
 use imaging::record::Scene;
 use imaging::Painter;
-use rofd_dom::{AnnotationKind, AnnotationSelection, OfdDocument, Rect as RofdRect};
+use rofd_dom::{
+    AnnotationKind, AnnotationSelection, OfdDocument, Point, Rect as RofdRect, ShapeKind,
+};
 
-use crate::annotation_scene::draw_annotations;
+use crate::annotation_scene::{arrow_head_path, draw_annotations};
 use crate::body_scene::draw_body;
 use crate::hit_test::{annotation_viewport_rect, HANDLE_SIZE};
 use crate::text::FontStore;
@@ -99,6 +101,16 @@ pub enum DragPreview {
     Create {
         kind: AnnotationKind,
         rect: RofdRect,
+    },
+    /// Creating a Line/Arrow annotation. `start`/`current` are page-local
+    /// endpoints (direction = start -> current; the arrowhead sits at
+    /// `current`). Carried separately from `Create` because a Line/Arrow is
+    /// defined by its endpoints, not its bbox - the bbox loses which diagonal
+    /// was drawn.
+    CreateLine {
+        kind: AnnotationKind,
+        start: (f64, f64),
+        current: (f64, f64),
     },
     /// Creating a freehand annotation; `path` is viewport-space points.
     CreateFreehand { path: Vec<(f64, f64)> },
@@ -316,6 +328,47 @@ fn draw_drag_preview(
                 .stroke(vr, &Stroke::new(PREVIEW_STROKE_WIDTH), PREVIEW_COLOR)
                 .draw();
         }
+        DragPreview::CreateLine {
+            kind,
+            start,
+            current,
+        } => {
+            // Create drags target page 0 (same as the Create rect arm).
+            let Some((origin_x, origin_y)) = page_origin(doc, vp, 0) else {
+                return;
+            };
+            let base = Affine::translate((origin_x, origin_y)) * Affine::scale(vp.zoom);
+            // Shaft: page-local start -> current (shows the drawn direction).
+            let mut shaft = BezPath::new();
+            shaft.move_to(*start);
+            shaft.line_to(*current);
+            painter
+                .stroke(&shaft, &Stroke::new(PREVIEW_STROKE_WIDTH), PREVIEW_COLOR)
+                .transform(base)
+                .draw();
+            // Arrow: filled triangle head at `current` so the user sees where
+            // the arrowhead will land before releasing.
+            if matches!(kind, AnnotationKind::Shape(ShapeKind::Arrow)) {
+                let bbox = RofdRect {
+                    x: start.0.min(current.0),
+                    y: start.1.min(current.1),
+                    w: (start.0 - current.0).abs(),
+                    h: (start.1 - current.1).abs(),
+                };
+                let head = arrow_head_path(
+                    Point {
+                        x: start.0,
+                        y: start.1,
+                    },
+                    Point {
+                        x: current.0,
+                        y: current.1,
+                    },
+                    &bbox,
+                );
+                painter.fill(&head, PREVIEW_COLOR).transform(base).draw();
+            }
+        }
         DragPreview::CreateFreehand { path } => {
             if path.len() < 2 {
                 return;
@@ -519,6 +572,84 @@ mod tests {
             "drag preview should add strokes ({} -> {})",
             count_strokes(&scene_no_drag),
             count_strokes(&scene_drag)
+        );
+    }
+
+    #[test]
+    fn composite_with_drag_preview_line_draws_shaft_not_rect() {
+        // A Line drag preview strokes a shaft line (start -> current); it must
+        // NOT add a fill (no head) and must add a stroke.
+        let (doc, _ann_id) = doc_with_rect_annotation();
+        let fonts = build_font_store();
+        let engine = RenderEngine::new(Arc::new(vec![]));
+        let vp = Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (200.0, 200.0),
+            page_gap: 20.0,
+        };
+        let preview = DragPreview::CreateLine {
+            kind: AnnotationKind::Shape(ShapeKind::Line),
+            start: (5.0, 5.0),
+            current: (50.0, 40.0),
+        };
+        let scene_no_drag = engine.composite(&doc, &vp, &fonts, &AnnotationSelection::None, None);
+        let scene_drag = engine.composite(
+            &doc,
+            &vp,
+            &fonts,
+            &AnnotationSelection::None,
+            Some(&preview),
+        );
+        assert!(
+            count_strokes(&scene_drag) > count_strokes(&scene_no_drag),
+            "Line preview should add a shaft stroke ({} -> {})",
+            count_strokes(&scene_no_drag),
+            count_strokes(&scene_drag)
+        );
+        assert_eq!(
+            count_fills(&scene_drag),
+            count_fills(&scene_no_drag),
+            "Line preview must not add a fill (no head)"
+        );
+    }
+
+    #[test]
+    fn composite_with_drag_preview_arrow_draws_shaft_and_head() {
+        // An Arrow drag preview strokes the shaft AND fills a head triangle.
+        let (doc, _ann_id) = doc_with_rect_annotation();
+        let fonts = build_font_store();
+        let engine = RenderEngine::new(Arc::new(vec![]));
+        let vp = Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (200.0, 200.0),
+            page_gap: 20.0,
+        };
+        let preview = DragPreview::CreateLine {
+            kind: AnnotationKind::Shape(ShapeKind::Arrow),
+            start: (5.0, 5.0),
+            current: (50.0, 40.0),
+        };
+        let scene_no_drag = engine.composite(&doc, &vp, &fonts, &AnnotationSelection::None, None);
+        let scene_drag = engine.composite(
+            &doc,
+            &vp,
+            &fonts,
+            &AnnotationSelection::None,
+            Some(&preview),
+        );
+        assert!(
+            count_strokes(&scene_drag) > count_strokes(&scene_no_drag),
+            "Arrow preview should add a shaft stroke ({} -> {})",
+            count_strokes(&scene_no_drag),
+            count_strokes(&scene_drag)
+        );
+        assert!(
+            count_fills(&scene_drag) > count_fills(&scene_no_drag),
+            "Arrow preview should add a head fill ({} -> {})",
+            count_fills(&scene_no_drag),
+            count_fills(&scene_drag)
         );
     }
 

@@ -50,6 +50,15 @@ pub fn line_path(r: &Rect) -> PathData {
     }
 }
 
+/// Straight line path between two explicit endpoints `p0 -> p1` (object-local
+/// coords). Use this when the line direction is known (Shape Line/Arrow with
+/// stored `points`); fall back to [`line_path`] when only the bbox is known.
+pub fn line_path_points(p0: Point, p1: Point) -> PathData {
+    PathData {
+        commands: vec![PathCommand::M(p0.x, p0.y), PathCommand::L(p1.x, p1.y)],
+    }
+}
+
 /// Arrow path: main diagonal line (0,0)->(w,h) plus a filled triangle head
 /// at the tip, oriented along the line direction. The head size scales with
 /// the smaller of (w, h). Emits M-L for the shaft, then M-L-L-Z for the head.
@@ -67,6 +76,28 @@ pub fn arrow_path(r: &Rect) -> PathData {
             PathCommand::M(w - dx + nx, h - dy + ny),
             PathCommand::L(w, h),
             PathCommand::L(w - dx - nx, h - dy - ny),
+            PathCommand::Z,
+        ],
+    }
+}
+
+/// Arrow path between two explicit endpoints `p0 -> p1` (object-local coords),
+/// with the filled triangle head at `p1` oriented along the shaft direction.
+/// Head size scales with the smaller rect side (matching [`arrow_path`]). Use
+/// this when the arrow direction is known; fall back to [`arrow_path`] when
+/// only the bbox is known.
+pub fn arrow_path_points(p0: Point, p1: Point, rect: &Rect) -> PathData {
+    let head = rect.w.min(rect.h).max(1.0) * 0.25;
+    let angle = (p1.y - p0.y).atan2(p1.x - p0.x);
+    let (bx, by) = (angle.cos() * head, angle.sin() * head);
+    let (nx, ny) = (-angle.sin() * head, angle.cos() * head);
+    PathData {
+        commands: vec![
+            PathCommand::M(p0.x, p0.y),
+            PathCommand::L(p1.x, p1.y),
+            PathCommand::M(p1.x - bx + nx, p1.y - by + ny),
+            PathCommand::L(p1.x, p1.y),
+            PathCommand::L(p1.x - bx - nx, p1.y - by - ny),
             PathCommand::Z,
         ],
     }
@@ -212,6 +243,40 @@ mod tests {
         assert!(matches!(p.commands[0], PathCommand::M(0.0, 0.0)));
         assert!(matches!(p.commands[1], PathCommand::L(10.0, 10.0)));
         // Triangle head closes with Z (filled), not the old open two-stub form.
+        assert!(matches!(p.commands.last(), Some(PathCommand::Z)));
+    }
+
+    #[test]
+    fn line_path_points_uses_explicit_endpoints() {
+        // Direction-aware: M(p0) L(p1) with the given endpoints (not the bbox
+        // diagonal). An anti-diagonal TR->BL line keeps TR->BL.
+        let p = line_path_points(Point { x: 100.0, y: 0.0 }, Point { x: 0.0, y: 50.0 });
+        assert_eq!(p.commands.len(), 2);
+        assert!(matches!(p.commands[0], PathCommand::M(100.0, 0.0)));
+        assert!(matches!(p.commands[1], PathCommand::L(0.0, 50.0)));
+    }
+
+    #[test]
+    fn arrow_path_points_head_at_p1() {
+        // The shaft runs p0 -> p1 and the closed triangle head sits at p1.
+        // For a TL->BR arrow this matches arrow_path(rect); for other
+        // directions the head follows p1.
+        let p = arrow_path_points(
+            Point { x: 0.0, y: 0.0 },
+            Point { x: 100.0, y: 50.0 },
+            &Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 50.0,
+            },
+        );
+        // M, L (shaft), M, L, L, Z (head) = 6 commands.
+        assert_eq!(p.commands.len(), 6);
+        assert!(matches!(p.commands[0], PathCommand::M(0.0, 0.0)));
+        assert!(matches!(p.commands[1], PathCommand::L(100.0, 50.0)));
+        // Head tip (4th command, the L to p1) lands on p1 = (100, 50).
+        assert!(matches!(p.commands[3], PathCommand::L(100.0, 50.0)));
         assert!(matches!(p.commands.last(), Some(PathCommand::Z)));
     }
 
