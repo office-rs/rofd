@@ -9,9 +9,12 @@
 //!   remains visible through the highlight). **Squiggly** is the exception:
 //!   it strokes a wavy Q-curve path (alternating up/down) instead of filling.
 //! - **Freehand**: the annotation's [`PathData`] stroked with `color`/`width`.
-//! - **Shape**: a filled and/or stroked rectangle / ellipse / arrow / line
-//!   bounded by `rect` (arrow/line use the rect's bounding box in v1), or a
-//!   polygon/polyline built from `points` (polygon closes the path).
+//! - **Shape**: a filled and/or stroked rectangle / ellipse bounded by `rect`,
+//!   a polygon/polyline built from `points`, or a **line/arrow** drawn from the
+//!   two endpoints in `points` (direction = `points[0] -> points[1]`, the
+//!   arrowhead sits at `points[1]`). When `points` is empty (legacy/external
+//!   OFD carrying only a boundary), line/arrow fall back to the rect's
+//!   TL->BR diagonal.
 //! - **Note**: a filled rectangle for the sticky-note icon (popup text is
 //!   rendered by the host UI, not in the scene).
 //! - **TextBox**: `content` shaped with the annotation's font and drawn inside
@@ -268,18 +271,23 @@ fn draw_freehand(
         .draw();
 }
 
-/// Shape: fill and/or stroke a rectangle / ellipse / arrow / line / polygon /
-/// polyline bounded by `rect` (or built from `points` for polygon/polyline).
+/// Shape: fill and/or stroke a rectangle / ellipse / polygon / polyline, or
+/// draw a line/arrow from its two endpoints.
 ///
-/// - Rect/Arrow/Line: rect bounding box (arrow/line use the bbox in v1; true
-///   arrowhead geometry is deferred).
-/// - Ellipse: kurbo `Ellipse` from the rect.
-/// - Polygon: BezPath through `points` (closed); fill (if Some) + stroke.
-/// - PolyLine: BezPath through `points` (open); stroke only (fill is typically
-///   None, but if provided it is still applied to the open path).
+/// - **Rect**: rect bounding box; fill (if Some) + stroke.
+/// - **Ellipse**: kurbo `Ellipse` from the rect; fill (if Some) + stroke.
+/// - **Polygon**: BezPath through `points` (closed); fill (if Some) + stroke.
+/// - **PolyLine**: BezPath through `points` (open); stroke only (fill is
+///   typically None, but if provided it is still applied to the open path).
+/// - **Line**: a single stroked segment `points[0] -> points[1]` (stroke only,
+///   no fill - `fill` is ignored). Falls back to the rect's TL->BR diagonal
+///   when `points` has fewer than 2 entries.
+/// - **Arrow**: the same segment stroked as the shaft, plus a filled triangle
+///   head at `points[1]` oriented along the shaft direction (filled with the
+///   stroke color; the `fill` field is ignored). Same fallback as Line.
 ///
-/// Fill is applied first, then stroke (painter's order). An empty `points`
-/// vector for Polygon/PolyLine draws nothing.
+/// For Polygon/PolyLine an empty `points` vector draws nothing. Fill is
+/// applied first, then stroke (painter's order).
 #[allow(clippy::too_many_arguments)] // all params describe one shape draw call
 fn draw_shape(
     painter: &mut Painter<Scene>,
@@ -291,9 +299,36 @@ fn draw_shape(
     points: &[rofd_dom::Point],
     base: Affine,
 ) {
-    let bez: BezPath = match kind {
-        ShapeKind::Rect | ShapeKind::Arrow | ShapeKind::Line => {
-            rofd_rect_to_kurbo(rect).to_path(SHAPE_TOLERANCE)
+    match kind {
+        ShapeKind::Line | ShapeKind::Arrow => {
+            let (p0, p1) = line_endpoints(rect, points);
+            // Shaft: a single stroked segment p0 -> p1.
+            let mut shaft = BezPath::new();
+            shaft.move_to((p0.x, p0.y));
+            shaft.line_to((p1.x, p1.y));
+            painter
+                .stroke(&shaft, &Stroke::new(width), to_peniko(stroke))
+                .transform(base)
+                .draw();
+            // Arrow: fill a triangle head at p1 along the shaft direction.
+            // Line stops here (stroke only).
+            if matches!(kind, ShapeKind::Arrow) {
+                let head = arrow_head_path(p0, p1, rect);
+                painter
+                    .fill(&head, to_peniko(stroke))
+                    .transform(base)
+                    .draw();
+            }
+        }
+        ShapeKind::Rect => {
+            let bez = rofd_rect_to_kurbo(rect).to_path(SHAPE_TOLERANCE);
+            fill_then_stroke(painter, &bez, fill, stroke, width, base);
+        }
+        ShapeKind::Ellipse => {
+            let center = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+            let radii = (rect.w / 2.0, rect.h / 2.0);
+            let bez = Ellipse::new(center, radii, 0.0).to_path(SHAPE_TOLERANCE);
+            fill_then_stroke(painter, &bez, fill, stroke, width, base);
         }
         ShapeKind::Polygon | ShapeKind::PolyLine => {
             if points.is_empty() {
@@ -307,19 +342,67 @@ fn draw_shape(
             if matches!(kind, ShapeKind::Polygon) {
                 path.close_path();
             }
-            path
+            fill_then_stroke(painter, &path, fill, stroke, width, base);
         }
-        ShapeKind::Ellipse => {
-            let center = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
-            let radii = (rect.w / 2.0, rect.h / 2.0);
-            Ellipse::new(center, radii, 0.0).to_path(SHAPE_TOLERANCE)
-        }
-    };
+    }
+}
+
+/// Resolve the two endpoints of a Line/Arrow. Prefers `points` (direction =
+/// `points[0] -> points[1]`, the arrowhead tip is `points[1]`); falls back to
+/// the rect's TL->BR diagonal when `points` has fewer than 2 entries (legacy
+/// or external OFD that carries only a boundary and no vertices).
+fn line_endpoints(rect: &Rect, points: &[rofd_dom::Point]) -> (rofd_dom::Point, rofd_dom::Point) {
+    if points.len() >= 2 {
+        (points[0], points[1])
+    } else {
+        (
+            rofd_dom::Point {
+                x: rect.x,
+                y: rect.y,
+            },
+            rofd_dom::Point {
+                x: rect.x + rect.w,
+                y: rect.y + rect.h,
+            },
+        )
+    }
+}
+
+/// Build the filled triangle arrowhead at `tip` (`p1`), oriented along the
+/// `p0 -> p1` shaft direction. The head size scales with the smaller rect
+/// side (`min(w, h) * 0.25`), matching `io::annotation_geom::arrow_path` so the
+/// rendered head matches the serialized AbbreviatedData head. Returns a
+/// closed BezPath (M-L-L-Z) ready to fill.
+pub(crate) fn arrow_head_path(p0: rofd_dom::Point, p1: rofd_dom::Point, rect: &Rect) -> BezPath {
+    // Shared with `composite::draw_drag_preview` for the Arrow drag preview.
+    let head = rect.w.min(rect.h).max(1.0) * 0.25;
+    let angle = (p1.y - p0.y).atan2(p1.x - p0.x);
+    // Unit vector back along the shaft (toward p0) and its perpendicular.
+    let (bx, by) = (angle.cos() * head, angle.sin() * head);
+    let (nx, ny) = (-angle.sin() * head, angle.cos() * head);
+    let mut path = BezPath::new();
+    path.move_to((p1.x - bx + nx, p1.y - by + ny));
+    path.line_to((p1.x, p1.y));
+    path.line_to((p1.x - bx - nx, p1.y - by - ny));
+    path.close_path();
+    path
+}
+
+/// Fill (if `Some`) then stroke a BezPath with `base` applied per draw call
+/// (painter's order: fill first, then stroke on top).
+fn fill_then_stroke(
+    painter: &mut Painter<Scene>,
+    bez: &BezPath,
+    fill: Option<Color>,
+    stroke: Color,
+    width: f64,
+    base: Affine,
+) {
     if let Some(fc) = fill {
-        painter.fill(&bez, to_peniko(fc)).transform(base).draw();
+        painter.fill(bez, to_peniko(fc)).transform(base).draw();
     }
     painter
-        .stroke(&bez, &Stroke::new(width), to_peniko(stroke))
+        .stroke(bez, &Stroke::new(width), to_peniko(stroke))
         .transform(base)
         .draw();
 }
@@ -620,6 +703,152 @@ mod tests {
             AnnotationKind::Shape(ShapeKind::Arrow),
         );
         let _ = build(&[ann]);
+    }
+
+    #[test]
+    fn shape_line_strokes_diagonal_not_fills_rect() {
+        // Line: a stroked line, NOT a filled/stroked rectangle outline (the
+        // "line became a rectangle" bug). build() paints one desk-bg fill, so
+        // the line must add a stroke but NO fill.
+        let ann = ann(
+            AnnotationPayload::Shape {
+                kind: ShapeKind::Line,
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 100.0,
+                    h: 50.0,
+                },
+                stroke: Color::Rgb(0, 0, 0),
+                fill: None,
+                width: 2.0,
+                points: vec![Point { x: 0.0, y: 0.0 }, Point { x: 100.0, y: 50.0 }],
+            },
+            AnnotationKind::Shape(ShapeKind::Line),
+        );
+        let scene = build(&[ann]);
+        let (fills, strokes) = count_fills_strokes(&scene);
+        assert_eq!(
+            fills, 1,
+            "Line must not add a fill (desk bg only), got {fills}"
+        );
+        assert!(strokes >= 1, "Line must stroke a segment, got {strokes}");
+    }
+
+    #[test]
+    fn shape_arrow_strokes_shaft_and_fills_head() {
+        // Arrow: shaft stroked + head filled. build() paints one desk-bg fill,
+        // so the arrow adds one stroke (shaft) and one fill (head triangle).
+        let ann = ann(
+            AnnotationPayload::Shape {
+                kind: ShapeKind::Arrow,
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 100.0,
+                    h: 50.0,
+                },
+                stroke: Color::Rgb(0, 0, 0),
+                fill: None,
+                width: 2.0,
+                points: vec![Point { x: 0.0, y: 0.0 }, Point { x: 100.0, y: 50.0 }],
+            },
+            AnnotationKind::Shape(ShapeKind::Arrow),
+        );
+        let scene = build(&[ann]);
+        let (fills, strokes) = count_fills_strokes(&scene);
+        assert!(strokes >= 1, "Arrow must stroke the shaft, got {strokes}");
+        assert!(
+            fills >= 2,
+            "Arrow must fill the head triangle (+desk bg), got {fills}"
+        );
+    }
+
+    #[test]
+    fn shape_line_uses_points_direction() {
+        // points = [TR, BL] -> the stroked line must run TR -> BL, NOT the
+        // bbox's TL -> BR diagonal (the "rect loses which diagonal" bug).
+        let ann = ann(
+            AnnotationPayload::Shape {
+                kind: ShapeKind::Line,
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 100.0,
+                    h: 50.0,
+                },
+                stroke: Color::Rgb(0, 0, 0),
+                fill: None,
+                width: 2.0,
+                points: vec![Point { x: 100.0, y: 0.0 }, Point { x: 0.0, y: 50.0 }],
+            },
+            AnnotationKind::Shape(ShapeKind::Line),
+        );
+        let scene = build(&[ann]);
+        let path = first_stroke_path(&scene).expect("a stroked line");
+        use imaging::kurbo::PathSeg;
+        let seg = path.segments().next();
+        match seg {
+            Some(PathSeg::Line(l)) => {
+                assert!(
+                    (l.p0.x - 100.0).abs() < 1e-9 && (l.p0.y - 0.0).abs() < 1e-9,
+                    "segment start = points[0] = (100, 0), got {:?}",
+                    l.p0
+                );
+                assert!(
+                    (l.p1.x - 0.0).abs() < 1e-9 && (l.p1.y - 50.0).abs() < 1e-9,
+                    "segment end = points[1] = (0, 50), got {:?}",
+                    l.p1
+                );
+            }
+            other => panic!("expected a Line segment, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shape_line_falls_back_to_rect_diagonal_when_no_points() {
+        // Legacy/external OFD with no `points`: fall back to the rect's
+        // TL -> BR diagonal so a bare-boundary Line still renders as a line.
+        let ann = ann(
+            AnnotationPayload::Shape {
+                kind: ShapeKind::Line,
+                rect: Rect {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 80.0,
+                    h: 30.0,
+                },
+                stroke: Color::Rgb(0, 0, 0),
+                fill: None,
+                width: 2.0,
+                points: vec![],
+            },
+            AnnotationKind::Shape(ShapeKind::Line),
+        );
+        let scene = build(&[ann]);
+        let path = first_stroke_path(&scene).expect("a stroked line");
+        use imaging::kurbo::PathSeg;
+        let seg = path.segments().next();
+        match seg {
+            Some(PathSeg::Line(l)) => {
+                assert!(
+                    (l.p0.x - 10.0).abs() < 1e-9,
+                    "fallback start = rect TL.x (10), got {:?}",
+                    l.p0
+                );
+                assert!(
+                    (l.p1.x - 90.0).abs() < 1e-9,
+                    "fallback end = rect BR.x (90), got {:?}",
+                    l.p1
+                );
+                assert!(
+                    (l.p1.y - 50.0).abs() < 1e-9,
+                    "fallback end = rect BR.y (50), got {:?} - must be the diagonal, not the top edge",
+                    l.p1
+                );
+            }
+            other => panic!("expected a Line segment, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1012,6 +1241,20 @@ mod tests {
             }
         }
         (fills, strokes)
+    }
+
+    /// Extract the first stroked path from the scene (the Line/Arrow shaft),
+    /// converted to a BezPath so tests can assert on its endpoints.
+    fn first_stroke_path(scene: &Scene) -> Option<BezPath> {
+        use imaging::record::{Command, Draw};
+        for cmd in scene.commands() {
+            if let Command::Draw(id) = cmd {
+                if let Draw::Stroke { shape, .. } = scene.draw_op(*id) {
+                    return Some(shape.to_path(SHAPE_TOLERANCE));
+                }
+            }
+        }
+        None
     }
 
     #[test]

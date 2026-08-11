@@ -300,6 +300,57 @@ fn polyline_roundtrips() {
     assert_eq!(a, roundtrip(&a));
 }
 
+#[test]
+fn line_roundtrips_with_direction() {
+    // A Line's endpoints (including anti-diagonal direction TR -> BL) must
+    // survive serialize -> parse so the rendered line keeps the drawn
+    // diagonal after save/reload. The bbox `rect` alone would lose this.
+    let a = ann(
+        30,
+        AnnotationKind::Shape(ShapeKind::Line),
+        AnnotationPayload::Shape {
+            kind: ShapeKind::Line,
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 50.0,
+            },
+            stroke: Color::Rgb(0, 0, 0),
+            fill: None,
+            width: 2.0,
+            points: vec![Point { x: 100.0, y: 0.0 }, Point { x: 0.0, y: 50.0 }],
+        },
+        None,
+    );
+    assert_eq!(a, roundtrip(&a));
+}
+
+#[test]
+fn arrow_roundtrips_with_direction() {
+    // An Arrow's direction (BR -> TL, arrowhead at TL) must survive
+    // serialize -> parse. The `Vertices` Parameter carries the endpoints.
+    let a = ann(
+        31,
+        AnnotationKind::Shape(ShapeKind::Arrow),
+        AnnotationPayload::Shape {
+            kind: ShapeKind::Arrow,
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 50.0,
+            },
+            stroke: Color::Rgb(255, 0, 0),
+            fill: None,
+            width: 2.0,
+            points: vec![Point { x: 100.0, y: 50.0 }, Point { x: 0.0, y: 0.0 }],
+        },
+        None,
+    );
+    assert_eq!(a, roundtrip(&a));
+}
+
 /// Multiple annotations on one page serialize/parse together.
 #[test]
 fn multiple_annots_roundtrip_together() {
