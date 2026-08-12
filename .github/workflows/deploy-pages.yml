@@ -1,0 +1,91 @@
+name: Deploy Web App to GitHub Pages
+
+# 把 examples/web-app 构建为静态站点并部署到 GitHub Pages 项目页。
+# 部署 URL：https://<user>.github.io/rofd/
+#
+# 前置条件（一次性配置）：
+#   仓库 Settings → Pages → Build and deployment → Source 选 "GitHub Actions"。
+#
+# 触发：push 到 main 分支，或手动 dispatch。
+# 产物：examples/web-app/dist 上传为 Pages artifact，由 deploy-pages action 部署。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'examples/web-app/**'
+      - 'crates/web-view/**'
+      - 'crates/dom/**'
+      - 'crates/io/**'
+      - 'crates/render/**'
+      - 'crates/editor/**'
+      - 'crates/component/**'
+      - '.github/workflows/deploy-pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时刻只跑一个部署任务，新的 push 会取消正在进行的旧部署。
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+
+      # rofd-web-view 依赖 yeslogic-fontconfig-sys，需要系统 fontconfig 库。
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1-dev libfreetype6-dev
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build wasm SDK
+        working-directory: crates/web-view
+        run: wasm-pack build --target web --out-dir sdk/dist
+
+      - name: Install web-app deps
+        working-directory: examples/web-app
+        run: npm install --no-audit --no-fund
+
+      # 字体文件已 commit 到 examples/web-app/public/fonts/，无需额外下载。
+      - name: Build
+        working-directory: examples/web-app
+        run: npm run build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: examples/web-app/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

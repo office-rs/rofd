@@ -45,17 +45,21 @@ async function main(): Promise<void> {
   const fileInput = document.getElementById('file-input') as HTMLInputElement;
   const toolbarEl = document.getElementById('toolbar') as HTMLElement;
 
+  // Vite 注入的 base 路径：本地 dev 为 '/'，生产构建为 '/rofd/'（GitHub Pages 子路径）。
+  // 字体文件放在 public/fonts/，构建后会被原样拷到 dist/fonts/，URL 需要拼上 base 前缀。
+  const BASE = import.meta.env.BASE_URL;
+
   const editor = await Editor.init(container, {
     fonts: [
-      { url: '/fonts/NotoSans-Regular.ttf' },
-      { url: '/fonts/NotoSansCJKsc-Regular.otf' },
-      { url: '/fonts/NotoSerifCJKsc-Regular.otf' },
-      { url: '/fonts/simsun.ttc' },
-      { url: '/fonts/simhei.ttf' },
-      { url: '/fonts/msyh.ttc' },
-      { url: '/fonts/arial.ttf' },
-      { url: '/fonts/times.ttf' },
-      { url: '/fonts/calibri.ttf' },
+      { url: `${BASE}fonts/NotoSans-Regular.ttf` },
+      { url: `${BASE}fonts/NotoSansCJKsc-Regular.otf` },
+      { url: `${BASE}fonts/NotoSerifCJKsc-Regular.otf` },
+      { url: `${BASE}fonts/simsun.ttc` },
+      { url: `${BASE}fonts/simhei.ttf` },
+      { url: `${BASE}fonts/msyh.ttc` },
+      { url: `${BASE}fonts/arial.ttf` },
+      { url: `${BASE}fonts/times.ttf` },
+      { url: `${BASE}fonts/calibri.ttf` },
     ],
     // Ctrl+S: download the current document as .ofd.
     onSaveRequest: () => {
