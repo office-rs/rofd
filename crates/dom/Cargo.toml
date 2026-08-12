@@ -2,6 +2,14 @@
 name = "rofd-dom"
 version = "0.1.0"
 edition = "2021"
+license = "GPL-3.0-or-later"
+authors = ["ravenq"]
+description = "OFD (GB/T 33190) document model — page body + annotation data structures for the rofd editor."
+repository = "https://github.com/ravenq/rofd"
+homepage = "https://github.com/ravenq/rofd#readme"
+keywords = ["ofd", "gbt-33190", "document-model"]
+categories = ["data-structures"]
+readme = "README.md"
 
 [dependencies]
 serde = { workspace = true }
