@@ -1,0 +1,7 @@
+# 让 npm 用本文件而不是根 .gitignore 来决定打包内容。
+# 根 .gitignore 排除了 crates/web-view/sdk/dist/，npm 在没有 .npmignore 时会读
+# .gitignore 过滤，导致 dist/ 产物被打包排除（tarball 里只剩 README + package.json）。
+# 本文件只排除构建/缓存产物；让 package.json 的 files: ["dist"] 决定打包内容。
+node_modules
+*.tgz
+package-lock.json
