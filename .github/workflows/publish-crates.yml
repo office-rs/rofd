@@ -14,6 +14,9 @@ name: Publish crates
 # 不发布：rofd-render / rofd-component / rofd-native-view / rofd-web-view
 #   原因：传递依赖 git 钉版（imaging / imaging_vello / xilem / masonry_winit），
 #   crates.io 拒绝 git 依赖。等上游发版到 crates.io 后再开。
+#
+# 关于 --allow-dirty：CI 用 sed 把 git tag 的版本号 patch 进 Cargo.toml，这些改动
+# 在 git 视角是"脏"的，cargo package / publish 默认拒绝。--allow-dirty 让它放行。
 
 on:
   release:
@@ -64,10 +67,10 @@ jobs:
           done
 
       - name: cargo package preview (rofd-dom)
-        run: cargo package -p rofd-dom --list
+        run: cargo package -p rofd-dom --list --allow-dirty
 
       - name: Publish rofd-dom
-        run: cargo publish -p rofd-dom
+        run: cargo publish -p rofd-dom --allow-dirty
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -77,10 +80,10 @@ jobs:
         run: sleep 30
 
       - name: cargo package preview (rofd-io)
-        run: cargo package -p rofd-io --list
+        run: cargo package -p rofd-io --list --allow-dirty
 
       - name: Publish rofd-io
-        run: cargo publish -p rofd-io
+        run: cargo publish -p rofd-io --allow-dirty
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -88,9 +91,9 @@ jobs:
         run: sleep 30
 
       - name: cargo package preview (rofd-editor)
-        run: cargo package -p rofd-editor --list
+        run: cargo package -p rofd-editor --list --allow-dirty
 
       - name: Publish rofd-editor
-        run: cargo publish -p rofd-editor
+        run: cargo publish -p rofd-editor --allow-dirty
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
