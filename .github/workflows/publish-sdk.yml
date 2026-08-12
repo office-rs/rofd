@@ -1,0 +1,117 @@
+name: Publish SDK
+
+# 当一个 GitHub Release 被 published 时，构建 wasm + TS 产物并发布到 npm registry。
+# 发布版本号来自 git tag（形如 v0.1.0）。
+#
+# 使用 npm Trusted Publishers (OIDC) 进行认证 —— 无需 NPM_TOKEN secret、零维护。
+#
+# 前置条件（一次性配置，详见 https://docs.npmjs.com/trusted-publishers）：
+#   1. 首次发版：必须先用 npm token 手动 publish 一次（在 npm 上创建包页面）。
+#      - 在 npmjs.com 创建一个 90 天的 granular write token（一次性的）。
+#      - 在 crates/web-view/sdk 目录下 `npm publish --access public`（带 token）。
+#   2. 在 https://www.npmjs.com/package/@rofd/sdk/access 配置 Trusted Publisher：
+#      - Publisher type: GitHub Actions
+#      - Organization/user: ravenq
+#      - Repository: rofd
+#      - Workflow filename: publish-sdk.yml
+#   3. 删除 NPM_TOKEN secret（如已配置）。
+#
+# 陷阱：actions/setup-node 的 registry-url 会往 ~/.npmrc 写一行
+#   `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`。
+# OIDC 模式下不设 NODE_AUTH_TOKEN，这行展开为空，npm CLI 误以为有 auth 就不触发 OIDC，
+# publish 报 ENEEDAUTH。解决：在 setup-node 后用 sed 删掉 _authToken 行。
+# 参考：https://github.com/npm/documentation/issues/1960
+
+on:
+  release:
+    types: [published]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # OIDC 必需：让 GitHub Actions 向 npm 请求签名 token
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version from git tag
+        id: tag
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          # 去掉前导 'v' 作为 npm 版本号
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      # npm CLI 11.5.1+ 才支持 OIDC Trusted Publishers。Node 22 自带 npm 10.x，
+      # 必须升级。
+      - name: Upgrade npm CLI to ≥11.5.1 (OIDC support)
+        run: npm install -g npm@latest
+
+      # 删除 setup-node 写入的空 _authToken 行，让 OIDC 流程接管认证。
+      - name: Strip empty _authToken from .npmrc (let OIDC kick in)
+        run: |
+          npmrc="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
+          sed -i '/_authToken/d' "$npmrc"
+          echo "=== .npmrc after strip ==="
+          cat "$npmrc" || true
+
+      - name: Install SDK devDeps (typescript)
+        working-directory: crates/web-view/sdk
+        run: npm install --no-audit --no-fund
+
+      - name: Build wasm (wasm-pack)
+        working-directory: crates/web-view
+        run: wasm-pack build --target web --out-dir sdk/dist
+
+      - name: Build TS (tsc)
+        working-directory: crates/web-view/sdk
+        run: npx tsc -p tsconfig.json
+
+      - name: Sync package.json for publish
+        working-directory: crates/web-view/sdk
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const p = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            // 1) 版本号来自 git tag（去掉前导 v）。
+            p.version = process.env.VERSION;
+            // 2) main/types/exports 指向编译产物。本地开发时仍指向 src/index.ts，
+            //    发布时切到 dist 让普通 bundler / node 也能直接消费。
+            p.main = "dist/index.js";
+            p.types = "dist/index.d.ts";
+            p.exports = {
+              ".": { "types": "dist/index.d.ts", "import": "dist/index.js" }
+            };
+            // 3) 发布到 npm 不需要源码目录，从 files 里去掉 src/ 让包更小。
+            p.files = ["dist"];
+            fs.writeFileSync("package.json", JSON.stringify(p, null, 2) + "\n");
+          '
+
+      - name: npm pack preview
+        working-directory: crates/web-view/sdk
+        run: npm pack --dry-run
+
+      - name: Publish to npm registry (OIDC, no token)
+        working-directory: crates/web-view/sdk
+        run: npm publish --access public --provenance

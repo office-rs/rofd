@@ -2,6 +2,27 @@
   "name": "@rofd/sdk",
   "version": "0.1.0",
   "description": "TypeScript SDK wrapping the rofd WASM editor exports.",
+  "license": "GPL-3.0-or-later",
+  "author": "ravenq",
+  "homepage": "https://github.com/ravenq/rofd#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ravenq/rofd.git",
+    "directory": "crates/web-view/sdk"
+  },
+  "bugs": {
+    "url": "https://github.com/ravenq/rofd/issues"
+  },
+  "keywords": [
+    "ofd",
+    "ofd-editor",
+    "gbt-33190",
+    "wasm",
+    "webgpu",
+    "annotation",
+    "rust"
+  ],
+  "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "exports": {
@@ -10,12 +31,15 @@
       "import": "src/index.ts"
     }
   },
-  "scripts": {
-    "build:wasm": "wasm-pack build --target web --out-dir sdk/dist ../",
-    "build": "npm run build:wasm"
-  },
+  "sideEffects": false,
   "files": [
     "dist",
     "src"
-  ]
+  ],
+  "scripts": {
+    "build:wasm": "wasm-pack build --target web --out-dir sdk/dist ../",
+    "build:ts": "tsc -p tsconfig.json",
+    "build": "npm run build:wasm && npm run build:ts",
+    "prepublishOnly": "npm run build"
+  }
 }
