@@ -1,6 +1,6 @@
 {
   "name": "@rofd/sdk",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "TypeScript SDK wrapping the rofd WASM editor exports.",
   "license": "GPL-3.0-or-later",
   "author": "ravenq",
@@ -41,5 +41,9 @@
     "build:ts": "tsc -p tsconfig.json",
     "build": "npm run build:wasm && npm run build:ts",
     "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.71",
+    "typescript": "^5.4.0"
   }
 }
