@@ -2,6 +2,14 @@
 name = "rofd-io"
 version = "0.1.0"
 edition = "2021"
+license = "GPL-3.0-or-later"
+authors = ["ravenq"]
+description = "OFD (GB/T 33190) ZIP/XML parser + surgical-save writer for the rofd editor."
+repository = "https://github.com/ravenq/rofd"
+homepage = "https://github.com/ravenq/rofd#readme"
+keywords = ["ofd", "gbt-33190", "zip", "xml"]
+categories = ["parser-implementations"]
+readme = "README.md"
 
 [dependencies]
 rofd-dom = { workspace = true }

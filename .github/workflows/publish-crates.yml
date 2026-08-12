@@ -1,0 +1,96 @@
+name: Publish crates
+
+# 当一个 GitHub Release 被 published 时，按依赖顺序发布 3 个 crate 到 crates.io。
+# 版本号来自 git tag（v0.1.0 → 0.1.0），3 个 crate 用同一版本号。
+#
+# 前置条件（一次性配置）：
+#   1. 用 GitHub 账号登录 https://crates.io → Settings → API Access → 创建 token
+#      （scope: publish-new-package，首次发版需要；后续 publish-update 也可）。
+#   2. 仓库 Settings → Secrets and variables → Actions → New repository secret，
+#      名为 `CARGO_REGISTRY_TOKEN`，值为上一步的 token。
+#   3. 首次发版时 crates.io 会自动创建 3 个 crate（rofd-dom / rofd-io / rofd-editor）
+#      归属当前账号；不用手动预占。
+#
+# 不发布：rofd-render / rofd-component / rofd-native-view / rofd-web-view
+#   原因：传递依赖 git 钉版（imaging / imaging_vello / xilem / masonry_winit），
+#   crates.io 拒绝 git 依赖。等上游发版到 crates.io 后再开。
+
+on:
+  release:
+    types: [published]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Read version from git tag
+        id: tag
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          # 去掉前导 'v' 作为 crates.io 版本号
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Sync version across crates
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          # 1. 3 个 crate 各自的 version 字段
+          for crate in dom io editor; do
+            sed -i "s|^version = .*|version = \"$VERSION\"|" "crates/$crate/Cargo.toml"
+          done
+          # 2. workspace.dependencies 里这 3 个 path 依赖的 version 字段
+          sed -i "s|^rofd-dom = { version = \"[^\"]*\", path = \"crates/dom\" }|rofd-dom = { version = \"$VERSION\", path = \"crates/dom\" }|" Cargo.toml
+          sed -i "s|^rofd-io = { version = \"[^\"]*\", path = \"crates/io\" }|rofd-io = { version = \"$VERSION\", path = \"crates/io\" }|" Cargo.toml
+          sed -i "s|^rofd-editor = { version = \"[^\"]*\", path = \"crates/editor\" }|rofd-editor = { version = \"$VERSION\", path = \"crates/editor\" }|" Cargo.toml
+
+      - name: Show patched versions
+        run: |
+          echo "=== root Cargo.toml (workspace.dependencies) ==="
+          sed -n '5,15p' Cargo.toml
+          for crate in dom io editor; do
+            echo "=== crates/$crate/Cargo.toml ==="
+            sed -n '1,12p' "crates/$crate/Cargo.toml"
+          done
+
+      - name: cargo package preview (rofd-dom)
+        run: cargo package -p rofd-dom --list
+
+      - name: Publish rofd-dom
+        run: cargo publish -p rofd-dom
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      # 等待 crates.io 索引传播：rofd-io 依赖 rofd-dom，rofd-editor 也依赖 rofd-dom。
+      # 索引更新通常 < 10s，给 30s 保险。
+      - name: Wait for crates.io index propagation
+        run: sleep 30
+
+      - name: cargo package preview (rofd-io)
+        run: cargo package -p rofd-io --list
+
+      - name: Publish rofd-io
+        run: cargo publish -p rofd-io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Wait for crates.io index propagation
+        run: sleep 30
+
+      - name: cargo package preview (rofd-editor)
+        run: cargo package -p rofd-editor --list
+
+      - name: Publish rofd-editor
+        run: cargo publish -p rofd-editor
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
