@@ -1,5 +1,11 @@
 target/
 .superpowers/
+
+# web SDK build artifacts
+crates/web-view/sdk/dist/
+crates/web-view/sdk/node_modules/
+crates/web-view/sdk/package-lock.json
+crates/web-view/sdk/*.tgz
 .claude/worktrees/
 .wasm-bindgen-install/
 agent.*
