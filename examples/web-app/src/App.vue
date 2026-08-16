@@ -39,7 +39,10 @@
         <a-tab-pane key="annotate" tab="注释">
           <div class="ribbon-row">
             <RibbonGroup label="工具">
-              <ToolButton tooltip="选择" :active="activeTool === 'select'" @click="setTool('select')">
+              <ToolButton tooltip="手型" :active="activeTool === 'hand'" @click="setTool('hand')">
+                <HandIcon />
+              </ToolButton>
+              <ToolButton tooltip="文本" :active="activeTool === 'select'" @click="setTool('select')">
                 <AimOutlined />
               </ToolButton>
             </RibbonGroup>
@@ -229,6 +232,57 @@ const SquigglyIcon = defineComponent({
         d: 'M64 640 Q 144 512 224 640 T 384 640 T 544 640 T 704 640 T 864 640',
         stroke: 'currentColor',
         'stroke-width': '80',
+        'stroke-linecap': 'round',
+      }),
+    ]);
+  },
+});
+
+// ─── 手型工具图标（antd 图标库没有 hand 图标，手绘 SVG，仿 WPS 手型工具） ────
+const HandIcon = defineComponent({
+  name: 'HandIcon',
+  render() {
+    return h('svg', { viewBox: '0 0 1024 1024', width: '1em', height: '1em', fill: 'none' }, [
+      // 四根手指（圆头竖线）
+      h('path', {
+        d: 'M310 240 V 450',
+        stroke: 'currentColor',
+        'stroke-width': '84',
+        'stroke-linecap': 'round',
+      }),
+      h('path', {
+        d: 'M430 160 V 450',
+        stroke: 'currentColor',
+        'stroke-width': '84',
+        'stroke-linecap': 'round',
+      }),
+      h('path', {
+        d: 'M550 150 V 450',
+        stroke: 'currentColor',
+        'stroke-width': '84',
+        'stroke-linecap': 'round',
+      }),
+      h('path', {
+        d: 'M668 215 V 450',
+        stroke: 'currentColor',
+        'stroke-width': '84',
+        'stroke-linecap': 'round',
+      }),
+      // 掌心（圆角矩形）
+      h('rect', {
+        x: 268,
+        y: 420,
+        width: 452,
+        height: 280,
+        rx: 96,
+        stroke: 'currentColor',
+        'stroke-width': '84',
+      }),
+      // 拇指（向左下弯出的短弧）
+      h('path', {
+        d: 'M268 606 C 214 596 186 566 176 516',
+        stroke: 'currentColor',
+        'stroke-width': '84',
         'stroke-linecap': 'round',
       }),
     ]);

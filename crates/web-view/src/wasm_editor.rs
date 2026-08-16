@@ -12,7 +12,7 @@
 //!
 //! [`parse_key`] and its tests are NOT cfg-gated - pure Rust, run on native.
 
-use rofd_component::{Key, Tool};
+use rofd_component::{Key, PointerCursor, Tool};
 use rofd_dom::{AnnotationKind, ShapeKind};
 
 // ─── parse_key (native + wasm) ───────────────────────────────────────────────
@@ -46,8 +46,8 @@ pub fn parse_key(s: &str) -> Key {
 }
 
 /// Map a JS-friendly tool-kind string to a [`Tool`]. Unknown strings fall
-/// back to [`Tool::Select`] (safe default). Mirrors the native-app's seven
-/// toolbar buttons: select / highlight / underline / strikeout / squiggly
+/// back to [`Tool::Select`] (safe default). Mirrors the native-app's toolbar
+/// buttons: hand / select / highlight / underline / strikeout / squiggly
 /// / freehand / rect.
 ///
 /// Pure Rust (no wasm types) so it runs under `cargo test` on native, like
@@ -55,6 +55,7 @@ pub fn parse_key(s: &str) -> Key {
 pub fn parse_tool_kind(kind: &str) -> Tool {
     match kind {
         "select" => Tool::Select,
+        "hand" => Tool::Hand,
         "highlight" => Tool::Create(AnnotationKind::Highlight),
         "underline" => Tool::Create(AnnotationKind::Underline),
         "strikeout" => Tool::Create(AnnotationKind::Strikeout),
@@ -62,6 +63,17 @@ pub fn parse_tool_kind(kind: &str) -> Tool {
         "freehand" => Tool::Create(AnnotationKind::Freehand),
         "rect" => Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)),
         _ => Tool::Select,
+    }
+}
+
+/// Map a [`PointerCursor`] to its JS-facing string. The values are chosen to
+/// be valid CSS cursor names, so the SDK can assign the string straight to
+/// `canvas.style.cursor` with no mapping table on the JS side.
+pub fn pointer_cursor_str(c: PointerCursor) -> &'static str {
+    match c {
+        PointerCursor::Default => "default",
+        PointerCursor::Grab => "grab",
+        PointerCursor::Grabbing => "grabbing",
     }
 }
 
@@ -73,15 +85,15 @@ mod wasm_impl {
     use std::rc::Rc;
 
     use rofd_component::{
-        ContextTarget, EditorComponent, EditorConfig, Modifiers, MouseButton, ScrollDirection,
-        ViewEvent,
+        ContextTarget, EditorComponent, EditorConfig, Modifiers, MouseButton, PointerCursor,
+        ScrollDirection, ViewEvent,
     };
     use rofd_dom::{AnnotationId, AnnotationSelection, OfdDocument, OfdWarning};
     use rofd_editor::TextCursor;
     use rofd_io::{parse_ofd, save_ofd, write_ofd, PackageHandle};
     use wasm_bindgen::prelude::*;
 
-    use crate::wasm_editor::{parse_key, parse_tool_kind};
+    use crate::wasm_editor::{parse_key, parse_tool_kind, pointer_cursor_str};
     use crate::webgpu_render_target::WebGpuRenderTarget;
 
     /// JS callback slots. Each is an `Rc<RefCell<Option<Function>>>` so the
@@ -100,6 +112,7 @@ mod wasm_impl {
         pub on_annotation_interact: Rc<RefCell<Option<js_sys::Function>>>,
         pub on_page_change: Rc<RefCell<Option<js_sys::Function>>>,
         pub on_zoom_change: Rc<RefCell<Option<js_sys::Function>>>,
+        pub on_pointer_cursor: Rc<RefCell<Option<js_sys::Function>>>,
     }
 
     /// wasm-bindgen editor surface for the web.
@@ -214,6 +227,15 @@ mod wasm_impl {
         #[wasm_bindgen(js_name = setOnZoomChange)]
         pub fn set_on_zoom_change(&mut self, callback: Option<js_sys::Function>) {
             *self.callbacks.on_zoom_change.borrow_mut() = callback;
+        }
+
+        /// Register the pointer-cursor callback. JS receives a CSS cursor
+        /// name string ("default" / "grab" / "grabbing") - assign it straight
+        /// to `canvas.style.cursor`. Fired when the cursor UI state changes
+        /// (e.g. hand tool selected, hand drag starts/ends).
+        #[wasm_bindgen(js_name = setOnPointerCursor)]
+        pub fn set_on_pointer_cursor(&mut self, callback: Option<js_sys::Function>) {
+            *self.callbacks.on_pointer_cursor.borrow_mut() = callback;
         }
 
         // ─── Event Handlers ─────────────────────────────────────────────────
@@ -405,9 +427,10 @@ mod wasm_impl {
         }
 
         /// Set the active editing tool. `kind` is a JS-friendly string:
-        /// `"select"` | `"highlight"` | `"underline"` | `"strikeout"` |
-        /// `"squiggly"` | `"freehand"` | `"rect"`. Unknown strings fall back
-        /// to `Select` (safe default). Mirrors the native-app's toolbar buttons.
+        /// `"select"` | `"hand"` | `"highlight"` | `"underline"` |
+        /// `"strikeout"` | `"squiggly"` | `"freehand"` | `"rect"`. Unknown
+        /// strings fall back to `Select` (safe default). Mirrors the
+        /// native-app's toolbar buttons.
         #[wasm_bindgen(js_name = setTool)]
         pub fn set_tool(&mut self, kind: &str) {
             let tool = parse_tool_kind(kind);
@@ -545,6 +568,12 @@ mod wasm_impl {
             self.component.on_zoom_change(Box::new(move |zoom: f64| {
                 call_js1_f64(&on_zoom_change_js, zoom);
             }));
+
+            let on_pointer_cursor_js = self.callbacks.on_pointer_cursor.clone();
+            self.component
+                .on_pointer_cursor(Box::new(move |cursor: PointerCursor| {
+                    call_js1_str(&on_pointer_cursor_js, pointer_cursor_str(cursor));
+                }));
         }
     }
 
@@ -706,5 +735,17 @@ mod tests {
         assert_eq!(parse_tool_kind("unknown"), Tool::Select);
         assert_eq!(parse_tool_kind(""), Tool::Select);
         assert_eq!(parse_tool_kind("SELECT"), Tool::Select); // case-sensitive
+    }
+
+    #[test]
+    fn parse_tool_kind_hand() {
+        assert_eq!(parse_tool_kind("hand"), Tool::Hand);
+    }
+
+    #[test]
+    fn pointer_cursor_str_maps_to_css_names() {
+        assert_eq!(pointer_cursor_str(PointerCursor::Default), "default");
+        assert_eq!(pointer_cursor_str(PointerCursor::Grab), "grab");
+        assert_eq!(pointer_cursor_str(PointerCursor::Grabbing), "grabbing");
     }
 }
