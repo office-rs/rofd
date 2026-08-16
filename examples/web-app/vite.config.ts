@@ -1,4 +1,5 @@
 import { defineConfig, type Plugin } from "vite";
+import vue from "@vitejs/plugin-vue";
 import { fileURLToPath } from "node:url";
 
 // Alias the SDK package name to its source so Vite serves and transforms the
@@ -25,14 +26,25 @@ function corpAllResponses(): Plugin {
 }
 
 export default defineConfig(({ mode }) => ({
-  plugins: [corpAllResponses()],
+  plugins: [vue(), corpAllResponses()],
   resolve: {
     alias: { "@rofd/sdk": sdkEntry },
   },
   // Keep the SDK out of dep pre-bundle: it pulls in a .wasm via
   // import.meta.url, which must be resolved by Vite's dev pipeline, not esbuild.
   optimizeDeps: { exclude: ["@rofd/sdk"] },
-  build: { target: "esnext" },
+  build: {
+    target: "esnext",
+    // 拆分 antd / vue 大包，避免单个 chunk 超限告警，页面加载可并行。
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vue: ["vue"],
+          antd: ["ant-design-vue", "@ant-design/icons-vue"],
+        },
+      },
+    },
+  },
   // GitHub Pages 项目页部署在 https://<user>.github.io/rofd/，需要 base 前缀。
   // 本地 dev 用默认 '/'，生产构建用 '/rofd/'。
   base: mode === "production" ? "/rofd/" : "/",
