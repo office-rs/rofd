@@ -21,6 +21,10 @@ use crate::render_target::RenderTarget;
 pub enum Tool {
     Select,
     Create(AnnotationKind),
+    /// WPS-style hand tool: drag on blank desk/page pans the viewport;
+    /// clicking an annotation selects it (move/resize/Delete reuse the
+    /// Select interactions).
+    Hand,
 }
 
 /// In-progress pointer drag state. Internal to the component - T3's
@@ -78,6 +82,10 @@ pub(crate) enum DragState {
         current_local: (f64, f64),
         moved: bool,
     },
+    /// Hand-tool pan drag. Pointer delta maps to viewport scroll (inverted
+    /// on y: dragging the pointer down moves content down). View-only; no
+    /// document mutation and no undo record.
+    Pan { last: (f64, f64) },
 }
 
 pub struct EditorComponent {
@@ -289,108 +297,14 @@ impl EditorComponent {
                         });
                     }
                     Tool::Select => {
-                        let target = rofd_render::hit_test(
-                            self.editor.document(),
-                            &self.viewport,
-                            self.editor.selection(),
-                            p,
-                        );
-                        match target {
-                            rofd_render::HitTarget::Handle(id, h) => {
-                                let was_selected = self.editor.selection().contains(&id);
-                                if !was_selected {
-                                    self.editor.select(id.clone());
-                                    self.fire_annotation_focus(&id);
-                                }
-                                self.fire_annotation_interact(&id);
-                                self.fire_selection_change();
-                                // Markup/Freehand annotations are not resizable
-                                // (they have no meaningful rect to drag-handle).
-                                // Select only and skip the Resize drag setup so
-                                // PointerUp doesn't commit a phantom Transaction.
-                                let Some(ann) = self.editor.document().annotations.find(&id) else {
-                                    // Annotation vanished between hit-test and
-                                    // lookup (should not happen for a valid
-                                    // selection). No-op repaint to refresh handles.
-                                    return EventOutcome {
-                                        needs_repaint: true,
-                                    };
-                                };
-                                if matches!(
-                                    &ann.payload,
-                                    AnnotationPayload::Markup { .. }
-                                        | AnnotationPayload::Freehand { .. }
-                                ) {
-                                    return EventOutcome {
-                                        needs_repaint: true,
-                                    };
-                                }
-                                // Set up resize drag: orig + anchor in page-local.
-                                let orig =
-                                    rofd_render::annotation_local_rect(ann).unwrap_or_default();
-                                let anchor = opposite_corner(&orig, &h);
-                                // current_local starts at the handle corner (no
-                                // resize until the pointer moves).
-                                let current_local = match &h {
-                                    HandlePos::Nw => (orig.x, orig.y),
-                                    HandlePos::Ne => (orig.x + orig.w, orig.y),
-                                    HandlePos::Sw => (orig.x, orig.y + orig.h),
-                                    HandlePos::Se => (orig.x + orig.w, orig.y + orig.h),
-                                    HandlePos::N => ((orig.x + orig.w) / 2.0, orig.y),
-                                    HandlePos::S => ((orig.x + orig.w) / 2.0, orig.y + orig.h),
-                                    HandlePos::E => (orig.x + orig.w, (orig.y + orig.h) / 2.0),
-                                    HandlePos::W => (orig.x, (orig.y + orig.h) / 2.0),
-                                };
-                                self.drag = Some(DragState::Resize {
-                                    id: id.clone(),
-                                    handle: h,
-                                    anchor,
-                                    orig,
-                                    current_local,
-                                    moved: false,
-                                });
-                            }
-                            rofd_render::HitTarget::Annotation(id)
-                            | rofd_render::HitTarget::AnnotationText(id, _) => {
-                                let was_selected = self.editor.selection().contains(&id);
-                                self.editor.select(id.clone());
-                                if !was_selected {
-                                    self.fire_annotation_focus(&id);
-                                }
-                                self.fire_annotation_interact(&id);
-                                // For text annotations, position cursor at end.
-                                if let Some(len) = self.text_content_len(&id) {
-                                    self.editor.set_cursor(id.clone(), len);
-                                }
-                                self.fire_selection_change();
-                                self.fire_cursor_change();
-                                // Capture the annotation's page-local rect at
-                                // drag start for the preview-based move.
-                                let Some(ann) = self.editor.document().annotations.find(&id) else {
-                                    // Annotation vanished between hit-test and
-                                    // lookup (should not happen for a valid
-                                    // selection). No-op repaint to refresh state.
-                                    return EventOutcome {
-                                        needs_repaint: true,
-                                    };
-                                };
-                                let before_rect =
-                                    rofd_render::annotation_local_rect(ann).unwrap_or_default();
-                                self.drag = Some(DragState::Move {
-                                    id: id.clone(),
-                                    before_rect,
-                                    start: p,
-                                    last: p,
-                                    moved: false,
-                                });
-                            }
-                            _ => {
-                                // Page or Empty: clear selection + cursor.
-                                self.editor.clear_selection();
-                                self.editor.clear_cursor();
-                                self.fire_selection_change();
-                                self.fire_cursor_change();
-                            }
+                        if !self.pointer_down_annotation(p) {
+                            self.clear_selection_and_cursor();
+                        }
+                    }
+                    Tool::Hand => {
+                        if !self.pointer_down_annotation(p) {
+                            self.clear_selection_and_cursor();
+                            self.drag = Some(DragState::Pan { last: p });
                         }
                     }
                 }
@@ -463,6 +377,27 @@ impl EditorComponent {
                                 *current_local = local;
                                 *moved = true;
                             }
+                        }
+                    }
+                    Some(DragState::Pan { .. }) => {
+                        // Copy `last` out (a plain f64 tuple) so the borrow of
+                        // `self.drag` ends before `maybe_fire_page_change`
+                        // (&mut self) runs; the drag is re-borrowed below to
+                        // store the new pointer position.
+                        let prev = match self.drag.as_ref() {
+                            Some(DragState::Pan { last }) => *last,
+                            // Matched Pan above; unreachable by construction.
+                            _ => unreachable!("drag was Pan"),
+                        };
+                        // Content follows the pointer: x tracks the pointer,
+                        // y is inverted (page_y = base - scroll.1).
+                        self.viewport.scroll.0 += p.0 - prev.0;
+                        self.viewport.scroll.1 -= p.1 - prev.1;
+                        self.viewport.scroll =
+                            rofd_render::clamp_scroll(self.editor.document(), &self.viewport);
+                        self.maybe_fire_page_change();
+                        if let Some(DragState::Pan { last }) = self.drag.as_mut() {
+                            *last = p;
                         }
                     }
                     None => {}
@@ -577,6 +512,9 @@ impl EditorComponent {
                                 }
                             }
                         }
+                        DragState::Pan { last: _ } => {
+                            // View-only pan: nothing to commit.
+                        }
                     }
                     EventOutcome {
                         needs_repaint: true,
@@ -676,6 +614,114 @@ impl EditorComponent {
                 needs_repaint: false,
             },
         }
+    }
+
+    /// Left-button PointerDown shared by Select and Hand: hit-test and run the
+    /// annotation interaction (handle drag / annotation move+select). Returns
+    /// true when the press landed on an annotation or handle; false when it
+    /// hit a page or the desk background. Does NOT clear the selection itself
+    /// -- the caller decides what a blank press means (Select: clear; Hand:
+    /// clear + start pan).
+    fn pointer_down_annotation(&mut self, p: (f64, f64)) -> bool {
+        let target = rofd_render::hit_test(
+            self.editor.document(),
+            &self.viewport,
+            self.editor.selection(),
+            p,
+        );
+        match target {
+            rofd_render::HitTarget::Handle(id, h) => {
+                let was_selected = self.editor.selection().contains(&id);
+                if !was_selected {
+                    self.editor.select(id.clone());
+                    self.fire_annotation_focus(&id);
+                }
+                self.fire_annotation_interact(&id);
+                self.fire_selection_change();
+                // Markup/Freehand annotations are not resizable
+                // (they have no meaningful rect to drag-handle).
+                // Select only and skip the Resize drag setup so
+                // PointerUp doesn't commit a phantom Transaction.
+                let Some(ann) = self.editor.document().annotations.find(&id) else {
+                    // Annotation vanished between hit-test and
+                    // lookup (should not happen for a valid
+                    // selection). No-op repaint to refresh handles.
+                    return true;
+                };
+                if matches!(
+                    &ann.payload,
+                    AnnotationPayload::Markup { .. } | AnnotationPayload::Freehand { .. }
+                ) {
+                    return true;
+                }
+                // Set up resize drag: orig + anchor in page-local.
+                let orig = rofd_render::annotation_local_rect(ann).unwrap_or_default();
+                let anchor = opposite_corner(&orig, &h);
+                // current_local starts at the handle corner (no
+                // resize until the pointer moves).
+                let current_local = match &h {
+                    HandlePos::Nw => (orig.x, orig.y),
+                    HandlePos::Ne => (orig.x + orig.w, orig.y),
+                    HandlePos::Sw => (orig.x, orig.y + orig.h),
+                    HandlePos::Se => (orig.x + orig.w, orig.y + orig.h),
+                    HandlePos::N => ((orig.x + orig.w) / 2.0, orig.y),
+                    HandlePos::S => ((orig.x + orig.w) / 2.0, orig.y + orig.h),
+                    HandlePos::E => (orig.x + orig.w, (orig.y + orig.h) / 2.0),
+                    HandlePos::W => (orig.x, (orig.y + orig.h) / 2.0),
+                };
+                self.drag = Some(DragState::Resize {
+                    id: id.clone(),
+                    handle: h,
+                    anchor,
+                    orig,
+                    current_local,
+                    moved: false,
+                });
+                true
+            }
+            rofd_render::HitTarget::Annotation(id)
+            | rofd_render::HitTarget::AnnotationText(id, _) => {
+                let was_selected = self.editor.selection().contains(&id);
+                self.editor.select(id.clone());
+                if !was_selected {
+                    self.fire_annotation_focus(&id);
+                }
+                self.fire_annotation_interact(&id);
+                // For text annotations, position cursor at end.
+                if let Some(len) = self.text_content_len(&id) {
+                    self.editor.set_cursor(id.clone(), len);
+                }
+                self.fire_selection_change();
+                self.fire_cursor_change();
+                // Capture the annotation's page-local rect at
+                // drag start for the preview-based move.
+                let Some(ann) = self.editor.document().annotations.find(&id) else {
+                    // Annotation vanished between hit-test and
+                    // lookup (should not happen for a valid
+                    // selection). No-op repaint to refresh state.
+                    return true;
+                };
+                let before_rect = rofd_render::annotation_local_rect(ann).unwrap_or_default();
+                self.drag = Some(DragState::Move {
+                    id: id.clone(),
+                    before_rect,
+                    start: p,
+                    last: p,
+                    moved: false,
+                });
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Clear annotation selection + text cursor and fire the change callbacks
+    /// (shared by Select's and Hand's blank-press paths).
+    fn clear_selection_and_cursor(&mut self) {
+        self.editor.clear_selection();
+        self.editor.clear_cursor();
+        self.fire_selection_change();
+        self.fire_cursor_change();
     }
 
     fn text_content_len(&self, id: &rofd_dom::AnnotationId) -> Option<usize> {
@@ -1147,6 +1193,8 @@ fn drag_to_preview(doc: &OfdDocument, d: &DragState, vp: &Viewport) -> Option<Dr
                 rect,
             })
         }
+        // Pan is a view-only drag (viewport scroll) - no annotation preview.
+        DragState::Pan { .. } => None,
     }
 }
 
@@ -2964,6 +3012,152 @@ mod tests {
             }
             _ => panic!("expected Shape payload"),
         }
+    }
+
+    /// P1 hand tool: two pages 200x200, vp size (0,0), gap 0, zoom 1, scroll
+    /// (0,0). Page0 occupies viewport y [0,200), page1 y [200,400).
+    fn component_two_pages() -> EditorComponent {
+        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        let mut doc = OfdDocument::default();
+        for i in 0..2 {
+            doc.pages.push(Page {
+                id: PageId::new(format!("P{i}")),
+                physical_box: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 200.0,
+                    h: 200.0,
+                },
+                layers: vec![Layer::default()],
+                template: None,
+            });
+        }
+        c.load_document(doc);
+        c.viewport = rofd_render::Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (0.0, 0.0),
+            page_gap: 0.0,
+        };
+        c
+    }
+
+    /// Full pan gesture: Left PointerDown at `from`, one PointerMove to `to`,
+    /// Left PointerUp.
+    fn pan(c: &mut EditorComponent, from: (f64, f64), to: (f64, f64)) {
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: from.0,
+            y: from.1,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerMove { x: to.0, y: to.1 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: to.0,
+            y: to.1,
+        });
+    }
+
+    #[test]
+    fn hand_pan_drag_updates_scroll_with_clamp() {
+        // component_with_page: single page 200x200, vp size (0,0), gap 0 ->
+        // x ∈ [-100,100], y ∈ [0,200].
+        let mut c = component_with_page();
+        c.set_tool(Tool::Hand);
+        pan(&mut c, (10.0, 10.0), (30.0, 40.0));
+        // dx=+20, dy=+30 (dragging the pointer down moves content down =
+        // scroll.1 decreases, clamps to 0).
+        assert_eq!(c.viewport.scroll, (20.0, 0.0));
+        pan(&mut c, (10.0, 10.0), (-30.0, -60.0));
+        // Previous round left scroll=(20,0): dx=-40, dy=-70 -> x=-20, y=70.
+        assert_eq!(c.viewport.scroll, (-20.0, 70.0));
+    }
+
+    #[test]
+    fn hand_pan_clamps_at_max_bounds() {
+        let mut c = component_with_page();
+        c.set_tool(Tool::Hand);
+        // Drag far past the top: scroll.1 upper bound is 200 (content bottom
+        // aligned to viewport bottom; size=0 means the page bottom).
+        pan(&mut c, (10.0, 10.0), (10.0, -10000.0));
+        assert_eq!(c.viewport.scroll, (0.0, 200.0));
+    }
+
+    #[test]
+    fn hand_pan_creates_no_undo_record() {
+        let mut c = component_with_page();
+        c.set_tool(Tool::Hand);
+        pan(&mut c, (10.0, 10.0), (40.0, -20.0));
+        assert!(!c.can_undo(), "pan is a view change, not a doc change");
+        assert!(!c.is_modified());
+    }
+
+    #[test]
+    fn hand_pan_fires_page_change_when_crossing_page() {
+        let mut c = component_two_pages();
+        c.set_tool(Tool::Hand);
+        let fired = Arc::new(Mutex::new(None));
+        let f = fired.clone();
+        c.on_page_change(move |idx| *f.lock().unwrap() = Some(idx));
+        // Pan up 220px: scroll.1=220, viewport center (0) lands at content
+        // y=220 -> page1.
+        pan(&mut c, (10.0, 10.0), (10.0, -210.0));
+        assert_eq!(*fired.lock().unwrap(), Some(1));
+    }
+
+    #[test]
+    fn hand_click_annotation_selects_and_delete_removes() {
+        // Markup (no text-cursor semantics) annotation: under Hand, clicking it
+        // selects -> Single selection -> Delete removes it.
+        let mut c = component_with_page();
+        c.set_clock("t".into(), 1);
+        let id = c.editor.create_annotation(
+            AnnotationKind::Highlight,
+            PageId::new("P0"),
+            AnnotationPayload::Markup {
+                quad_points: vec![Point { x: 0.0, y: 0.0 }, Point { x: 100.0, y: 100.0 }],
+                color: Color::Rgb(255, 255, 0),
+            },
+        );
+        c.set_tool(Tool::Hand);
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 10.0,
+            y: 10.0,
+            modifiers: Modifiers::default(),
+        });
+        assert_eq!(c.selection(), &AnnotationSelection::Single(id.clone()));
+        // Pressing on an annotation does NOT enter Pan (the drag is Move).
+        assert!(matches!(c.drag, Some(DragState::Move { .. })));
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 10.0,
+            y: 10.0,
+        });
+        c.handle_event(&ViewEvent::KeyDown {
+            key: Key::Delete,
+            modifiers: Modifiers::default(),
+        });
+        assert!(
+            c.document().annotations.find(&id).is_none(),
+            "Delete removed the annotation"
+        );
+    }
+
+    #[test]
+    fn switching_tool_cancels_pan_drag() {
+        let mut c = component_with_page();
+        c.set_tool(Tool::Hand);
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 10.0,
+            y: 10.0,
+            modifiers: Modifiers::default(),
+        });
+        assert!(matches!(c.drag, Some(DragState::Pan { .. })));
+        c.set_tool(Tool::Select);
+        assert!(c.drag.is_none(), "set_tool cancels in-progress pan");
     }
 
     /// After the full smoke flow (create + delete + undo), rendering must not
