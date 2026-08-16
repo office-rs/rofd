@@ -7,7 +7,7 @@ use rofd_dom::{
 use rofd_editor::{Editor, TextCursor};
 use rofd_render::{DragPreview, FontStore, HandlePos, RenderEngine, Scene, Viewport, PX_PER_MM};
 
-use crate::callbacks::{Callbacks, ContextTarget};
+use crate::callbacks::{Callbacks, ContextTarget, PointerCursor};
 use crate::config::EditorConfig;
 use crate::event::EventOutcome;
 use crate::render_target::RenderTarget;
@@ -104,6 +104,10 @@ pub struct EditorComponent {
     pub(crate) modified: bool,
     /// Active editing tool (Select or Create{kind}). Defaults to `Select`.
     pub(crate) tool: Tool,
+    /// Current pointer-cursor UI state (Default / Grab / Grabbing). Mirrors
+    /// the zoom-change guard: `set_pointer_cursor` only fires
+    /// `on_pointer_cursor` when the value actually changes.
+    pub(crate) pointer_cursor: PointerCursor,
     /// In-progress pointer drag, if any. `None` when no drag is active.
     pub(crate) drag: Option<DragState>,
     /// The index of the currently visible page (the page containing the
@@ -129,6 +133,7 @@ impl EditorComponent {
             callbacks: Callbacks::default(),
             modified: false,
             tool: Tool::Select,
+            pointer_cursor: PointerCursor::Default,
             drag: None,
             current_page: None,
         }
@@ -212,6 +217,21 @@ impl EditorComponent {
     pub fn set_tool(&mut self, tool: Tool) {
         self.tool = tool;
         self.drag = None;
+        self.set_pointer_cursor(match self.tool {
+            Tool::Hand => PointerCursor::Grab,
+            _ => PointerCursor::Default,
+        });
+    }
+
+    /// Update the pointer-cursor UI state and fire `on_pointer_cursor` when it
+    /// actually changed (mirrors the zoom-change guard).
+    fn set_pointer_cursor(&mut self, cursor: PointerCursor) {
+        if self.pointer_cursor != cursor {
+            self.pointer_cursor = cursor;
+            if let Some(cb) = &self.callbacks.on_pointer_cursor {
+                cb(cursor);
+            }
+        }
     }
 
     // Command pass-throughs. The host calls these for programmatic annotation
@@ -305,6 +325,7 @@ impl EditorComponent {
                         if !self.pointer_down_annotation(p) {
                             self.clear_selection_and_cursor();
                             self.drag = Some(DragState::Pan { last: p });
+                            self.set_pointer_cursor(PointerCursor::Grabbing);
                         }
                     }
                 }
@@ -513,7 +534,9 @@ impl EditorComponent {
                             }
                         }
                         DragState::Pan { last: _ } => {
-                            // View-only pan: nothing to commit.
+                            // View-only pan: nothing to commit. The drag ended,
+                            // so the hand tool returns to the hovering cursor.
+                            self.set_pointer_cursor(PointerCursor::Grab);
                         }
                     }
                     EventOutcome {
@@ -1094,6 +1117,21 @@ impl EditorComponent {
     #[cfg(target_arch = "wasm32")]
     pub fn on_warning(&mut self, cb: impl Fn(&[OfdWarning]) + 'static) {
         self.callbacks.on_warning = Some(Box::new(cb));
+    }
+
+    /// Current pointer-cursor UI state (for hosts that poll instead of
+    /// registering [`Self::on_pointer_cursor`], e.g. to set the initial
+    /// cursor right after construction).
+    pub fn pointer_cursor(&self) -> PointerCursor {
+        self.pointer_cursor
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn on_pointer_cursor(&mut self, cb: impl Fn(PointerCursor) + 'static + Send) {
+        self.callbacks.on_pointer_cursor = Some(Box::new(cb));
+    }
+    #[cfg(target_arch = "wasm32")]
+    pub fn on_pointer_cursor(&mut self, cb: impl Fn(PointerCursor) + 'static) {
+        self.callbacks.on_pointer_cursor = Some(Box::new(cb));
     }
 }
 
@@ -3142,6 +3180,54 @@ mod tests {
         assert!(
             c.document().annotations.find(&id).is_none(),
             "Delete removed the annotation"
+        );
+    }
+
+    // --- P1 Task 3: pointer cursor callback ---
+
+    #[test]
+    fn hand_tool_cursor_transitions() {
+        let fired = Arc::new(Mutex::new(Vec::new()));
+        let f = fired.clone();
+        let mut c = component_with_page();
+        c.on_pointer_cursor(move |cur| f.lock().unwrap().push(cur));
+        c.set_tool(Tool::Hand);
+        assert_eq!(*fired.lock().unwrap(), vec![PointerCursor::Grab]);
+        // 按下空白 -> Grabbing；拖动多帧不重复发；抬起 -> Grab。
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 10.0,
+            y: 10.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerMove { x: 20.0, y: 20.0 });
+        c.handle_event(&ViewEvent::PointerMove { x: 30.0, y: 30.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 30.0,
+            y: 30.0,
+        });
+        assert_eq!(
+            *fired.lock().unwrap(),
+            vec![
+                PointerCursor::Grab,
+                PointerCursor::Grabbing,
+                PointerCursor::Grab
+            ]
+        );
+    }
+
+    #[test]
+    fn switching_away_from_hand_fires_default() {
+        let fired = Arc::new(Mutex::new(Vec::new()));
+        let f = fired.clone();
+        let mut c = component_with_page();
+        c.on_pointer_cursor(move |cur| f.lock().unwrap().push(cur));
+        c.set_tool(Tool::Hand);
+        c.set_tool(Tool::Select);
+        assert_eq!(
+            *fired.lock().unwrap(),
+            vec![PointerCursor::Grab, PointerCursor::Default]
         );
     }
 

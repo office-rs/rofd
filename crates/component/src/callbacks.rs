@@ -6,7 +6,7 @@ use rofd_editor::{AnnotationSelection, TextCursor};
 // on_save_request passes (); on_annotation_focus/on_annotation_interact pass
 // &AnnotationId; on_context_menu passes ((f64,f64), ContextTarget);
 // on_page_change passes usize; on_zoom_change passes f64; on_warning passes
-// &[OfdWarning].
+// &[OfdWarning]; on_pointer_cursor passes PointerCursor.
 //
 // Target-gated `Send`: the host (Phase 4b native) requires `Send` callbacks. On native
 // targets the aliases below add `+ Send`; on wasm they do not (wasm is single-threaded).
@@ -30,6 +30,8 @@ pub type OnPageChange = dyn Fn(usize) + Send;
 #[cfg(not(target_arch = "wasm32"))]
 pub type OnZoomChange = dyn Fn(f64) + Send;
 #[cfg(not(target_arch = "wasm32"))]
+pub type OnPointerCursor = dyn Fn(PointerCursor) + Send;
+#[cfg(not(target_arch = "wasm32"))]
 pub type OnWarning = dyn Fn(&[OfdWarning]) + Send;
 
 #[cfg(target_arch = "wasm32")]
@@ -50,6 +52,8 @@ pub type OnContextMenu = dyn Fn((f64, f64), ContextTarget);
 pub type OnPageChange = dyn Fn(usize);
 #[cfg(target_arch = "wasm32")]
 pub type OnZoomChange = dyn Fn(f64);
+#[cfg(target_arch = "wasm32")]
+pub type OnPointerCursor = dyn Fn(PointerCursor);
 #[cfg(target_arch = "wasm32")]
 pub type OnWarning = dyn Fn(&[OfdWarning]);
 
@@ -72,6 +76,19 @@ pub enum ContextTarget {
     Empty,
 }
 
+/// OS/pointer cursor shape the host should display over the canvas.
+/// Platform mapping lives in the adapters (winit CursorIcon / CSS cursor),
+/// per AGENTS.md §4.9 (component never touches platform facilities).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PointerCursor {
+    #[default]
+    Default,
+    /// Hand tool hovering (WPS 手型).
+    Grab,
+    /// Hand tool actively dragging (pan in progress).
+    Grabbing,
+}
+
 #[derive(Default)]
 pub struct Callbacks {
     pub on_change: Option<Box<OnChange>>,
@@ -83,6 +100,7 @@ pub struct Callbacks {
     pub on_context_menu: Option<Box<OnContextMenu>>,
     pub on_page_change: Option<Box<OnPageChange>>,
     pub on_zoom_change: Option<Box<OnZoomChange>>,
+    pub on_pointer_cursor: Option<Box<OnPointerCursor>>,
     pub on_warning: Option<Box<OnWarning>>,
 }
 
@@ -118,6 +136,21 @@ mod tests {
         };
         (cbs.on_save_request.as_ref().unwrap())();
         assert!(*fired.lock().unwrap());
+    }
+
+    #[test]
+    fn on_pointer_cursor_fires() {
+        use std::sync::{Arc, Mutex};
+        let fired = Arc::new(Mutex::new(None));
+        let f = fired.clone();
+        let cbs = Callbacks {
+            on_pointer_cursor: Some(Box::new(move |c: super::PointerCursor| {
+                *f.lock().unwrap() = Some(c);
+            })),
+            ..Default::default()
+        };
+        (cbs.on_pointer_cursor.as_ref().unwrap())(super::PointerCursor::Grab);
+        assert_eq!(*fired.lock().unwrap(), Some(super::PointerCursor::Grab));
     }
 
     #[test]
