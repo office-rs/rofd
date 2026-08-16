@@ -14,17 +14,28 @@
 //! The "Open" toolbar button pops a native file dialog (`rfd`) and loads the
 //! chosen `.ofd`. A `task` view + `MessageProxy` wakes the app after load so the
 //! canvas repaints with the new document.
+//!
+//! The window cursor is declarative: `app_logic` wraps the root in
+//! `xilem::window(...).with_options(|o| o.with_cursor(...))`, mapping the
+//! component's `PointerCursor` (pushed via `on_pointer_cursor` into shared
+//! state) to a `winit::CursorIcon`; xilem diffs and applies it on rebuild.
+//!
+//! Known limitation (hand tool cursor): xilem@bf81712 re-runs app_logic only
+//! on widget Actions, and MasonryState exposes no winit window handle, so the
+//! Grabbing cursor cannot refresh mid-drag (Grab/Default update on toolbar
+//! clicks). Revisit on the next Linebender stack bump.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use masonry_winit::app::{AppDriver, MasonryState, MasonryUserEvent};
 use rfd::FileDialog;
-use rofd_component::{ContextTarget, Tool, ViewEvent};
+use rofd_component::{ContextTarget, PointerCursor, Tool, ViewEvent};
 use rofd_dom::{AnnotationId, AnnotationKind, ShapeKind};
 use rofd_native_view::{EditorApp, WinitEventBridge};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
+use winit::window::CursorIcon;
 
 use xilem::core::MessageProxy;
 use xilem::kurbo::{Point, Size};
@@ -32,7 +43,7 @@ use xilem::masonry::core::WidgetId;
 use xilem::masonry::imaging::{kurbo::Rect as KurboRect, peniko::Color, record::Scene, Painter};
 use xilem::style::{Padding, Style};
 use xilem::view::{canvas, flex_col, flex_row, sized_box, task, text_button, FlexExt};
-use xilem::{EventLoop, WidgetView, WindowOptions, Xilem};
+use xilem::{EventLoop, WidgetView, Xilem};
 
 const BTN_PAD: Padding = Padding::from_vh(0.0, 6.0);
 
@@ -43,6 +54,10 @@ type SharedWakeProxy = Arc<Mutex<Option<MessageProxy<()>>>>;
 /// pattern, mirroring `save_requested`). When non-empty, the `window_event`
 /// handler deletes the annotation and clears it.
 type SharedContextMenu = Arc<Mutex<Option<AnnotationId>>>;
+/// Pointer-cursor UI state pushed by the component's `on_pointer_cursor`
+/// callback (flag-pattern, like `context_menu_target`). `app_logic` reads it
+/// on each rebuild and maps it to the declarative window cursor.
+type SharedPointerCursor = Arc<Mutex<PointerCursor>>;
 
 /// Build a toolbar tool button. On click it sets the component's active tool
 /// to `tool`. Mirrors the `btn_open`/`btn_save` pattern (text_button + padding
@@ -61,6 +76,14 @@ struct AppState {
     editor: SharedEditor,
     canvas_widget_id: SharedCanvasId,
     wake_proxy: SharedWakeProxy,
+    window_id: xilem::WindowId,
+    pointer_cursor: SharedPointerCursor,
+}
+
+impl xilem::AppState for AppState {
+    fn keep_running(&self) -> bool {
+        true
+    }
 }
 
 /// Save the editor's document to `current_file` (overwrite), or prompt a
@@ -98,7 +121,7 @@ fn do_save(editor: &mut EditorApp) {
     editor.component.clear_modified();
 }
 
-fn app_logic(_app: &mut AppState) -> impl WidgetView<AppState> + use<> {
+fn app_logic(app: &mut AppState) -> std::iter::Once<xilem::WindowView<AppState>> {
     let btn_open = text_button("Open", |app: &mut AppState| {
         if let Some(path) = FileDialog::new()
             .add_filter("OFD document", &["ofd"])
@@ -133,10 +156,14 @@ fn app_logic(_app: &mut AppState) -> impl WidgetView<AppState> + use<> {
     let file_row =
         flex_row((btn_open, btn_save)).gap(xilem::masonry::layout::Length::const_px(2.0));
 
-    // Tool buttons: Select + 6 create tools (Highlight/Underline/Strikeout/
-    // Squiggly/Freehand/Rect). Clicking a button sets the component's active
-    // tool; the next pointer drag creates (or selects) accordingly.
-    let btn_select = tool_button("选择", Tool::Select);
+    // Tool buttons, WPS-style grouping: browse-mode group (Hand / Text) first,
+    // then the annotation create groups. No spring-back: a create tool stays
+    // active after each commit (spec §3.3).
+    let btn_hand = tool_button("手型", Tool::Hand);
+    let btn_text = tool_button("文本", Tool::Select); // WPS "文本" = our Select
+    let group_tools =
+        flex_row((btn_hand, btn_text)).gap(xilem::masonry::layout::Length::const_px(2.0));
+
     let btn_highlight = tool_button("高亮", Tool::Create(AnnotationKind::Highlight));
     let btn_underline = tool_button("下划线", Tool::Create(AnnotationKind::Underline));
     let btn_strikeout = tool_button("删除线", Tool::Create(AnnotationKind::Strikeout));
@@ -144,8 +171,9 @@ fn app_logic(_app: &mut AppState) -> impl WidgetView<AppState> + use<> {
     let btn_freehand = tool_button("手写", Tool::Create(AnnotationKind::Freehand));
     let btn_rect = tool_button("矩形", Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)));
 
+    // v1 native demo: wide gap between groups instead of a separator widget.
     let tool_row = flex_row((
-        btn_select,
+        group_tools,
         btn_highlight,
         btn_underline,
         btn_strikeout,
@@ -153,7 +181,7 @@ fn app_logic(_app: &mut AppState) -> impl WidgetView<AppState> + use<> {
         btn_freehand,
         btn_rect,
     ))
-    .gap(xilem::masonry::layout::Length::const_px(2.0));
+    .gap(xilem::masonry::layout::Length::const_px(8.0));
 
     let menu_bar = sized_box(flex_col((file_row, tool_row)))
         .padding(Padding::from_vh(2.0, 4.0))
@@ -193,7 +221,20 @@ fn app_logic(_app: &mut AppState) -> impl WidgetView<AppState> + use<> {
         |_state: &mut AppState, _: ()| {},
     );
 
-    xilem::core::fork(main_view, wake_task)
+    let root = xilem::core::fork(main_view, wake_task);
+
+    // Declarative window cursor: map the component's PointerCursor (shared
+    // state, updated by the on_pointer_cursor callback) to a winit CursorIcon.
+    // xilem diffs WindowOptions on each rebuild and calls window.set_cursor.
+    let cursor_icon = match *app.pointer_cursor.lock().unwrap() {
+        PointerCursor::Default => CursorIcon::Default,
+        PointerCursor::Grab => CursorIcon::Grab,
+        PointerCursor::Grabbing => CursorIcon::Grabbing,
+    };
+    std::iter::once(
+        xilem::window(app.window_id, "rofd - OFD Editor", root)
+            .with_options(|o| o.with_cursor(cursor_icon)),
+    )
 }
 
 /// winit `ApplicationHandler` host owning the masonry state + the editor/bridge.
@@ -240,6 +281,11 @@ impl ApplicationHandler<MasonryUserEvent> for NativeApp {
         wid: winit::window::WindowId,
         ev: WindowEvent,
     ) {
+        // Xilem::new (no ExitOnClose wrapper): handle window close ourselves.
+        if matches!(ev, WindowEvent::CloseRequested) {
+            el.exit();
+        }
+
         // Refresh the canvas origin (window-logical coords) before any
         // coord-bearing event so the bridge can translate to canvas-local.
         self.update_canvas_origin();
@@ -447,14 +493,35 @@ fn main() -> Result<(), winit::error::EventLoopError> {
             });
     }
 
+    // Pointer cursor: the component fires on_pointer_cursor whenever the
+    // hover/tool state changes the desired cursor (e.g. Hand tool -> Grab).
+    // The callback only stashes the value into shared state (flag-pattern,
+    // like save_requested); app_logic reads it on rebuild and applies it as
+    // the declarative window cursor.
+    let window_id = xilem::WindowId::next();
+    let pointer_cursor: SharedPointerCursor = Arc::new(Mutex::new(PointerCursor::Default));
+    {
+        let pc = pointer_cursor.clone();
+        editor
+            .lock()
+            .unwrap()
+            .component
+            .on_pointer_cursor(move |c| *pc.lock().unwrap() = c);
+    }
+
     let app_state = AppState {
         editor: editor.clone(),
         canvas_widget_id: canvas_widget_id.clone(),
         wake_proxy: wake_proxy.clone(),
+        window_id,
+        pointer_cursor: pointer_cursor.clone(),
     };
 
-    let window_options = WindowOptions::new("rofd - OFD Editor");
-    let xilem = Xilem::new_simple(app_state, app_logic, window_options);
+    // Xilem::new takes an app_logic returning a window iterator (vs
+    // new_simple's single root + WindowOptions) and brings its own tokio
+    // runtime, so the `task` view keeps working. It does NOT wrap the state
+    // in ExitOnClose, so window close is handled in NativeApp::window_event.
+    let xilem = Xilem::new(app_state, app_logic);
 
     let event_loop = EventLoop::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
