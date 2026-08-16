@@ -153,8 +153,17 @@ body 保持只读；选区不进 dom、不进 editor 历史、不落盘。渲染
 
 - component 新增 `selected_text() -> Option<String>`（按 ranges 拼接，行间加
   换行符策略：不同 TextCode 之间加 `\n`，同 Code 内不加）。
-- `Ctrl+C`（TextSelect 工具且有选区时）→ 触发新回调 `on_copy(text: String)`，
-  宿主写系统剪贴板。库不碰剪贴板（与库不取时间同原则）。
+- `Ctrl+C`（TextSelect 工具且有选区时）-> 触发新回调 `on_copy(text: String)`。
+  **component 层不碰剪贴板**（同"库不取系统时间"原则；且 native/wasm 剪贴板
+  API 异构，component 保持平台无关、依赖面不变）。
+- **剪贴板由适配器层默认实现**，上层宿主应用开箱即用：
+  - `web-view`：`WasmEditor` 默认订阅 `on_copy`，SDK 的 JS 层写
+    `navigator.clipboard.writeText`（在 Ctrl+C 的 user activation 窗口内）；
+    SDK 配置项可关闭默认实现，宿主自行处理。
+  - `native-view`：`EditorApp` 默认订阅 `on_copy`，用 `arboard` 写系统剪贴板
+    （依赖加在 native-view，不进 component）；配置项同样可关闭。
+  - `examples/native-app` / `examples/web-app`：零代码感知，无需各自接
+    `on_copy`。
 - 预留（P3 一期可只交付复制）：`create_highlight_from_selection(color) ->
   Option<AnnotationId>`：把 `text_selection_rects` 每行矩形换算成
   `Markup.quad_points`（页局部坐标），走现有 `create_annotation(Highlight,
@@ -168,7 +177,8 @@ body 保持只读；选区不进 dom、不进 editor 历史、不落盘。渲染
   状态机、`selected_text`、`on_copy` 回调、`create_highlight_from_selection`。
 - `crates/web-view` + SDK：`setTool('textSelect')`、`onCopy`、`getSelectedText`、
   （P3.5）`createHighlightFromSelection`。
-- `examples`：工具栏文本选择按钮；native/web 的 Ctrl+C → 剪贴板对接。
+- `crates/native-view`：默认 `on_copy` -> arboard 剪贴板（可配置关闭）。
+- `examples`：工具栏文本选择按钮（剪贴板由适配器层默认实现，示例零代码对接）。
 
 ## 6. 测试策略
 
