@@ -12,6 +12,7 @@
 
 - **v1 范围**：查看 + 批注。主文档（body）**只读渲染**；批注是**唯一可变层**。
 - **库形态**：以 `EditorComponent` 为唯一集成入口（类比 `<textarea>`），宿主控制消息循环并转发事件。库本身不取系统时间、不直接依赖 GUI 框架。
+- **平台边界**：库 = 平台无关核心（dom/io/render/editor/component）+ 两个平台适配器（native-view/web-view）；`examples/` 只是宿主接入的 demo，不是库的交付物（见 §4.9）。
 - **非目标**：编辑 body 内容、创建/验签电子签名、全保真渲染（模板继承/JBIG2/瓦片图按需补，v1 桩处理）、实时协同。
 - 为 B（后端生成）/ C（PDF→OFD）/ D（后端读改写）留门，但不实现。
 
@@ -61,7 +62,7 @@ npm run build             # vite 生产构建
 
 ## 3. 仓库布局与分层
 
-严格 5 层单向依赖，**反向边禁止**。每个 crate 的 `[dependencies]` 是依赖方向的唯一事实来源。
+严格 5 层单向依赖，**反向边禁止**。每个 crate 的 `[dependencies]` 是依赖方向的唯一事实来源。**平台边界线画在 component 与适配器之间**：component 及以下五个 crate 平台无关（不依赖 winit/web-sys/wgpu/arboard 等平台 crate），native-view / web-view 是仅有的两层平台绑定。
 
 ```
 examples/native-app   ─┐
@@ -120,6 +121,12 @@ examples/web-app ─► web-view ───────────┘           
 ### 4.8 ID 约定
 `ObjectId`/`PageId` = OFD ID 字符串 newtype；`AnnotationId` = uuid v4。
 
+### 4.9 平台边界：功能内聚核心层，适配器只做绑定
+- **component 及以下平台无关**：不依赖任何平台 crate（winit/web-sys/wgpu/arboard/文件对话框等），必须同时可编译 native 与 wasm32。平台差异只允许出现在 native-view / web-view。
+- **功能内聚**：状态机、几何/命中、命令等业务逻辑一律落在 component 及以下；适配器**不实现功能**，只做事件映射、渲染目标对接、平台能力默认装配。
+- **平台能力经回调下沉**：功能需要平台能力（剪贴板/保存路径/时钟/光标）时，component 定义回调（如 `on_copy`/`on_save_request`），适配器默认接好（可配置关闭），宿主零配置。库自身绝不直接触碰平台设施。
+- **API 以宿主易用为先**：适配器与 SDK 对外 API 遵循"默认开箱即用、可选覆盖"；宿主接入代码量最小化是 API 设计的验收标准，examples 即用量样板。
+
 ---
 
 ## 5. 各 crate 工作要点
@@ -152,6 +159,7 @@ examples/web-app ─► web-view ───────────┘           
 - **不依赖 io**——load/save 的字节→文档转换由上层适配器完成。
 
 ### rofd-native-view
+- 薄适配器：只做 winit/masonry 事件映射与平台能力默认装配（剪贴板等），不承载功能逻辑（§4.9）。
 - 三层：Host（examples/native-app，masonry/xilem 状态 + 渲染循环）、`WinitEventBridge`（modifiers/cursor/scale_factor/canvas_origin）、`EditorApp`（EditorComponent + 文件路径 + modified）。
 - Bridge **不进** EditorApp（框架无关、host 可前置拦截、生命周期不同）。
 - 输入在 **winit 层**路由到 editor（不经 masonry widget 事件系统）；canvas widget 仅渲染。
@@ -159,6 +167,7 @@ examples/web-app ─► web-view ───────────┘           
 - `EditorApp` 持 `Rc<RefCell<parley::FontContext>>`（经 FontStore），**非 `Send`**；单线程，`Arc<Mutex>` 镜像 reditor 模式（见 `#[allow(clippy::arc_with_non_send_sync)]`）。
 
 ### rofd-web-view
+- 薄适配器：只做 DOM 事件桥、WebGPU 对接与平台能力默认装配（剪贴板等），不承载功能逻辑（§4.9）。
 - `WasmEditor`（wasm-bindgen）+ `WebGpuRenderTarget` + JS 事件桥。`wasm-pack --target web`。
 - SDK 在 `crates/web-view/sdk/`，入口 `Editor.create(canvas, fontBytes)`，发布为 npm 包 `@rofd/sdk`。
 - 默认字体 NotoSans + NotoSansCJKsc，`Arc<Vec<u8>>` 共享，`warmup()` 预编译 shader。
@@ -213,6 +222,9 @@ examples/web-app ─► web-view ───────────┘           
 | 依赖只向上 | 给 dom/render 加反向依赖到 editor/io |
 | 硬错 `OfdError`、降级 `OfdWarning` | 裸 `unwrap` / 静默 `ignore` 错误 |
 | bump 四个 git rev 一起动 | 单独 bump xilem 或 imaging 之一 |
+| 功能逻辑落 component 及以下 | 在适配器层写状态机/几何/业务逻辑 |
+| component 出回调、适配器默认装配（宿主零配置） | 让每个宿主重复对接平台能力 |
+| examples 只当接入 demo 参照 | 把库功能写进 examples |
 | body_scene 稳定缓存、只失效批注页 | 每帧重建 body_scene |
 | 适配器层（native-view/web-view）持 io | 往 component 里塞 io 调用 |
 | 改 io save 后跑手术刀字节保留测试 | 只靠单元测试断言模型相等 |
