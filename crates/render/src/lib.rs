@@ -26,7 +26,7 @@ pub use hit_test::{annotation_local_rect, hit_test, HandlePos, HitTarget};
 pub use image::decode_image;
 pub use path::path_to_bezpath;
 pub use text::{shape_text, FontStore, ShapedGlyph};
-pub use viewport::{Viewport, PX_PER_MM};
+pub use viewport::{clamp_scroll, Viewport, PX_PER_MM};
 
 /// The backend-agnostic scene type this crate produces.
 pub use imaging::record::Scene;
