@@ -258,12 +258,17 @@ export class Editor {
       opts,
     );
 
-    // Mouse (coords in device pixels: CSS * DPR).
+    // Pointer events (coords in device pixels: CSS * DPR). pointerdown
+    // captures the pointer so pointermove/pointerup keep firing on the
+    // canvas even when the drag is released outside it (e.g. over the
+    // ribbon); without capture the component would never see the up and
+    // the drag state (hand-tool pan, grabbing cursor) would stick.
     this.canvas.addEventListener(
-      'mousedown',
-      (e: MouseEvent) => {
+      'pointerdown',
+      (e: PointerEvent) => {
         e.preventDefault();
         this.canvas.focus();
+        this.canvas.setPointerCapture(e.pointerId);
         const rect = this.canvas.getBoundingClientRect();
         this.wasm.handleMouseDown(
           e.button,
@@ -279,8 +284,27 @@ export class Editor {
     );
 
     this.canvas.addEventListener(
-      'mouseup',
-      (e: MouseEvent) => {
+      'pointerup',
+      (e: PointerEvent) => {
+        const rect = this.canvas.getBoundingClientRect();
+        this.wasm.handleMouseUp(
+          e.button,
+          (e.clientX - rect.left) * dpr(),
+          (e.clientY - rect.top) * dpr(),
+          e.shiftKey,
+          e.ctrlKey,
+          e.altKey,
+          e.metaKey,
+        );
+      },
+      opts,
+    );
+
+    // Fallback: the browser cancels the pointer (e.g. touch gesture
+    // takeover); forward as an up so any drag state still clears.
+    this.canvas.addEventListener(
+      'pointercancel',
+      (e: PointerEvent) => {
         const rect = this.canvas.getBoundingClientRect();
         this.wasm.handleMouseUp(
           e.button,
@@ -296,8 +320,8 @@ export class Editor {
     );
 
     this.canvas.addEventListener(
-      'mousemove',
-      (e: MouseEvent) => {
+      'pointermove',
+      (e: PointerEvent) => {
         const rect = this.canvas.getBoundingClientRect();
         this.wasm.handleMouseMove((e.clientX - rect.left) * dpr(), (e.clientY - rect.top) * dpr());
       },

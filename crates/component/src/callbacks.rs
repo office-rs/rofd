@@ -1,7 +1,7 @@
 use rofd_dom::{AnnotationId, OfdDocument, OfdWarning};
 use rofd_editor::{AnnotationSelection, TextCursor};
 
-// The 10 callback types. on_change passes &OfdDocument; on_selection_change
+// The callback types. on_change passes &OfdDocument; on_selection_change
 // passes &AnnotationSelection; on_cursor_change passes Option<&TextCursor>;
 // on_save_request passes (); on_annotation_focus/on_annotation_interact pass
 // &AnnotationId; on_context_menu passes ((f64,f64), ContextTarget);

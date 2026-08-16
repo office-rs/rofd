@@ -170,6 +170,9 @@ impl EditorComponent {
     }
 
     pub fn load_document(&mut self, doc: OfdDocument) {
+        // Clear any in-progress drag (Pan/Move/Resize) from the previous
+        // document; its geometry is meaningless after the swap.
+        self.drag = None;
         self.editor.load_document(doc);
         self.font_store = Some(self.build_font_store());
         self.modified = false;
@@ -180,6 +183,7 @@ impl EditorComponent {
     }
 
     pub fn new_document(&mut self) {
+        self.drag = None;
         self.editor.load_document(OfdDocument::default());
         self.font_store = Some(self.build_font_store());
         self.modified = false;
