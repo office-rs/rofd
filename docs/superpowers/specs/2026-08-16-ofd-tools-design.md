@@ -63,6 +63,12 @@ component 不直接设系统光标（同"库不取系统时间"原则：平台�
 - `crates/native-view` / `crates/web-view`：光标回调 → winit/CSS 映射。
 - `examples/native-app` / `examples/web-app`：工具栏加手型按钮；SDK 暴露
   `setTool('hand')`。
+- **工具栏布局仿 WPS 分组**（demo 层）：`[手型 | 文本] │ [高亮 下划线 删除线
+  波浪线] │ [手绘 矩形]`--浏览模式组（手型/文本）与批注创建组用分隔线分开。
+  现有"选择"按钮即 WPS"文本"工具（P3 后具备正文拖选能力），demo 中更名为
+  "文本"。
+- **无 spring-back**（已核实 WPS 行为）：画完一个批注后**停留在当前创建工具**，
+  继续画下一个；不自动切回选择/手型。
 
 ## 4. P2 顶点编辑与句柄策略
 
