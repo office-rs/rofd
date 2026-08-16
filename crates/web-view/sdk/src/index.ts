@@ -63,6 +63,7 @@ interface WasmEditor {
   setOnAnnotationInteract(cb: ((annotationId: string) => void) | null): void;
   setOnPageChange(cb: ((pageIndex: number) => void) | null): void;
   setOnZoomChange(cb: ((zoom: number) => void) | null): void;
+  setOnPointerCursor(cb: ((shape: string) => void) | null): void;
   setTool(kind: string): void;
   deleteAnnotation(id: string): boolean;
   deleteSelected(): number;
@@ -164,7 +165,9 @@ export class Editor {
     canvas.style.width = '100%';
     canvas.style.height = '100%';
     canvas.style.outline = 'none';
-    canvas.style.cursor = 'text';
+    // Initial cursor matches the component's PointerCursor::Default state;
+    // the onPointerCursor callback takes over on the first state change.
+    canvas.style.cursor = 'default';
     container.appendChild(canvas);
 
     // 4. Create WasmEditor (async: WebGPU init + warmup).
@@ -192,6 +195,12 @@ export class Editor {
     if (config?.onAnnotationInteract) wasmEditor.setOnAnnotationInteract(config.onAnnotationInteract);
     if (config?.onPageChange) wasmEditor.setOnPageChange(config.onPageChange);
     if (config?.onZoomChange) wasmEditor.setOnZoomChange(config.onZoomChange);
+
+    // Pointer cursor: the wasm side reports CSS cursor names directly
+    // ("default"/"grab"/"grabbing"), so no mapping is needed here.
+    wasmEditor.setOnPointerCursor((shape: string) => {
+      canvas.style.cursor = shape;
+    });
 
     // 7. Create wrapper + bind DOM events.
     const editor = new Editor(wasmEditor, canvas);
