@@ -483,47 +483,63 @@ impl EditorComponent {
                             current,
                             path,
                         } => {
-                            // Resolve the page from the viewport-space `current`
-                            // point, then convert start/current/path (viewport)
-                            // to page-local before building the payload. The
-                            // default zoom is PX_PER_MM (~3.78), so without this
-                            // conversion created annotations would have
-                            // viewport-space geometry baked in (wrong by the
-                            // zoom factor + page origin). Mirrors how Move
-                            // (divides delta by zoom) and Resize (uses
-                            // viewport_to_page_local) already convert.
-                            let doc = self.editor.document();
-                            let page = current_page_id(doc, &self.viewport, current);
-                            let start_local =
-                                viewport_to_page_local(doc, &self.viewport, &page, start);
-                            let current_local =
-                                viewport_to_page_local(doc, &self.viewport, &page, current);
-                            let (start_l, current_l) = match (start_local, current_local) {
-                                (Some(s), Some(c)) => (s, c),
-                                // Page not found (empty doc): fall back to
-                                // raw viewport coords so a degenerate doc
-                                // does not panic. current_page_id already
-                                // returns a default PageId in this case.
-                                _ => (start, current),
-                            };
-                            let path_local: Vec<(f64, f64)> = path
-                                .iter()
-                                .map(|&p| {
-                                    viewport_to_page_local(doc, &self.viewport, &page, p)
-                                        .unwrap_or(p)
-                                })
-                                .collect();
-                            let payload =
-                                build_create_payload(&kind, start_l, current_l, &path_local);
-                            let id = self.editor.create_annotation(kind.clone(), page, payload);
-                            self.editor.select(id.clone());
-                            // No spring-back: the create tool stays active after
-                            // commit (spec 3.3, WPS continuous drawing). The host
-                            // or user switches back to Select explicitly.
-                            self.after_annotation_change();
-                            self.fire_annotation_focus(&id);
-                            self.fire_annotation_interact(&id);
-                            self.fire_selection_change();
+                            // Degenerate-create guard: a click-without-drag
+                            // (start ~= current) must commit nothing. Applies
+                            // to all create kinds (Shape/Markup/Freehand - a
+                            // single-point Freehand click is equally inert).
+                            // `drag` was already taken above, so the drag
+                            // state is cleared either way.
+                            let dist = ((current.0 - start.0).powi(2)
+                                + (current.1 - start.1).powi(2))
+                            .sqrt();
+                            if dist < MIN_CREATE_DRAG_PX {
+                                // Suppressed: no annotation, no history, no
+                                // selection change, no focus/interact
+                                // callbacks. Fall through to the repaint
+                                // outcome below.
+                            } else {
+                                // Resolve the page from the viewport-space `current`
+                                // point, then convert start/current/path (viewport)
+                                // to page-local before building the payload. The
+                                // default zoom is PX_PER_MM (~3.78), so without this
+                                // conversion created annotations would have
+                                // viewport-space geometry baked in (wrong by the
+                                // zoom factor + page origin). Mirrors how Move
+                                // (divides delta by zoom) and Resize (uses
+                                // viewport_to_page_local) already convert.
+                                let doc = self.editor.document();
+                                let page = current_page_id(doc, &self.viewport, current);
+                                let start_local =
+                                    viewport_to_page_local(doc, &self.viewport, &page, start);
+                                let current_local =
+                                    viewport_to_page_local(doc, &self.viewport, &page, current);
+                                let (start_l, current_l) = match (start_local, current_local) {
+                                    (Some(s), Some(c)) => (s, c),
+                                    // Page not found (empty doc): fall back to
+                                    // raw viewport coords so a degenerate doc
+                                    // does not panic. current_page_id already
+                                    // returns a default PageId in this case.
+                                    _ => (start, current),
+                                };
+                                let path_local: Vec<(f64, f64)> = path
+                                    .iter()
+                                    .map(|&p| {
+                                        viewport_to_page_local(doc, &self.viewport, &page, p)
+                                            .unwrap_or(p)
+                                    })
+                                    .collect();
+                                let payload =
+                                    build_create_payload(&kind, start_l, current_l, &path_local);
+                                let id = self.editor.create_annotation(kind.clone(), page, payload);
+                                self.editor.select(id.clone());
+                                // No spring-back: the create tool stays active after
+                                // commit (spec 3.3, WPS continuous drawing). The host
+                                // or user switches back to Select explicitly.
+                                self.after_annotation_change();
+                                self.fire_annotation_focus(&id);
+                                self.fire_annotation_interact(&id);
+                                self.fire_selection_change();
+                            }
                         }
                         DragState::Move {
                             id,
@@ -752,19 +768,9 @@ impl EditorComponent {
                 let orig = rofd_render::annotation_local_rect(ann).unwrap_or_default();
                 let anchor = opposite_corner(&orig, &h);
                 // current_local starts at the handle corner (no
-                // resize until the pointer moves).
-                let current_local = match &h {
-                    HandlePos::Nw => (orig.x, orig.y),
-                    HandlePos::Ne => (orig.x + orig.w, orig.y),
-                    HandlePos::Sw => (orig.x, orig.y + orig.h),
-                    HandlePos::Se => (orig.x + orig.w, orig.y + orig.h),
-                    HandlePos::N => ((orig.x + orig.w) / 2.0, orig.y),
-                    HandlePos::S => ((orig.x + orig.w) / 2.0, orig.y + orig.h),
-                    HandlePos::E => (orig.x + orig.w, (orig.y + orig.h) / 2.0),
-                    HandlePos::W => (orig.x, (orig.y + orig.h) / 2.0),
-                    // Vertex handles set up DragState::VertexMove above.
-                    HandlePos::Vertex(_) => unreachable!("vertex drag set up above"),
-                };
+                // resize until the pointer moves). Vertex handles
+                // returned above, so `h` is always a bbox handle here.
+                let current_local = rofd_render::handle_center_local(ann, h).unwrap_or_default();
                 self.drag = Some(DragState::Resize {
                     id: id.clone(),
                     handle: h,
@@ -1362,6 +1368,15 @@ const DEFAULT_SHAPE_COLOR: Color = Color::Rgb(255, 0, 0);
 const DEFAULT_FREEHAND_WIDTH: f64 = 1.5;
 /// Default shape stroke width.
 const DEFAULT_SHAPE_WIDTH: f64 = 2.0;
+/// Minimum viewport-space drag distance (px) for a create-drag to commit.
+/// A click-without-drag (or sub-threshold jitter) under a create tool creates
+/// NOTHING - no annotation, no history entry, no selection change. WPS-style
+/// continuous drawing keeps the create tool active indefinitely, so without
+/// this guard every stray click would accumulate an invisible zero-size
+/// annotation and flood the undo history. The distance is measured in
+/// viewport pixels (not page-local), so the gesture feels the same at any
+/// zoom.
+const MIN_CREATE_DRAG_PX: f64 = 3.0;
 
 /// Compute the new rect when dragging a resize handle.
 ///
@@ -1956,6 +1971,106 @@ mod tests {
             .map(Vec::len)
             .sum::<usize>();
         assert_eq!(count, 2, "continuous drawing without re-clicking the tool");
+    }
+
+    /// Total annotation count across all pages (test helper).
+    fn annotation_count(c: &EditorComponent) -> usize {
+        c.document()
+            .annotations
+            .by_page
+            .values()
+            .map(Vec::len)
+            .sum()
+    }
+
+    /// Final-review Fix 1: with the create tool active (and no spring-back
+    /// keeping it active indefinitely), a click-without-drag must NOT commit
+    /// a zero-size invisible annotation, history entry, or selection change.
+    #[test]
+    fn create_click_without_drag_creates_nothing() {
+        let mut c = component_with_page();
+        c.set_tool(Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)));
+        let history_before = c.editor.history_len();
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 10.0,
+            y: 10.0,
+            modifiers: Modifiers::default(),
+        });
+        let outcome = c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 10.0,
+            y: 10.0,
+        });
+        assert!(outcome.needs_repaint);
+        assert_eq!(annotation_count(&c), 0, "no annotation created");
+        assert_eq!(
+            c.editor.history_len(),
+            history_before,
+            "no history entry for a degenerate click"
+        );
+        assert!(
+            matches!(c.editor.selection(), AnnotationSelection::None),
+            "no selection change"
+        );
+        assert!(
+            matches!(c.tool, Tool::Create(AnnotationKind::Shape(ShapeKind::Rect))),
+            "tool stays Create (no spring-back still holds)"
+        );
+        assert!(c.drag.is_none(), "suppressed click leaves no drag state");
+    }
+
+    /// Final-review Fix 1: a drag slightly larger than MIN_CREATE_DRAG_PX
+    /// still creates the annotation (the guard must not eat real gestures).
+    #[test]
+    fn create_drag_slightly_above_threshold_still_creates() {
+        let mut c = component_with_page();
+        c.set_tool(Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)));
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 10.0,
+            y: 10.0,
+            modifiers: Modifiers::default(),
+        });
+        // Distance 4 px > MIN_CREATE_DRAG_PX (3.0).
+        c.handle_event(&ViewEvent::PointerMove { x: 14.0, y: 10.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 14.0,
+            y: 10.0,
+        });
+        assert_eq!(annotation_count(&c), 1, "small-but-real drag creates");
+        assert!(
+            matches!(c.editor.selection(), AnnotationSelection::Single(_)),
+            "created annotation is selected"
+        );
+    }
+
+    /// Final-review Fix 1: Freehand is covered by the same guard - a single
+    /// click (path of one point, start == current) creates nothing.
+    #[test]
+    fn create_freehand_click_without_drag_creates_nothing() {
+        let mut c = component_with_page();
+        c.set_tool(Tool::Create(AnnotationKind::Freehand));
+        let history_before = c.editor.history_len();
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 30.0,
+            y: 30.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 30.0,
+            y: 30.0,
+        });
+        assert_eq!(annotation_count(&c), 0, "no freehand created from a click");
+        assert_eq!(
+            c.editor.history_len(),
+            history_before,
+            "no history entry for a degenerate freehand click"
+        );
+        assert!(c.drag.is_none(), "suppressed click leaves no drag state");
     }
 
     #[test]

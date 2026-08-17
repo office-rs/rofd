@@ -79,11 +79,13 @@ pub fn resize_payload(p: &mut AnnotationPayload, new_rect: Rect) {
 /// rect-based Shape kinds (Rect/Ellipse), non-Shape payloads, or an
 /// out-of-range index.
 ///
-/// Line/Arrow with fewer than 2 points first seeds the endpoints from the
-/// rect's TL->BR diagonal (mirroring render's `line_endpoints` fallback) so
-/// external OFD that carries only a boundary is still editable. Seeding only
-/// happens when `index` is reachable (< 2), so a false return never leaves a
-/// partially seeded payload behind.
+/// Line/Arrow with NO points first seeds the endpoints from the rect's
+/// TL->BR diagonal (mirroring render's `line_endpoints` fallback) so external
+/// OFD that carries only a boundary is still editable. A 1-point Line/Arrow
+/// is degenerate and is a clean no-op (returns false, payload untouched) -
+/// seeding it would corrupt the geometry to 3 points while rendering reads
+/// `points[0..2]`. Seeding only happens when `index` is reachable (< 2), so
+/// a false return never leaves a partially seeded payload behind.
 pub fn move_vertex_payload(p: &mut AnnotationPayload, index: usize, new_point: (f64, f64)) -> bool {
     let AnnotationPayload::Shape {
         kind, rect, points, ..
@@ -97,15 +99,22 @@ pub fn move_vertex_payload(p: &mut AnnotationPayload, index: usize, new_point: (
     ) {
         return false;
     }
-    if matches!(kind, ShapeKind::Line | ShapeKind::Arrow) && points.len() < 2 && index < 2 {
-        points.push(Point {
-            x: rect.x,
-            y: rect.y,
-        });
-        points.push(Point {
-            x: rect.x + rect.w,
-            y: rect.y + rect.h,
-        });
+    if matches!(kind, ShapeKind::Line | ShapeKind::Arrow) {
+        if points.is_empty() && index < 2 {
+            points.push(Point {
+                x: rect.x,
+                y: rect.y,
+            });
+            points.push(Point {
+                x: rect.x + rect.w,
+                y: rect.y + rect.h,
+            });
+        }
+        if points.len() < 2 {
+            // Degenerate 1-point Line/Arrow: no meaningful vertex geometry to
+            // edit. Nothing was seeded above, so return a clean no-op.
+            return false;
+        }
     }
     let Some(pt) = points.get_mut(index) else {
         return false;
@@ -588,6 +597,36 @@ mod tests {
             width: 1.5,
         };
         assert!(!move_vertex_payload(&mut p, 0, (1.0, 1.0)));
+    }
+
+    #[test]
+    fn move_vertex_one_point_line_is_noop() {
+        // A 1-point Line is degenerate: Vertex(0)/Vertex(1) drags must return
+        // false AND leave the payload untouched. (Previously the <2 seeding
+        // guard pushed TL+BR onto the single point, yielding 3 points while
+        // rendering reads points[0..2] -> dragging Vertex(0) visibly moved the
+        // wrong endpoint.)
+        for index in [0usize, 1] {
+            let mut p = AnnotationPayload::Shape {
+                kind: ShapeKind::Line,
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 40.0,
+                    h: 30.0,
+                },
+                stroke: Color::Rgb(0, 0, 0),
+                fill: None,
+                width: 2.0,
+                points: vec![Point { x: 5.0, y: 5.0 }],
+            };
+            let before = p.clone();
+            assert!(
+                !move_vertex_payload(&mut p, index, (50.0, 10.0)),
+                "Vertex({index}) on a 1-point Line must be a clean no-op"
+            );
+            assert_eq!(p, before, "payload untouched for Vertex({index})");
+        }
     }
 
     #[test]
