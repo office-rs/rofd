@@ -82,6 +82,18 @@ pub(crate) enum DragState {
         current_local: (f64, f64),
         moved: bool,
     },
+    /// Dragging one vertex of a point-based Shape (Line/Arrow endpoint,
+    /// Polygon/PolyLine corner). `index` is the vertex position in
+    /// `payload.points`; `orig_local`/`current_local` are page-local. Like
+    /// Move/Resize: preview-only during PointerMove; one
+    /// `editor.move_annotation_vertex` Transaction on PointerUp.
+    VertexMove {
+        id: rofd_dom::AnnotationId,
+        index: usize,
+        orig_local: (f64, f64),
+        current_local: (f64, f64),
+        moved: bool,
+    },
     /// Hand-tool pan drag. Pointer delta maps to viewport scroll (inverted
     /// on y: dragging the pointer down moves content down). View-only; no
     /// document mutation and no undo record.
@@ -404,6 +416,28 @@ impl EditorComponent {
                             }
                         }
                     }
+                    Some(DragState::VertexMove {
+                        id,
+                        current_local,
+                        moved,
+                        ..
+                    }) => {
+                        // Same page-local conversion as Resize: preview-only.
+                        // The committed vertex position is issued once on
+                        // PointerUp via editor.move_annotation_vertex.
+                        let ann = self.editor.document().annotations.find(id);
+                        if let Some(ann) = ann {
+                            if let Some(local) = viewport_to_page_local(
+                                self.editor.document(),
+                                &self.viewport,
+                                &ann.page,
+                                p,
+                            ) {
+                                *current_local = local;
+                                *moved = true;
+                            }
+                        }
+                    }
                     Some(DragState::Pan { .. }) => {
                         // Copy `last` out (a plain f64 tuple) so the borrow of
                         // `self.drag` ends before `maybe_fire_page_change`
@@ -535,6 +569,22 @@ impl EditorComponent {
                                     self.editor.resize_annotation(&id, final_rect);
                                     self.after_annotation_change();
                                 }
+                            }
+                        }
+                        DragState::VertexMove {
+                            id,
+                            index,
+                            orig_local,
+                            current_local,
+                            moved,
+                        } => {
+                            // Preview-based drag commit: one
+                            // editor.move_annotation_vertex Transaction (one
+                            // undo restores the pre-drag vertex + bbox).
+                            if moved && current_local != orig_local {
+                                self.editor
+                                    .move_annotation_vertex(&id, index, current_local);
+                                self.after_annotation_change();
                             }
                         }
                         DragState::Pan { last: _ } => {
@@ -681,6 +731,21 @@ impl EditorComponent {
                 ) {
                     return true;
                 }
+                // Point-based shapes: a Vertex handle starts a vertex drag
+                // (Line/Arrow endpoint, Polygon/PolyLine corner) instead of a
+                // bbox resize. `moved` stays false until a PointerMove shifts
+                // the pointer, so a click-without-drag commits nothing.
+                if let HandlePos::Vertex(index) = h {
+                    let orig_local = rofd_render::handle_center_local(ann, h).unwrap_or_default();
+                    self.drag = Some(DragState::VertexMove {
+                        id: id.clone(),
+                        index,
+                        orig_local,
+                        current_local: orig_local,
+                        moved: false,
+                    });
+                    return true;
+                }
                 // Set up resize drag: orig + anchor in page-local.
                 let orig = rofd_render::annotation_local_rect(ann).unwrap_or_default();
                 let anchor = opposite_corner(&orig, &h);
@@ -695,6 +760,8 @@ impl EditorComponent {
                     HandlePos::S => ((orig.x + orig.w) / 2.0, orig.y + orig.h),
                     HandlePos::E => (orig.x + orig.w, (orig.y + orig.h) / 2.0),
                     HandlePos::W => (orig.x, (orig.y + orig.h) / 2.0),
+                    // Vertex handles set up DragState::VertexMove above.
+                    HandlePos::Vertex(_) => unreachable!("vertex drag set up above"),
                 };
                 self.drag = Some(DragState::Resize {
                     id: id.clone(),
@@ -1235,6 +1302,36 @@ fn drag_to_preview(doc: &OfdDocument, d: &DragState, vp: &Viewport) -> Option<Dr
                 rect,
             })
         }
+        DragState::VertexMove {
+            id,
+            index,
+            current_local,
+            ..
+        } => {
+            let ann = doc.annotations.find(id)?;
+            let AnnotationPayload::Shape {
+                kind, rect, points, ..
+            } = &ann.payload
+            else {
+                return None;
+            };
+            let mut pts: Vec<(f64, f64)> = points.iter().map(|p| (p.x, p.y)).collect();
+            // Line/Arrow with seeded-empty points: mirror the diagonal
+            // fallback so the preview shows real endpoints.
+            if pts.is_empty() && matches!(kind, ShapeKind::Line | ShapeKind::Arrow) {
+                pts = vec![(rect.x, rect.y), (rect.x + rect.w, rect.y + rect.h)];
+            }
+            if *index < pts.len() {
+                pts[*index] = *current_local;
+                Some(DragPreview::VertexMove {
+                    id: id.clone(),
+                    kind: *kind,
+                    points: pts,
+                })
+            } else {
+                None
+            }
+        }
         // Pan is a view-only drag (viewport scroll) - no annotation preview.
         DragState::Pan { .. } => None,
     }
@@ -1307,6 +1404,9 @@ fn compute_resize(handle: &HandlePos, anchor: (f64, f64), orig: Rect, point: (f6
             w: orig.w,
             h: orig.y + orig.h - point.1,
         },
+        // Vertex drags never resize the bbox directly (they go through
+        // editor.move_annotation_vertex, which recomputes the bbox).
+        HandlePos::Vertex(_) => unreachable!("vertex drags do not use compute_resize"),
     }
 }
 
@@ -1491,6 +1591,8 @@ fn opposite_corner(rect: &Rect, handle: &HandlePos) -> (f64, f64) {
         HandlePos::S => (cx, y0),  // opposite edge = N midpoint
         HandlePos::E => (x0, cy),  // opposite edge = W midpoint
         HandlePos::W => (x1, cy),  // opposite edge = E midpoint
+        // Vertex drags have no opposite anchor (see compute_resize).
+        HandlePos::Vertex(_) => unreachable!("vertex drags do not use opposite_corner"),
     }
 }
 
@@ -2265,9 +2367,10 @@ mod tests {
         c
     }
 
-    /// Resize guard: clicking a handle on a Markup (Highlight) annotation must
-    /// NOT enter Resize. The annotation is not resizable, so no DragState::Resize
-    /// should be set up, and a subsequent PointerUp must not push a Transaction.
+    /// Handle-strategy guard (P2): a Markup annotation exposes NO handles, so
+    /// clicking where the old Se corner handle used to be (100,100) now hits
+    /// the annotation body (bbox boundary) and starts a Move - never a
+    /// Resize. A click-without-drag still commits nothing.
     #[test]
     fn markup_handle_down_does_not_enter_resize() {
         let mut c = component_with_markup();
@@ -2285,31 +2388,29 @@ mod tests {
             x: 50.0,
             y: 50.0,
         });
-        // Now the markup is selected. Its viewport rect is (10,10,90,90) (bbox
-        // of the quad pair at zoom 1, page origin (0,0)). The Se handle is at
-        // (100,100). Click on it.
+        // Under the WPS handle strategy the markup exposes no handles, so the
+        // old Se-handle position (100,100) falls through to the annotation
+        // body hit (bbox boundary) -> Move, not Resize.
         c.handle_event(&ViewEvent::PointerDown {
             button: MouseButton::Left,
             x: 100.0,
             y: 100.0,
             modifiers: Modifiers::default(),
         });
-        // No DragState::Resize should have been set up.
         assert!(
-            c.drag.is_none(),
-            "Markup handle must not enter Resize (drag should be None)"
+            matches!(c.drag, Some(DragState::Move { .. })),
+            "Markup corner click must start a Move (no handles), not a Resize"
         );
-        // Move + Up should not push a Transaction (no resize happened).
-        c.handle_event(&ViewEvent::PointerMove { x: 120.0, y: 120.0 });
+        // Release without moving: no Transaction pushed, payload unchanged.
         c.handle_event(&ViewEvent::PointerUp {
             button: MouseButton::Left,
-            x: 120.0,
-            y: 120.0,
+            x: 100.0,
+            y: 100.0,
         });
         assert_eq!(
             c.editor.history_len(),
             undo_before,
-            "Markup handle drag must not push a Transaction (no phantom resize)"
+            "Markup click without drag must not push a Transaction"
         );
         // The annotation's quad_points should be unchanged.
         if let AnnotationSelection::Single(id) = c.editor.selection() {
@@ -2319,7 +2420,7 @@ mod tests {
                     assert_eq!(
                         quad_points.len(),
                         2,
-                        "Markup quad_points unchanged after handle drag"
+                        "Markup quad_points unchanged after handle-position click"
                     );
                 }
                 _ => panic!("expected Markup payload"),
@@ -2366,8 +2467,11 @@ mod tests {
         c
     }
 
-    /// Resize guard: clicking a handle on a Freehand annotation must NOT enter
-    /// Resize. Same logic as the Markup test.
+    /// Handle-strategy guard (P2): a Freehand annotation exposes NO handles,
+    /// so clicking where the old Se corner handle used to be (100,100) now
+    /// hits the annotation body (bbox boundary) and starts a Move - never a
+    /// Resize. A click-without-drag still commits nothing. Same logic as the
+    /// Markup test.
     #[test]
     fn freehand_handle_down_does_not_enter_resize() {
         let mut c = component_with_freehand();
@@ -2384,7 +2488,8 @@ mod tests {
             x: 50.0,
             y: 50.0,
         });
-        // The freehand bbox is (10,10,90,90). Se handle at (100,100). Click it.
+        // The freehand bbox is (10,10,90,90); with no handles the old
+        // Se-handle position (100,100) hits the bbox boundary -> Move.
         c.handle_event(&ViewEvent::PointerDown {
             button: MouseButton::Left,
             x: 100.0,
@@ -2392,20 +2497,19 @@ mod tests {
             modifiers: Modifiers::default(),
         });
         assert!(
-            c.drag.is_none(),
-            "Freehand handle must not enter Resize (drag should be None)"
+            matches!(c.drag, Some(DragState::Move { .. })),
+            "Freehand corner click must start a Move (no handles), not a Resize"
         );
-        // Move + Up should not push a Transaction.
-        c.handle_event(&ViewEvent::PointerMove { x: 120.0, y: 120.0 });
+        // Release without moving: no Transaction pushed.
         c.handle_event(&ViewEvent::PointerUp {
             button: MouseButton::Left,
-            x: 120.0,
-            y: 120.0,
+            x: 100.0,
+            y: 100.0,
         });
         assert_eq!(
             c.editor.history_len(),
             undo_before,
-            "Freehand handle drag must not push a Transaction (no phantom resize)"
+            "Freehand click without drag must not push a Transaction"
         );
     }
 
@@ -3287,5 +3391,276 @@ mod tests {
         };
         c.render(&mut rt);
         assert_eq!(rt.drawn, 1, "render drew exactly one scene");
+    }
+
+    // --- P2 Task 2: WPS handle strategy + vertex-move drag ---
+
+    /// Component with one page (P0, 200x200) and one Shape annotation.
+    /// Viewport: zoom=1, size=(0,0), gap=0, scroll=(0,0) so page origin is
+    /// (0,0) and viewport coords == page-local coords.
+    fn component_with_shape(
+        kind: ShapeKind,
+        rect: Rect,
+        points: Vec<rofd_dom::Point>,
+    ) -> EditorComponent {
+        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        let mut doc = OfdDocument::default();
+        doc.pages.push(Page {
+            id: PageId::new("P0"),
+            physical_box: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 200.0,
+            },
+            layers: vec![Layer::default()],
+            template: None,
+        });
+        c.load_document(doc);
+        c.set_clock("t".into(), 1);
+        c.create_annotation(
+            AnnotationKind::Shape(kind),
+            PageId::new("P0"),
+            AnnotationPayload::Shape {
+                kind,
+                rect,
+                stroke: Color::Rgb(255, 0, 0),
+                fill: None,
+                width: 2.0,
+                points,
+            },
+        );
+        c.viewport = rofd_render::Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (0.0, 0.0),
+            page_gap: 0.0,
+        };
+        c
+    }
+
+    #[test]
+    fn drag_line_endpoint_commits_vertex_move_and_undo_restores() {
+        let mut c = component_with_shape(
+            ShapeKind::Line,
+            Rect {
+                x: 10.0,
+                y: 10.0,
+                w: 90.0,
+                h: 50.0,
+            },
+            vec![Point { x: 10.0, y: 10.0 }, Point { x: 100.0, y: 60.0 }],
+        );
+        // 选中（点批注体）。
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 30.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 30.0,
+        });
+        // 按在 Vertex(1) = (100,60) 句柄上。
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 100.0,
+            y: 60.0,
+            modifiers: Modifiers::default(),
+        });
+        assert!(matches!(
+            c.drag,
+            Some(DragState::VertexMove { index: 1, .. })
+        ));
+        c.handle_event(&ViewEvent::PointerMove { x: 80.0, y: 40.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 80.0,
+            y: 40.0,
+        });
+        // 提交：points[1] = (80,40)，rect = bbox((10,10),(80,40))。
+        let id = match c.selection() {
+            AnnotationSelection::Single(id) => id.clone(),
+            _ => panic!("selected"),
+        };
+        match &c.document().annotations.find(&id).unwrap().payload {
+            AnnotationPayload::Shape { rect, points, .. } => {
+                assert_eq!(points[1], Point { x: 80.0, y: 40.0 });
+                assert_eq!(
+                    *rect,
+                    Rect {
+                        x: 10.0,
+                        y: 10.0,
+                        w: 70.0,
+                        h: 30.0
+                    }
+                );
+            }
+            _ => panic!("expected Shape"),
+        }
+        assert!(c.can_undo());
+        assert!(
+            c.handle_event(&ViewEvent::KeyDown {
+                key: Key::Char('z'),
+                modifiers: Modifiers {
+                    control: true,
+                    ..Default::default()
+                }
+            })
+            .needs_repaint
+        );
+        match &c.document().annotations.find(&id).unwrap().payload {
+            AnnotationPayload::Shape { points, .. } => {
+                assert_eq!(points[1], Point { x: 100.0, y: 60.0 })
+            }
+            _ => panic!("expected Shape"),
+        }
+    }
+
+    #[test]
+    fn vertex_handle_click_without_drag_no_history() {
+        let mut c = component_with_shape(
+            ShapeKind::Line,
+            Rect {
+                x: 10.0,
+                y: 10.0,
+                w: 90.0,
+                h: 50.0,
+            },
+            vec![Point { x: 10.0, y: 10.0 }, Point { x: 100.0, y: 60.0 }],
+        );
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 30.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 30.0,
+        });
+        let undo_before = c.editor.history_len();
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 100.0,
+            y: 60.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 100.0,
+            y: 60.0,
+        });
+        // 创建批注那笔已在历史里；点句柄不动不应再 +1。
+        assert_eq!(
+            c.editor.history_len(),
+            undo_before,
+            "vertex click without drag must not push history"
+        );
+        match c.selection() {
+            AnnotationSelection::Single(id) => {
+                match &c.document().annotations.find(id).unwrap().payload {
+                    AnnotationPayload::Shape { points, .. } => {
+                        assert_eq!(points[1], Point { x: 100.0, y: 60.0 }, "vertex unchanged")
+                    }
+                    _ => panic!("expected Shape"),
+                }
+            }
+            _ => panic!("selected"),
+        }
+    }
+
+    #[test]
+    fn ellipse_edge_handle_resizes_and_corner_is_not_a_handle() {
+        let mut c = component_with_shape(
+            ShapeKind::Ellipse,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 50.0,
+            },
+            vec![],
+        );
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 25.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 25.0,
+        });
+        // E 中点 (100,25) -> Resize(E)。
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 100.0,
+            y: 25.0,
+            modifiers: Modifiers::default(),
+        });
+        assert!(matches!(
+            c.drag,
+            Some(DragState::Resize {
+                handle: HandlePos::E,
+                ..
+            })
+        ));
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 100.0,
+            y: 25.0,
+        });
+        // Nw 角 (0,0) 不再是句柄 -> 命中批注体（bbox 内）-> Move。
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 0.0,
+            y: 0.0,
+            modifiers: Modifiers::default(),
+        });
+        assert!(matches!(c.drag, Some(DragState::Move { .. })));
+    }
+
+    #[test]
+    fn freehand_selected_shows_no_handles_so_corner_starts_move() {
+        // Freehand path bbox (0,0)-(50,50)；选中后旧 Nw 角位置 (0,0) 应是 Move 而非句柄。
+        let mut c = component_with_page();
+        c.set_clock("t".into(), 1);
+        c.create_annotation(
+            AnnotationKind::Freehand,
+            PageId::new("P0"),
+            AnnotationPayload::Freehand {
+                path: PathData {
+                    commands: vec![PathCommand::M(0.0, 0.0), PathCommand::L(50.0, 50.0)],
+                },
+                color: Color::Rgb(0, 0, 0),
+                width: 1.5,
+            },
+        );
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 25.0,
+            y: 25.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 25.0,
+            y: 25.0,
+        });
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 0.0,
+            y: 0.0,
+            modifiers: Modifiers::default(),
+        });
+        assert!(
+            matches!(c.drag, Some(DragState::Move { .. })),
+            "no phantom handles on Freehand"
+        );
     }
 }

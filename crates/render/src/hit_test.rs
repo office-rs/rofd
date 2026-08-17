@@ -7,9 +7,12 @@
 //! topmost-first (reverse document order), matching painter's order (later
 //! annotations paint over earlier ones).
 //!
-//! When an annotation is selected, its 8 resize handles (4 corners + 4 edge
-//! midpoints) are tested first - before the annotation body - so that a click
-//! on a handle returns [`HitTarget::Handle`] rather than [`HitTarget::Annotation`].
+//! When an annotation is selected, its selection handles (per the WPS handle
+//! strategy in [`crate::handles`]: 8 for rect-like payloads, 4 edge midpoints
+//! for Ellipse, point-based Vertex handles for Line/Arrow/Polygon/PolyLine,
+//! none for Markup/Freehand) are tested first - before the annotation body -
+//! so that a click on a handle returns [`HitTarget::Handle`] rather than
+//! [`HitTarget::Annotation`].
 //!
 //! [`HitTarget::AnnotationText`] is reserved for future caret placement on text
 //! annotations; v1 returns [`HitTarget::Annotation`] for all hits.
@@ -42,6 +45,9 @@ pub enum HandlePos {
     E,
     /// West edge midpoint (left-center).
     W,
+    /// A point-based Shape vertex (Line/Arrow endpoint or Polygon/PolyLine
+    /// corner). The index is the position in `payload.points`.
+    Vertex(usize),
 }
 
 /// The topmost thing under a viewport point.
@@ -73,9 +79,9 @@ const HIT_PAD: f64 = 4.0;
 /// hits (annotations render above the body), else the page, else [`HitTarget::Empty`].
 ///
 /// If `selection` is [`AnnotationSelection::Single`], the selected annotation's
-/// 8 resize handles are tested first - a hit returns
-/// [`HitTarget::Handle(id, pos)`]. Otherwise the annotation body / page / empty
-/// logic runs as usual.
+/// selection handles (per the [`crate::handles`] strategy) are tested first - a
+/// hit returns [`HitTarget::Handle(id, pos)`]. Otherwise the annotation body /
+/// page / empty logic runs as usual.
 ///
 /// The page-origin is computed via [`crate::composite::page_origin`] (the
 /// shared page-stacking helper): centering + scroll on both axes + `page_gap`
@@ -89,15 +95,17 @@ pub fn hit_test(
     let (px, py) = point;
 
     // 1. If an annotation is selected, test its handles first (before any
-    //    page/annotation body hit-test). Handles are screen-space (not
-    //    page-local), so we compute the selected annotation's viewport-space
-    //    bounding rect and check if the point falls on any of the 8 handle
-    //    positions.
+    //    page/annotation body hit-test). The handle set and centers come from
+    //    `crate::handles` (the WPS strategy, spec §4.1) - the same source the
+    //    selection overlay draws from, so hitting and drawing never drift.
+    //    Handles are screen-space (not page-local) and stay a constant
+    //    on-screen size regardless of zoom.
     if let AnnotationSelection::Single(id) = selection {
         if let Some(ann) = doc.annotations.find(id) {
-            if let Some(viewport_rect) = annotation_viewport_rect(doc, ann, vp) {
-                if let Some(h) = hit_handle(viewport_rect, point) {
-                    return HitTarget::Handle(id.clone(), h);
+            let r = HANDLE_SIZE / 2.0 + HIT_PAD;
+            for (pos, (hx, hy)) in crate::handles::annotation_handle_positions(doc, ann, vp) {
+                if (px - hx).abs() <= r && (py - hy).abs() <= r {
+                    return HitTarget::Handle(id.clone(), pos);
                 }
             }
         }
@@ -211,53 +219,6 @@ pub fn annotation_local_rect(ann: &Annotation) -> Option<Rect> {
         | AnnotationPayload::Stamp { rect, .. }
         | AnnotationPayload::Watermark { rect, .. } => Some(*rect),
     }
-}
-
-/// Test whether a viewport-space point falls within the hit radius of any of
-/// the 8 handles on `rect`. Returns the first hit handle, or `None`.
-///
-/// Handles are positioned at the 4 corners + 4 edge midpoints of `rect`. The
-/// hit radius is `HANDLE_SIZE / 2 + HIT_PAD` (screen pixels, not zoom-scaled).
-///
-/// Corner handles are tested before edge handles (corners take priority when
-/// they overlap with edges at very small rect sizes).
-fn hit_handle(rect: Rect, point: (f64, f64)) -> Option<HandlePos> {
-    let r = HANDLE_SIZE / 2.0 + HIT_PAD;
-    let (px, py) = point;
-    let x0 = rect.x;
-    let y0 = rect.y;
-    let x1 = rect.x + rect.w;
-    let y1 = rect.y + rect.h;
-    let cx = (x0 + x1) / 2.0;
-    let cy = (y0 + y1) / 2.0;
-
-    // 4 corners first (priority over edges).
-    let corners = [
-        (HandlePos::Nw, x0, y0),
-        (HandlePos::Ne, x1, y0),
-        (HandlePos::Sw, x0, y1),
-        (HandlePos::Se, x1, y1),
-    ];
-    for (pos, hx, hy) in &corners {
-        if (px - hx).abs() <= r && (py - hy).abs() <= r {
-            return Some(*pos);
-        }
-    }
-
-    // 4 edge midpoints.
-    let edges = [
-        (HandlePos::N, cx, y0),
-        (HandlePos::S, cx, y1),
-        (HandlePos::E, x1, cy),
-        (HandlePos::W, x0, cy),
-    ];
-    for (pos, hx, hy) in &edges {
-        if (px - hx).abs() <= r && (py - hy).abs() <= r {
-            return Some(*pos);
-        }
-    }
-
-    None
 }
 
 /// Test whether a page-local point falls inside an annotation's hit region.
@@ -688,5 +649,141 @@ mod tests {
             },
             "annotation_viewport_rect should use page 1's stacked Y origin (150), not page 0's (30)"
         );
+    }
+
+    // --- WPS handle strategy (spec §4.1): strategy-level hit tests ---
+
+    /// Viewport where viewport coords == page-local coords: single page
+    /// 200x200, zoom 1, size (0,0), gap 0, scroll (0,0) -> page origin (0,0).
+    fn vp() -> Viewport {
+        Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (0.0, 0.0),
+            page_gap: 0.0,
+        }
+    }
+
+    /// Doc with one page "P0" (200x200) and one Shape annotation of `kind`.
+    fn doc_with_shape(
+        kind: ShapeKind,
+        rect: Rect,
+        points: Vec<rofd_dom::Point>,
+    ) -> (OfdDocument, AnnotationId) {
+        let ann_id = AnnotationId::from_int(1);
+        let annotation = Annotation {
+            id: ann_id.clone(),
+            kind: AnnotationKind::Shape(kind),
+            page: PageId::new("P0"),
+            creator: "t".into(),
+            created: 0,
+            modified: 0,
+            reply_to: None,
+            payload: AnnotationPayload::Shape {
+                kind,
+                rect,
+                stroke: Color::Rgb(255, 0, 0),
+                fill: None,
+                width: 2.0,
+                points,
+            },
+        };
+        let mut model = rofd_dom::AnnotationModel::default();
+        model.insert(annotation);
+        let doc = OfdDocument {
+            meta: Default::default(),
+            pages: vec![rofd_dom::Page {
+                id: PageId::new("P0"),
+                physical_box: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 200.0,
+                    h: 200.0,
+                },
+                layers: vec![],
+                template: None,
+            }],
+            resources: Default::default(),
+            annotations: model,
+            max_unit_id: 0,
+        };
+        (doc, ann_id)
+    }
+
+    #[test]
+    fn selected_ellipse_hits_only_four_edge_handles() {
+        // Ellipse rect (0,0,100,50)：E 中点 (100,25) 命中；Nw 角 (0,0) 不再是句柄
+        //（落入 bbox -> Annotation 命中）。
+        let (doc, id) = doc_with_shape(
+            ShapeKind::Ellipse,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 50.0,
+            },
+            vec![],
+        );
+        let sel = AnnotationSelection::Single(id);
+        assert!(matches!(
+            hit_test(&doc, &vp(), &sel, (100.0, 25.0)),
+            HitTarget::Handle(_, HandlePos::E)
+        ));
+        assert!(matches!(
+            hit_test(&doc, &vp(), &sel, (0.0, 0.0)),
+            HitTarget::Annotation(_)
+        ));
+    }
+
+    #[test]
+    fn selected_line_hits_endpoint_vertices_not_bbox_corners() {
+        // Line pts (10,10)->(100,60)，bbox (10,10,90,50)。
+        let (doc, id) = doc_with_shape(
+            ShapeKind::Line,
+            Rect {
+                x: 10.0,
+                y: 10.0,
+                w: 90.0,
+                h: 50.0,
+            },
+            vec![
+                rofd_dom::Point { x: 10.0, y: 10.0 },
+                rofd_dom::Point { x: 100.0, y: 60.0 },
+            ],
+        );
+        let sel = AnnotationSelection::Single(id);
+        assert!(matches!(
+            hit_test(&doc, &vp(), &sel, (100.0, 60.0)),
+            HitTarget::Handle(_, HandlePos::Vertex(1))
+        ));
+        // bbox 右下角 (100,60) 就是端点；换个真角：bbox 左下 (10,60) 不是句柄。
+        assert!(matches!(
+            hit_test(&doc, &vp(), &sel, (10.0, 60.0)),
+            HitTarget::Annotation(_)
+        ));
+    }
+
+    #[test]
+    fn selected_polygon_hits_each_vertex() {
+        let pts = vec![
+            rofd_dom::Point { x: 0.0, y: 0.0 },
+            rofd_dom::Point { x: 50.0, y: 80.0 },
+            rofd_dom::Point { x: 100.0, y: 0.0 },
+        ];
+        let (doc, id) = doc_with_shape(
+            ShapeKind::Polygon,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 80.0,
+            },
+            pts,
+        );
+        let sel = AnnotationSelection::Single(id);
+        assert!(matches!(
+            hit_test(&doc, &vp(), &sel, (50.0, 80.0)),
+            HitTarget::Handle(_, HandlePos::Vertex(1))
+        ));
     }
 }
