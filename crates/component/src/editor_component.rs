@@ -517,7 +517,9 @@ impl EditorComponent {
                                 build_create_payload(&kind, start_l, current_l, &path_local);
                             let id = self.editor.create_annotation(kind.clone(), page, payload);
                             self.editor.select(id.clone());
-                            self.set_tool(Tool::Select);
+                            // No spring-back: the create tool stays active after
+                            // commit (spec 3.3, WPS continuous drawing). The host
+                            // or user switches back to Select explicitly.
                             self.after_annotation_change();
                             self.fire_annotation_focus(&id);
                             self.fire_annotation_interact(&id);
@@ -1888,8 +1890,8 @@ mod tests {
             "new rect selected"
         );
         assert!(
-            matches!(c.tool, Tool::Select),
-            "tool back to Select after create"
+            matches!(c.tool, Tool::Create(AnnotationKind::Shape(ShapeKind::Rect))),
+            "tool stays on the create tool after commit (no spring-back)"
         );
         // Verify the annotation was created with the expected rect.
         if let AnnotationSelection::Single(id) = c.editor.selection() {
@@ -1910,6 +1912,50 @@ mod tests {
                 _ => panic!("expected Shape payload"),
             }
         }
+    }
+
+    #[test]
+    fn create_commit_keeps_tool_no_spring_back() {
+        // spec §3.3：画完一个批注停留在当前创建工具（WPS 连续绘制）。
+        let mut c = component_with_page();
+        c.set_tool(Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)));
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 10.0,
+            y: 10.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 60.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 60.0,
+        });
+        assert!(
+            matches!(c.tool, Tool::Create(AnnotationKind::Shape(ShapeKind::Rect))),
+            "tool stays on the create tool (no spring-back)"
+        );
+        // 第二次拖拽直接画第二个批注。
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 60.0,
+            y: 10.0,
+            modifiers: Modifiers::default(),
+        });
+        c.handle_event(&ViewEvent::PointerMove { x: 90.0, y: 40.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 90.0,
+            y: 40.0,
+        });
+        let count = c
+            .document()
+            .annotations
+            .by_page
+            .values()
+            .map(Vec::len)
+            .sum::<usize>();
+        assert_eq!(count, 2, "continuous drawing without re-clicking the tool");
     }
 
     #[test]
@@ -2970,9 +3016,13 @@ mod tests {
         });
         assert!(create_outcome.needs_repaint, "create needs repaint");
         assert!(
-            matches!(c.tool, Tool::Select),
-            "tool reverts to Select after create"
+            matches!(c.tool, Tool::Create(AnnotationKind::Shape(ShapeKind::Rect))),
+            "tool stays on the create tool after commit (no spring-back)"
         );
+        // The create tool stays active after commit (no spring-back), so the
+        // user explicitly switches back to Select to continue the
+        // select/move/resize flow below (as in WPS: click the tool again).
+        c.set_tool(Tool::Select);
         let id = match c.editor.selection() {
             AnnotationSelection::Single(id) => id.clone(),
             _ => panic!("expected single selection after create"),
