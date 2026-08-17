@@ -108,6 +108,29 @@ impl Editor {
         self.execute_transaction(txn);
     }
 
+    /// Move a single vertex of a point-based Shape annotation (Line/Arrow/
+    /// Polygon/PolyLine). `index` is the vertex position in `payload.points`;
+    /// `new_point` is page-local. Rect/Ellipse and non-Shape payloads are a
+    /// no-op (no history entry). Spec §4.2: vertex drag.
+    pub fn move_annotation_vertex(
+        &mut self,
+        id: &AnnotationId,
+        index: usize,
+        new_point: (f64, f64),
+    ) {
+        let before = match self.document.annotations.find(id).cloned() {
+            Some(a) => a,
+            None => return,
+        };
+        let mut after = before.clone();
+        if !crate::payload_util::move_vertex_payload(&mut after.payload, index, new_point) {
+            return;
+        }
+        after.modified = self.current_ts;
+        let txn = self.replace_txn(id.clone(), before, after);
+        self.execute_transaction(txn);
+    }
+
     /// Helper: build a ReplaceAnnotationStep Transaction preserving selection/cursor.
     pub(crate) fn replace_txn(
         &self,
