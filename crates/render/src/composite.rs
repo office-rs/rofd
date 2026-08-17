@@ -124,6 +124,13 @@ pub enum DragPreview {
         id: rofd_dom::AnnotationId,
         rect: RofdRect,
     },
+    /// Moving a vertex of a point-based Shape; `points` is the updated
+    /// page-local point list (the dragged index already replaced).
+    VertexMove {
+        id: rofd_dom::AnnotationId,
+        kind: ShapeKind,
+        points: Vec<(f64, f64)>,
+    },
 }
 
 /// Color for selection handle fills (opaque blue).
@@ -168,8 +175,8 @@ impl RenderEngine {
     /// re-registered every frame.
     ///
     /// `selection` controls handle drawing: if [`AnnotationSelection::Single`],
-    /// 8 resize handles + a selection frame are drawn on the selected
-    /// annotation's viewport-space bounding rect. `drag` draws a live
+    /// a selection frame + the strategy handles (see [`crate::handles`]) are
+    /// drawn on the selected annotation. `drag` draws a live
     /// semi-transparent preview of an in-progress create/move/resize operation.
     pub fn composite(
         &self,
@@ -221,14 +228,21 @@ impl RenderEngine {
             draw_annotations(&mut painter, anns, &doc.resources, fonts, origin, vp.zoom);
         }
 
-        // Selection overlay: draw 8 handles + a frame on the selected
+        // Selection overlay: draw the selection frame + handles on the selected
         // annotation (if Single). Drawn after all pages so handles appear on
-        // top. Handles are screen-space (not page-local); they don't scale
-        // with zoom.
+        // top. Handle centers come from `crate::handles` (the WPS strategy) -
+        // the same source hit_test resolves hits through, so drawing and
+        // hitting never drift. Handles are screen-space (not page-local);
+        // they don't scale with zoom.
         if let AnnotationSelection::Single(id) = selection {
             if let Some(ann) = doc.annotations.find(id) {
                 if let Some(vr) = annotation_viewport_rect(doc, ann, vp) {
-                    draw_selection_overlay(&mut painter, vr);
+                    let centers: Vec<(f64, f64)> =
+                        crate::handles::annotation_handle_positions(doc, ann, vp)
+                            .into_iter()
+                            .map(|(_, c)| c)
+                            .collect();
+                    draw_selection_overlay(&mut painter, vr, &centers);
                 }
             }
         }
@@ -242,12 +256,19 @@ impl RenderEngine {
     }
 }
 
-/// Draw the selection frame (stroked bounding rect) + 8 handle fills on the
+/// Draw the selection frame (stroked bounding rect) + handle fills on the
 /// annotation's viewport-space rect.
 ///
-/// Handles are `HANDLE_SIZE` x `HANDLE_SIZE` screen-pixel squares centered on
-/// the 4 corners + 4 edge midpoints. The frame is a 1px stroked rect.
-fn draw_selection_overlay(painter: &mut Painter<Scene>, vr: RofdRect) {
+/// `handle_centers` are the screen-space centers of the annotation's handles
+/// (already resolved through `crate::handles`, so this function draws exactly
+/// what hit_test hits - Markup/Freehand pass an empty list and get a frame
+/// only). Each handle is a `HANDLE_SIZE` x `HANDLE_SIZE` screen-pixel square;
+/// the frame is a 1px stroked rect.
+fn draw_selection_overlay(
+    painter: &mut Painter<Scene>,
+    vr: RofdRect,
+    handle_centers: &[(f64, f64)],
+) {
     let kurbo_rect = Rect::new(vr.x, vr.y, vr.x + vr.w, vr.y + vr.h);
 
     // Selection frame: stroked bounding rect.
@@ -255,26 +276,9 @@ fn draw_selection_overlay(painter: &mut Painter<Scene>, vr: RofdRect) {
         .stroke(kurbo_rect, &Stroke::new(FRAME_STROKE_WIDTH), FRAME_COLOR)
         .draw();
 
-    // 8 handles: 4 corners + 4 edge midpoints.
+    // Handles at the strategy-resolved centers.
     let half = HANDLE_SIZE / 2.0;
-    let x0 = vr.x;
-    let y0 = vr.y;
-    let x1 = vr.x + vr.w;
-    let y1 = vr.y + vr.h;
-    let cx = (x0 + x1) / 2.0;
-    let cy = (y0 + y1) / 2.0;
-
-    let handle_centers = [
-        (x0, y0), // Nw
-        (x1, y0), // Ne
-        (x0, y1), // Sw
-        (x1, y1), // Se
-        (cx, y0), // N
-        (cx, y1), // S
-        (x1, cy), // E
-        (x0, cy), // W
-    ];
-    for (hx, hy) in &handle_centers {
+    for (hx, hy) in handle_centers {
         let handle_rect = Rect::new(hx - half, hy - half, hx + half, hy + half);
         painter.fill_rect(handle_rect, HANDLE_COLOR);
     }
@@ -287,6 +291,9 @@ fn draw_selection_overlay(painter: &mut Painter<Scene>, vr: RofdRect) {
 /// - `CreateFreehand`: stroked viewport-space path.
 /// - `Move`/`Resize`: stroked page-local rect transformed to viewport coords,
 ///   using the annotation's page's stacked Y origin (NOT page 0's).
+/// - `VertexMove`: stroked polyline (closed for Polygon) through the updated
+///   page-local points, plus a filled arrow head for Arrow - same page-origin
+///   resolution and preview style as `CreateLine`.
 ///
 /// The page origin is computed via [`page_origin`] (the shared page-stacking
 /// helper), so multi-page docs use the correct stacked Y origin for an
@@ -363,6 +370,72 @@ fn draw_drag_preview(
                     Point {
                         x: current.0,
                         y: current.1,
+                    },
+                    &bbox,
+                );
+                painter.fill(&head, PREVIEW_COLOR).transform(base).draw();
+            }
+        }
+        DragPreview::VertexMove { id, kind, points } => {
+            if points.len() < 2 {
+                return;
+            }
+            // Resolve the annotation's page so the preview lands under the
+            // pointer on multi-page docs (same as Move/Resize).
+            let Some(target_page_idx) = doc
+                .annotations
+                .find(id)
+                .and_then(|a| doc.pages.iter().position(|p| p.id == a.page))
+            else {
+                return;
+            };
+            let Some((origin_x, origin_y)) = page_origin(doc, vp, target_page_idx) else {
+                return;
+            };
+            let base = Affine::translate((origin_x, origin_y)) * Affine::scale(vp.zoom);
+            // Shaft/polyline through the updated page-local points (the
+            // dragged index is already replaced by the component).
+            let mut path = BezPath::new();
+            path.move_to((points[0].0, points[0].1));
+            for p in &points[1..] {
+                path.line_to((p.0, p.1));
+            }
+            if matches!(kind, ShapeKind::Polygon) {
+                path.close_path();
+            }
+            painter
+                .stroke(&path, &Stroke::new(PREVIEW_STROKE_WIDTH), PREVIEW_COLOR)
+                .transform(base)
+                .draw();
+            // Arrow: filled triangle head at the (possibly moved) tip, drawn
+            // the same way as the CreateLine preview.
+            if matches!(kind, ShapeKind::Arrow) {
+                let (mut minx, mut miny, mut maxx, mut maxy) = (
+                    f64::INFINITY,
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                    f64::NEG_INFINITY,
+                );
+                for (x, y) in points {
+                    minx = minx.min(*x);
+                    miny = miny.min(*y);
+                    maxx = maxx.max(*x);
+                    maxy = maxy.max(*y);
+                }
+                let bbox = RofdRect {
+                    x: minx,
+                    y: miny,
+                    w: maxx - minx,
+                    h: maxy - miny,
+                };
+                let head = arrow_head_path(
+                    Point {
+                        x: points[0].0,
+                        y: points[0].1,
+                    },
+                    Point {
+                        x: points[1].0,
+                        y: points[1].1,
                     },
                     &bbox,
                 );
