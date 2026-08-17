@@ -1,4 +1,4 @@
-use rofd_dom::{AnnotationPayload, Color, PathCommand, Rect};
+use rofd_dom::{AnnotationPayload, Color, PathCommand, Point, Rect, ShapeKind};
 
 /// Shift an annotation's geometry by (dx, dy).
 pub fn move_payload(p: &mut AnnotationPayload, dx: f64, dy: f64) {
@@ -73,6 +73,66 @@ pub fn resize_payload(p: &mut AnnotationPayload, new_rect: Rect) {
     }
 }
 
+/// Move vertex `index` of a point-based Shape payload to `new_point` and
+/// recompute `rect` as the points' bounding box (hit-test / selection frame /
+/// resize all read `rect`). Returns false -- payload untouched -- for
+/// rect-based Shape kinds (Rect/Ellipse), non-Shape payloads, or an
+/// out-of-range index.
+///
+/// Line/Arrow with fewer than 2 points first seeds the endpoints from the
+/// rect's TL->BR diagonal (mirroring render's `line_endpoints` fallback) so
+/// external OFD that carries only a boundary is still editable. Seeding only
+/// happens when `index` is reachable (< 2), so a false return never leaves a
+/// partially seeded payload behind.
+pub fn move_vertex_payload(p: &mut AnnotationPayload, index: usize, new_point: (f64, f64)) -> bool {
+    let AnnotationPayload::Shape {
+        kind, rect, points, ..
+    } = p
+    else {
+        return false;
+    };
+    if !matches!(
+        kind,
+        ShapeKind::Line | ShapeKind::Arrow | ShapeKind::Polygon | ShapeKind::PolyLine
+    ) {
+        return false;
+    }
+    if matches!(kind, ShapeKind::Line | ShapeKind::Arrow) && points.len() < 2 && index < 2 {
+        points.push(Point {
+            x: rect.x,
+            y: rect.y,
+        });
+        points.push(Point {
+            x: rect.x + rect.w,
+            y: rect.y + rect.h,
+        });
+    }
+    let Some(pt) = points.get_mut(index) else {
+        return false;
+    };
+    pt.x = new_point.0;
+    pt.y = new_point.1;
+    let (mut minx, mut miny, mut maxx, mut maxy) = (
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for p in points.iter() {
+        minx = minx.min(p.x);
+        miny = miny.min(p.y);
+        maxx = maxx.max(p.x);
+        maxy = maxy.max(p.y);
+    }
+    *rect = Rect {
+        x: minx,
+        y: miny,
+        w: maxx - minx,
+        h: maxy - miny,
+    };
+    true
+}
+
 fn shift_cmd(cmd: &mut PathCommand, dx: f64, dy: f64) {
     match cmd {
         PathCommand::M(x, y) | PathCommand::L(x, y) => {
@@ -126,7 +186,7 @@ pub fn set_width(p: &mut AnnotationPayload, width: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rofd_dom::{Color, PathData};
+    use rofd_dom::{Color, PathData, Point, ShapeKind};
 
     #[test]
     fn move_note_shifts_rect() {
@@ -375,6 +435,184 @@ mod tests {
                 ],
                 "BR->TL direction preserved after resize"
             );
+        }
+    }
+
+    #[test]
+    fn move_vertex_line_updates_points_and_rect() {
+        let mut p = AnnotationPayload::Shape {
+            kind: ShapeKind::Line,
+            rect: Rect {
+                x: 10.0,
+                y: 10.0,
+                w: 90.0,
+                h: 50.0,
+            },
+            stroke: Color::Rgb(255, 0, 0),
+            fill: None,
+            width: 2.0,
+            points: vec![Point { x: 10.0, y: 10.0 }, Point { x: 100.0, y: 60.0 }],
+        };
+        assert!(move_vertex_payload(&mut p, 1, (30.0, 20.0)));
+        match &p {
+            AnnotationPayload::Shape { rect, points, .. } => {
+                assert_eq!(points[1], Point { x: 30.0, y: 20.0 });
+                // rect 重算为 points 的 bbox：(10,10)-(30,20)
+                assert_eq!(
+                    *rect,
+                    Rect {
+                        x: 10.0,
+                        y: 10.0,
+                        w: 20.0,
+                        h: 10.0
+                    }
+                );
+            }
+            _ => panic!("expected Shape"),
+        }
+    }
+
+    #[test]
+    fn move_vertex_polygon_updates_only_that_vertex() {
+        let mut p = AnnotationPayload::Shape {
+            kind: ShapeKind::Polygon,
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 10.0,
+                h: 10.0,
+            },
+            stroke: Color::Rgb(0, 0, 255),
+            fill: None,
+            width: 1.0,
+            points: vec![
+                Point { x: 0.0, y: 0.0 },
+                Point { x: 5.0, y: 10.0 },
+                Point { x: 10.0, y: 0.0 },
+            ],
+        };
+        assert!(move_vertex_payload(&mut p, 1, (5.0, 4.0)));
+        match &p {
+            AnnotationPayload::Shape { rect, points, .. } => {
+                assert_eq!(points[0], Point { x: 0.0, y: 0.0 });
+                assert_eq!(points[2], Point { x: 10.0, y: 0.0 });
+                assert_eq!(
+                    *rect,
+                    Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 10.0,
+                        h: 4.0
+                    }
+                );
+            }
+            _ => panic!("expected Shape"),
+        }
+    }
+
+    #[test]
+    fn move_vertex_line_with_empty_points_seeds_diagonal() {
+        // 外部 OFD 只带边界无顶点：先播种 rect 对角线（镜像渲染的
+        // line_endpoints 回退），再把 Vertex(1) 挪到新位置。
+        let mut p = AnnotationPayload::Shape {
+            kind: ShapeKind::Arrow,
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 40.0,
+                h: 30.0,
+            },
+            stroke: Color::Rgb(0, 0, 0),
+            fill: None,
+            width: 2.0,
+            points: vec![],
+        };
+        assert!(move_vertex_payload(&mut p, 1, (50.0, 10.0)));
+        match &p {
+            AnnotationPayload::Shape { points, .. } => {
+                assert_eq!(points[0], Point { x: 0.0, y: 0.0 }, "seeded from rect TL");
+                assert_eq!(points[1], Point { x: 50.0, y: 10.0 });
+            }
+            _ => panic!("expected Shape"),
+        }
+    }
+
+    #[test]
+    fn move_vertex_rect_kind_is_noop() {
+        let mut p = AnnotationPayload::Shape {
+            kind: ShapeKind::Rect,
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 10.0,
+                h: 10.0,
+            },
+            stroke: Color::Rgb(0, 0, 0),
+            fill: None,
+            width: 1.0,
+            points: vec![],
+        };
+        assert!(
+            !move_vertex_payload(&mut p, 0, (5.0, 5.0)),
+            "Rect has no vertices"
+        );
+    }
+
+    #[test]
+    fn move_vertex_out_of_range_is_noop() {
+        let mut p = AnnotationPayload::Shape {
+            kind: ShapeKind::PolyLine,
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 10.0,
+                h: 10.0,
+            },
+            stroke: Color::Rgb(0, 0, 0),
+            fill: None,
+            width: 1.0,
+            points: vec![Point { x: 0.0, y: 0.0 }, Point { x: 10.0, y: 10.0 }],
+        };
+        let before = p.clone();
+        assert!(!move_vertex_payload(&mut p, 2, (5.0, 5.0)));
+        assert_eq!(p, before, "payload untouched on bad index");
+    }
+
+    #[test]
+    fn move_vertex_freehand_is_noop() {
+        let mut p = AnnotationPayload::Freehand {
+            path: PathData {
+                commands: vec![PathCommand::M(0.0, 0.0), PathCommand::L(5.0, 5.0)],
+            },
+            color: Color::Rgb(0, 0, 255),
+            width: 1.5,
+        };
+        assert!(!move_vertex_payload(&mut p, 0, (1.0, 1.0)));
+    }
+
+    #[test]
+    fn move_vertex_line_unreachable_index_does_not_seed() {
+        // Line with empty points + index >= 2: seeding must NOT run (the
+        // diagonal seed only applies when the index is reachable), so a
+        // false return leaves the payload completely untouched.
+        let mut p = AnnotationPayload::Shape {
+            kind: ShapeKind::Line,
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 40.0,
+                h: 30.0,
+            },
+            stroke: Color::Rgb(0, 0, 0),
+            fill: None,
+            width: 2.0,
+            points: vec![],
+        };
+        let before = p.clone();
+        assert!(!move_vertex_payload(&mut p, 2, (50.0, 10.0)));
+        assert_eq!(p, before, "unreachable index must not seed the diagonal");
+        if let AnnotationPayload::Shape { points, .. } = &p {
+            assert!(points.is_empty(), "points still empty after no-op");
         }
     }
 }
