@@ -35,7 +35,7 @@
   2. **`BodyTextSelection` 类型放 render**：spec §5.1 说选区状态放 EditorComponent——指**字段归属**；类型定义放 `rofd-render`（render 的 API 需要它作参数，render 不能依赖 component），component 直接复用。语义不变。
   3. **`hit_test_body_text` 不带 fonts 参数**：spec §5.3 签名含 fonts，但笔位由 deltas 决定、字形数由 glyph_ids/text 长度决定，命中根本不需要字体（shaping 只影响绘制用的字形 ID）。按 YAGNI 去掉。
   4. **range 带 code_index**：spec §5.1 的 `Vec<(ObjectId, start, end)>` 无法表达同一 TextObject 内跨 TextCode（跨行）的部分选区，细化为 `BodyTextRange { object, code_index, start, end }`（spec §7 开放问题授权实现阶段定）。
-  5. **CTM 旋转体 v1 不可选**：命中/选区只处理 ctm 平移近似（不做逆矩阵）；`ctm` 有缩放/旋转的 TextObject 不参与命中。已知限制，记录于 body_text.rs 文档注释。
+  5. **CTM 旋转体 v1 不可选**：命中/选区矩形只处理 ctm 平移近似--线性部分为单位阵（epsilon 内）时把平移 `(e,f)`（对象局部 mm，随 zoom 缩放）加到格子原点，与 `draw_text` 的 `compose_object_transform` 顺序一致；`ctm` 有缩放/旋转（含 0.0176 单位换算）的 TextObject 在命中与选区矩形中整体跳过（不做逆矩阵）。已知限制，记录于 body_text.rs 文档注释。
   6. **拖到无字区域**：PointerMove 未命中文字时保持选区不变（等效“钳制到最近已过字符”的 v1 简化），不强行找最近行。
   7. **demo 工具串**：`setTool("textSelect")`（spec §5.5 原文）；现有"文本"按钮从 Select 切到 TextSelect。
 
