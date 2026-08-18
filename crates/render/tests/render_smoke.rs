@@ -89,6 +89,7 @@ fn composite_builds_paper_on_desk_scene() {
         &fonts,
         &AnnotationSelection::None,
         None,
+        None,
     ); // built without panic
 }
 
@@ -114,6 +115,7 @@ fn end_to_end_parse_composite_hit_test() {
         &fonts,
         &AnnotationSelection::None,
         None,
+        None,
     );
 
     // Hit-test somewhere on page 0 (annotation entries exist in the fixture).
@@ -132,6 +134,7 @@ fn end_to_end_parse_composite_hit_test() {
         &vp,
         &fonts,
         &AnnotationSelection::None,
+        None,
         None,
     );
 }
@@ -184,6 +187,7 @@ fn real_ofd_parses_and_composites() {
         &vp,
         &fonts,
         &AnnotationSelection::None,
+        None,
         None,
     ); // composites without panic
 

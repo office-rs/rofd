@@ -303,6 +303,8 @@ impl EditorComponent {
             &self.viewport,
             fonts,
             self.editor.selection(),
+            // T3 wires the real body-text selection state here.
+            None,
             drag_preview.as_ref(),
         )
     }
