@@ -47,14 +47,15 @@ pub fn parse_key(s: &str) -> Key {
 
 /// Map a JS-friendly tool-kind string to a [`Tool`]. Unknown strings fall
 /// back to [`Tool::Select`] (safe default). Mirrors the native-app's toolbar
-/// buttons: hand / select / highlight / underline / strikeout / squiggly
-/// / freehand / rect.
+/// buttons: hand / select / textSelect / highlight / underline / strikeout
+/// / squiggly / freehand / rect.
 ///
 /// Pure Rust (no wasm types) so it runs under `cargo test` on native, like
 /// [`parse_key`]. The WasmEditor's `setTool` method calls this.
 pub fn parse_tool_kind(kind: &str) -> Tool {
     match kind {
         "select" => Tool::Select,
+        "textSelect" => Tool::TextSelect,
         "hand" => Tool::Hand,
         "highlight" => Tool::Create(AnnotationKind::Highlight),
         "underline" => Tool::Create(AnnotationKind::Underline),
@@ -78,6 +79,30 @@ pub fn pointer_cursor_str(c: PointerCursor) -> &'static str {
     }
 }
 
+/// Parse a JS-facing color string (`"#RRGGBB"`, case-insensitive hex) into a
+/// [`rofd_dom::Color`]. Any invalid shape or hex digit falls back to black
+/// ([`rofd_dom::Color::default`]) - a safe default that only guards host-side
+/// typos, not an error worth surfacing.
+///
+/// Pure Rust (no wasm types) so it runs under `cargo test` on native, like
+/// [`parse_key`]. The WasmEditor's `createHighlightFromSelection` calls this.
+pub fn parse_color(s: &str) -> rofd_dom::Color {
+    // ASCII check first: slicing multi-byte UTF-8 mid-char would panic, and
+    // only ASCII hex digits are valid anyway.
+    if !s.is_ascii() {
+        return rofd_dom::Color::default();
+    }
+    let hex = s.strip_prefix('#').unwrap_or("");
+    if hex.len() != 6 {
+        return rofd_dom::Color::default();
+    }
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16);
+    match (byte(0), byte(2), byte(4)) {
+        (Ok(r), Ok(g), Ok(b)) => rofd_dom::Color::Rgb(r, g, b),
+        _ => rofd_dom::Color::default(),
+    }
+}
+
 // ─── WasmEditor (wasm32 only) ────────────────────────────────────────────────
 
 #[cfg(target_arch = "wasm32")]
@@ -94,7 +119,7 @@ mod wasm_impl {
     use rofd_io::{parse_ofd, save_ofd, write_ofd, PackageHandle};
     use wasm_bindgen::prelude::*;
 
-    use crate::wasm_editor::{parse_key, parse_tool_kind, pointer_cursor_str};
+    use crate::wasm_editor::{parse_color, parse_key, parse_tool_kind, pointer_cursor_str};
     use crate::webgpu_render_target::WebGpuRenderTarget;
 
     /// JS callback slots. Each is an `Rc<RefCell<Option<Function>>>` so the
@@ -114,6 +139,7 @@ mod wasm_impl {
         pub on_page_change: Rc<RefCell<Option<js_sys::Function>>>,
         pub on_zoom_change: Rc<RefCell<Option<js_sys::Function>>>,
         pub on_pointer_cursor: Rc<RefCell<Option<js_sys::Function>>>,
+        pub on_copy: Rc<RefCell<Option<js_sys::Function>>>,
     }
 
     /// wasm-bindgen editor surface for the web.
@@ -239,6 +265,34 @@ mod wasm_impl {
             *self.callbacks.on_pointer_cursor.borrow_mut() = callback;
         }
 
+        /// Register the copy callback. JS receives the selected text string.
+        /// Fired on Ctrl+C when the TextSelect tool has a live body-text
+        /// selection. The SDK defaults this to `navigator.clipboard.writeText`.
+        #[wasm_bindgen(js_name = setOnCopy)]
+        pub fn set_on_copy(&mut self, callback: Option<js_sys::Function>) {
+            *self.callbacks.on_copy.borrow_mut() = callback;
+        }
+
+        /// The current body-text selection's text; null when there is no
+        /// selection (or the selection can't be sliced to text - see
+        /// `EditorComponent::selected_text`).
+        #[wasm_bindgen(js_name = getSelectedText)]
+        pub fn get_selected_text(&self) -> Option<String> {
+            self.component.selected_text()
+        }
+
+        /// Convert the current body-text selection into a Highlight
+        /// annotation. Returns the new annotation's id string, or null when
+        /// there is no selection. `color` is `"#RRGGBB"` (invalid strings
+        /// fall back to black - see [`parse_color`]).
+        #[wasm_bindgen(js_name = createHighlightFromSelection)]
+        pub fn create_highlight_from_selection(&mut self, color: &str) -> Option<String> {
+            let parsed = parse_color(color);
+            self.component
+                .create_highlight_from_selection(parsed)
+                .map(|id| id.0)
+        }
+
         // ─── Event Handlers ─────────────────────────────────────────────────
 
         #[wasm_bindgen(js_name = handleKeyDown)]
@@ -273,6 +327,7 @@ mod wasm_impl {
             ctrl: bool,
             alt: bool,
             meta: bool,
+            click_count: u32,
         ) -> Result<(), JsValue> {
             let modifiers = Modifiers {
                 shift,
@@ -285,8 +340,8 @@ mod wasm_impl {
                 x,
                 y,
                 modifiers,
-                // 真实多击计数由 Task 6/7 的适配器接上；先传 1。
-                click_count: 1,
+                // Real multi-click count from the DOM (MouseEvent.detail).
+                click_count: click_count as u8,
             });
             Ok(())
         }
@@ -430,10 +485,10 @@ mod wasm_impl {
         }
 
         /// Set the active editing tool. `kind` is a JS-friendly string:
-        /// `"select"` | `"hand"` | `"highlight"` | `"underline"` |
-        /// `"strikeout"` | `"squiggly"` | `"freehand"` | `"rect"`. Unknown
-        /// strings fall back to `Select` (safe default). Mirrors the
-        /// native-app's toolbar buttons.
+        /// `"select"` | `"textSelect"` | `"hand"` | `"highlight"` |
+        /// `"underline"` | `"strikeout"` | `"squiggly"` | `"freehand"` |
+        /// `"rect"`. Unknown strings fall back to `Select` (safe default).
+        /// Mirrors the native-app's toolbar buttons.
         #[wasm_bindgen(js_name = setTool)]
         pub fn set_tool(&mut self, kind: &str) {
             let tool = parse_tool_kind(kind);
@@ -577,6 +632,11 @@ mod wasm_impl {
                 .on_pointer_cursor(Box::new(move |cursor: PointerCursor| {
                     call_js1_str(&on_pointer_cursor_js, pointer_cursor_str(cursor));
                 }));
+
+            let on_copy_js = self.callbacks.on_copy.clone();
+            self.component.on_copy(Box::new(move |text: String| {
+                call_js1_str(&on_copy_js, &text);
+            }));
         }
     }
 
@@ -743,6 +803,31 @@ mod tests {
     #[test]
     fn parse_tool_kind_hand() {
         assert_eq!(parse_tool_kind("hand"), Tool::Hand);
+    }
+
+    #[test]
+    fn parse_tool_kind_text_select() {
+        assert_eq!(parse_tool_kind("textSelect"), Tool::TextSelect);
+        assert_eq!(parse_tool_kind("select"), Tool::Select);
+    }
+
+    #[test]
+    fn parse_color_hex_rrggbb() {
+        assert_eq!(parse_color("#ff0000"), rofd_dom::Color::Rgb(255, 0, 0));
+        assert_eq!(parse_color("#00ff00"), rofd_dom::Color::Rgb(0, 255, 0));
+        assert_eq!(parse_color("#102030"), rofd_dom::Color::Rgb(16, 32, 48));
+    }
+
+    #[test]
+    fn parse_color_invalid_falls_back_to_black() {
+        // Invalid shapes/values fall back to black (safe default; the host
+        // SDK controls the color strings so this only guards typos).
+        assert_eq!(parse_color("red"), rofd_dom::Color::Rgb(0, 0, 0));
+        assert_eq!(parse_color("#fff"), rofd_dom::Color::Rgb(0, 0, 0));
+        assert_eq!(parse_color("#gg0000"), rofd_dom::Color::Rgb(0, 0, 0));
+        assert_eq!(parse_color(""), rofd_dom::Color::Rgb(0, 0, 0));
+        // Multi-byte UTF-8 must not panic the hex slicing.
+        assert_eq!(parse_color("#é0000"), rofd_dom::Color::Rgb(0, 0, 0));
     }
 
     #[test]
