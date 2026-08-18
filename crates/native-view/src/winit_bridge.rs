@@ -1,4 +1,36 @@
+use std::time::Duration;
+use std::time::Instant;
+
 use rofd_component::{Key, Modifiers, MouseButton, ScrollDirection, ViewEvent};
+
+/// Double/triple-click tracking for the bridge. Monotonic `Instant` only
+/// (Ruling 1): the §4.4 clock ban targets wall-clock document timestamps;
+/// interaction rhythm detection in a platform adapter is not that.
+#[derive(Default)]
+pub(crate) struct ClickState {
+    last: Option<(Instant, (f64, f64), u8)>,
+}
+
+const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(500);
+const CLICK_SLOP_PX: f64 = 4.0;
+
+/// Advance the click counter: consecutive clicks within the double-click
+/// window at (roughly) the same position count 1, 2, 3, then wrap to 1;
+/// anything outside the window or slop resets to 1.
+fn next_click_count(s: &mut ClickState, pos: (f64, f64), now: Instant) -> u8 {
+    let count = match s.last {
+        Some((t, p, n))
+            if now.duration_since(t) <= DOUBLE_CLICK_WINDOW
+                && (p.0 - pos.0).abs() <= CLICK_SLOP_PX
+                && (p.1 - pos.1).abs() <= CLICK_SLOP_PX =>
+        {
+            (n % 3) + 1
+        }
+        _ => 1,
+    };
+    s.last = Some((now, pos, count));
+    count
+}
 
 /// Transient winit translation state. NOT a field on EditorApp (keeps EditorApp
 /// framework-agnostic). The Host owns both and passes &mut EditorApp into handle_window_event.
@@ -11,6 +43,8 @@ pub struct WinitEventBridge {
     /// the host each frame (the canvas sits below the toolbar, so its origin is
     /// not (0, 0)). Until set, coord-bearing pointer events are dropped.
     canvas_origin: Option<(f64, f64)>,
+    /// Double/triple-click counter for PointerDown events.
+    clicks: ClickState,
 }
 
 impl WinitEventBridge {
@@ -21,6 +55,7 @@ impl WinitEventBridge {
             cursor_phys_y: 0.0,
             scale_factor: 1.0,
             canvas_origin: None,
+            clicks: ClickState::default(),
         }
     }
 
@@ -76,8 +111,14 @@ impl WinitEventBridge {
                         x,
                         y,
                         modifiers: self.modifiers,
-                        // 真实多击计数由后续任务的 bridge 接上；先传 1。
-                        click_count: 1,
+                        // Multi-click counting lives in the adapter (host-side
+                        // interaction assembly, AGENTS §4.9): window/slop
+                        // rhythm detection on canvas-local logical coords.
+                        click_count: next_click_count(
+                            &mut self.clicks,
+                            (x, y),
+                            std::time::Instant::now(),
+                        ),
                     }),
                     winit::event::ElementState::Released => {
                         Some(ViewEvent::PointerUp { button: btn, x, y })
@@ -222,6 +263,7 @@ fn page_scroll_direction(key: &winit::keyboard::PhysicalKey) -> Option<ScrollDir
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn canvas_local_divides_by_scale_factor() {
@@ -294,6 +336,46 @@ mod tests {
         assert_eq!(
             page_scroll_direction(&PhysicalKey::Code(KeyCode::Enter)),
             None
+        );
+    }
+
+    #[test]
+    fn click_count_sequences_within_window() {
+        let mut s = ClickState::default();
+        let t0 = std::time::Instant::now();
+        assert_eq!(next_click_count(&mut s, (10.0, 10.0), t0), 1);
+        assert_eq!(
+            next_click_count(&mut s, (11.0, 10.0), t0 + Duration::from_millis(200)),
+            2
+        );
+        assert_eq!(
+            next_click_count(&mut s, (10.0, 11.0), t0 + Duration::from_millis(400)),
+            3
+        );
+        // 超窗 -> 重新从 1 计。
+        assert_eq!(
+            next_click_count(&mut s, (10.0, 10.0), t0 + Duration::from_millis(1200)),
+            1
+        );
+        // 位置跳变（>4px）-> 重新计。
+        assert_eq!(
+            next_click_count(&mut s, (50.0, 50.0), t0 + Duration::from_millis(1400)),
+            1
+        );
+        // 连续第 4 击 -> 回绕到 1。
+        let mut s2 = ClickState::default();
+        assert_eq!(next_click_count(&mut s2, (0.0, 0.0), t0), 1);
+        assert_eq!(
+            next_click_count(&mut s2, (0.0, 0.0), t0 + Duration::from_millis(100)),
+            2
+        );
+        assert_eq!(
+            next_click_count(&mut s2, (0.0, 0.0), t0 + Duration::from_millis(200)),
+            3
+        );
+        assert_eq!(
+            next_click_count(&mut s2, (0.0, 0.0), t0 + Duration::from_millis(300)),
+            1
         );
     }
 

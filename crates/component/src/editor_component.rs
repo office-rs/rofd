@@ -1425,12 +1425,9 @@ impl EditorComponent {
 
     /// Fired on Ctrl+C while body text is selected (TextSelect tool). The
     /// component never touches the clipboard (AGENTS §4.9) - adapters wire
-    /// the default platform clipboard behind this callback.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn on_copy(&mut self, cb: impl Fn(String) + 'static + Send) {
-        self.callbacks.on_copy = Some(Box::new(cb));
-    }
-    #[cfg(target_arch = "wasm32")]
+    /// the default platform clipboard behind this callback. Not Send-gated:
+    /// the native adapter's default clipboard closure captures Rc state
+    /// (single-threaded EditorApp), and no usage needs cross-thread Send.
     pub fn on_copy(&mut self, cb: impl Fn(String) + 'static) {
         self.callbacks.on_copy = Some(Box::new(cb));
     }
