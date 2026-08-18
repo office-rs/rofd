@@ -163,8 +163,8 @@ mod tests {
         assert_eq!(h.char_offset, 1);
         // x=36 在字符 2 (30..40) 后半 -> offset 3。
         assert_eq!(hit_test_body_text(&doc, &vp, (36.0, 25.0)).unwrap().char_offset, 3);
-        // 行尾右边界外 -> offset = n。
-        assert_eq!(hit_test_body_text(&doc, &vp, (60.0, 25.0)).unwrap().char_offset, 4);
+        // x=50（最后一格 30..40 右缘的 1.5 格余量内）-> offset = n。
+        assert_eq!(hit_test_body_text(&doc, &vp, (50.0, 25.0)).unwrap().char_offset, 4);
     }
 
     #[test]
@@ -609,8 +609,10 @@ pub fn word_range_at(page: &Page, hit: &TextHit) -> Vec<BodyTextRange> {
     let Some(t) = find_object(page, &hit.object) else { return Vec::new() };
     let Some(code) = t.codes.get(hit.code_index) else { return Vec::new() };
     let chars: Vec<char> = code.text.chars().collect();
-    // glyph-id codes carry no chars to classify - fall back to the whole code.
-    if chars.is_empty() || !code.glyph_ids.is_empty() {
+    // Codes with no chars to classify (glyph-only, empty text) fall back to
+    // the whole code; glyph-id codes WITH text still segment by chars
+    // (char offsets == glyph indices when lengths agree).
+    if chars.is_empty() {
         let n = code_char_count(code);
         return vec![BodyTextRange { object: hit.object.clone(), code_index: hit.code_index, start: 0, end: n }];
     }
@@ -804,7 +806,7 @@ git commit -m "feat(render): body-text selection ranges, rects, and composite ov
             button: MouseButton::Left, x: 31.0, y: 25.0,
             modifiers: Modifiers::default(), click_count: 2,
         });
-        // glyph-id code 无 chars 可分类 -> 整个 code（v1 回退）。
+        // "ABCD" 全部同类字母 -> 词 = 整个 code。
         let sel = c.text_selection().unwrap();
         assert_eq!((sel.ranges[0].code_index, sel.ranges[0].start, sel.ranges[0].end), (0, 0, 4));
         c.handle_event(&ViewEvent::PointerDown {
@@ -932,7 +934,7 @@ Expected: FAIL（`Tool::TextSelect` 不存在 + click_count 字段编译错—�
                                     .pages
                                     .iter()
                                     .find(|pg| pg.id == page_id);
-                                let ranges = page.map(|page| match click_count {
+                                let mut ranges = page.map(|page| match click_count {
                                     2 => rofd_render::word_range_at(page, &hit),
                                     3 => rofd_render::paragraph_range_at(page, &hit),
                                     _ => vec![rofd_render::BodyTextRange {
@@ -942,6 +944,8 @@ Expected: FAIL（`Tool::TextSelect` 不存在 + click_count 字段编译错—�
                                         end: hit.char_offset,
                                     }],
                                 }).unwrap_or_default();
+                                // 单击不拖 -> 零宽 caret range 不算选区。
+                                ranges.retain(|r| r.end > r.start);
                                 self.text_selection =
                                     (!ranges.is_empty()).then(|| rofd_render::BodyTextSelection {
                                         page: page_id,
@@ -1238,8 +1242,8 @@ git commit -m "feat(component): selected_text and on_copy callback for text sele
                 assert_eq!(*color, Color::Rgb(255, 255, 0));
                 // 两行 -> 两个 quad（4 个点），页局部坐标（viewport=页局部因 zoom1/origin0）。
                 assert_eq!(quad_points.len(), 4);
-                assert_eq!(quad_points[0], Point { x: 20.0, y: 20.0 }, "line0 tl (viewport 20,20)");
-                assert_eq!(quad_points[1], Point { x: 40.0, y: 32.5 }, "line0 br");
+                assert_eq!(quad_points[0], Point { x: 30.0, y: 20.0 }, "line0 tl: cell2 x=20 + boundary 10");
+                assert_eq!(quad_points[1], Point { x: 50.0, y: 32.5 }, "line0 br: cell3 x+adv=40 + boundary 10");
                 assert_eq!(quad_points[2], Point { x: 10.0, y: 40.0 }, "line1 tl");
                 assert_eq!(quad_points[3], Point { x: 20.0, y: 52.5 }, "line1 br");
             }
@@ -1262,7 +1266,7 @@ git commit -m "feat(component): selected_text and on_copy callback for text sele
     }
 ```
 
-（quad 坐标由 Task 2 `selection_rects_one_per_code_line` 的同一几何推得：行 0 选 [2,4) -> viewport x∈[20,40]、y∈[20,32.5]；行 1 选 [0,1) -> x∈[10,20]、y∈[40,52.5]；zoom=1、页原点 (0,0) 时 viewport==页局部。）
+（quad 坐标由 Task 2 `selection_rects_one_per_code_line` 的同一几何推得：行 0 选 [2,4) -> 首格 x=20、末格 x+adv=40，加 boundary.x=10 -> viewport x∈[30,50]、y∈[20,32.5]；行 1 选 [0,1) -> x∈[10,20]、y∈[40,52.5]；zoom=1、页原点 (0,0) 时 viewport==页局部。）
 
 - [ ] **Step 2: 跑测试确认失败**
 
