@@ -363,6 +363,48 @@ impl EditorComponent {
         self.after_annotation_change();
     }
 
+    /// Convert the current body-text selection into a Highlight annotation
+    /// (spec §5.4): one Markup quad per selected line (page-local tl/br
+    /// pairs), via the existing `create_annotation` command - undoable and
+    /// saved like any annotation. Clears the selection on success.
+    pub fn create_highlight_from_selection(
+        &mut self,
+        color: Color,
+    ) -> Option<rofd_dom::AnnotationId> {
+        let sel = self.text_selection.clone()?;
+        let page_id = sel.page.clone();
+        let rects = rofd_render::text_selection_rects(self.editor.document(), &self.viewport, &sel);
+        if rects.is_empty() {
+            return None;
+        }
+        let mut quad_points = Vec::with_capacity(rects.len() * 2);
+        for r in &rects {
+            // viewport -> page-local (same conversion hit-testing uses).
+            let tl = viewport_to_page_local(
+                self.editor.document(),
+                &self.viewport,
+                &page_id,
+                (r.x, r.y),
+            )?;
+            let br = viewport_to_page_local(
+                self.editor.document(),
+                &self.viewport,
+                &page_id,
+                (r.x + r.w, r.y + r.h),
+            )?;
+            quad_points.push(Point { x: tl.0, y: tl.1 });
+            quad_points.push(Point { x: br.0, y: br.1 });
+        }
+        let id = self.editor.create_annotation(
+            AnnotationKind::Highlight,
+            page_id,
+            AnnotationPayload::Markup { quad_points, color },
+        );
+        self.after_annotation_change();
+        self.fire_selection_change();
+        Some(id)
+    }
+
     /// Build the current editor scene (paper-on-desk) for the host to paint.
     ///
     /// The native xilem canvas consumes the returned [`Scene`] via
@@ -4299,6 +4341,69 @@ mod tests {
             },
         );
         assert!(c.text_selection().is_none());
+    }
+
+    // --- P3 Task 5: selection -> Highlight annotation ---
+
+    #[test]
+    fn create_highlight_from_selection_makes_markup_quads_and_undo_removes() {
+        let mut c = component_with_body_text();
+        c.set_tool(Tool::TextSelect);
+        c.handle_event(&pd(31.0, 25.0));
+        c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 16.0,
+            y: 45.0,
+        });
+        let id = c
+            .create_highlight_from_selection(Color::Rgb(255, 255, 0))
+            .expect("highlight created");
+        // 选区已清空（成功后清空，spec §5.4）。
+        assert!(c.text_selection().is_none());
+        let ann = c.document().annotations.find(&id).unwrap();
+        match &ann.payload {
+            AnnotationPayload::Markup { quad_points, color } => {
+                assert_eq!(*color, Color::Rgb(255, 255, 0));
+                // 两行 -> 两个 quad（4 个点），页局部坐标（viewport=页局部因 zoom1/origin0）。
+                assert_eq!(quad_points.len(), 4);
+                assert_eq!(
+                    quad_points[0],
+                    Point { x: 30.0, y: 20.0 },
+                    "line0 tl: cell2 x=20 + boundary 10"
+                );
+                assert_eq!(
+                    quad_points[1],
+                    Point { x: 50.0, y: 32.5 },
+                    "line0 br: cell3 x+adv=40 + boundary 10"
+                );
+                assert_eq!(quad_points[2], Point { x: 10.0, y: 40.0 }, "line1 tl");
+                assert_eq!(quad_points[3], Point { x: 20.0, y: 52.5 }, "line1 br");
+            }
+            _ => panic!("expected Markup payload"),
+        }
+        // 可 undo（走 create_annotation 命令）。
+        assert!(c.can_undo());
+        c.handle_event(&ViewEvent::KeyDown {
+            key: Key::Char('z'),
+            modifiers: Modifiers {
+                control: true,
+                ..Default::default()
+            },
+        });
+        assert!(
+            c.document().annotations.find(&id).is_none(),
+            "undo removes highlight"
+        );
+    }
+
+    #[test]
+    fn create_highlight_without_selection_is_none() {
+        let mut c = component_with_body_text();
+        c.set_tool(Tool::TextSelect);
+        assert!(c
+            .create_highlight_from_selection(Color::Rgb(255, 255, 0))
+            .is_none());
     }
 
     #[test]
