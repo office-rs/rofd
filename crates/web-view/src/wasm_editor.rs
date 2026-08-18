@@ -74,6 +74,7 @@ pub fn pointer_cursor_str(c: PointerCursor) -> &'static str {
         PointerCursor::Default => "default",
         PointerCursor::Grab => "grab",
         PointerCursor::Grabbing => "grabbing",
+        PointerCursor::Text => "text",
     }
 }
 
@@ -284,6 +285,8 @@ mod wasm_impl {
                 x,
                 y,
                 modifiers,
+                // 真实多击计数由 Task 6/7 的适配器接上；先传 1。
+                click_count: 1,
             });
             Ok(())
         }
@@ -747,5 +750,6 @@ mod tests {
         assert_eq!(pointer_cursor_str(PointerCursor::Default), "default");
         assert_eq!(pointer_cursor_str(PointerCursor::Grab), "grab");
         assert_eq!(pointer_cursor_str(PointerCursor::Grabbing), "grabbing");
+        assert_eq!(pointer_cursor_str(PointerCursor::Text), "text");
     }
 }
