@@ -6,7 +6,8 @@ use rofd_editor::{AnnotationSelection, TextCursor};
 // on_save_request passes (); on_annotation_focus/on_annotation_interact pass
 // &AnnotationId; on_context_menu passes ((f64,f64), ContextTarget);
 // on_page_change passes usize; on_zoom_change passes f64; on_warning passes
-// &[OfdWarning]; on_pointer_cursor passes PointerCursor.
+// &[OfdWarning]; on_pointer_cursor passes PointerCursor; on_copy passes
+// String (the selected body text).
 //
 // Target-gated `Send`: the host (Phase 4b native) requires `Send` callbacks. On native
 // targets the aliases below add `+ Send`; on wasm they do not (wasm is single-threaded).
@@ -33,6 +34,8 @@ pub type OnZoomChange = dyn Fn(f64) + Send;
 pub type OnPointerCursor = dyn Fn(PointerCursor) + Send;
 #[cfg(not(target_arch = "wasm32"))]
 pub type OnWarning = dyn Fn(&[OfdWarning]) + Send;
+#[cfg(not(target_arch = "wasm32"))]
+pub type OnCopy = dyn Fn(String) + Send;
 
 #[cfg(target_arch = "wasm32")]
 pub type OnChange = dyn Fn(&OfdDocument);
@@ -56,6 +59,8 @@ pub type OnZoomChange = dyn Fn(f64);
 pub type OnPointerCursor = dyn Fn(PointerCursor);
 #[cfg(target_arch = "wasm32")]
 pub type OnWarning = dyn Fn(&[OfdWarning]);
+#[cfg(target_arch = "wasm32")]
+pub type OnCopy = dyn Fn(String);
 
 /// What a right-click landed on, passed to `on_context_menu`. The host uses
 /// this to show a context menu tailored to the target (annotation actions vs.
@@ -104,6 +109,7 @@ pub struct Callbacks {
     pub on_zoom_change: Option<Box<OnZoomChange>>,
     pub on_pointer_cursor: Option<Box<OnPointerCursor>>,
     pub on_warning: Option<Box<OnWarning>>,
+    pub on_copy: Option<Box<OnCopy>>,
 }
 
 #[cfg(test)]
@@ -153,6 +159,20 @@ mod tests {
         };
         (cbs.on_pointer_cursor.as_ref().unwrap())(super::PointerCursor::Grab);
         assert_eq!(*fired.lock().unwrap(), Some(super::PointerCursor::Grab));
+    }
+
+    #[test]
+    fn on_copy_fires() {
+        let fired = Arc::new(Mutex::new(String::new()));
+        let f = fired.clone();
+        let cbs = Callbacks {
+            on_copy: Some(Box::new(move |text: String| {
+                *f.lock().unwrap() = text;
+            })),
+            ..Default::default()
+        };
+        (cbs.on_copy.as_ref().unwrap())("hello".into());
+        assert_eq!(*fired.lock().unwrap(), "hello");
     }
 
     #[test]

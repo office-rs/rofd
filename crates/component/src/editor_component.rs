@@ -231,6 +231,65 @@ impl EditorComponent {
     pub fn text_selection(&self) -> Option<&rofd_render::BodyTextSelection> {
         self.text_selection.as_ref()
     }
+    /// The selected body text, joined with `\n` between TextCodes (same code
+    /// never spans a newline; different codes are different lines).
+    ///
+    /// Glyph-id codes can only be sliced by char offset when the code's text
+    /// char count equals its glyph count; mismatched codes are skipped (v1
+    /// limitation). Returns `None` when there is no selection or the sliced
+    /// result is empty.
+    pub fn selected_text(&self) -> Option<String> {
+        let sel = self.text_selection.as_ref()?;
+        let page = self
+            .editor
+            .document()
+            .pages
+            .iter()
+            .find(|p| p.id == sel.page)?;
+        let mut out = String::new();
+        for (i, range) in sel.ranges.iter().enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            let text_obj =
+                page.layers
+                    .iter()
+                    .flat_map(|l| l.objects.iter())
+                    .find_map(|o| match o {
+                        rofd_dom::PageObject::Text(t) if t.id == range.object => Some(t),
+                        _ => None,
+                    });
+            if let Some(t) = text_obj {
+                if let Some(code) = t.codes.get(range.code_index) {
+                    // glyph-id codes: slice `text` by char offset only when
+                    // lengths agree; else skip (v1).
+                    if code.glyph_ids.is_empty() {
+                        out.extend(
+                            code.text
+                                .chars()
+                                .skip(range.start)
+                                .take(range.end - range.start),
+                        );
+                    } else {
+                        let n = code.text.chars().count();
+                        if n == code.glyph_ids.len() {
+                            out.extend(
+                                code.text
+                                    .chars()
+                                    .skip(range.start)
+                                    .take(range.end - range.start),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
+    }
     pub fn can_undo(&self) -> bool {
         self.editor.can_undo()
     }
@@ -983,6 +1042,21 @@ impl EditorComponent {
                 needs_repaint: false,
             };
         }
+        // Ctrl+C: copy selected body text (TextSelect tool only). The
+        // component never touches the clipboard (AGENTS §4.9) - it fires
+        // `on_copy` and adapters wire the platform clipboard.
+        if modifiers.control && !modifiers.shift && matches!(key, Key::Char('c') | Key::Char('C')) {
+            if matches!(self.tool, Tool::TextSelect) {
+                if let Some(text) = self.selected_text() {
+                    if let Some(cb) = &self.callbacks.on_copy {
+                        cb(text);
+                    }
+                }
+            }
+            return EventOutcome {
+                needs_repaint: false,
+            };
+        }
         // Delete/Backspace: delete selected (when no text cursor)
         if matches!(key, Key::Delete | Key::Backspace)
             && self.editor.text_cursor().is_none()
@@ -1305,6 +1379,18 @@ impl EditorComponent {
     #[cfg(target_arch = "wasm32")]
     pub fn on_warning(&mut self, cb: impl Fn(&[OfdWarning]) + 'static) {
         self.callbacks.on_warning = Some(Box::new(cb));
+    }
+
+    /// Fired on Ctrl+C while body text is selected (TextSelect tool). The
+    /// component never touches the clipboard (AGENTS §4.9) - adapters wire
+    /// the default platform clipboard behind this callback.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn on_copy(&mut self, cb: impl Fn(String) + 'static + Send) {
+        self.callbacks.on_copy = Some(Box::new(cb));
+    }
+    #[cfg(target_arch = "wasm32")]
+    pub fn on_copy(&mut self, cb: impl Fn(String) + 'static) {
+        self.callbacks.on_copy = Some(Box::new(cb));
     }
 
     /// Current pointer-cursor UI state (for hosts that poll instead of
@@ -4227,5 +4313,59 @@ mod tests {
             y: 25.0,
         });
         assert!(c.text_selection().is_none());
+    }
+
+    #[test]
+    fn selected_text_joins_codes_with_newline() {
+        let mut c = component_with_body_text();
+        c.set_tool(Tool::TextSelect);
+        c.handle_event(&pd(31.0, 25.0));
+        c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 16.0,
+            y: 45.0,
+        });
+        // 跨两行：code0 [2,4) = "CD"，code1 [0,1) = "E"；不同 code 间加 \n。
+        assert_eq!(c.selected_text().as_deref(), Some("CD\nE"));
+        // 无选区 -> None。
+        c.handle_event(&pd(150.0, 150.0));
+        assert_eq!(c.selected_text(), None);
+    }
+
+    #[test]
+    fn ctrl_c_with_selection_fires_on_copy() {
+        use std::sync::{Arc, Mutex};
+        let mut c = component_with_body_text();
+        c.set_tool(Tool::TextSelect);
+        c.handle_event(&pd(31.0, 25.0));
+        c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 16.0,
+            y: 45.0,
+        });
+        let got = Arc::new(Mutex::new(String::new()));
+        let g = got.clone();
+        c.on_copy(move |text| *g.lock().unwrap() = text);
+        c.handle_event(&ViewEvent::KeyDown {
+            key: Key::Char('c'),
+            modifiers: Modifiers {
+                control: true,
+                ..Default::default()
+            },
+        });
+        assert_eq!(*got.lock().unwrap(), "CD\nE");
+        // 无选区时 Ctrl+C 不触发。
+        c.handle_event(&pd(150.0, 150.0));
+        *got.lock().unwrap() = String::new();
+        c.handle_event(&ViewEvent::KeyDown {
+            key: Key::Char('c'),
+            modifiers: Modifiers {
+                control: true,
+                ..Default::default()
+            },
+        });
+        assert_eq!(*got.lock().unwrap(), "");
     }
 }
