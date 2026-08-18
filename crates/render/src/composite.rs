@@ -37,6 +37,7 @@ use rofd_dom::{
 
 use crate::annotation_scene::{arrow_head_path, draw_annotations};
 use crate::body_scene::draw_body;
+use crate::body_text::BodyTextSelection;
 use crate::hit_test::{annotation_viewport_rect, HANDLE_SIZE};
 use crate::text::FontStore;
 use crate::viewport::Viewport;
@@ -142,6 +143,10 @@ const FRAME_COLOR: Color = Color::from_rgba8(0x00, 0x72, 0xC6, 0xFF);
 /// Color for drag preview outlines (semi-transparent blue).
 const PREVIEW_COLOR: Color = Color::from_rgba8(0x00, 0x72, 0xC6, 0x80);
 
+/// Color for body-text selection highlights (semi-transparent selection blue,
+/// rgba(68, 132, 255, 0.3)).
+const TEXT_SELECTION_COLOR: Color = Color::from_rgba8(68, 132, 255, 77);
+
 /// Stroke width for the selection frame (screen pixels).
 const FRAME_STROKE_WIDTH: f64 = 1.0;
 
@@ -176,14 +181,17 @@ impl RenderEngine {
     ///
     /// `selection` controls handle drawing: if [`AnnotationSelection::Single`],
     /// a selection frame + the strategy handles (see [`crate::handles`]) are
-    /// drawn on the selected annotation. `drag` draws a live
-    /// semi-transparent preview of an in-progress create/move/resize operation.
+    /// drawn on the selected annotation. `text_selection` fills body-text
+    /// selection rects (drawn after the body text, under the annotation
+    /// overlay). `drag` draws a live semi-transparent preview of an
+    /// in-progress create/move/resize operation.
     pub fn composite(
         &self,
         doc: &OfdDocument,
         vp: &Viewport,
         fonts: &FontStore,
         selection: &AnnotationSelection,
+        text_selection: Option<&BodyTextSelection>,
         drag: Option<&DragPreview>,
     ) -> Scene {
         let mut scene = Scene::new();
@@ -224,6 +232,19 @@ impl RenderEngine {
             // Body + annotation, drawn directly with page_origin + zoom baked
             // into each draw call (no cached sub-scenes - see module docs).
             draw_body(&mut painter, page, &doc.resources, fonts, origin, vp.zoom);
+
+            // Body-text selection highlight: drawn after the body (the
+            // highlight pads on top of the text) but before the annotation
+            // overlay (annotations stay on top of the selection).
+            if let Some(sel) = text_selection {
+                if sel.page == page.id {
+                    for r in crate::body_text::text_selection_rects(doc, vp, sel) {
+                        let rect = Rect::new(r.x, r.y, r.x + r.w, r.y + r.h);
+                        painter.fill_rect(rect, TEXT_SELECTION_COLOR);
+                    }
+                }
+            }
+
             let anns = doc.annotations.for_page(&page.id);
             draw_annotations(&mut painter, anns, &doc.resources, fonts, origin, vp.zoom);
         }
@@ -568,8 +589,9 @@ mod tests {
 
         // With selection: the scene should have at least 8 more fills (handles)
         // and 1 more stroke (selection frame) than without selection.
-        let scene_no_sel = engine.composite(&doc, &vp, &fonts, &AnnotationSelection::None, None);
-        let scene_sel = engine.composite(&doc, &vp, &fonts, &selection, None);
+        let scene_no_sel =
+            engine.composite(&doc, &vp, &fonts, &AnnotationSelection::None, None, None);
+        let scene_sel = engine.composite(&doc, &vp, &fonts, &selection, None, None);
 
         let fills_no_sel = count_fills(&scene_no_sel);
         let fills_sel = count_fills(&scene_sel);
@@ -601,7 +623,7 @@ mod tests {
             size: (200.0, 200.0),
             page_gap: 20.0,
         };
-        let scene = engine.composite(&doc, &vp, &fonts, &AnnotationSelection::None, None);
+        let scene = engine.composite(&doc, &vp, &fonts, &AnnotationSelection::None, None, None);
         let fills = count_fills(&scene);
         // Desk bg (1) + page bg (1) + annotation fill (1) = 3 fills. No handles.
         assert_eq!(
@@ -631,12 +653,14 @@ mod tests {
                 h: 20.0,
             },
         };
-        let scene_no_drag = engine.composite(&doc, &vp, &fonts, &AnnotationSelection::None, None);
+        let scene_no_drag =
+            engine.composite(&doc, &vp, &fonts, &AnnotationSelection::None, None, None);
         let scene_drag = engine.composite(
             &doc,
             &vp,
             &fonts,
             &AnnotationSelection::None,
+            None,
             Some(&preview),
         );
         // The drag preview adds 1 stroke (the preview rect outline).
@@ -666,12 +690,14 @@ mod tests {
             start: (5.0, 5.0),
             current: (50.0, 40.0),
         };
-        let scene_no_drag = engine.composite(&doc, &vp, &fonts, &AnnotationSelection::None, None);
+        let scene_no_drag =
+            engine.composite(&doc, &vp, &fonts, &AnnotationSelection::None, None, None);
         let scene_drag = engine.composite(
             &doc,
             &vp,
             &fonts,
             &AnnotationSelection::None,
+            None,
             Some(&preview),
         );
         assert!(
@@ -704,12 +730,14 @@ mod tests {
             start: (5.0, 5.0),
             current: (50.0, 40.0),
         };
-        let scene_no_drag = engine.composite(&doc, &vp, &fonts, &AnnotationSelection::None, None);
+        let scene_no_drag =
+            engine.composite(&doc, &vp, &fonts, &AnnotationSelection::None, None, None);
         let scene_drag = engine.composite(
             &doc,
             &vp,
             &fonts,
             &AnnotationSelection::None,
+            None,
             Some(&preview),
         );
         assert!(
@@ -737,7 +765,7 @@ mod tests {
             size: (800.0, 600.0),
             page_gap: 20.0,
         };
-        let _scene = engine.composite(&doc, &vp, &fonts, &AnnotationSelection::None, None);
+        let _scene = engine.composite(&doc, &vp, &fonts, &AnnotationSelection::None, None, None);
     }
 
     // --- page_origin helper tests ---

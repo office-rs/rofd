@@ -21,7 +21,10 @@ pub mod viewport;
 
 pub use annotation_scene::draw_annotations;
 pub use body_scene::draw_body;
-pub use body_text::{hit_test_body_text, BodyTextRange, BodyTextSelection, TextHit};
+pub use body_text::{
+    body_text_ranges_between, hit_test_body_text, paragraph_range_at, text_selection_rects,
+    word_range_at, BodyTextRange, BodyTextSelection, TextHit,
+};
 pub use caret_rect::caret_rect;
 pub use composite::{page_origin, page_origins, DragPreview, RenderEngine};
 pub use ctm::{compose_transform, ctm_to_affine};
