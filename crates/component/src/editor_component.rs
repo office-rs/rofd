@@ -25,6 +25,10 @@ pub enum Tool {
     /// clicking an annotation selects it (move/resize/Delete reuse the
     /// Select interactions).
     Hand,
+    /// WPS-style text tool: drag over body text to select it (single page,
+    /// across lines), double-click selects a word, triple-click a TextObject.
+    /// Pure UI state - never enters dom/history/saves (spec §5.1).
+    TextSelect,
 }
 
 /// In-progress pointer drag state. Internal to the component - T3's
@@ -98,6 +102,10 @@ pub(crate) enum DragState {
     /// on y: dragging the pointer down moves content down). View-only; no
     /// document mutation and no undo record.
     Pan { last: (f64, f64) },
+    /// Selecting body text: `anchor` is the press-time hit; PointerMove
+    /// recomputes ranges from anchor to the current hit (preview-only UI
+    /// state - no document change, no history).
+    TextSelect { anchor: rofd_render::TextHit },
 }
 
 pub struct EditorComponent {
@@ -122,6 +130,10 @@ pub struct EditorComponent {
     pub(crate) pointer_cursor: PointerCursor,
     /// In-progress pointer drag, if any. `None` when no drag is active.
     pub(crate) drag: Option<DragState>,
+    /// Current body-text selection (TextSelect tool). Pure UI state - never
+    /// enters dom/editor history (spec §5.1). Cleared on tool switch, page
+    /// change, and document change.
+    pub(crate) text_selection: Option<rofd_render::BodyTextSelection>,
     /// The index of the currently visible page (the page containing the
     /// viewport's vertical center), or `None` if no page is visible / no
     /// document loaded. Updated after Scroll/Resize; when it changes,
@@ -147,6 +159,7 @@ impl EditorComponent {
             tool: Tool::Select,
             pointer_cursor: PointerCursor::Default,
             drag: None,
+            text_selection: None,
             current_page: None,
         }
     }
@@ -185,6 +198,8 @@ impl EditorComponent {
         // Clear any in-progress drag (Pan/Move/Resize) from the previous
         // document; its geometry is meaningless after the swap.
         self.drag = None;
+        // Body-text selection belongs to the old document's pages.
+        self.text_selection = None;
         self.editor.load_document(doc);
         self.font_store = Some(self.build_font_store());
         self.modified = false;
@@ -196,6 +211,7 @@ impl EditorComponent {
 
     pub fn new_document(&mut self) {
         self.drag = None;
+        self.text_selection = None;
         self.editor.load_document(OfdDocument::default());
         self.font_store = Some(self.build_font_store());
         self.modified = false;
@@ -210,6 +226,10 @@ impl EditorComponent {
     }
     pub fn text_cursor(&self) -> Option<&TextCursor> {
         self.editor.text_cursor()
+    }
+    /// The current body-text selection (TextSelect tool), if any (spec §5.1).
+    pub fn text_selection(&self) -> Option<&rofd_render::BodyTextSelection> {
+        self.text_selection.as_ref()
     }
     pub fn can_undo(&self) -> bool {
         self.editor.can_undo()
@@ -229,12 +249,14 @@ impl EditorComponent {
     }
 
     /// Set the active editing tool. Switching tools cancels any in-progress
-    /// drag (clears `drag`).
+    /// drag (clears `drag`) and the body-text selection (spec §5.1).
     pub fn set_tool(&mut self, tool: Tool) {
         self.tool = tool;
         self.drag = None;
+        self.text_selection = None;
         self.set_pointer_cursor(match self.tool {
             Tool::Hand => PointerCursor::Grab,
+            Tool::TextSelect => PointerCursor::Text,
             _ => PointerCursor::Default,
         });
     }
@@ -303,8 +325,7 @@ impl EditorComponent {
             &self.viewport,
             fonts,
             self.editor.selection(),
-            // T3 wires the real body-text selection state here.
-            None,
+            self.text_selection.as_ref(),
             drag_preview.as_ref(),
         )
     }
@@ -321,6 +342,7 @@ impl EditorComponent {
                 button: MouseButton::Left,
                 x,
                 y,
+                click_count,
                 ..
             } => {
                 let p = (*x, *y);
@@ -344,6 +366,51 @@ impl EditorComponent {
                             self.clear_selection_and_cursor();
                             self.drag = Some(DragState::Pan { last: p });
                             self.set_pointer_cursor(PointerCursor::Grabbing);
+                        }
+                    }
+                    Tool::TextSelect => {
+                        match rofd_render::hit_test_body_text(
+                            self.editor.document(),
+                            &self.viewport,
+                            p,
+                        ) {
+                            Some(hit) => {
+                                // 互斥（spec §5.2）：文字选区取代批注选择。
+                                self.clear_selection_and_cursor();
+                                let page_id = hit.page.clone();
+                                let page = self
+                                    .editor
+                                    .document()
+                                    .pages
+                                    .iter()
+                                    .find(|pg| pg.id == page_id);
+                                let mut ranges = page
+                                    .map(|page| match click_count {
+                                        2 => rofd_render::word_range_at(page, &hit),
+                                        3 => rofd_render::paragraph_range_at(page, &hit),
+                                        _ => vec![rofd_render::BodyTextRange {
+                                            object: hit.object.clone(),
+                                            code_index: hit.code_index,
+                                            start: hit.char_offset,
+                                            end: hit.char_offset,
+                                        }],
+                                    })
+                                    .unwrap_or_default();
+                                // 单击不拖 -> 零宽 caret range 不算选区。
+                                ranges.retain(|r| r.end > r.start);
+                                self.text_selection = (!ranges.is_empty()).then_some(
+                                    rofd_render::BodyTextSelection {
+                                        page: page_id,
+                                        ranges,
+                                    },
+                                );
+                                if *click_count == 1 {
+                                    self.drag = Some(DragState::TextSelect { anchor: hit });
+                                }
+                            }
+                            None => {
+                                self.text_selection = None;
+                            }
                         }
                     }
                 }
@@ -459,6 +526,37 @@ impl EditorComponent {
                         self.maybe_fire_page_change();
                         if let Some(DragState::Pan { last }) = self.drag.as_mut() {
                             *last = p;
+                        }
+                    }
+                    Some(DragState::TextSelect { anchor }) => {
+                        // Ruling 6：未命中文字时保持选区不变。
+                        if let Some(hit) = rofd_render::hit_test_body_text(
+                            self.editor.document(),
+                            &self.viewport,
+                            p,
+                        ) {
+                            if hit.page == anchor.page {
+                                if let Some(page) = self
+                                    .editor
+                                    .document()
+                                    .pages
+                                    .iter()
+                                    .find(|pg| pg.id == hit.page)
+                                {
+                                    let ranges =
+                                        rofd_render::body_text_ranges_between(page, anchor, &hit);
+                                    // 零宽（拖回锚点）不算选区（spec §5.1）。
+                                    if ranges.is_empty() {
+                                        self.text_selection = None;
+                                    } else {
+                                        self.text_selection =
+                                            Some(rofd_render::BodyTextSelection {
+                                                page: hit.page.clone(),
+                                                ranges,
+                                            });
+                                    }
+                                }
+                            }
                         }
                     }
                     None => {}
@@ -612,6 +710,9 @@ impl EditorComponent {
                             // so the hand tool returns to the hovering cursor.
                             self.set_pointer_cursor(PointerCursor::Grab);
                         }
+                        // Text-select drag: the selection was updated live on
+                        // each PointerMove; nothing to commit (pure UI state).
+                        DragState::TextSelect { .. } => {}
                     }
                     EventOutcome {
                         needs_repaint: true,
@@ -720,6 +821,8 @@ impl EditorComponent {
     /// -- the caller decides what a blank press means (Select: clear; Hand:
     /// clear + start pan).
     fn pointer_down_annotation(&mut self, p: (f64, f64)) -> bool {
+        // 互斥（spec §5.2）：选中批注即清空文字选区。
+        self.text_selection = None;
         let target = rofd_render::hit_test(
             self.editor.document(),
             &self.viewport,
@@ -975,6 +1078,8 @@ impl EditorComponent {
     // Called by annotation-mutating commands (text editing, undo/redo, delete).
     fn after_annotation_change(&mut self) {
         self.modified = true;
+        // 文档变更 -> 文字选区失效（spec §5.1）。
+        self.text_selection = None;
         if let Some(cb) = &self.callbacks.on_change {
             cb(self.editor.document());
         }
@@ -1060,6 +1165,8 @@ impl EditorComponent {
         let new_page = self.visible_page_index();
         if new_page != self.current_page {
             self.current_page = new_page;
+            // 页变了 -> 清空文字选区（spec §5.1：单页语义，不跨页）。
+            self.text_selection = None;
             if let Some(idx) = new_page {
                 self.fire_page_change(idx);
             }
@@ -1343,7 +1450,9 @@ fn drag_to_preview(doc: &OfdDocument, d: &DragState, vp: &Viewport) -> Option<Dr
             }
         }
         // Pan is a view-only drag (viewport scroll) - no annotation preview.
-        DragState::Pan { .. } => None,
+        // TextSelect is likewise preview-only (the live selection rects come
+        // from `text_selection`, drawn by composite via text_selection_rects).
+        DragState::Pan { .. } | DragState::TextSelect { .. } => None,
     }
 }
 
@@ -1657,8 +1766,9 @@ mod tests {
 
     use crate::event::{Key, Modifiers, MouseButton, ScrollDirection, ViewEvent};
     use rofd_dom::{
-        AnnotationKind, AnnotationPayload, AnnotationSelection, Color, Layer, NoteIcon,
-        OfdDocument, Page, PageId, PathCommand, PathData, Point, Rect, ShapeKind,
+        AnnotationKind, AnnotationPayload, AnnotationSelection, Color, FontId, Layer, LayerType,
+        NoteIcon, ObjectId, OfdDocument, Page, PageId, PageObject, PathCommand, PathData, Point,
+        Rect, ShapeKind, TextCode, TextObject,
     };
     use std::sync::Mutex;
 
@@ -1894,6 +2004,7 @@ mod tests {
             x: 10.0,
             y: 10.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 60.0 });
         let outcome = c.handle_event(&ViewEvent::PointerUp {
@@ -1941,6 +2052,7 @@ mod tests {
             x: 10.0,
             y: 10.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 60.0 });
         c.handle_event(&ViewEvent::PointerUp {
@@ -1958,6 +2070,7 @@ mod tests {
             x: 60.0,
             y: 10.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerMove { x: 90.0, y: 40.0 });
         c.handle_event(&ViewEvent::PointerUp {
@@ -1998,6 +2111,7 @@ mod tests {
             x: 10.0,
             y: 10.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         let outcome = c.handle_event(&ViewEvent::PointerUp {
             button: MouseButton::Left,
@@ -2033,6 +2147,7 @@ mod tests {
             x: 10.0,
             y: 10.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         // Distance 4 px > MIN_CREATE_DRAG_PX (3.0).
         c.handle_event(&ViewEvent::PointerMove { x: 14.0, y: 10.0 });
@@ -2060,6 +2175,7 @@ mod tests {
             x: 30.0,
             y: 30.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerUp {
             button: MouseButton::Left,
@@ -2088,6 +2204,7 @@ mod tests {
             x: 10.0,
             y: 10.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 60.0 });
         c.handle_event(&ViewEvent::PointerUp {
@@ -2132,6 +2249,7 @@ mod tests {
             x: 50.0,
             y: 60.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerMove { x: 10.0, y: 10.0 });
         c.handle_event(&ViewEvent::PointerUp {
@@ -2205,6 +2323,7 @@ mod tests {
             x: 40.0,
             y: 40.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerMove { x: 140.0, y: 140.0 });
         let outcome = c.handle_event(&ViewEvent::PointerUp {
@@ -2249,6 +2368,7 @@ mod tests {
             x: 50.0,
             y: 50.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         // Drag to (60,60) -> dx=10, dy=10 (page-local == viewport at zoom=1).
         c.handle_event(&ViewEvent::PointerMove { x: 60.0, y: 60.0 });
@@ -2293,6 +2413,7 @@ mod tests {
             x: 50.0,
             y: 50.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         // Simulate a 100-pixel drag via many PointerMove events. With the
         // old (per-pixel) approach this would push ~100 Transactions; with
@@ -2370,6 +2491,7 @@ mod tests {
             x: 50.0,
             y: 50.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerUp {
             button: MouseButton::Left,
@@ -2382,6 +2504,7 @@ mod tests {
             x: 100.0,
             y: 100.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         for i in 1..=50 {
             let v = 100.0 + i as f64;
@@ -2450,6 +2573,7 @@ mod tests {
             x: 50.0,
             y: 50.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerUp {
             button: MouseButton::Left,
@@ -2463,6 +2587,7 @@ mod tests {
             x: 100.0,
             y: 100.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerMove { x: 120.0, y: 130.0 });
         let outcome = c.handle_event(&ViewEvent::PointerUp {
@@ -2545,6 +2670,7 @@ mod tests {
             x: 50.0,
             y: 50.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerUp {
             button: MouseButton::Left,
@@ -2559,6 +2685,7 @@ mod tests {
             x: 100.0,
             y: 100.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         assert!(
             matches!(c.drag, Some(DragState::Move { .. })),
@@ -2645,6 +2772,7 @@ mod tests {
             x: 50.0,
             y: 50.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerUp {
             button: MouseButton::Left,
@@ -2658,6 +2786,7 @@ mod tests {
             x: 100.0,
             y: 100.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         assert!(
             matches!(c.drag, Some(DragState::Move { .. })),
@@ -2698,6 +2827,7 @@ mod tests {
             x: 50.0,
             y: 50.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         assert!(*focus_fired.lock().unwrap(), "focus fires on first select");
         assert!(
@@ -2718,6 +2848,7 @@ mod tests {
             x: 50.0,
             y: 50.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         assert!(
             !*focus_fired.lock().unwrap(),
@@ -2738,6 +2869,7 @@ mod tests {
             x: 50.0,
             y: 50.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerUp {
             button: MouseButton::Left,
@@ -2765,6 +2897,7 @@ mod tests {
             x: 10.0,
             y: 20.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         assert!(fired.lock().unwrap().is_some(), "context_menu fired");
     }
@@ -2783,6 +2916,7 @@ mod tests {
             x: 50.0,
             y: 50.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         let got = fired.lock().unwrap().clone().expect("context_menu fired");
         assert!(
@@ -2802,6 +2936,7 @@ mod tests {
             x: 50.0,
             y: 50.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         assert!(
             matches!(c.editor.selection(), AnnotationSelection::None),
@@ -3124,6 +3259,7 @@ mod tests {
             x: 20.0,
             y: 20.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerMove { x: 80.0, y: 80.0 });
         let create_outcome = c.handle_event(&ViewEvent::PointerUp {
@@ -3173,6 +3309,7 @@ mod tests {
             x: 150.0,
             y: 150.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerUp {
             button: MouseButton::Left,
@@ -3188,6 +3325,7 @@ mod tests {
             x: 50.0,
             y: 50.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         assert!(
             matches!(c.editor.selection(), AnnotationSelection::Single(_)),
@@ -3207,6 +3345,7 @@ mod tests {
             x: 50.0,
             y: 50.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerMove { x: 60.0, y: 60.0 });
         let move_outcome = c.handle_event(&ViewEvent::PointerUp {
@@ -3246,6 +3385,7 @@ mod tests {
             x: 90.0,
             y: 90.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerMove { x: 100.0, y: 100.0 });
         let resize_outcome = c.handle_event(&ViewEvent::PointerUp {
@@ -3363,6 +3503,7 @@ mod tests {
             x: from.0,
             y: from.1,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerMove { x: to.0, y: to.1 });
         c.handle_event(&ViewEvent::PointerUp {
@@ -3439,6 +3580,7 @@ mod tests {
             x: 10.0,
             y: 10.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         assert_eq!(c.selection(), &AnnotationSelection::Single(id.clone()));
         // Pressing on an annotation does NOT enter Pan (the drag is Move).
@@ -3474,6 +3616,7 @@ mod tests {
             x: 10.0,
             y: 10.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerMove { x: 20.0, y: 20.0 });
         c.handle_event(&ViewEvent::PointerMove { x: 30.0, y: 30.0 });
@@ -3515,6 +3658,7 @@ mod tests {
             x: 10.0,
             y: 10.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         assert!(matches!(c.drag, Some(DragState::Pan { .. })));
         c.set_tool(Tool::Select);
@@ -3533,6 +3677,7 @@ mod tests {
             x: 20.0,
             y: 20.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerMove { x: 80.0, y: 80.0 });
         c.handle_event(&ViewEvent::PointerUp {
@@ -3624,6 +3769,7 @@ mod tests {
             x: 50.0,
             y: 30.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerUp {
             button: MouseButton::Left,
@@ -3636,6 +3782,7 @@ mod tests {
             x: 100.0,
             y: 60.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         assert!(matches!(
             c.drag,
@@ -3703,6 +3850,7 @@ mod tests {
             x: 50.0,
             y: 30.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerUp {
             button: MouseButton::Left,
@@ -3715,6 +3863,7 @@ mod tests {
             x: 100.0,
             y: 60.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerUp {
             button: MouseButton::Left,
@@ -3757,6 +3906,7 @@ mod tests {
             x: 50.0,
             y: 25.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerUp {
             button: MouseButton::Left,
@@ -3769,6 +3919,7 @@ mod tests {
             x: 100.0,
             y: 25.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         assert!(matches!(
             c.drag,
@@ -3788,6 +3939,7 @@ mod tests {
             x: 0.0,
             y: 0.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         assert!(matches!(c.drag, Some(DragState::Move { .. })));
     }
@@ -3813,6 +3965,7 @@ mod tests {
             x: 25.0,
             y: 25.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         c.handle_event(&ViewEvent::PointerUp {
             button: MouseButton::Left,
@@ -3824,10 +3977,255 @@ mod tests {
             x: 0.0,
             y: 0.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         });
         assert!(
             matches!(c.drag, Some(DragState::Move { .. })),
             "no phantom handles on Freehand"
         );
+    }
+
+    // --- P3 Task 3: TextSelect tool state machine ---
+
+    /// 一页 P0 (200x200) + 一个 TextObject（boundary (10,20)，两行 code：
+    /// y=10 四字符 "ABCD"（advance 10）、y=30 两字符 "EF"）。viewport zoom=1
+    /// -> 行带 0: y∈[20,32.5] 字符格 x=10+10i；行带 1: y∈[40,52.5] x=10,20。
+    fn component_with_body_text() -> EditorComponent {
+        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        let mut doc = OfdDocument::default();
+        doc.pages.push(Page {
+            id: PageId::new("P0"),
+            physical_box: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 200.0,
+            },
+            layers: vec![Layer {
+                layer_type: LayerType::Body,
+                objects: vec![PageObject::Text(TextObject {
+                    id: ObjectId::new("t1"),
+                    boundary: Rect {
+                        x: 10.0,
+                        y: 20.0,
+                        w: 100.0,
+                        h: 40.0,
+                    },
+                    ctm: None,
+                    font: FontId::new("F1"),
+                    size: 10.0,
+                    fill: None,
+                    codes: vec![
+                        TextCode {
+                            glyph_ids: vec![1, 2, 3, 4],
+                            deltas: vec![(10.0, 0.0), (10.0, 0.0), (10.0, 0.0)],
+                            text: "ABCD".into(),
+                            x: 0.0,
+                            y: 10.0,
+                        },
+                        TextCode {
+                            glyph_ids: vec![5, 6],
+                            deltas: vec![(10.0, 0.0)],
+                            text: "EF".into(),
+                            x: 0.0,
+                            y: 30.0,
+                        },
+                    ],
+                    draw_param: None,
+                })],
+            }],
+            template: None,
+        });
+        c.load_document(doc);
+        c.viewport = rofd_render::Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (0.0, 0.0),
+            page_gap: 0.0,
+        };
+        c
+    }
+
+    /// Single left-click PointerDown (viewport coords).
+    fn pd(x: f64, y: f64) -> ViewEvent {
+        ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        }
+    }
+
+    #[test]
+    fn text_select_drag_across_lines_produces_ranges() {
+        let mut c = component_with_body_text();
+        c.set_tool(Tool::TextSelect);
+        // 锚点：行 0 的 'C' 前半 (x=31 -> offset 2)。
+        c.handle_event(&pd(31.0, 25.0));
+        // 拖到行 1 的 'F' 后半 (x=16 -> offset 1)。
+        c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 16.0,
+            y: 45.0,
+        });
+        let sel = c.text_selection().expect("selection exists");
+        assert_eq!(sel.page, PageId::new("P0"));
+        assert_eq!(
+            sel.ranges.len(),
+            2,
+            "partial first line + partial second line"
+        );
+        assert_eq!(
+            (
+                sel.ranges[0].code_index,
+                sel.ranges[0].start,
+                sel.ranges[0].end
+            ),
+            (0, 2, 4)
+        );
+        assert_eq!(
+            (
+                sel.ranges[1].code_index,
+                sel.ranges[1].start,
+                sel.ranges[1].end
+            ),
+            (1, 0, 1)
+        );
+    }
+
+    #[test]
+    fn text_select_click_blank_clears_selection() {
+        let mut c = component_with_body_text();
+        c.set_tool(Tool::TextSelect);
+        c.handle_event(&pd(31.0, 25.0));
+        c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 16.0,
+            y: 45.0,
+        });
+        assert!(c.text_selection().is_some());
+        c.handle_event(&pd(150.0, 150.0));
+        assert!(c.text_selection().is_none(), "blank press clears");
+    }
+
+    #[test]
+    fn text_select_double_click_selects_word_triple_selects_object() {
+        let mut c = component_with_body_text();
+        c.set_tool(Tool::TextSelect);
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 31.0,
+            y: 25.0,
+            modifiers: Modifiers::default(),
+            click_count: 2,
+        });
+        // "ABCD" 全部同类字母 -> 词 = 整个 code。
+        let sel = c.text_selection().unwrap();
+        assert_eq!(
+            (
+                sel.ranges[0].code_index,
+                sel.ranges[0].start,
+                sel.ranges[0].end
+            ),
+            (0, 0, 4)
+        );
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 31.0,
+            y: 25.0,
+            modifiers: Modifiers::default(),
+            click_count: 3,
+        });
+        let sel = c.text_selection().unwrap();
+        assert_eq!(sel.ranges.len(), 2, "triple click = whole TextObject");
+    }
+
+    #[test]
+    fn text_and_annotation_selection_are_mutually_exclusive() {
+        // component_with_shape 只有批注没有正文；互斥测试需要两者同页：
+        // 正文 TextObject（行带 y∈[20,52.5]）+ 一个 Rect 批注 (0,100,50,50)。
+        let mut c = component_with_body_text();
+        c.set_clock("t".into(), 1);
+        c.create_annotation(
+            AnnotationKind::Shape(ShapeKind::Rect),
+            PageId::new("P0"),
+            AnnotationPayload::Shape {
+                kind: ShapeKind::Rect,
+                rect: Rect {
+                    x: 0.0,
+                    y: 100.0,
+                    w: 50.0,
+                    h: 50.0,
+                },
+                stroke: Color::Rgb(255, 0, 0),
+                fill: None,
+                width: 2.0,
+                points: vec![],
+            },
+        );
+        // 先选中批注（Select 工具）。
+        c.handle_event(&pd(25.0, 125.0));
+        assert!(matches!(c.selection(), AnnotationSelection::Single(_)));
+        // 切 TextSelect 并拖选文字 -> 批注选择被清除。
+        c.set_tool(Tool::TextSelect);
+        assert!(c.text_selection().is_none(), "switching tools clears");
+        c.handle_event(&pd(31.0, 25.0));
+        c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 16.0,
+            y: 45.0,
+        });
+        assert!(c.text_selection().is_some());
+        // set_tool 已清批注选择；反向：Select 点批注 -> 文字选区清空。
+        c.set_tool(Tool::Select);
+        c.handle_event(&pd(25.0, 125.0));
+        assert!(matches!(c.selection(), AnnotationSelection::Single(_)));
+        assert!(
+            c.text_selection().is_none(),
+            "selecting an annotation clears text selection"
+        );
+    }
+
+    #[test]
+    fn text_selection_clears_on_document_change() {
+        let mut c = component_with_body_text();
+        c.set_tool(Tool::TextSelect);
+        c.handle_event(&pd(31.0, 25.0));
+        c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 16.0,
+            y: 45.0,
+        });
+        assert!(c.text_selection().is_some());
+        // 文档变更（创建批注）-> 清空。
+        c.set_clock("t".into(), 1);
+        c.create_annotation(
+            AnnotationKind::Highlight,
+            PageId::new("P0"),
+            AnnotationPayload::Markup {
+                quad_points: vec![],
+                color: Color::Rgb(255, 255, 0),
+            },
+        );
+        assert!(c.text_selection().is_none());
+    }
+
+    #[test]
+    fn text_select_drag_without_move_yields_no_selection() {
+        let mut c = component_with_body_text();
+        c.set_tool(Tool::TextSelect);
+        // 单击（不拖）-> 零宽选区即无选区。
+        c.handle_event(&pd(31.0, 25.0));
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 31.0,
+            y: 25.0,
+        });
+        assert!(c.text_selection().is_none());
     }
 }

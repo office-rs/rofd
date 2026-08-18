@@ -76,6 +76,8 @@ impl WinitEventBridge {
                         x,
                         y,
                         modifiers: self.modifiers,
+                        // 真实多击计数由后续任务的 bridge 接上；先传 1。
+                        click_count: 1,
                     }),
                     winit::event::ElementState::Released => {
                         Some(ViewEvent::PointerUp { button: btn, x, y })

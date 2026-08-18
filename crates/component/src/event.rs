@@ -50,6 +50,10 @@ pub enum ViewEvent {
         x: f64,
         y: f64,
         modifiers: Modifiers,
+        /// Click count for multi-click gestures (1 = single, 2 = double,
+        /// 3 = triple). The host supplies it (winit/DOM `detail`); the
+        /// component has no clock (AGENTS §4.4) and never derives it.
+        click_count: u8,
     },
     PointerMove {
         x: f64,
@@ -125,6 +129,7 @@ mod tests {
             x: 10.0,
             y: 20.0,
             modifiers: Modifiers::default(),
+            click_count: 1,
         };
         assert!(matches!(
             e,

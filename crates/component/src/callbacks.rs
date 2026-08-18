@@ -87,6 +87,8 @@ pub enum PointerCursor {
     Grab,
     /// Hand tool actively dragging (pan in progress).
     Grabbing,
+    /// Text tool hovering (WPS 文本, I-beam).
+    Text,
 }
 
 #[derive(Default)]
