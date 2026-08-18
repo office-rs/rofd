@@ -236,8 +236,10 @@ impl EditorComponent {
     ///
     /// Glyph-id codes can only be sliced by char offset when the code's text
     /// char count equals its glyph count; mismatched codes are skipped (v1
-    /// limitation). Returns `None` when there is no selection or the sliced
-    /// result is empty.
+    /// limitation). Skipped ranges contribute nothing - not even a
+    /// separator - so a selection whose every range is unslicable returns
+    /// `None` and partial skips leave no stray trailing newlines. Returns
+    /// `None` when there is no selection or no range is representable.
     pub fn selected_text(&self) -> Option<String> {
         let sel = self.text_selection.as_ref()?;
         let page = self
@@ -246,48 +248,46 @@ impl EditorComponent {
             .pages
             .iter()
             .find(|p| p.id == sel.page)?;
-        let mut out = String::new();
-        for (i, range) in sel.ranges.iter().enumerate() {
-            if i > 0 {
-                out.push('\n');
-            }
-            let text_obj =
-                page.layers
-                    .iter()
-                    .flat_map(|l| l.objects.iter())
-                    .find_map(|o| match o {
-                        rofd_dom::PageObject::Text(t) if t.id == range.object => Some(t),
-                        _ => None,
-                    });
-            if let Some(t) = text_obj {
-                if let Some(code) = t.codes.get(range.code_index) {
+        // Per-range segments: None = unslicable (missing object/code or
+        // glyph/text length mismatch), joined only between representable
+        // segments.
+        let segments: Vec<String> =
+            sel.ranges
+                .iter()
+                .filter_map(|range| {
+                    let text_obj = page.layers.iter().flat_map(|l| l.objects.iter()).find_map(
+                        |o| match o {
+                            rofd_dom::PageObject::Text(t) if t.id == range.object => Some(t),
+                            _ => None,
+                        },
+                    )?;
+                    let code = text_obj.codes.get(range.code_index)?;
                     // glyph-id codes: slice `text` by char offset only when
                     // lengths agree; else skip (v1).
-                    if code.glyph_ids.is_empty() {
-                        out.extend(
-                            code.text
-                                .chars()
-                                .skip(range.start)
-                                .take(range.end - range.start),
-                        );
-                    } else {
-                        let n = code.text.chars().count();
-                        if n == code.glyph_ids.len() {
-                            out.extend(
-                                code.text
-                                    .chars()
-                                    .skip(range.start)
-                                    .take(range.end - range.start),
-                            );
-                        }
+                    let slicable = code.glyph_ids.is_empty()
+                        || code.text.chars().count() == code.glyph_ids.len();
+                    if !slicable {
+                        return None;
                     }
-                }
-            }
-        }
-        if out.is_empty() {
+                    let segment: String = code
+                        .text
+                        .chars()
+                        .skip(range.start)
+                        .take(range.end - range.start)
+                        .collect();
+                    // Zero-width slices join as nothing (guard against
+                    // hand-built ranges producing empty segments).
+                    if segment.is_empty() {
+                        None
+                    } else {
+                        Some(segment)
+                    }
+                })
+                .collect();
+        if segments.is_empty() {
             None
         } else {
-            Some(out)
+            Some(segments.join("\n"))
         }
     }
     pub fn can_undo(&self) -> bool {
@@ -4115,7 +4115,9 @@ mod tests {
     /// 一页 P0 (200x200) + 一个 TextObject（boundary (10,20)，两行 code：
     /// y=10 四字符 "ABCD"（advance 10）、y=30 两字符 "EF"）。viewport zoom=1
     /// -> 行带 0: y∈[20,32.5] 字符格 x=10+10i；行带 1: y∈[40,52.5] x=10,20。
-    fn component_with_body_text() -> EditorComponent {
+    /// Component with one body TextObject (id "t1", boundary (10,20)) whose
+    /// codes are `codes` - lets tests vary glyph/text length agreement.
+    fn component_with_codes(codes: Vec<TextCode>) -> EditorComponent {
         let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
@@ -4140,22 +4142,7 @@ mod tests {
                     font: FontId::new("F1"),
                     size: 10.0,
                     fill: None,
-                    codes: vec![
-                        TextCode {
-                            glyph_ids: vec![1, 2, 3, 4],
-                            deltas: vec![(10.0, 0.0), (10.0, 0.0), (10.0, 0.0)],
-                            text: "ABCD".into(),
-                            x: 0.0,
-                            y: 10.0,
-                        },
-                        TextCode {
-                            glyph_ids: vec![5, 6],
-                            deltas: vec![(10.0, 0.0)],
-                            text: "EF".into(),
-                            x: 0.0,
-                            y: 30.0,
-                        },
-                    ],
+                    codes,
                     draw_param: None,
                 })],
             }],
@@ -4169,6 +4156,25 @@ mod tests {
             page_gap: 0.0,
         };
         c
+    }
+
+    fn component_with_body_text() -> EditorComponent {
+        component_with_codes(vec![
+            TextCode {
+                glyph_ids: vec![1, 2, 3, 4],
+                deltas: vec![(10.0, 0.0), (10.0, 0.0), (10.0, 0.0)],
+                text: "ABCD".into(),
+                x: 0.0,
+                y: 10.0,
+            },
+            TextCode {
+                glyph_ids: vec![5, 6],
+                deltas: vec![(10.0, 0.0)],
+                text: "EF".into(),
+                x: 0.0,
+                y: 30.0,
+            },
+        ])
     }
 
     /// Single left-click PointerDown (viewport coords).
@@ -4433,6 +4439,70 @@ mod tests {
         // 无选区 -> None。
         c.handle_event(&pd(150.0, 150.0));
         assert_eq!(c.selected_text(), None);
+    }
+
+    // I2 回归：全部 range 不可切片（glyph 数 ≠ text 字符数，子集字体常见）
+    // -> None，而不是只有分隔符的 "\n"；部分可切片 -> 只返回可表示段，
+    // 无多余尾部换行。
+    #[test]
+    fn selected_text_all_skipped_ranges_yield_none() {
+        let mut c = component_with_codes(vec![
+            TextCode {
+                glyph_ids: vec![1, 2, 3, 4],
+                deltas: vec![(10.0, 0.0), (10.0, 0.0), (10.0, 0.0)],
+                text: "".into(), // 4 glyphs vs 0 chars -> unslicable
+                x: 0.0,
+                y: 10.0,
+            },
+            TextCode {
+                glyph_ids: vec![5, 6],
+                deltas: vec![(10.0, 0.0)],
+                text: "X".into(), // 2 glyphs vs 1 char -> unslicable
+                x: 0.0,
+                y: 30.0,
+            },
+        ]);
+        c.set_tool(Tool::TextSelect);
+        c.handle_event(&pd(31.0, 25.0));
+        c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 16.0,
+            y: 45.0,
+        });
+        // 选区建立（hit 按字形计数，与 text 长度无关）但两个 range 均不可切片。
+        assert!(c.text_selection().is_some());
+        assert_eq!(c.selected_text(), None, "no bare separators");
+    }
+
+    #[test]
+    fn selected_text_partial_skip_leaves_no_trailing_newline() {
+        let mut c = component_with_codes(vec![
+            TextCode {
+                glyph_ids: vec![1, 2, 3, 4],
+                deltas: vec![(10.0, 0.0), (10.0, 0.0), (10.0, 0.0)],
+                text: "ABCD".into(), // slicable
+                x: 0.0,
+                y: 10.0,
+            },
+            TextCode {
+                glyph_ids: vec![5, 6],
+                deltas: vec![(10.0, 0.0)],
+                text: "".into(), // skipped
+                x: 0.0,
+                y: 30.0,
+            },
+        ]);
+        c.set_tool(Tool::TextSelect);
+        c.handle_event(&pd(31.0, 25.0));
+        c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 16.0,
+            y: 45.0,
+        });
+        // code0 [2,4) = "CD" 可表示；code1 跳过 -> 结果无尾部 \n。
+        assert_eq!(c.selected_text().as_deref(), Some("CD"));
     }
 
     #[test]

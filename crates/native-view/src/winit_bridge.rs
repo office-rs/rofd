@@ -106,20 +106,29 @@ impl WinitEventBridge {
                 };
                 let (x, y) = self.canvas_local_cursor()?;
                 match state {
-                    winit::event::ElementState::Pressed => Some(ViewEvent::PointerDown {
-                        button: btn,
-                        x,
-                        y,
-                        modifiers: self.modifiers,
-                        // Multi-click counting lives in the adapter (host-side
-                        // interaction assembly, AGENTS §4.9): window/slop
-                        // rhythm detection on canvas-local logical coords.
-                        click_count: next_click_count(
-                            &mut self.clicks,
-                            (x, y),
-                            std::time::Instant::now(),
-                        ),
-                    }),
+                    winit::event::ElementState::Pressed => {
+                        // Only left presses advance the multi-click counter;
+                        // any other press breaks the sequence (a right-click
+                        // between two left clicks legitimately restarts it),
+                        // so left-right-left counts 1 then 1, not 3.
+                        let click_count = if *button == winit::event::MouseButton::Left {
+                            // Multi-click counting lives in the adapter
+                            // (host-side interaction assembly, AGENTS §4.9):
+                            // window/slop rhythm detection on canvas-local
+                            // logical coords.
+                            next_click_count(&mut self.clicks, (x, y), std::time::Instant::now())
+                        } else {
+                            self.clicks = ClickState::default();
+                            1
+                        };
+                        Some(ViewEvent::PointerDown {
+                            button: btn,
+                            x,
+                            y,
+                            modifiers: self.modifiers,
+                            click_count,
+                        })
+                    }
                     winit::event::ElementState::Released => {
                         Some(ViewEvent::PointerUp { button: btn, x, y })
                     }
@@ -376,6 +385,35 @@ mod tests {
         assert_eq!(
             next_click_count(&mut s2, (0.0, 0.0), t0 + Duration::from_millis(300)),
             1
+        );
+    }
+
+    // I3 回归：右键不推进左键连击计数（右键打断序列，left-right-left
+    // -> 1, 1 而非 1, 3）。
+    #[test]
+    fn right_click_breaks_left_click_sequence() {
+        use winit::event::{DeviceId, ElementState, MouseButton as WButton, WindowEvent};
+        let mut bridge = WinitEventBridge::new();
+        bridge.set_canvas_origin(0.0, 0.0);
+        bridge.set_cursor(10.0, 10.0);
+        let press_count = |bridge: &mut WinitEventBridge, button: WButton| {
+            let ev = WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button,
+            };
+            match bridge.translate(&ev) {
+                Some(ViewEvent::PointerDown { click_count, .. }) => click_count,
+                other => panic!("expected PointerDown, got {:?}", other),
+            }
+        };
+        assert_eq!(press_count(&mut bridge, WButton::Left), 1);
+        // 右键（同位置、同窗口内）作为单击转发，但打断连击序列。
+        assert_eq!(press_count(&mut bridge, WButton::Right), 1);
+        assert_eq!(
+            press_count(&mut bridge, WButton::Left),
+            1,
+            "right-click must reset the double-click sequence"
         );
     }
 

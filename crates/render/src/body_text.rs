@@ -1,13 +1,39 @@
 //! Body-text geometry shared by drawing, hit-testing, and selection rects
 //! (spec P3 §5.3: single source of truth - never a second implementation).
 //!
-//! v1 limitation: TextObjects with a scaling/rotating CTM are not selectable
-//! (only translation is accounted for); Freehand-style shaped text is drawn
-//! by glyph ids but positioned by the same deltas used here.
+//! v1 CTM handling (plan Ruling 5, translation approximation): a TextObject
+//! whose CTM linear part is the identity (within epsilon) contributes the
+//! CTM translation `(e, f)` (object-local mm) to the cell origin, matching
+//! how `draw_text` composes `boundary + ctm × local`; a TextObject whose CTM
+//! scales or rotates is skipped entirely by hit-testing and selection rects
+//! (not selectable in v1 - no inverse matrix). Freehand-style shaped text is
+//! drawn by glyph ids but positioned by the same deltas used here.
 
-use rofd_dom::{ObjectId, OfdDocument, Page, PageId, Rect, TextCode, TextObject};
+use rofd_dom::{Ctm, ObjectId, OfdDocument, Page, PageId, Rect, TextCode, TextObject};
 
 use crate::viewport::Viewport;
+
+/// CTM translation usable for hit/selection geometry (plan Ruling 5):
+/// `Some((0, 0))` when there is no CTM, `Some((e, f))` when the linear part
+/// is the identity within epsilon, `None` when the CTM scales or rotates
+/// (such objects are skipped - not selectable in v1). The translation is in
+/// object-local mm units, applied after the Boundary origin and before zoom,
+/// exactly as `compose_object_transform` orders them.
+fn ctm_translation(ctm: Option<&Ctm>) -> Option<(f64, f64)> {
+    const EPS: f64 = 1e-9;
+    match ctm {
+        None => Some((0.0, 0.0)),
+        Some(c)
+            if (c.a - 1.0).abs() < EPS
+                && (c.d - 1.0).abs() < EPS
+                && c.b.abs() < EPS
+                && c.c.abs() < EPS =>
+        {
+            Some((c.e, c.f))
+        }
+        _ => None,
+    }
+}
 
 /// A selected character range within one TextCode: chars `[start, end)` of
 /// `code_index` inside `object`. Offsets are char (not byte) offsets.
@@ -94,8 +120,8 @@ pub(crate) fn code_char_count(code: &TextCode) -> usize {
 
 /// Hit-test a viewport-space point against body text (all pages, document
 /// order). Within a code's line band the nearest character boundary wins
-/// (前/后半宽). Among bands, the vertically nearest wins. CTM rotation is
-/// ignored (v1 - see module docs).
+/// (前/后半宽). Among bands, the vertically nearest wins. TextObjects whose
+/// CTM scales or rotates are skipped (v1 - see module docs).
 pub fn hit_test_body_text(doc: &OfdDocument, vp: &Viewport, point: (f64, f64)) -> Option<TextHit> {
     use rofd_dom::PageObject;
     let origins = crate::composite::page_origins(doc, vp);
@@ -104,8 +130,13 @@ pub fn hit_test_body_text(doc: &OfdDocument, vp: &Viewport, point: (f64, f64)) -
         for layer in &page.layers {
             for obj in &layer.objects {
                 let PageObject::Text(t) = obj else { continue };
-                let base_x = ox + t.boundary.x * vp.zoom;
-                let base_y = oy + t.boundary.y * vp.zoom;
+                // Translation-only CTM: offset the base by (e, f). Scaling/
+                // rotating CTM: skip the object (not selectable, v1).
+                let Some((ctm_tx, ctm_ty)) = ctm_translation(t.ctm.as_ref()) else {
+                    continue;
+                };
+                let base_x = ox + (t.boundary.x + ctm_tx) * vp.zoom;
+                let base_y = oy + (t.boundary.y + ctm_ty) * vp.zoom;
                 for (ci, code) in t.codes.iter().enumerate() {
                     let n = code_char_count(code);
                     if n == 0 {
@@ -313,7 +344,8 @@ pub fn paragraph_range_at(page: &Page, hit: &TextHit) -> Vec<BodyTextRange> {
 }
 
 /// One covering rect per selected code line, viewport space. Uses the same
-/// shared cells + line band as `hit_test_body_text`.
+/// shared cells + line band as `hit_test_body_text`; ranges belonging to a
+/// scaling/rotating-CTM object yield no rect (v1 - see module docs).
 pub fn text_selection_rects(
     doc: &OfdDocument,
     vp: &Viewport,
@@ -342,10 +374,15 @@ pub fn text_selection_rects(
         let (Some(first), Some(last)) = (cells.get(range.start), cells.get(range.end - 1)) else {
             continue;
         };
-        let x0 = ox + (t.boundary.x + first.x) * vp.zoom;
-        let x1 = ox + (t.boundary.x + last.x + last.advance) * vp.zoom;
-        let y0 = oy + (t.boundary.y + last.y - t.size) * vp.zoom;
-        let y1 = oy + (t.boundary.y + last.y + t.size * 0.25) * vp.zoom;
+        // Same CTM rule as hit-testing: translation offset applied, scaling/
+        // rotating CTM skipped (v1).
+        let Some((ctm_tx, ctm_ty)) = ctm_translation(t.ctm.as_ref()) else {
+            continue;
+        };
+        let x0 = ox + (t.boundary.x + ctm_tx + first.x) * vp.zoom;
+        let x1 = ox + (t.boundary.x + ctm_tx + last.x + last.advance) * vp.zoom;
+        let y0 = oy + (t.boundary.y + ctm_ty + last.y - t.size) * vp.zoom;
+        let y1 = oy + (t.boundary.y + ctm_ty + last.y + t.size * 0.25) * vp.zoom;
         out.push(Rect {
             x: x0,
             y: y0,
@@ -698,5 +735,74 @@ mod tests {
                 .code_index,
             0
         );
+    }
+
+    // 平移 CTM：格子原点 = boundary + (e,f)（对象局部 mm，随 zoom），与
+    // draw_text 的 compose_object_transform 一致。
+    #[test]
+    fn translated_ctm_hits_at_offset_position() {
+        let mut obj = text_obj(vec![code4()]);
+        obj.ctm = Some(Ctm {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: 40.0,
+            f: 5.0,
+        });
+        let (doc, vp) = doc_with(obj);
+        // base = (10+40, 20+5) = (50, 25)；原 (12,25) 命中点右移 40 -> (52,30)。
+        let h = hit_test_body_text(&doc, &vp, (52.0, 30.0)).expect("hit at ctm offset");
+        assert_eq!(h.char_offset, 0);
+        // 未偏移的旧位置不再命中。
+        assert!(
+            hit_test_body_text(&doc, &vp, (12.0, 25.0)).is_none(),
+            "un-offset position must miss"
+        );
+        // 选区矩形同样带偏移（选 [0,2)：x ∈ [50, 70]，行带 y ∈ [25, 37.5]）。
+        let sel = BodyTextSelection {
+            page: PageId::new("P0"),
+            ranges: vec![BodyTextRange {
+                object: ObjectId::new("t1"),
+                code_index: 0,
+                start: 0,
+                end: 2,
+            }],
+        };
+        let rects = text_selection_rects(&doc, &vp, &sel);
+        assert_eq!(rects.len(), 1);
+        assert_eq!(rects[0].x, 50.0, "boundary.x + ctm.e");
+        assert_eq!(rects[0].y, 25.0, "boundary.y + ctm.f");
+    }
+
+    // 缩放 CTM（如 sample.ofd 的 0.0176 单位换算）：v1 整体跳过，不可选。
+    #[test]
+    fn scaled_ctm_object_is_not_selectable() {
+        let mut obj = text_obj(vec![code4()]);
+        obj.ctm = Some(Ctm {
+            a: 0.0176,
+            b: 0.0,
+            c: 0.0,
+            d: 0.0176,
+            e: 0.0,
+            f: 0.0,
+        });
+        let (doc, vp) = doc_with(obj);
+        // 旧无 CTM 命中带中心 (15,25) 处也不命中。
+        assert!(
+            hit_test_body_text(&doc, &vp, (15.0, 25.0)).is_none(),
+            "scaled-ctm text is skipped (v1)"
+        );
+        // 即使 range 存在（外部构造），rects 也跳过该对象。
+        let sel = BodyTextSelection {
+            page: PageId::new("P0"),
+            ranges: vec![BodyTextRange {
+                object: ObjectId::new("t1"),
+                code_index: 0,
+                start: 1,
+                end: 3,
+            }],
+        };
+        assert!(text_selection_rects(&doc, &vp, &sel).is_empty());
     }
 }
