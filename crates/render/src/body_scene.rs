@@ -99,49 +99,28 @@ fn draw_text(
         //   the text and draw by the shaper's glyph IDs. The returned font is
         //   the one parley actually used (document, default, or system fallback)
         //   - draw with THAT font so glyph ids match.
-        let (font, positioned): (Option<peniko::FontData>, Vec<Glyph>) =
-            if !code.glyph_ids.is_empty() {
-                let font = fonts.resolve_or_default(&t.font).cloned();
-                let mut pen_x = code.x as f32;
-                let mut pen_y = code.y as f32;
-                let positioned = code
-                    .glyph_ids
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &id)| {
-                        let g = Glyph {
-                            id,
-                            x: pen_x,
-                            y: pen_y,
-                        };
-                        let (dx, dy) = code.deltas.get(i).copied().unwrap_or((0.0, 0.0));
-                        pen_x += dx;
-                        pen_y += dy;
-                        g
-                    })
-                    .collect();
-                (font, positioned)
-            } else {
-                let (font, glyphs) = fonts.shape(&t.font, &code.text, t.size);
-                let mut pen_x = code.x as f32;
-                let mut pen_y = code.y as f32;
-                let positioned = glyphs
-                    .iter()
-                    .enumerate()
-                    .map(|(i, g)| {
-                        let gl = Glyph {
-                            id: g.glyph_id,
-                            x: pen_x,
-                            y: pen_y,
-                        };
-                        let (dx, dy) = code.deltas.get(i).copied().unwrap_or((0.0, 0.0));
-                        pen_x += dx;
-                        pen_y += dy;
-                        gl
-                    })
-                    .collect();
-                (font, positioned)
-            };
+        let (font, ids): (Option<peniko::FontData>, Vec<u32>) = if !code.glyph_ids.is_empty() {
+            let font = fonts.resolve_or_default(&t.font).cloned();
+            (font, code.glyph_ids.clone())
+        } else {
+            let (font, glyphs) = fonts.shape(&t.font, &code.text, t.size);
+            (font, glyphs.iter().map(|g| g.glyph_id).collect())
+        };
+        // Shared pen geometry (hit-testing and selection rects use the same
+        // cells - spec §5.3 single source of truth): the pen starts at
+        // (code.x, code.y); each glyph sits at the pen and advances by its
+        // document delta (GB/T 33190 DeltaX semantics). The shaper's natural
+        // x/y is ignored.
+        let cells = crate::body_text::code_char_cells(t, code, ids.len());
+        let positioned: Vec<Glyph> = ids
+            .iter()
+            .zip(cells.iter())
+            .map(|(&id, c)| Glyph {
+                id,
+                x: c.x as f32,
+                y: c.y as f32,
+            })
+            .collect();
         let font = match font {
             Some(f) => f,
             None => continue,
@@ -149,10 +128,6 @@ fn draw_text(
         if positioned.is_empty() {
             continue;
         }
-        // Position glyphs by the TextCode X/Y origin + cumulative document
-        // deltas. The first glyph sits at (x, y); each delta is the advance to
-        // the next glyph (GB/T 33190 DeltaX semantics). The shaper's natural
-        // x/y is ignored.
         painter
             .glyphs(&font, fill)
             .font_size(t.size as f32)
