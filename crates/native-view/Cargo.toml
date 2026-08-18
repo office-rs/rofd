@@ -9,3 +9,4 @@ rofd-render = { workspace = true }
 rofd-io = { workspace = true }
 rofd-dom = { workspace = true }
 winit = { workspace = true }
+arboard = "3"

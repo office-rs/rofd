@@ -12,6 +12,9 @@ use rofd_editor::{AnnotationSelection, TextCursor};
 // Target-gated `Send`: the host (Phase 4b native) requires `Send` callbacks. On native
 // targets the aliases below add `+ Send`; on wasm they do not (wasm is single-threaded).
 // Phase 4b can rely on these aliases directly when storing callbacks across threads.
+// Exception: `OnCopy` is NOT Send on any target. The native adapter's default
+// clipboard assembly captures `Rc<Cell<bool>>` (EditorApp is single-threaded,
+// non-Send by design), and no existing usage relies on Send.
 #[cfg(not(target_arch = "wasm32"))]
 pub type OnChange = dyn Fn(&OfdDocument) + Send;
 #[cfg(not(target_arch = "wasm32"))]
@@ -34,8 +37,7 @@ pub type OnZoomChange = dyn Fn(f64) + Send;
 pub type OnPointerCursor = dyn Fn(PointerCursor) + Send;
 #[cfg(not(target_arch = "wasm32"))]
 pub type OnWarning = dyn Fn(&[OfdWarning]) + Send;
-#[cfg(not(target_arch = "wasm32"))]
-pub type OnCopy = dyn Fn(String) + Send;
+pub type OnCopy = dyn Fn(String);
 
 #[cfg(target_arch = "wasm32")]
 pub type OnChange = dyn Fn(&OfdDocument);
@@ -59,8 +61,7 @@ pub type OnZoomChange = dyn Fn(f64);
 pub type OnPointerCursor = dyn Fn(PointerCursor);
 #[cfg(target_arch = "wasm32")]
 pub type OnWarning = dyn Fn(&[OfdWarning]);
-#[cfg(target_arch = "wasm32")]
-pub type OnCopy = dyn Fn(String);
+// `OnCopy` has no wasm variant - it is defined once above (non-Send on all targets).
 
 /// What a right-click landed on, passed to `on_context_menu`. The host uses
 /// this to show a context menu tailored to the target (annotation actions vs.
