@@ -31,6 +31,7 @@ interface WasmEditor {
     ctrl: boolean,
     alt: boolean,
     meta: boolean,
+    clickCount: number,
   ): void;
   handleMouseUp(
     button: number,
@@ -64,6 +65,9 @@ interface WasmEditor {
   setOnPageChange(cb: ((pageIndex: number) => void) | null): void;
   setOnZoomChange(cb: ((zoom: number) => void) | null): void;
   setOnPointerCursor(cb: ((shape: string) => void) | null): void;
+  setOnCopy(cb: ((text: string) => void) | null): void;
+  getSelectedText(): string | null;
+  createHighlightFromSelection(color: string): string | null;
   setTool(kind: string): void;
   deleteAnnotation(id: string): boolean;
   deleteSelected(): number;
@@ -105,6 +109,13 @@ export interface EditorConfig {
   /** Fired when the viewport zoom changes. Receives the new zoom factor
    * (1.0 = 100%). Only fires when the zoom actually differs. */
   onZoomChange?: (zoom: number) => void;
+  /** Fired on Ctrl+C with body text selected (TextSelect tool). Defaults to
+   * writing the text to the system clipboard via navigator.clipboard
+   * (inside the user-activation window); pass `clipboard: false` and use
+   * this to handle copying yourself. */
+  onCopy?: (text: string) => void;
+  /** Set false to disable the default Ctrl+C -> clipboard wiring. */
+  clipboard?: boolean;
 }
 
 // Default font CDN (jsDelivr - ICP-licensed China CDN nodes). Same fonts reditor
@@ -197,10 +208,23 @@ export class Editor {
     if (config?.onZoomChange) wasmEditor.setOnZoomChange(config.onZoomChange);
 
     // Pointer cursor: the wasm side reports CSS cursor names directly
-    // ("default"/"grab"/"grabbing"), so no mapping is needed here.
+    // ("default"/"grab"/"grabbing"/"text"), so no mapping is needed here.
     wasmEditor.setOnPointerCursor((shape: string) => {
       canvas.style.cursor = shape;
     });
+
+    // Copy: on Ctrl+C with a live TextSelect selection, forward the text.
+    // The default writes to the system clipboard; the subscription happens
+    // here (at create time) so the callback chain fires synchronously from
+    // the keydown event, inside the browser's user-activation window.
+    const onCopy =
+      config?.onCopy ??
+      (config?.clipboard === false
+        ? null
+        : (text: string) => {
+            void navigator.clipboard.writeText(text);
+          });
+    if (onCopy) wasmEditor.setOnCopy(onCopy);
 
     // 7. Create wrapper + bind DOM events.
     const editor = new Editor(wasmEditor, canvas);
@@ -278,6 +302,7 @@ export class Editor {
           e.ctrlKey,
           e.altKey,
           e.metaKey,
+          e.detail,
         );
       },
       opts,
@@ -403,11 +428,24 @@ export class Editor {
     this.wasm.setClock(author, BigInt(ts));
   }
 
-  /** Set the active editing tool. `kind` is one of: "select", "highlight",
-   * "underline", "strikeout", "squiggly", "freehand", "rect". Unknown values
-   * fall back to "select". */
+  /** Set the active editing tool. `kind` is one of: "select", "textSelect",
+   * "hand", "highlight", "underline", "strikeout", "squiggly", "freehand",
+   * "rect". Unknown values fall back to "select". */
   setTool(kind: string): void {
     this.wasm.setTool(kind);
+  }
+
+  /** The current body-text selection's text (TextSelect tool), or null when
+   * there is no selection. */
+  getSelectedText(): string | null {
+    return this.wasm.getSelectedText();
+  }
+
+  /** Convert the current body-text selection into a Highlight annotation.
+   * `color` is "#RRGGBB" (invalid strings fall back to black). Returns the
+   * new annotation's id, or null when there is no selection. */
+  createHighlightFromSelection(color: string): string | null {
+    return this.wasm.createHighlightFromSelection(color);
   }
 
   /** Delete the annotation with the given id string. Returns false if no

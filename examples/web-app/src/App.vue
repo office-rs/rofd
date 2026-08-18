@@ -42,7 +42,19 @@
               <ToolButton tooltip="手型" :active="activeTool === 'hand'" @click="setTool('hand')">
                 <HandIcon />
               </ToolButton>
-              <ToolButton tooltip="文本" :active="activeTool === 'select'" @click="setTool('select')">
+              <ToolButton
+                tooltip="选择"
+                :active="activeTool === 'select'"
+                @click="setTool('select')"
+              >
+                <SelectOutlined />
+              </ToolButton>
+              <!-- WPS "文本" = the text-selection tool (I-beam, drag-select body text). -->
+              <ToolButton
+                tooltip="文本"
+                :active="activeTool === 'textSelect'"
+                @click="setTool('textSelect')"
+              >
                 <AimOutlined />
               </ToolButton>
             </RibbonGroup>
@@ -212,6 +224,7 @@ import {
   SaveOutlined,
   ScanOutlined,
   SearchOutlined,
+  SelectOutlined,
   StrikethroughOutlined,
   UnderlineOutlined,
   UpOutlined,
