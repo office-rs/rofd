@@ -46,16 +46,16 @@ pub fn parse_key(s: &str) -> Key {
 }
 
 /// Map a JS-friendly tool-kind string to a [`Tool`]. Unknown strings fall
-/// back to [`Tool::Select`] (safe default). Mirrors the native-app's toolbar
-/// buttons: hand / select / textSelect / highlight / underline / strikeout
-/// / squiggly / freehand / rect.
+/// back to [`Tool::Text`] (safe default). Mirrors the native-app's toolbar
+/// buttons: text / hand / highlight / underline / strikeout / squiggly
+/// / freehand / rect. `"select"` and `"textSelect"` are kept as aliases of
+/// `"text"` (the WPS-aligned unified tool - spec §3).
 ///
 /// Pure Rust (no wasm types) so it runs under `cargo test` on native, like
 /// [`parse_key`]. The WasmEditor's `setTool` method calls this.
 pub fn parse_tool_kind(kind: &str) -> Tool {
     match kind {
-        "select" => Tool::Select,
-        "textSelect" => Tool::TextSelect,
+        "text" | "select" | "textSelect" => Tool::Text,
         "hand" => Tool::Hand,
         "highlight" => Tool::Create(AnnotationKind::Highlight),
         "underline" => Tool::Create(AnnotationKind::Underline),
@@ -63,7 +63,7 @@ pub fn parse_tool_kind(kind: &str) -> Tool {
         "squiggly" => Tool::Create(AnnotationKind::Squiggly),
         "freehand" => Tool::Create(AnnotationKind::Freehand),
         "rect" => Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)),
-        _ => Tool::Select,
+        _ => Tool::Text,
     }
 }
 
@@ -266,7 +266,7 @@ mod wasm_impl {
         }
 
         /// Register the copy callback. JS receives the selected text string.
-        /// Fired on Ctrl+C when the TextSelect tool has a live body-text
+        /// Fired on Ctrl+C when the Text tool has a live body-text
         /// selection. The SDK defaults this to `navigator.clipboard.writeText`.
         #[wasm_bindgen(js_name = setOnCopy)]
         pub fn set_on_copy(&mut self, callback: Option<js_sys::Function>) {
@@ -485,9 +485,10 @@ mod wasm_impl {
         }
 
         /// Set the active editing tool. `kind` is a JS-friendly string:
-        /// `"select"` | `"textSelect"` | `"hand"` | `"highlight"` |
-        /// `"underline"` | `"strikeout"` | `"squiggly"` | `"freehand"` |
-        /// `"rect"`. Unknown strings fall back to `Select` (safe default).
+        /// `"text"` | `"hand"` | `"highlight"` | `"underline"` |
+        /// `"strikeout"` | `"squiggly"` | `"freehand"` | `"rect"`.
+        /// `"select"` / `"textSelect"` are accepted as aliases of `"text"`.
+        /// Unknown strings fall back to `Text` (safe default).
         /// Mirrors the native-app's toolbar buttons.
         #[wasm_bindgen(js_name = setTool)]
         pub fn set_tool(&mut self, kind: &str) {
@@ -757,8 +758,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_tool_kind_select() {
-        assert_eq!(parse_tool_kind("select"), Tool::Select);
+    fn parse_tool_kind_text_and_aliases() {
+        assert_eq!(parse_tool_kind("text"), Tool::Text);
+        assert_eq!(parse_tool_kind("select"), Tool::Text);
+        assert_eq!(parse_tool_kind("textSelect"), Tool::Text);
     }
 
     #[test]
@@ -794,21 +797,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_tool_kind_unknown_falls_back_to_select() {
-        assert_eq!(parse_tool_kind("unknown"), Tool::Select);
-        assert_eq!(parse_tool_kind(""), Tool::Select);
-        assert_eq!(parse_tool_kind("SELECT"), Tool::Select); // case-sensitive
+    fn parse_tool_kind_unknown_falls_back_to_text() {
+        assert_eq!(parse_tool_kind("unknown"), Tool::Text);
+        assert_eq!(parse_tool_kind(""), Tool::Text);
+        assert_eq!(parse_tool_kind("SELECT"), Tool::Text); // case-sensitive
     }
 
     #[test]
     fn parse_tool_kind_hand() {
         assert_eq!(parse_tool_kind("hand"), Tool::Hand);
-    }
-
-    #[test]
-    fn parse_tool_kind_text_select() {
-        assert_eq!(parse_tool_kind("textSelect"), Tool::TextSelect);
-        assert_eq!(parse_tool_kind("select"), Tool::Select);
     }
 
     #[test]

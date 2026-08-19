@@ -15,20 +15,18 @@ use crate::render_target::RenderTarget;
 /// The active editing tool. The host selects a tool (e.g. via a toolbar) and
 /// the component uses it to interpret pointer drags (T3 wires the drag logic).
 ///
-/// `Select` clicks select/drag existing annotations; `Create` begins a new
-/// annotation of the given [`AnnotationKind`] on the next pointer drag.
+/// WPS-aligned two-tool model (spec §3): `Text` is the unified tool - it
+/// selects/drags existing annotations first, and falls back to body-text
+/// selection when no annotation is hit. `Create` begins a new annotation of
+/// the given [`AnnotationKind`] on the next pointer drag.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tool {
-    Select,
+    Text,
     Create(AnnotationKind),
     /// WPS-style hand tool: drag on blank desk/page pans the viewport;
     /// clicking an annotation selects it (move/resize/Delete reuse the
-    /// Select interactions).
+    /// Text interactions).
     Hand,
-    /// WPS-style text tool: drag over body text to select it (single page,
-    /// across lines), double-click selects a word, triple-click a TextObject.
-    /// Pure UI state - never enters dom/history/saves (spec §5.1).
-    TextSelect,
 }
 
 /// In-progress pointer drag state. Internal to the component - T3's
@@ -156,7 +154,7 @@ impl EditorComponent {
             registered_font_bytes: Vec::new(),
             callbacks: Callbacks::default(),
             modified: false,
-            tool: Tool::Select,
+            tool: Tool::Text,
             pointer_cursor: PointerCursor::Default,
             drag: None,
             text_selection: None,
@@ -315,7 +313,8 @@ impl EditorComponent {
         self.text_selection = None;
         self.set_pointer_cursor(match self.tool {
             Tool::Hand => PointerCursor::Grab,
-            Tool::TextSelect => PointerCursor::Text,
+            // Text 工具的光标随悬停目标动态变化（PointerMove 无拖拽分支）：
+            // 正文文字上为 I 型，其余区域为箭头。
             _ => PointerCursor::Default,
         });
     }
@@ -457,9 +456,55 @@ impl EditorComponent {
                             path: vec![p],
                         });
                     }
-                    Tool::Select => {
+                    Tool::Text => {
+                        // WPS 文本工具（spec §3 两工具模型）：先命中批注
+                        // （选中/拖动任意类型批注），未命中再走正文文字选区，
+                        // 两者皆无则清空全部选择（§5.2 互斥）。
                         if !self.pointer_down_annotation(p) {
-                            self.clear_selection_and_cursor();
+                            match rofd_render::hit_test_body_text(
+                                self.editor.document(),
+                                &self.viewport,
+                                p,
+                            ) {
+                                Some(hit) => {
+                                    // 互斥（spec §5.2）：文字选区取代批注选择。
+                                    self.clear_selection_and_cursor();
+                                    let page_id = hit.page.clone();
+                                    let page = self
+                                        .editor
+                                        .document()
+                                        .pages
+                                        .iter()
+                                        .find(|pg| pg.id == page_id);
+                                    let mut ranges = page
+                                        .map(|page| match click_count {
+                                            2 => rofd_render::word_range_at(page, &hit),
+                                            3 => rofd_render::paragraph_range_at(page, &hit),
+                                            _ => vec![rofd_render::BodyTextRange {
+                                                object: hit.object.clone(),
+                                                code_index: hit.code_index,
+                                                start: hit.char_offset,
+                                                end: hit.char_offset,
+                                            }],
+                                        })
+                                        .unwrap_or_default();
+                                    // 单击不拖 -> 零宽 caret range 不算选区。
+                                    ranges.retain(|r| r.end > r.start);
+                                    self.text_selection = (!ranges.is_empty()).then_some(
+                                        rofd_render::BodyTextSelection {
+                                            page: page_id,
+                                            ranges,
+                                        },
+                                    );
+                                    if *click_count == 1 {
+                                        self.drag = Some(DragState::TextSelect { anchor: hit });
+                                    }
+                                }
+                                None => {
+                                    self.text_selection = None;
+                                    self.clear_selection_and_cursor();
+                                }
+                            }
                         }
                     }
                     Tool::Hand => {
@@ -467,51 +512,6 @@ impl EditorComponent {
                             self.clear_selection_and_cursor();
                             self.drag = Some(DragState::Pan { last: p });
                             self.set_pointer_cursor(PointerCursor::Grabbing);
-                        }
-                    }
-                    Tool::TextSelect => {
-                        match rofd_render::hit_test_body_text(
-                            self.editor.document(),
-                            &self.viewport,
-                            p,
-                        ) {
-                            Some(hit) => {
-                                // 互斥（spec §5.2）：文字选区取代批注选择。
-                                self.clear_selection_and_cursor();
-                                let page_id = hit.page.clone();
-                                let page = self
-                                    .editor
-                                    .document()
-                                    .pages
-                                    .iter()
-                                    .find(|pg| pg.id == page_id);
-                                let mut ranges = page
-                                    .map(|page| match click_count {
-                                        2 => rofd_render::word_range_at(page, &hit),
-                                        3 => rofd_render::paragraph_range_at(page, &hit),
-                                        _ => vec![rofd_render::BodyTextRange {
-                                            object: hit.object.clone(),
-                                            code_index: hit.code_index,
-                                            start: hit.char_offset,
-                                            end: hit.char_offset,
-                                        }],
-                                    })
-                                    .unwrap_or_default();
-                                // 单击不拖 -> 零宽 caret range 不算选区。
-                                ranges.retain(|r| r.end > r.start);
-                                self.text_selection = (!ranges.is_empty()).then_some(
-                                    rofd_render::BodyTextSelection {
-                                        page: page_id,
-                                        ranges,
-                                    },
-                                );
-                                if *click_count == 1 {
-                                    self.drag = Some(DragState::TextSelect { anchor: hit });
-                                }
-                            }
-                            None => {
-                                self.text_selection = None;
-                            }
                         }
                     }
                 }
@@ -660,7 +660,23 @@ impl EditorComponent {
                             }
                         }
                     }
-                    None => {}
+                    None => {
+                        // WPS 文本工具：悬停正文文字 -> I 型光标，其余区域 ->
+                        // 箭头（spec §3 两工具模型）。其他工具不参与悬停。
+                        if self.tool == Tool::Text {
+                            let over_text = rofd_render::hit_test_body_text(
+                                self.editor.document(),
+                                &self.viewport,
+                                p,
+                            )
+                            .is_some();
+                            self.set_pointer_cursor(if over_text {
+                                PointerCursor::Text
+                            } else {
+                                PointerCursor::Default
+                            });
+                        }
+                    }
                 }
                 if self.drag.is_some() {
                     EventOutcome {
@@ -1084,11 +1100,11 @@ impl EditorComponent {
                 needs_repaint: false,
             };
         }
-        // Ctrl+C: copy selected body text (TextSelect tool only). The
+        // Ctrl+C: copy selected body text (Text tool only). The
         // component never touches the clipboard (AGENTS §4.9) - it fires
         // `on_copy` and adapters wire the platform clipboard.
         if modifiers.control && !modifiers.shift && matches!(key, Key::Char('c') | Key::Char('C')) {
-            if matches!(self.tool, Tool::TextSelect) {
+            if matches!(self.tool, Tool::Text) {
                 if let Some(text) = self.selected_text() {
                     if let Some(cb) = &self.callbacks.on_copy {
                         cb(text);
@@ -2113,11 +2129,11 @@ mod tests {
     #[test]
     fn set_tool_changes_tool_state() {
         let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
-        assert!(matches!(c.tool, Tool::Select));
+        assert!(matches!(c.tool, Tool::Text));
         c.set_tool(Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)));
         assert!(matches!(c.tool, Tool::Create(_)));
-        c.set_tool(Tool::Select);
-        assert!(matches!(c.tool, Tool::Select));
+        c.set_tool(Tool::Text);
+        assert!(matches!(c.tool, Tool::Text));
     }
 
     #[test]
@@ -3400,7 +3416,7 @@ mod tests {
         // The create tool stays active after commit (no spring-back), so the
         // user explicitly switches back to Select to continue the
         // select/move/resize flow below (as in WPS: click the tool again).
-        c.set_tool(Tool::Select);
+        c.set_tool(Tool::Text);
         let id = match c.editor.selection() {
             AnnotationSelection::Single(id) => id.clone(),
             _ => panic!("expected single selection after create"),
@@ -3767,7 +3783,7 @@ mod tests {
         let mut c = component_with_page();
         c.on_pointer_cursor(move |cur| f.lock().unwrap().push(cur));
         c.set_tool(Tool::Hand);
-        c.set_tool(Tool::Select);
+        c.set_tool(Tool::Text);
         assert_eq!(
             *fired.lock().unwrap(),
             vec![PointerCursor::Grab, PointerCursor::Default]
@@ -3786,7 +3802,7 @@ mod tests {
             click_count: 1,
         });
         assert!(matches!(c.drag, Some(DragState::Pan { .. })));
-        c.set_tool(Tool::Select);
+        c.set_tool(Tool::Text);
         assert!(c.drag.is_none(), "set_tool cancels in-progress pan");
     }
 
@@ -4191,7 +4207,7 @@ mod tests {
     #[test]
     fn text_select_drag_across_lines_produces_ranges() {
         let mut c = component_with_body_text();
-        c.set_tool(Tool::TextSelect);
+        c.set_tool(Tool::Text);
         // 锚点：行 0 的 'C' 前半 (x=31 -> offset 2)。
         c.handle_event(&pd(31.0, 25.0));
         // 拖到行 1 的 'F' 后半 (x=16 -> offset 1)。
@@ -4229,7 +4245,7 @@ mod tests {
     #[test]
     fn text_select_click_blank_clears_selection() {
         let mut c = component_with_body_text();
-        c.set_tool(Tool::TextSelect);
+        c.set_tool(Tool::Text);
         c.handle_event(&pd(31.0, 25.0));
         c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
         c.handle_event(&ViewEvent::PointerUp {
@@ -4243,9 +4259,54 @@ mod tests {
     }
 
     #[test]
+    fn text_tool_prefers_annotation_over_body_text() {
+        // WPS 统一"文本"工具：批注优先于正文文字（spec §3 两工具模型）。
+        let mut c = component_with_body_text();
+        c.set_clock("t".into(), 1);
+        c.editor.create_annotation(
+            AnnotationKind::Note,
+            PageId::new("P0"),
+            AnnotationPayload::Note {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 100.0,
+                    h: 100.0,
+                },
+                color: Color::Rgb(0, 0, 0),
+                content: "hi".into(),
+                icon: NoteIcon::Note,
+            },
+        );
+        c.set_tool(Tool::Text);
+        // 点在批注（覆盖正文文字区域）上 -> 选中批注，不产生文字选区。
+        c.handle_event(&pd(31.0, 25.0));
+        assert!(matches!(c.selection(), AnnotationSelection::Single(_)));
+        assert!(c.text_selection().is_none(), "no text selection");
+    }
+
+    #[test]
+    fn text_tool_hover_cursor_follows_body_text() {
+        // WPS 文本工具：悬停正文 -> I 型光标；空白处 -> 箭头（spec §3）。
+        let mut c = component_with_body_text();
+        c.set_tool(Tool::Text);
+        assert_eq!(c.pointer_cursor(), PointerCursor::Default);
+        // 行带 0 内 (x=31, y=25) 是 'C' 字符格。
+        c.handle_event(&ViewEvent::PointerMove { x: 31.0, y: 25.0 });
+        assert_eq!(c.pointer_cursor(), PointerCursor::Text);
+        // 空白区域。
+        c.handle_event(&ViewEvent::PointerMove { x: 150.0, y: 150.0 });
+        assert_eq!(c.pointer_cursor(), PointerCursor::Default);
+        // 手型工具不参与悬停光标切换。
+        c.set_tool(Tool::Hand);
+        c.handle_event(&ViewEvent::PointerMove { x: 31.0, y: 25.0 });
+        assert_eq!(c.pointer_cursor(), PointerCursor::Grab);
+    }
+
+    #[test]
     fn text_select_double_click_selects_word_triple_selects_object() {
         let mut c = component_with_body_text();
-        c.set_tool(Tool::TextSelect);
+        c.set_tool(Tool::Text);
         c.handle_event(&ViewEvent::PointerDown {
             button: MouseButton::Left,
             x: 31.0,
@@ -4301,7 +4362,7 @@ mod tests {
         c.handle_event(&pd(25.0, 125.0));
         assert!(matches!(c.selection(), AnnotationSelection::Single(_)));
         // 切 TextSelect 并拖选文字 -> 批注选择被清除。
-        c.set_tool(Tool::TextSelect);
+        c.set_tool(Tool::Text);
         assert!(c.text_selection().is_none(), "switching tools clears");
         c.handle_event(&pd(31.0, 25.0));
         c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
@@ -4312,7 +4373,7 @@ mod tests {
         });
         assert!(c.text_selection().is_some());
         // set_tool 已清批注选择；反向：Select 点批注 -> 文字选区清空。
-        c.set_tool(Tool::Select);
+        c.set_tool(Tool::Text);
         c.handle_event(&pd(25.0, 125.0));
         assert!(matches!(c.selection(), AnnotationSelection::Single(_)));
         assert!(
@@ -4324,7 +4385,7 @@ mod tests {
     #[test]
     fn text_selection_clears_on_document_change() {
         let mut c = component_with_body_text();
-        c.set_tool(Tool::TextSelect);
+        c.set_tool(Tool::Text);
         c.handle_event(&pd(31.0, 25.0));
         c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
         c.handle_event(&ViewEvent::PointerUp {
@@ -4351,7 +4412,7 @@ mod tests {
     #[test]
     fn create_highlight_from_selection_makes_markup_quads_and_undo_removes() {
         let mut c = component_with_body_text();
-        c.set_tool(Tool::TextSelect);
+        c.set_tool(Tool::Text);
         c.handle_event(&pd(31.0, 25.0));
         c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
         c.handle_event(&ViewEvent::PointerUp {
@@ -4403,7 +4464,7 @@ mod tests {
     #[test]
     fn create_highlight_without_selection_is_none() {
         let mut c = component_with_body_text();
-        c.set_tool(Tool::TextSelect);
+        c.set_tool(Tool::Text);
         assert!(c
             .create_highlight_from_selection(Color::Rgb(255, 255, 0))
             .is_none());
@@ -4412,7 +4473,7 @@ mod tests {
     #[test]
     fn text_select_drag_without_move_yields_no_selection() {
         let mut c = component_with_body_text();
-        c.set_tool(Tool::TextSelect);
+        c.set_tool(Tool::Text);
         // 单击（不拖）-> 零宽选区即无选区。
         c.handle_event(&pd(31.0, 25.0));
         c.handle_event(&ViewEvent::PointerUp {
@@ -4426,7 +4487,7 @@ mod tests {
     #[test]
     fn selected_text_joins_codes_with_newline() {
         let mut c = component_with_body_text();
-        c.set_tool(Tool::TextSelect);
+        c.set_tool(Tool::Text);
         c.handle_event(&pd(31.0, 25.0));
         c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
         c.handle_event(&ViewEvent::PointerUp {
@@ -4462,7 +4523,7 @@ mod tests {
                 y: 30.0,
             },
         ]);
-        c.set_tool(Tool::TextSelect);
+        c.set_tool(Tool::Text);
         c.handle_event(&pd(31.0, 25.0));
         c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
         c.handle_event(&ViewEvent::PointerUp {
@@ -4493,7 +4554,7 @@ mod tests {
                 y: 30.0,
             },
         ]);
-        c.set_tool(Tool::TextSelect);
+        c.set_tool(Tool::Text);
         c.handle_event(&pd(31.0, 25.0));
         c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
         c.handle_event(&ViewEvent::PointerUp {
@@ -4509,7 +4570,7 @@ mod tests {
     fn ctrl_c_with_selection_fires_on_copy() {
         use std::sync::{Arc, Mutex};
         let mut c = component_with_body_text();
-        c.set_tool(Tool::TextSelect);
+        c.set_tool(Tool::Text);
         c.handle_event(&pd(31.0, 25.0));
         c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
         c.handle_event(&ViewEvent::PointerUp {
