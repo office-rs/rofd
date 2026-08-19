@@ -661,20 +661,37 @@ impl EditorComponent {
                         }
                     }
                     None => {
-                        // WPS 文本工具：悬停正文文字 -> I 型光标，其余区域 ->
-                        // 箭头（spec §3 两工具模型）。其他工具不参与悬停。
-                        if self.tool == Tool::Text {
-                            let over_text = rofd_render::hit_test_body_text(
-                                self.editor.document(),
-                                &self.viewport,
-                                p,
-                            )
-                            .is_some();
-                            self.set_pointer_cursor(if over_text {
-                                PointerCursor::Text
-                            } else {
-                                PointerCursor::Default
-                            });
+                        // WPS 悬停光标（spec §3.2）：手型 = 空白 Grab、批注上
+                        // 箭头（可点选，WPS 实测）；文本 = 批注上箭头（批注
+                        // 优先，点击会选中批注）> 正文文字 I 型 > 空白箭头。
+                        // 创建工具不参与悬停切换。
+                        match self.tool {
+                            Tool::Hand => {
+                                let over_ann = self.annotation_at(p);
+                                self.set_pointer_cursor(if over_ann {
+                                    PointerCursor::Default
+                                } else {
+                                    PointerCursor::Grab
+                                });
+                            }
+                            Tool::Text => {
+                                if self.annotation_at(p) {
+                                    self.set_pointer_cursor(PointerCursor::Default);
+                                } else {
+                                    let over_text = rofd_render::hit_test_body_text(
+                                        self.editor.document(),
+                                        &self.viewport,
+                                        p,
+                                    )
+                                    .is_some();
+                                    self.set_pointer_cursor(if over_text {
+                                        PointerCursor::Text
+                                    } else {
+                                        PointerCursor::Default
+                                    });
+                                }
+                            }
+                            Tool::Create(_) => {}
                         }
                     }
                 }
@@ -937,6 +954,23 @@ impl EditorComponent {
     /// hit a page or the desk background. Does NOT clear the selection itself
     /// -- the caller decides what a blank press means (Select: clear; Hand:
     /// clear + start pan).
+    /// Whether an annotation (body or handle) is under the viewport point -
+    /// the hover-cursor analogue of [`Self::pointer_down_annotation`]'s
+    /// hit test (annotation-first priority, spec §5.2).
+    fn annotation_at(&self, p: (f64, f64)) -> bool {
+        matches!(
+            rofd_render::hit_test(
+                self.editor.document(),
+                &self.viewport,
+                self.editor.selection(),
+                p,
+            ),
+            rofd_render::HitTarget::Annotation(_)
+                | rofd_render::HitTarget::AnnotationText(..)
+                | rofd_render::HitTarget::Handle(..)
+        )
+    }
+
     fn pointer_down_annotation(&mut self, p: (f64, f64)) -> bool {
         // 互斥（spec §5.2）：选中批注即清空文字选区。
         self.text_selection = None;
@@ -4297,10 +4331,71 @@ mod tests {
         // 空白区域。
         c.handle_event(&ViewEvent::PointerMove { x: 150.0, y: 150.0 });
         assert_eq!(c.pointer_cursor(), PointerCursor::Default);
-        // 手型工具不参与悬停光标切换。
+        // 手型工具：无批注处悬停保持 Grab（文档里没有批注）。
         c.set_tool(Tool::Hand);
         c.handle_event(&ViewEvent::PointerMove { x: 31.0, y: 25.0 });
         assert_eq!(c.pointer_cursor(), PointerCursor::Grab);
+    }
+
+    #[test]
+    fn hand_tool_hover_annotation_shows_arrow() {
+        // WPS 手型工具：悬停批注 -> 箭头（可点选）；空白 -> Grab。
+        let mut c = component_with_body_text();
+        c.set_clock("t".into(), 1);
+        c.editor.create_annotation(
+            AnnotationKind::Note,
+            PageId::new("P0"),
+            AnnotationPayload::Note {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 100.0,
+                    h: 100.0,
+                },
+                color: Color::Rgb(0, 0, 0),
+                content: "hi".into(),
+                icon: NoteIcon::Note,
+            },
+        );
+        c.set_tool(Tool::Hand);
+        assert_eq!(c.pointer_cursor(), PointerCursor::Grab);
+        // 批注覆盖正文文字区域 (31,25) -> 箭头。
+        c.handle_event(&ViewEvent::PointerMove { x: 31.0, y: 25.0 });
+        assert_eq!(
+            c.pointer_cursor(),
+            PointerCursor::Default,
+            "annotation hover"
+        );
+        // 空白区域 -> Grab。
+        c.handle_event(&ViewEvent::PointerMove { x: 150.0, y: 150.0 });
+        assert_eq!(c.pointer_cursor(), PointerCursor::Grab);
+    }
+
+    #[test]
+    fn text_tool_hover_annotation_shows_arrow_over_body_text() {
+        // 文本工具：批注优先同样作用于悬停光标——批注（盖在正文文字上）
+        // 显示箭头，纯正文文字才显示 I 型。
+        let mut c = component_with_body_text();
+        c.set_clock("t".into(), 1);
+        c.editor.create_annotation(
+            AnnotationKind::Note,
+            PageId::new("P0"),
+            AnnotationPayload::Note {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 100.0,
+                    h: 100.0,
+                },
+                color: Color::Rgb(0, 0, 0),
+                content: "hi".into(),
+                icon: NoteIcon::Note,
+            },
+        );
+        c.set_tool(Tool::Text);
+        // (31,25) 是正文文字，但被批注覆盖 -> 箭头。
+        c.handle_event(&ViewEvent::PointerMove { x: 31.0, y: 25.0 });
+        assert_eq!(c.pointer_cursor(), PointerCursor::Default);
     }
 
     #[test]

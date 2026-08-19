@@ -59,8 +59,15 @@ P1/P2/P3 各自独立成 plan，可分别交付。
 
 component 不直接设系统光标（同"库不取系统时间"原则：平台能力经回调交给宿主）。
 新增 `PointerCursor` 枚举（`Default / Grab / Grabbing / Text / …`），经新回调
-`on_pointer_cursor(shape)` 上抛。手型工具：悬停空白 = `Grab`，拖拽中 =
-`Grabbing`。native 宿主映射 winit CursorIcon，web 宿主映射 CSS cursor。
+`on_pointer_cursor(shape)` 上抛。native 宿主映射 winit CursorIcon，web 宿主映射
+CSS cursor。悬停光标随命中目标动态切换（PointerMove 无拖拽分支，2026-08-16
+修订）：
+
+- **手型工具**：悬停空白 = `Grab`，悬停批注 = 箭头（可点选，WPS 实测），
+  拖拽中 = `Grabbing`。
+- **文本工具**：批注优先--悬停批注（含覆盖正文文字的批注）= 箭头；纯正文
+  文字 = I 型（`Text`）；空白 = 箭头。
+- 创建工具不参与悬停切换。
 
 ### 3.3 涉及范围
 
@@ -146,8 +153,9 @@ body 保持只读；选区不进 dom、不进 editor 历史、不落盘。渲染
 - **拖选**：PointerDown 于正文文字 → 锚点 char offset；PointerMove 逐帧更新
   选区（单页内跨行，含部分首尾行）；不跨页（拖出页面边界 clamp 到页内最近
   位置）。PointerDown 于空白/图片 → 清空选区与批注选择。
-- **悬停光标**：正文文字上为 I 型（`PointerCursor::Text`），其余区域为箭头
-  （`PointerCursor::Default`），PointerMove 无拖拽时动态更新。
+- **悬停光标**：批注优先（含覆盖正文文字的批注，与点击优先级一致）= 箭头；
+  纯正文文字 = I 型（`PointerCursor::Text`）；空白 = 箭头
+  （`PointerCursor::Default`），PointerMove 无拖拽时动态更新（详见 §3.2）。
 - **双击选词**（CJK 按字符邻接分词：连续同类字符为一段）；**三击选段**（同一
   TextObject 的全部内容）。双击/三击需要 component 记录点击时间与次数--
   组件自身无时钟（不变量 4.4），由 ViewEvent 携带或宿主侧判定（实现时定，
