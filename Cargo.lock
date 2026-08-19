@@ -3013,6 +3013,7 @@ name = "rofd-native-view"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "kurbo",
  "rofd-component",
  "rofd-dom",
  "rofd-io",
