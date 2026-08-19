@@ -78,8 +78,12 @@ pub(crate) struct CharCell {
 ///
 /// `n` is the cell count to produce: the glyph count for glyph-id codes,
 /// the char count for shaped text (the drawer passes its own glyph count).
-/// The last character's advance (no following delta) falls back to the last
-/// non-zero delta, then to the font `size`.
+/// A cell's width is the displacement to the next character; the last
+/// character (no following delta) falls back to the last positive delta,
+/// then to the font `size`. Explicit zero deltas are treated like absent
+/// ones: producers commonly write a redundant `DeltaX="0"` on single-char
+/// codes, and a literal zero advance would collapse the cell to a point,
+/// making the object un-hittable (hover/drag blind spot).
 pub(crate) fn code_char_cells(t: &TextObject, code: &TextCode, n: usize) -> Vec<CharCell> {
     let fallback = code
         .deltas
@@ -92,7 +96,7 @@ pub(crate) fn code_char_cells(t: &TextObject, code: &TextCode, n: usize) -> Vec<
     let mut pen_y = code.y;
     for i in 0..n {
         let (dx, dy) = code.deltas.get(i).copied().unwrap_or((0.0, 0.0));
-        let advance = if i < code.deltas.len() {
+        let advance = if i < code.deltas.len() && dx as f64 > 0.0 {
             dx as f64
         } else {
             fallback
@@ -482,6 +486,39 @@ mod tests {
         // 无任何 delta -> advance 回退字号。
         assert_eq!(cells[0].advance, 10.0);
         assert_eq!(cells[1].x, 0.0, "zero deltas -> pen never advances");
+    }
+
+    #[test]
+    fn char_cells_explicit_zero_delta_falls_back_to_size() {
+        // 生产者常见写法：单字符 code 带冗余 DeltaX="0"。advance 若取字面
+        // 0，命中范围会退化成一个点（悬停/拖选盲区），必须回退字号。
+        let t = text_obj(vec![TextCode {
+            glyph_ids: vec![1],
+            deltas: vec![(0.0, 0.0)],
+            text: "年".into(),
+            x: 0.0,
+            y: 0.0,
+        }]);
+        let cells = code_char_cells(&t, &t.codes[0], 1);
+        assert_eq!(cells[0].advance, 10.0, "explicit 0 delta -> size fallback");
+    }
+
+    #[test]
+    fn hit_single_char_code_with_zero_delta_is_hittable() {
+        // 真实文档回归（ru-yuan-ji-lu.ofd 279 个单字零 delta code）：
+        // 字符格范围内必须能命中（悬停 I-beam / 拖选的前提）。
+        let (doc, vp) = doc_with(text_obj(vec![TextCode {
+            glyph_ids: vec![1],
+            deltas: vec![(0.0, 0.0)],
+            text: "年".into(),
+            x: 0.0,
+            y: 10.0,
+        }]));
+        // code 原点 (10,30)（boundary 10,20 + code 0,10），字号 10 ->
+        // 行带 y ∈ [30-10, 30+2.5] = [20, 32.5]？笔位 y=20+10=30，带 = [30-10, 30+2.5]。
+        // 字符格 x ∈ [10-5, 10+15]。
+        let h = hit_test_body_text(&doc, &vp, (12.0, 25.0)).expect("hit");
+        assert_eq!(h.char_offset, 0);
     }
 
     // 对象 boundary (10,20)，code.y=10 -> 行带 viewport y ∈ [20+(10-10), 20+(10+2.5)] = [20, 32.5]。
