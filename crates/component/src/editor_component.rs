@@ -956,30 +956,48 @@ impl EditorComponent {
     /// clear + start pan).
     /// Whether an annotation (body or handle) is under the viewport point -
     /// the hover-cursor analogue of [`Self::pointer_down_annotation`]'s
-    /// hit test (annotation-first priority, spec §5.2).
+    /// hit test (annotation-first priority, spec §5.2). Text-markup
+    /// annotations pass through (see [`Self::is_text_markup`]) so the
+    /// cursor reflects the body text beneath them.
     fn annotation_at(&self, p: (f64, f64)) -> bool {
-        matches!(
-            rofd_render::hit_test(
-                self.editor.document(),
-                &self.viewport,
-                self.editor.selection(),
-                p,
-            ),
-            rofd_render::HitTarget::Annotation(_)
-                | rofd_render::HitTarget::AnnotationText(..)
-                | rofd_render::HitTarget::Handle(..)
-        )
-    }
-
-    fn pointer_down_annotation(&mut self, p: (f64, f64)) -> bool {
-        // 互斥（spec §5.2）：选中批注即清空文字选区。
-        self.text_selection = None;
         let target = rofd_render::hit_test(
             self.editor.document(),
             &self.viewport,
             self.editor.selection(),
             p,
         );
+        let Some(id) = target_annotation_id(&target) else {
+            return false;
+        };
+        !Self::is_text_markup(self.editor.document(), id)
+    }
+
+    /// WPS 行为：文字 markup 批注（高亮/下划线/删除线/波浪线，spec §5.2）
+    /// 贴附在正文文字上，不是点击目标--指针穿透到文字选区流程。
+    /// 它们仍可经右键上下文菜单命中（`hit_test` 本身不变）。
+    fn is_text_markup(doc: &rofd_dom::OfdDocument, id: &rofd_dom::AnnotationId) -> bool {
+        doc.annotations
+            .find(id)
+            .is_some_and(|ann| matches!(ann.payload, AnnotationPayload::Markup { .. }))
+    }
+
+    fn pointer_down_annotation(&mut self, p: (f64, f64)) -> bool {
+        let target = rofd_render::hit_test(
+            self.editor.document(),
+            &self.viewport,
+            self.editor.selection(),
+            p,
+        );
+        // Markup pass-through（spec §5.2）：命中 markup 不当作批注按下，
+        // 落回文字选区流程；此时尚未清空 text_selection，由后续文字
+        // 流程决定（命中文字则按字选规则重置，空白则清空）。
+        if let Some(id) = target_annotation_id(&target) {
+            if Self::is_text_markup(self.editor.document(), id) {
+                return false;
+            }
+        }
+        // 互斥（spec §5.2）：选中批注即清空文字选区。
+        self.text_selection = None;
         match target {
             rofd_render::HitTarget::Handle(id, h) => {
                 let was_selected = self.editor.selection().contains(&id);
@@ -989,8 +1007,9 @@ impl EditorComponent {
                 }
                 self.fire_annotation_interact(&id);
                 self.fire_selection_change();
-                // Markup/Freehand annotations are not resizable
-                // (they have no meaningful rect to drag-handle).
+                // Freehand annotations are not resizable (they have no
+                // meaningful bbox handles). (Markup never reaches here:
+                // it passes through before this match, see above.)
                 // Select only and skip the Resize drag setup so
                 // PointerUp doesn't commit a phantom Transaction.
                 let Some(ann) = self.editor.document().annotations.find(&id) else {
@@ -1896,6 +1915,17 @@ fn opposite_corner(rect: &Rect, handle: &HandlePos) -> (f64, f64) {
         HandlePos::W => (x1, cy),  // opposite edge = E midpoint
         // Vertex drags have no opposite anchor (see compute_resize).
         HandlePos::Vertex(_) => unreachable!("vertex drags do not use opposite_corner"),
+    }
+}
+
+/// The annotation id referenced by a hit-test target, if the target is
+/// annotation-related (body, text caret, or drag handle).
+fn target_annotation_id(target: &rofd_render::HitTarget) -> Option<&rofd_dom::AnnotationId> {
+    match target {
+        rofd_render::HitTarget::Annotation(id)
+        | rofd_render::HitTarget::AnnotationText(id, _)
+        | rofd_render::HitTarget::Handle(id, _) => Some(id),
+        _ => None,
     }
 }
 
@@ -2830,66 +2860,59 @@ mod tests {
         c
     }
 
-    /// Handle-strategy guard (P2): a Markup annotation exposes NO handles, so
-    /// clicking where the old Se corner handle used to be (100,100) now hits
-    /// the annotation body (bbox boundary) and starts a Move - never a
-    /// Resize. A click-without-drag still commits nothing.
+    /// Markup pass-through guard (WPS 行为, spec §5.2)：a Markup annotation is
+    /// not a click target at all. Pressing inside it (or where the old Se
+    /// corner handle used to be, (100,100)) arms no drag, selects nothing,
+    /// and pushes no Transaction - the pointer falls through to the page.
     #[test]
-    fn markup_handle_down_does_not_enter_resize() {
+    fn markup_click_passes_through_no_drag_no_selection() {
         let mut c = component_with_markup();
         let undo_before = c.editor.history_len();
-        // Select the markup by clicking inside it (at (50,50) -- inside the
-        // (10,10)-(100,100) bbox).
-        c.handle_event(&ViewEvent::PointerDown {
-            button: MouseButton::Left,
-            x: 50.0,
-            y: 50.0,
-            modifiers: Modifiers::default(),
-            click_count: 1,
-        });
-        c.handle_event(&ViewEvent::PointerUp {
-            button: MouseButton::Left,
-            x: 50.0,
-            y: 50.0,
-        });
-        // Under the WPS handle strategy the markup exposes no handles, so the
-        // old Se-handle position (100,100) falls through to the annotation
-        // body hit (bbox boundary) -> Move, not Resize.
-        c.handle_event(&ViewEvent::PointerDown {
-            button: MouseButton::Left,
-            x: 100.0,
-            y: 100.0,
-            modifiers: Modifiers::default(),
-            click_count: 1,
-        });
-        assert!(
-            matches!(c.drag, Some(DragState::Move { .. })),
-            "Markup corner click must start a Move (no handles), not a Resize"
-        );
-        // Release without moving: no Transaction pushed, payload unchanged.
-        c.handle_event(&ViewEvent::PointerUp {
-            button: MouseButton::Left,
-            x: 100.0,
-            y: 100.0,
-        });
+        for (x, y) in [(50.0, 50.0), (100.0, 100.0)] {
+            c.handle_event(&ViewEvent::PointerDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+            });
+            assert!(
+                c.drag.is_none(),
+                "markup press must not arm any drag (pass-through)"
+            );
+            assert!(
+                !matches!(c.selection(), AnnotationSelection::Single(_)),
+                "markup press must not select"
+            );
+            c.handle_event(&ViewEvent::PointerUp {
+                button: MouseButton::Left,
+                x,
+                y,
+            });
+        }
         assert_eq!(
             c.editor.history_len(),
             undo_before,
-            "Markup click without drag must not push a Transaction"
+            "Markup click must not push a Transaction"
         );
-        // The annotation's quad_points should be unchanged.
-        if let AnnotationSelection::Single(id) = c.editor.selection() {
-            let ann = c.editor.document().annotations.find(id).unwrap();
-            match &ann.payload {
-                AnnotationPayload::Markup { quad_points, .. } => {
-                    assert_eq!(
-                        quad_points.len(),
-                        2,
-                        "Markup quad_points unchanged after handle-position click"
-                    );
-                }
-                _ => panic!("expected Markup payload"),
+        // The annotation's quad_points are unchanged.
+        let ann = c
+            .document()
+            .annotations
+            .by_page
+            .values()
+            .flatten()
+            .next()
+            .expect("markup still present");
+        match &ann.payload {
+            AnnotationPayload::Markup { quad_points, .. } => {
+                assert_eq!(
+                    quad_points.len(),
+                    2,
+                    "Markup quad_points unchanged after pass-through clicks"
+                );
             }
+            _ => panic!("expected Markup payload"),
         }
     }
 
@@ -3737,16 +3760,27 @@ mod tests {
 
     #[test]
     fn hand_click_annotation_selects_and_delete_removes() {
-        // Markup (no text-cursor semantics) annotation: under Hand, clicking it
-        // selects -> Single selection -> Delete removes it.
+        // Non-markup annotation (Rect shape, no text cursor): under Hand,
+        // clicking it selects -> Single selection -> Delete removes it.
+        // (Markup would pass through to the page, see
+        // markup_click_passes_through_no_drag_no_selection.)
         let mut c = component_with_page();
         c.set_clock("t".into(), 1);
         let id = c.editor.create_annotation(
-            AnnotationKind::Highlight,
+            AnnotationKind::Shape(ShapeKind::Rect),
             PageId::new("P0"),
-            AnnotationPayload::Markup {
-                quad_points: vec![Point { x: 0.0, y: 0.0 }, Point { x: 100.0, y: 100.0 }],
-                color: Color::Rgb(255, 255, 0),
+            AnnotationPayload::Shape {
+                kind: ShapeKind::Rect,
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 100.0,
+                    h: 100.0,
+                },
+                stroke: Color::Rgb(0, 0, 0),
+                fill: None,
+                width: 1.0,
+                points: vec![],
             },
         );
         c.set_tool(Tool::Hand);
@@ -4317,6 +4351,59 @@ mod tests {
         c.handle_event(&pd(31.0, 25.0));
         assert!(matches!(c.selection(), AnnotationSelection::Single(_)));
         assert!(c.text_selection().is_none(), "no text selection");
+    }
+
+    /// A Highlight markup annotation covering the whole text area
+    /// (quad_points = [top-left, bottom-right]).
+    fn add_highlight_covering_text(c: &mut EditorComponent) {
+        c.editor.create_annotation(
+            AnnotationKind::Highlight,
+            PageId::new("P0"),
+            AnnotationPayload::Markup {
+                quad_points: vec![Point { x: 0.0, y: 0.0 }, Point { x: 100.0, y: 100.0 }],
+                color: Color::Rgb(255, 255, 0),
+            },
+        );
+    }
+
+    #[test]
+    fn text_tool_markup_passes_through_to_body_text() {
+        // WPS 行为（spec §5.2）：markup 批注（高亮/下划线/删除线/波浪线）
+        // 贴附正文文字，不是点击目标--指针穿透到文字选区流程。
+        let mut c = component_with_body_text();
+        c.set_clock("t".into(), 1);
+        add_highlight_covering_text(&mut c);
+        c.set_tool(Tool::Text);
+        // 高亮覆盖正文文字区域 (31,25)：按下穿透 -> 不选中批注。
+        c.handle_event(&pd(31.0, 25.0));
+        assert!(
+            !matches!(c.selection(), AnnotationSelection::Single(_)),
+            "markup is not a click target"
+        );
+        // 拖到行 1 -> 产生文字选区（与无批注时一致）。
+        c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 16.0,
+            y: 45.0,
+        });
+        let sel = c.text_selection().expect("selection exists");
+        assert_eq!(sel.ranges.len(), 2, "drag select across lines");
+    }
+
+    #[test]
+    fn text_tool_hover_over_markup_shows_ibeam() {
+        // markup 穿透同样作用于悬停光标：高亮覆盖处显示 I 型而非箭头。
+        let mut c = component_with_body_text();
+        c.set_clock("t".into(), 1);
+        add_highlight_covering_text(&mut c);
+        c.set_tool(Tool::Text);
+        c.handle_event(&ViewEvent::PointerMove { x: 31.0, y: 25.0 });
+        assert_eq!(c.pointer_cursor(), PointerCursor::Text);
+        // 手型工具同样穿透：markup 上是 Grab 而非箭头。
+        c.set_tool(Tool::Hand);
+        c.handle_event(&ViewEvent::PointerMove { x: 31.0, y: 25.0 });
+        assert_eq!(c.pointer_cursor(), PointerCursor::Grab);
     }
 
     #[test]
