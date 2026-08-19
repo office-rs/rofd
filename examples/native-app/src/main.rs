@@ -156,15 +156,14 @@ fn app_logic(app: &mut AppState) -> std::iter::Once<xilem::WindowView<AppState>>
     let file_row =
         flex_row((btn_open, btn_save)).gap(xilem::masonry::layout::Length::const_px(2.0));
 
-    // Tool buttons, WPS-style grouping: browse-mode group (Hand / Text) first,
-    // then the annotation create groups. No spring-back: a create tool stays
-    // active after each commit (spec §3.3).
+    // Tool buttons, WPS-style grouping: the two browse-mode tools
+    // (Hand / Text) first, then the annotation create groups. No spring-back:
+    // a create tool stays active after each commit (spec §3.3).
     let btn_hand = tool_button("手型", Tool::Hand);
-    let btn_select = tool_button("选择", Tool::Select);
-    // WPS "文本" = the text-selection tool (I-beam, drag-select body text).
-    let btn_text = tool_button("文本", Tool::TextSelect);
-    let group_tools = flex_row((btn_hand, btn_select, btn_text))
-        .gap(xilem::masonry::layout::Length::const_px(2.0));
+    // WPS "文本" = unified tool: selects annotations AND drag-selects body text.
+    let btn_text = tool_button("文本", Tool::Text);
+    let group_tools =
+        flex_row((btn_hand, btn_text)).gap(xilem::masonry::layout::Length::const_px(2.0));
 
     let btn_highlight = tool_button("高亮", Tool::Create(AnnotationKind::Highlight));
     let btn_underline = tool_button("下划线", Tool::Create(AnnotationKind::Underline));

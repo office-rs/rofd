@@ -11,8 +11,15 @@
 1. **手型工具**（P1）：点击空白处拖拽平移视图；点选批注后可 Delete 删除。
 2. **顶点编辑**（P2）：线段类批注（Line/PolyLine/Polygon/Arrow）通过顶点句柄改形状；
    椭圆用 4 个边中点句柄调整宽高；Freehand 仅显示外包矩形、只可移动。
-3. **文本选择工具**（P3）：拖选正文文字（单页、跨行）、双击选词、三击选段，
+3. **文本工具**（P3）：拖选正文文字（单页、跨行）、双击选词、三击选段，
    支持复制文本，预留"选中转高亮批注"接口。
+
+**工具模型（2026-08-16 修订，用户裁定）**：对标 WPS，浏览模式只有**两个工具**：
+`手型（Hand）` 与 `文本（Text）`。原独立的"选择"工具并入"文本"：`Tool::Select`
+删除，`Tool::TextSelect` 更名 `Tool::Text`。`Tool::Text` 是统一入口--
+PointerDown 先命中批注（选中/拖动/删除任意类型批注），未命中再走正文文字选区，
+两者皆无则清空全部选择。SDK 字符串 `"text"` 为正式名，`"select"`/`"textSelect"`
+保留为兼容别名。
 
 ### 1.1 WPS 行为的核实情况
 
@@ -37,7 +44,7 @@ P1/P2/P3 各自独立成 plan，可分别交付。
 
 - `Tool` 枚举新增 `Hand` 变体（`crates/component/src/editor_component.rs`）。
 - **PointerDown（左键）**：先 `hit_test`。
-  - 命中批注/句柄 → 走现有 Select 工具的选中与拖拽逻辑（Move/Resize/Delete
+  - 命中批注/句柄 → 走现有 Text 工具的选中与拖拽逻辑（Move/Resize/Delete
     全部复用，不复制代码）。
   - 命中 `Page`/`Empty` → 清除选区与文字光标，进入新的 `DragState::Pan
     { start: (f64,f64), last: (f64,f64) }`。
@@ -65,8 +72,8 @@ component 不直接设系统光标（同"库不取系统时间"原则：平台�
   `setTool('hand')`。
 - **工具栏布局仿 WPS 分组**（demo 层）：`[手型 | 文本] │ [高亮 下划线 删除线
   波浪线] │ [手绘 矩形]`--浏览模式组（手型/文本）与批注创建组用分隔线分开。
-  现有"选择"按钮即 WPS"文本"工具（P3 后具备正文拖选能力），demo 中更名为
-  "文本"。
+  "文本"即 WPS"文本"工具（统一入口：批注选择 + 正文拖选），见 §1 工具模型修订；
+  原"选择"按钮已删除。
 - **无 spring-back**（已核实 WPS 行为）：画完一个批注后**停留在当前创建工具**，
   继续画下一个；不自动切回选择/手型。
 
@@ -132,11 +139,15 @@ body 保持只读；选区不进 dom、不进 editor 历史、不落盘。渲染
 
 ### 5.2 交互定义
 
-`Tool::TextSelect`：
+`Tool::Text`（统一工具，见 §1 工具模型修订）：
 
+- **批注优先**：PointerDown 先命中批注（含句柄），命中即走批注选中/拖动逻辑
+  （Move/Resize/Delete 全部复用），不产生文字选区。
 - **拖选**：PointerDown 于正文文字 → 锚点 char offset；PointerMove 逐帧更新
   选区（单页内跨行，含部分首尾行）；不跨页（拖出页面边界 clamp 到页内最近
-  位置）。PointerDown 于空白/图片 → 清空选区。
+  位置）。PointerDown 于空白/图片 → 清空选区与批注选择。
+- **悬停光标**：正文文字上为 I 型（`PointerCursor::Text`），其余区域为箭头
+  （`PointerCursor::Default`），PointerMove 无拖拽时动态更新。
 - **双击选词**（CJK 按字符邻接分词：连续同类字符为一段）；**三击选段**（同一
   TextObject 的全部内容）。双击/三击需要 component 记录点击时间与次数--
   组件自身无时钟（不变量 4.4），由 ViewEvent 携带或宿主侧判定（实现时定，
@@ -159,7 +170,7 @@ body 保持只读；选区不进 dom、不进 editor 历史、不落盘。渲染
 
 - component 新增 `selected_text() -> Option<String>`（按 ranges 拼接，行间加
   换行符策略：不同 TextCode 之间加 `\n`，同 Code 内不加）。
-- `Ctrl+C`（TextSelect 工具且有选区时）-> 触发新回调 `on_copy(text: String)`。
+- `Ctrl+C`（Text 工具且有选区时）-> 触发新回调 `on_copy(text: String)`。
   **component 层不碰剪贴板**（同"库不取系统时间"原则；且 native/wasm 剪贴板
   API 异构，component 保持平台无关、依赖面不变）。
 - **剪贴板由适配器层默认实现**，上层宿主应用开箱即用：
@@ -179,9 +190,9 @@ body 保持只读；选区不进 dom、不进 editor 历史、不落盘。渲染
 
 - `crates/render`：`hit_test_body_text`、`text_selection_rects`、几何抽取、
   composite 选区 overlay 绘制。
-- `crates/component`：`Tool::TextSelect`、`BodyTextSelection`、拖选/双击/三击
+- `crates/component`：`Tool::Text`、`BodyTextSelection`、拖选/双击/三击
   状态机、`selected_text`、`on_copy` 回调、`create_highlight_from_selection`。
-- `crates/web-view` + SDK：`setTool('textSelect')`、`onCopy`、`getSelectedText`、
+- `crates/web-view` + SDK：`setTool('text')`、`onCopy`、`getSelectedText`、
   （P3.5）`createHighlightFromSelection`。
 - `crates/native-view`：默认 `on_copy` -> arboard 剪贴板（可配置关闭）。
 - `examples`：工具栏文本选择按钮（剪贴板由适配器层默认实现，示例零代码对接）。

@@ -428,14 +428,16 @@ export class Editor {
     this.wasm.setClock(author, BigInt(ts));
   }
 
-  /** Set the active editing tool. `kind` is one of: "select", "textSelect",
-   * "hand", "highlight", "underline", "strikeout", "squiggly", "freehand",
-   * "rect". Unknown values fall back to "select". */
+  /** Set the active editing tool. `kind` is one of: "text", "hand",
+   * "highlight", "underline", "strikeout", "squiggly", "freehand", "rect".
+   * "select"/"textSelect" are accepted as aliases of "text" (WPS-style
+   * unified tool: selects annotations AND drag-selects body text).
+   * Unknown values fall back to "text". */
   setTool(kind: string): void {
     this.wasm.setTool(kind);
   }
 
-  /** The current body-text selection's text (TextSelect tool), or null when
+  /** The current body-text selection's text (Text tool), or null when
    * there is no selection. */
   getSelectedText(): string | null {
     return this.wasm.getSelectedText();

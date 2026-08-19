@@ -42,19 +42,8 @@
               <ToolButton tooltip="手型" :active="activeTool === 'hand'" @click="setTool('hand')">
                 <HandIcon />
               </ToolButton>
-              <ToolButton
-                tooltip="选择"
-                :active="activeTool === 'select'"
-                @click="setTool('select')"
-              >
-                <SelectOutlined />
-              </ToolButton>
-              <!-- WPS "文本" = the text-selection tool (I-beam, drag-select body text). -->
-              <ToolButton
-                tooltip="文本"
-                :active="activeTool === 'textSelect'"
-                @click="setTool('textSelect')"
-              >
+              <!-- WPS "文本" = unified tool: selects annotations AND drag-selects body text. -->
+              <ToolButton tooltip="文本" :active="activeTool === 'text'" @click="setTool('text')">
                 <AimOutlined />
               </ToolButton>
             </RibbonGroup>
@@ -224,7 +213,6 @@ import {
   SaveOutlined,
   ScanOutlined,
   SearchOutlined,
-  SelectOutlined,
   StrikethroughOutlined,
   UnderlineOutlined,
   UpOutlined,
@@ -316,7 +304,7 @@ const PX_PER_MM = 96 / 25.4;
 
 const loading = ref(true);
 const activeTab = ref('read');
-const activeTool = ref('select');
+const activeTool = ref('text');
 const pageIndex = ref(0);
 const zoom = ref(PX_PER_MM);
 const zoomPercent = computed(() => Math.round((zoom.value / PX_PER_MM) * 100));
