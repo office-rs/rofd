@@ -104,6 +104,16 @@ pub(crate) enum DragState {
     /// recomputes ranges from anchor to the current hit (preview-only UI
     /// state - no document change, no history).
     TextSelect { anchor: rofd_render::TextHit },
+    /// Press on a text-markup annotation (Text tool, WPS click-vs-drag):
+    /// the press selects the markup; if the pointer then moves beyond
+    /// [`MARKUP_DRAG_THRESHOLD_PX`] and the press point hit body text
+    /// (`anchor`), the drag converts to [`DragState::TextSelect`] (the
+    /// annotation selection is cleared - spec §5.2 互斥). Released without
+    /// moving: the markup stays selected (click-select).
+    MarkupPress {
+        start: (f64, f64),
+        anchor: Option<rofd_render::TextHit>,
+    },
 }
 
 pub struct EditorComponent {
@@ -548,6 +558,23 @@ impl EditorComponent {
             }
             ViewEvent::PointerMove { x, y } => {
                 let p = (*x, *y);
+                // MarkupPress -> TextSelect conversion (WPS click-vs-drag,
+                // spec §5.2): once the pointer moves beyond the threshold
+                // with a body-text anchor, the markup press becomes a
+                // text-selection drag (annotation selection cleared - 互斥).
+                if let Some(DragState::MarkupPress { start, anchor, .. }) = self.drag.as_ref() {
+                    let dist = ((p.0 - start.0).powi(2) + (p.1 - start.1).powi(2)).sqrt();
+                    if dist > MARKUP_DRAG_THRESHOLD_PX && anchor.is_some() {
+                        let anchor = match self.drag.take() {
+                            Some(DragState::MarkupPress {
+                                anchor: Some(hit), ..
+                            }) => hit,
+                            _ => unreachable!("drag was MarkupPress with anchor"),
+                        };
+                        self.clear_selection_and_cursor();
+                        self.drag = Some(DragState::TextSelect { anchor });
+                    }
+                }
                 match &mut self.drag {
                     Some(DragState::Create { current, path, .. }) => {
                         *current = p;
@@ -659,6 +686,11 @@ impl EditorComponent {
                                 }
                             }
                         }
+                    }
+                    Some(DragState::MarkupPress { .. }) => {
+                        // Still inside the click-vs-drag threshold (or no
+                        // body-text anchor): stay a press; conversion is
+                        // handled above, release keeps the markup selected.
                     }
                     None => {
                         // WPS 悬停光标（spec §3.2）：手型 = 空白 Grab、批注上
@@ -847,6 +879,9 @@ impl EditorComponent {
                         // Text-select drag: the selection was updated live on
                         // each PointerMove; nothing to commit (pure UI state).
                         DragState::TextSelect { .. } => {}
+                        // Markup click (never dragged past the threshold):
+                        // the markup stays selected - nothing to commit.
+                        DragState::MarkupPress { .. } => {}
                     }
                     EventOutcome {
                         needs_repaint: true,
@@ -956,25 +991,25 @@ impl EditorComponent {
     /// clear + start pan).
     /// Whether an annotation (body or handle) is under the viewport point -
     /// the hover-cursor analogue of [`Self::pointer_down_annotation`]'s
-    /// hit test (annotation-first priority, spec §5.2). Text-markup
-    /// annotations pass through (see [`Self::is_text_markup`]) so the
-    /// cursor reflects the body text beneath them.
+    /// hit test (annotation-first priority, spec §5.2).
     fn annotation_at(&self, p: (f64, f64)) -> bool {
-        let target = rofd_render::hit_test(
-            self.editor.document(),
-            &self.viewport,
-            self.editor.selection(),
-            p,
-        );
-        let Some(id) = target_annotation_id(&target) else {
-            return false;
-        };
-        !Self::is_text_markup(self.editor.document(), id)
+        matches!(
+            rofd_render::hit_test(
+                self.editor.document(),
+                &self.viewport,
+                self.editor.selection(),
+                p,
+            ),
+            rofd_render::HitTarget::Annotation(_)
+                | rofd_render::HitTarget::AnnotationText(..)
+                | rofd_render::HitTarget::Handle(..)
+        )
     }
 
-    /// WPS 行为：文字 markup 批注（高亮/下划线/删除线/波浪线，spec §5.2）
-    /// 贴附在正文文字上，不是点击目标--指针穿透到文字选区流程。
-    /// 它们仍可经右键上下文菜单命中（`hit_test` 本身不变）。
+    /// Whether the annotation is a text-markup (highlight/underline/
+    /// strikeout/squiggly). WPS 行为（spec §5.2）：markup 贴附正文文字，
+    /// 点击选中（click）；按住拖动则转为文字拖选（drag）--见
+    /// [`DragState::MarkupPress`]。
     fn is_text_markup(doc: &rofd_dom::OfdDocument, id: &rofd_dom::AnnotationId) -> bool {
         doc.annotations
             .find(id)
@@ -988,12 +1023,11 @@ impl EditorComponent {
             self.editor.selection(),
             p,
         );
-        // Markup pass-through（spec §5.2）：命中 markup 不当作批注按下，
-        // 落回文字选区流程；此时尚未清空 text_selection，由后续文字
-        // 流程决定（命中文字则按字选规则重置，空白则清空）。
+        // Markup click-vs-drag（spec §5.2）：按下先选中 markup；Text 工具
+        // 下拖动越过阈值且按下点命中正文文字 -> 转为 TextSelect 拖选。
         if let Some(id) = target_annotation_id(&target) {
             if Self::is_text_markup(self.editor.document(), id) {
-                return false;
+                return self.pointer_down_markup(id.clone(), p);
             }
         }
         // 互斥（spec §5.2）：选中批注即清空文字选区。
@@ -1090,6 +1124,43 @@ impl EditorComponent {
             }
             _ => false,
         }
+    }
+
+    /// PointerDown on a text-markup annotation (WPS click-vs-drag, spec
+    /// §5.2). The press always selects the markup; the armed drag depends
+    /// on the tool:
+    /// - **Hand**: like any annotation - a preview-based Move drag.
+    /// - **Text**: [`DragState::MarkupPress`]. Released without moving ->
+    ///   the markup stays selected (click-select); moved beyond
+    ///   [`MARKUP_DRAG_THRESHOLD_PX`] with a body-text anchor -> converts
+    ///   to [`DragState::TextSelect`] (drag-select the text beneath).
+    fn pointer_down_markup(&mut self, id: rofd_dom::AnnotationId, p: (f64, f64)) -> bool {
+        // 互斥（spec §5.2）：选中批注即清空文字选区。
+        self.text_selection = None;
+        let was_selected = self.editor.selection().contains(&id);
+        self.editor.select(id.clone());
+        if !was_selected {
+            self.fire_annotation_focus(&id);
+        }
+        self.fire_annotation_interact(&id);
+        self.fire_selection_change();
+        if matches!(self.tool, Tool::Hand) {
+            let Some(ann) = self.editor.document().annotations.find(&id) else {
+                return true;
+            };
+            let before_rect = rofd_render::annotation_local_rect(ann).unwrap_or_default();
+            self.drag = Some(DragState::Move {
+                id,
+                before_rect,
+                start: p,
+                last: p,
+                moved: false,
+            });
+        } else {
+            let anchor = rofd_render::hit_test_body_text(self.editor.document(), &self.viewport, p);
+            self.drag = Some(DragState::MarkupPress { start: p, anchor });
+        }
+        true
     }
 
     /// Clear annotation selection + text cursor and fire the change callbacks
@@ -1646,7 +1717,10 @@ fn drag_to_preview(doc: &OfdDocument, d: &DragState, vp: &Viewport) -> Option<Dr
         // Pan is a view-only drag (viewport scroll) - no annotation preview.
         // TextSelect is likewise preview-only (the live selection rects come
         // from `text_selection`, drawn by composite via text_selection_rects).
-        DragState::Pan { .. } | DragState::TextSelect { .. } => None,
+        // MarkupPress shows the (already-selected) markup - no preview either.
+        DragState::Pan { .. } | DragState::TextSelect { .. } | DragState::MarkupPress { .. } => {
+            None
+        }
     }
 }
 
@@ -1682,6 +1756,12 @@ const DEFAULT_SHAPE_WIDTH: f64 = 2.0;
 /// viewport pixels (not page-local), so the gesture feels the same at any
 /// zoom.
 const MIN_CREATE_DRAG_PX: f64 = 3.0;
+
+/// Viewport-pixel distance a markup press must travel before it converts
+/// from a click (select the markup) to a drag (select the body text
+/// beneath, WPS click-vs-drag - spec §5.2). Same scale as the adapter-side
+/// click slop.
+const MARKUP_DRAG_THRESHOLD_PX: f64 = 4.0;
 
 /// Compute the new rect when dragging a resize handle.
 ///
@@ -2860,12 +2940,12 @@ mod tests {
         c
     }
 
-    /// Markup pass-through guard (WPS 行为, spec §5.2)：a Markup annotation is
-    /// not a click target at all. Pressing inside it (or where the old Se
-    /// corner handle used to be, (100,100)) arms no drag, selects nothing,
-    /// and pushes no Transaction - the pointer falls through to the page.
+    /// Markup click-vs-drag guard (WPS 行为, spec §5.2)：pressing a Markup
+    /// annotation selects it and arms a [`DragState::MarkupPress`] - never a
+    /// Resize (markup exposes no handles). Releasing in place keeps the
+    /// selection and pushes no Transaction; quad_points are unchanged.
     #[test]
-    fn markup_click_passes_through_no_drag_no_selection() {
+    fn markup_click_selects_without_drag_side_effects() {
         let mut c = component_with_markup();
         let undo_before = c.editor.history_len();
         for (x, y) in [(50.0, 50.0), (100.0, 100.0)] {
@@ -2877,18 +2957,19 @@ mod tests {
                 click_count: 1,
             });
             assert!(
-                c.drag.is_none(),
-                "markup press must not arm any drag (pass-through)"
+                matches!(c.drag, Some(DragState::MarkupPress { .. })),
+                "markup press arms a MarkupPress, not a Resize"
             );
             assert!(
-                !matches!(c.selection(), AnnotationSelection::Single(_)),
-                "markup press must not select"
+                matches!(c.selection(), AnnotationSelection::Single(_)),
+                "markup press selects the markup"
             );
             c.handle_event(&ViewEvent::PointerUp {
                 button: MouseButton::Left,
                 x,
                 y,
             });
+            assert!(c.drag.is_none(), "release clears the drag");
         }
         assert_eq!(
             c.editor.history_len(),
@@ -2909,7 +2990,7 @@ mod tests {
                 assert_eq!(
                     quad_points.len(),
                     2,
-                    "Markup quad_points unchanged after pass-through clicks"
+                    "Markup quad_points unchanged after click-selects"
                 );
             }
             _ => panic!("expected Markup payload"),
@@ -3760,27 +3841,17 @@ mod tests {
 
     #[test]
     fn hand_click_annotation_selects_and_delete_removes() {
-        // Non-markup annotation (Rect shape, no text cursor): under Hand,
-        // clicking it selects -> Single selection -> Delete removes it.
-        // (Markup would pass through to the page, see
-        // markup_click_passes_through_no_drag_no_selection.)
+        // Markup annotation: under Hand, clicking it selects (click-vs-drag,
+        // spec §5.2) -> Single selection -> Delete removes it (markup has no
+        // text cursor, so Delete deletes the annotation).
         let mut c = component_with_page();
         c.set_clock("t".into(), 1);
         let id = c.editor.create_annotation(
-            AnnotationKind::Shape(ShapeKind::Rect),
+            AnnotationKind::Highlight,
             PageId::new("P0"),
-            AnnotationPayload::Shape {
-                kind: ShapeKind::Rect,
-                rect: Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    w: 100.0,
-                    h: 100.0,
-                },
-                stroke: Color::Rgb(0, 0, 0),
-                fill: None,
-                width: 1.0,
-                points: vec![],
+            AnnotationPayload::Markup {
+                quad_points: vec![Point { x: 0.0, y: 0.0 }, Point { x: 100.0, y: 100.0 }],
+                color: Color::Rgb(255, 255, 0),
             },
         );
         c.set_tool(Tool::Hand);
@@ -4367,21 +4438,26 @@ mod tests {
     }
 
     #[test]
-    fn text_tool_markup_passes_through_to_body_text() {
-        // WPS 行为（spec §5.2）：markup 批注（高亮/下划线/删除线/波浪线）
-        // 贴附正文文字，不是点击目标--指针穿透到文字选区流程。
+    fn text_tool_drag_from_markup_selects_text() {
+        // WPS 行为（spec §5.2 click-vs-drag）：markup 批注上按下先选中
+        // 批注；拖动越过阈值 -> 转为文字拖选（批注选择被清空）。
         let mut c = component_with_body_text();
         c.set_clock("t".into(), 1);
         add_highlight_covering_text(&mut c);
         c.set_tool(Tool::Text);
-        // 高亮覆盖正文文字区域 (31,25)：按下穿透 -> 不选中批注。
+        // 高亮覆盖正文文字区域 (31,25)：按下 -> markup 被选中。
         c.handle_event(&pd(31.0, 25.0));
         assert!(
-            !matches!(c.selection(), AnnotationSelection::Single(_)),
-            "markup is not a click target"
+            matches!(c.selection(), AnnotationSelection::Single(_)),
+            "markup press selects the markup"
         );
-        // 拖到行 1 -> 产生文字选区（与无批注时一致）。
+        assert!(c.text_selection().is_none());
+        // 拖到行 1（越过阈值）-> 转为文字拖选，批注选择清空。
         c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
+        assert!(
+            !matches!(c.selection(), AnnotationSelection::Single(_)),
+            "conversion to text drag clears the annotation selection"
+        );
         c.handle_event(&ViewEvent::PointerUp {
             button: MouseButton::Left,
             x: 16.0,
@@ -4392,18 +4468,47 @@ mod tests {
     }
 
     #[test]
-    fn text_tool_hover_over_markup_shows_ibeam() {
-        // markup 穿透同样作用于悬停光标：高亮覆盖处显示 I 型而非箭头。
+    fn text_tool_markup_click_without_drag_keeps_selection() {
+        // Click-vs-drag 的 click 侧：按下后原地释放 -> markup 保持选中。
+        let mut c = component_with_body_text();
+        c.set_clock("t".into(), 1);
+        add_highlight_covering_text(&mut c);
+        c.set_tool(Tool::Text);
+        c.handle_event(&pd(31.0, 25.0));
+        // 阈值内微动（1px < 4px）不算拖动。
+        c.handle_event(&ViewEvent::PointerMove { x: 32.0, y: 25.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 32.0,
+            y: 25.0,
+        });
+        assert!(
+            matches!(c.selection(), AnnotationSelection::Single(_)),
+            "markup click keeps the markup selected"
+        );
+        assert!(c.text_selection().is_none());
+    }
+
+    #[test]
+    fn markup_hover_shows_arrow_on_both_tools() {
+        // markup 是批注：两个工具下悬停都显示箭头（可点选）。
         let mut c = component_with_body_text();
         c.set_clock("t".into(), 1);
         add_highlight_covering_text(&mut c);
         c.set_tool(Tool::Text);
         c.handle_event(&ViewEvent::PointerMove { x: 31.0, y: 25.0 });
-        assert_eq!(c.pointer_cursor(), PointerCursor::Text);
-        // 手型工具同样穿透：markup 上是 Grab 而非箭头。
+        assert_eq!(
+            c.pointer_cursor(),
+            PointerCursor::Default,
+            "Text tool over markup = arrow (click-select)"
+        );
         c.set_tool(Tool::Hand);
         c.handle_event(&ViewEvent::PointerMove { x: 31.0, y: 25.0 });
-        assert_eq!(c.pointer_cursor(), PointerCursor::Grab);
+        assert_eq!(
+            c.pointer_cursor(),
+            PointerCursor::Default,
+            "Hand tool over markup = arrow (click-select)"
+        );
     }
 
     #[test]
