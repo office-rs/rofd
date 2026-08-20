@@ -171,6 +171,13 @@ body 保持只读；选区不进 dom、不进 editor 历史、不落盘。渲染
   组件自身无时钟（不变量 4.4），由 ViewEvent 携带或宿主侧判定（实现时定，
   倾向 PointerDown 增加可选 `click_count` 字段，宿主的 winit/DOM 事件天然
   提供该信息）。
+- **click_count 语义**（实现裁定）：`PointerDown.click_count` 仅 2（双击选词）
+  与 3（三击选段）有特殊语义；0（宿主未提供计数）与 ≥4 一律按单击处理并
+  arm 拖选。web 侧的 `pointerdown` 事件 `detail` 恒为 0（Pointer Events
+  spec），故 SDK 自行计数（500ms 窗口 + 4px slop，循环 1->2->3，与 winit
+  bridge 的 `next_click_count` 一致），不转发 `e.detail`。曾因转发
+  `detail=0` 导致纯正文拖选静默失效（批注文字不受影响，因为 markup
+  click-vs-drag 不看 click_count），此为该回归的根因。
 - **选区与批注选择互斥**：有文字选区时清除批注选择，反之亦然。
 - 不做（本期非目标）：跨页选择、Shift+点击扩展、Ctrl+A、键盘 Shift+方向键选字。
 

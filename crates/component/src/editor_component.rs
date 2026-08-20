@@ -506,7 +506,11 @@ impl EditorComponent {
                                             ranges,
                                         },
                                     );
-                                    if *click_count == 1 {
+                                    // 拖选 arm：仅 2（双击选词）/3（三击选段）
+                                    // 不 arm。0（宿主未提供计数，见 web
+                                    // pointerdown 的 detail=0）与 ≥4 均按
+                                    // 单击处理，否则拖选会静默失效。
+                                    if !matches!(click_count, 2 | 3) {
                                         self.drag = Some(DragState::TextSelect { anchor: hit });
                                     }
                                 }
@@ -4341,6 +4345,37 @@ mod tests {
             modifiers: Modifiers::default(),
             click_count: 1,
         }
+    }
+
+    /// Same as [`pd`] but with an explicit click count (0 = host gave no
+    /// count, e.g. web pointerdown whose `detail` is always 0).
+    fn pd_cc(x: f64, y: f64, click_count: u8) -> ViewEvent {
+        ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            modifiers: Modifiers::default(),
+            click_count,
+        }
+    }
+
+    #[test]
+    fn text_select_drag_with_zero_click_count_still_arms() {
+        // 回归：web 的 pointerdown `detail` 恒为 0（Pointer Events spec），
+        // click_count=0 也必须 arm 文字拖选，否则纯正文拖选静默失效。
+        let mut c = component_with_body_text();
+        c.set_tool(Tool::Text);
+        c.handle_event(&pd_cc(31.0, 25.0, 0));
+        c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 16.0,
+            y: 45.0,
+        });
+        let sel = c
+            .text_selection()
+            .expect("click_count=0 must still arm the drag");
+        assert_eq!(sel.ranges.len(), 2, "drag select across lines");
     }
 
     #[test]
