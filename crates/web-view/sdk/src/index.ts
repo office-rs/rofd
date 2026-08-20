@@ -144,6 +144,13 @@ export class Editor {
   private canvas: HTMLCanvasElement;
   private animFrameId: number | null = null;
   private abortController: AbortController;
+  // Click counting (mirrors the native winit bridge): pointerdown's
+  // `detail` is 0 for pointer events per the Pointer Events spec, so the
+  // count is tracked here -- same 500ms window + 4px slop, cycling 1->2->3.
+  private clickCount = 0;
+  private lastClickTime = 0;
+  private lastClickX = -Infinity;
+  private lastClickY = -Infinity;
 
   private constructor(wasm: WasmEditor, canvas: HTMLCanvasElement) {
     this.wasm = wasm;
@@ -257,6 +264,25 @@ export class Editor {
 
   // ─── Internal: event binding ──────────────────────────────────────────────
 
+  /**
+   * Compute the click count for a press at `(x, y)` (device px): presses
+   * within 500ms and 4px of the previous one advance the chain 1->2->3->1
+   * (double = word select, triple = paragraph select); anything else starts
+   * over at 1. `e.detail` can't be used -- it is 0 for pointer events.
+   */
+  private nextClickCount(x: number, y: number): number {
+    const now = performance.now();
+    const withinWindow =
+      now - this.lastClickTime <= 500 &&
+      Math.abs(x - this.lastClickX) <= 4 &&
+      Math.abs(y - this.lastClickY) <= 4;
+    this.clickCount = withinWindow ? (this.clickCount % 3) + 1 : 1;
+    this.lastClickTime = now;
+    this.lastClickX = x;
+    this.lastClickY = y;
+    return this.clickCount;
+  }
+
   /** Bind DOM events on the canvas, translating them to wasm calls. */
   private bindEvents(): void {
     const opts: AddEventListenerOptions = { signal: this.abortController.signal };
@@ -294,15 +320,21 @@ export class Editor {
         this.canvas.focus();
         this.canvas.setPointerCapture(e.pointerId);
         const rect = this.canvas.getBoundingClientRect();
+        const x = (e.clientX - rect.left) * dpr();
+        const y = (e.clientY - rect.top) * dpr();
+        // Right-click resets the click chain (mirrors the native bridge).
+        if (e.button !== 0) {
+          this.clickCount = 0;
+        }
         this.wasm.handleMouseDown(
           e.button,
-          (e.clientX - rect.left) * dpr(),
-          (e.clientY - rect.top) * dpr(),
+          x,
+          y,
           e.shiftKey,
           e.ctrlKey,
           e.altKey,
           e.metaKey,
-          e.detail,
+          this.nextClickCount(x, y),
         );
       },
       opts,
