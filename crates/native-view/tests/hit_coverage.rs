@@ -7,6 +7,7 @@
 use rofd_render::{composite, hit_test_body_text};
 
 #[test]
+#[ignore = "requires the real OFD at ../../test/ru-yuan-ji-lu.ofd"]
 fn every_fixture_text_object_is_hittable() {
     let bytes = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
