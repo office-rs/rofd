@@ -53,6 +53,8 @@ interface WasmEditor {
   saveOfd(): Uint8Array;
   canUndo(): boolean;
   canRedo(): boolean;
+  undo(): boolean;
+  redo(): boolean;
   setClock(author: string, ts: bigint): void;
   setOnChange(cb: (() => void) | null): void;
   setOnSelectionChange(cb: (() => void) | null): void;
@@ -69,6 +71,8 @@ interface WasmEditor {
   getSelectedText(): string | null;
   createHighlightFromSelection(color: string): string | null;
   setTool(kind: string): void;
+  setHighlightColor(color: string): void;
+  setMarkupColor(kind: string, color: string): void;
   deleteAnnotation(id: string): boolean;
   deleteSelected(): number;
 }
@@ -444,16 +448,6 @@ export class Editor {
     return this.wasm.saveOfd();
   }
 
-  /** Whether there are undoable operations. */
-  get canUndo(): boolean {
-    return this.wasm.canUndo();
-  }
-
-  /** Whether there are redoable operations. */
-  get canRedo(): boolean {
-    return this.wasm.canRedo();
-  }
-
   /** Set the annotation clock (author + timestamp ms) for subsequent edits. */
   setClock(author: string, ts: number): void {
     // i64 maps to BigInt in wasm-bindgen; convert from JS number.
@@ -461,12 +455,28 @@ export class Editor {
   }
 
   /** Set the active editing tool. `kind` is one of: "text", "hand",
-   * "highlight", "underline", "strikeout", "squiggly", "freehand", "rect".
+   * "highlight", "underline", "strikeout", "squiggly", "freehand", "rect",
+   * "ellipse", "arrow", "line", "polygon".
    * "select"/"textSelect" are accepted as aliases of "text" (WPS-style
    * unified tool: selects annotations AND drag-selects body text).
    * Unknown values fall back to "text". */
   setTool(kind: string): void {
     this.wasm.setTool(kind);
+  }
+
+  /** Set the color used for newly created highlight annotations.
+   * `color` is "#RRGGBB" (invalid strings fall back to black).
+   * Mirrors the WPS highlight-color dropdown on the annotate tab. */
+  setHighlightColor(color: string): void {
+    this.wasm.setHighlightColor(color);
+  }
+
+  /** Set the color a markup create-tool uses for new annotations (WPS gives
+   * each markup tool its own color dropdown). `kind` is one of "highlight",
+   * "underline", "strikeout", "squiggly"; other kinds are ignored.
+   * `color` is "#RRGGBB" (invalid strings fall back to black). */
+  setMarkupColor(kind: string, color: string): void {
+    this.wasm.setMarkupColor(kind, color);
   }
 
   /** The current body-text selection's text (Text tool), or null when
@@ -491,6 +501,28 @@ export class Editor {
   /** Delete all currently-selected annotations. Returns the count deleted. */
   deleteSelected(): number {
     return this.wasm.deleteSelected();
+  }
+
+  /** Undo the last command (toolbar button; same as Ctrl+Z). Returns
+   * whether anything was undone. */
+  undo(): boolean {
+    return this.wasm.undo();
+  }
+
+  /** Redo the last undone command (toolbar button; same as Ctrl+Y).
+   * Returns whether anything was redone. */
+  redo(): boolean {
+    return this.wasm.redo();
+  }
+
+  /** Whether there are undoable operations in the history. */
+  canUndo(): boolean {
+    return this.wasm.canUndo();
+  }
+
+  /** Whether there are redoable operations in the history. */
+  canRedo(): boolean {
+    return this.wasm.canRedo();
   }
 
   /** Scroll by one page height. `direction` is "up" or "down". Intended for

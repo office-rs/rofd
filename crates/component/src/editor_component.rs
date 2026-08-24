@@ -147,6 +147,17 @@ pub struct EditorComponent {
     /// document loaded. Updated after Scroll/Resize; when it changes,
     /// `on_page_change` fires. T4.
     pub(crate) current_page: Option<usize>,
+    /// Color used when the Highlight create-tool commits an annotation.
+    /// Defaults to yellow (`DEFAULT_HIGHLIGHT_COLOR`); the host can override
+    /// via [`Self::set_highlight_color`] (WPS highlight-color dropdown).
+    pub(crate) highlight_color: Color,
+    /// Colors used when the Underline/Strikeout/Squiggly create-tools commit
+    /// an annotation. Each defaults to `DEFAULT_MARKUP_COLOR` (blue); the host
+    /// can override per-kind via [`Self::set_markup_color`] (WPS gives each
+    /// markup tool its own color dropdown).
+    pub(crate) underline_color: Color,
+    pub(crate) strikeout_color: Color,
+    pub(crate) squiggly_color: Color,
 }
 
 impl EditorComponent {
@@ -169,6 +180,10 @@ impl EditorComponent {
             drag: None,
             text_selection: None,
             current_page: None,
+            highlight_color: DEFAULT_HIGHLIGHT_COLOR,
+            underline_color: DEFAULT_MARKUP_COLOR,
+            strikeout_color: DEFAULT_MARKUP_COLOR,
+            squiggly_color: DEFAULT_MARKUP_COLOR,
         }
     }
 
@@ -304,6 +319,26 @@ impl EditorComponent {
     pub fn can_redo(&self) -> bool {
         self.editor.can_redo()
     }
+    /// Undo the last command (same path as Ctrl+Z). Returns whether anything
+    /// was undone; on success the annotation caches are invalidated and the
+    /// host should request a repaint.
+    pub fn undo(&mut self) -> bool {
+        if self.editor.undo() {
+            self.after_annotation_change();
+            true
+        } else {
+            false
+        }
+    }
+    /// Redo the last undone command (same path as Ctrl+Y / Ctrl+Shift+Z).
+    pub fn redo(&mut self) -> bool {
+        if self.editor.redo() {
+            self.after_annotation_change();
+            true
+        } else {
+            false
+        }
+    }
     pub fn is_modified(&self) -> bool {
         self.modified
     }
@@ -327,6 +362,39 @@ impl EditorComponent {
             // 正文文字上为 I 型，其余区域为箭头。
             _ => PointerCursor::Default,
         });
+    }
+
+    /// Set the color the Highlight create-tool uses for new annotations
+    /// (WPS highlight-color dropdown). Affects only future creates; existing
+    /// annotations keep their own color.
+    pub fn set_highlight_color(&mut self, color: Color) {
+        self.highlight_color = color;
+    }
+
+    /// Set the color a markup create-tool (Highlight/Underline/Strikeout/
+    /// Squiggly) uses for new annotations (WPS per-tool color dropdowns).
+    /// Non-markup kinds are ignored. Affects only future creates.
+    pub fn set_markup_color(&mut self, kind: &AnnotationKind, color: Color) {
+        match kind {
+            AnnotationKind::Highlight => self.highlight_color = color,
+            AnnotationKind::Underline => self.underline_color = color,
+            AnnotationKind::Strikeout => self.strikeout_color = color,
+            AnnotationKind::Squiggly => self.squiggly_color = color,
+            _ => {}
+        }
+    }
+
+    /// The color the given markup create-tool commits with (per-tool color).
+    /// Non-markup kinds fall back to `DEFAULT_MARKUP_COLOR` (unused by their
+    /// payload builders).
+    fn markup_color(&self, kind: &AnnotationKind) -> Color {
+        match kind {
+            AnnotationKind::Highlight => self.highlight_color,
+            AnnotationKind::Underline => self.underline_color,
+            AnnotationKind::Strikeout => self.strikeout_color,
+            AnnotationKind::Squiggly => self.squiggly_color,
+            _ => DEFAULT_MARKUP_COLOR,
+        }
     }
 
     /// Update the pointer-cursor UI state and fire `on_pointer_cursor` when it
@@ -798,8 +866,13 @@ impl EditorComponent {
                                             .unwrap_or(p)
                                     })
                                     .collect();
-                                let payload =
-                                    build_create_payload(&kind, start_l, current_l, &path_local);
+                                let payload = build_create_payload(
+                                    &kind,
+                                    start_l,
+                                    current_l,
+                                    &path_local,
+                                    self.markup_color(&kind),
+                                );
                                 let id = self.editor.create_annotation(kind.clone(), page, payload);
                                 self.editor.select(id.clone());
                                 // No spring-back: the create tool stays active after
@@ -1830,6 +1903,7 @@ fn build_create_payload(
     start: (f64, f64),
     current: (f64, f64),
     path: &[(f64, f64)],
+    markup_color: Color,
 ) -> AnnotationPayload {
     match kind {
         AnnotationKind::Highlight => AnnotationPayload::Markup {
@@ -1843,7 +1917,7 @@ fn build_create_payload(
                     y: current.1,
                 },
             ],
-            color: DEFAULT_HIGHLIGHT_COLOR,
+            color: markup_color,
         },
         AnnotationKind::Underline | AnnotationKind::Strikeout | AnnotationKind::Squiggly => {
             AnnotationPayload::Markup {
@@ -1857,7 +1931,7 @@ fn build_create_payload(
                         y: current.1,
                     },
                 ],
-                color: DEFAULT_MARKUP_COLOR,
+                color: markup_color,
             }
         }
         AnnotationKind::Freehand => {
@@ -2450,6 +2524,44 @@ mod tests {
             matches!(c.editor.selection(), AnnotationSelection::Single(_)),
             "created annotation is selected"
         );
+    }
+
+    /// set_markup_color 按工具独立配色（WPS 每个标注工具一个颜色下拉）：
+    /// 下划线用红色，创建的下划线批注 payload 即红色；且不影响高亮默认黄。
+    #[test]
+    fn set_markup_color_scopes_per_kind() {
+        let mut c = component_with_page();
+        c.set_clock("t".into(), 1);
+        c.set_markup_color(&AnnotationKind::Underline, Color::Rgb(255, 0, 0));
+        c.set_tool(Tool::Create(AnnotationKind::Underline));
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 10.0,
+            y: 10.0,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        });
+        c.handle_event(&ViewEvent::PointerMove { x: 40.0, y: 14.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 40.0,
+            y: 14.0,
+        });
+        assert_eq!(annotation_count(&c), 1);
+        let anns = c.document().annotations.for_page(&PageId::new("P0"));
+        match &anns[0].payload {
+            AnnotationPayload::Markup { color, .. } => {
+                assert_eq!(*color, Color::Rgb(255, 0, 0), "underline uses its color");
+            }
+            _ => panic!("expected Markup payload"),
+        }
+        // 高亮保持默认黄（per-kind 隔离）。
+        assert_eq!(c.highlight_color, Color::Rgb(255, 255, 0));
+        assert_eq!(c.underline_color, Color::Rgb(255, 0, 0));
+        assert_eq!(c.strikeout_color, Color::Rgb(0, 0, 255), "default blue");
+        // 非 markup kind 是 no-op。
+        c.set_markup_color(&AnnotationKind::Freehand, Color::Rgb(0, 255, 0));
+        assert_eq!(c.underline_color, Color::Rgb(255, 0, 0));
     }
 
     /// Final-review Fix 1: Freehand is covered by the same guard - a single
