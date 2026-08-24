@@ -63,7 +63,24 @@ pub fn parse_tool_kind(kind: &str) -> Tool {
         "squiggly" => Tool::Create(AnnotationKind::Squiggly),
         "freehand" => Tool::Create(AnnotationKind::Freehand),
         "rect" => Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)),
+        "ellipse" => Tool::Create(AnnotationKind::Shape(ShapeKind::Ellipse)),
+        "arrow" => Tool::Create(AnnotationKind::Shape(ShapeKind::Arrow)),
+        "line" => Tool::Create(AnnotationKind::Shape(ShapeKind::Line)),
+        "polygon" => Tool::Create(AnnotationKind::Shape(ShapeKind::Polygon)),
         _ => Tool::Text,
+    }
+}
+
+/// Map a JS-friendly markup-kind string to an [`AnnotationKind`] for the
+/// per-tool markup color API. Returns `None` for non-markup or unknown
+/// strings (the caller ignores the call).
+pub fn parse_markup_kind(kind: &str) -> Option<AnnotationKind> {
+    match kind {
+        "highlight" => Some(AnnotationKind::Highlight),
+        "underline" => Some(AnnotationKind::Underline),
+        "strikeout" => Some(AnnotationKind::Strikeout),
+        "squiggly" => Some(AnnotationKind::Squiggly),
+        _ => None,
     }
 }
 
@@ -478,6 +495,20 @@ mod wasm_impl {
             self.component.can_redo()
         }
 
+        /// Undo the last command (toolbar button; same path as Ctrl+Z).
+        /// Returns whether anything was undone.
+        #[wasm_bindgen(js_name = undo)]
+        pub fn undo(&mut self) -> bool {
+            self.component.undo()
+        }
+
+        /// Redo the last undone command (toolbar button; same path as
+        /// Ctrl+Y). Returns whether anything was redone.
+        #[wasm_bindgen(js_name = redo)]
+        pub fn redo(&mut self) -> bool {
+            self.component.redo()
+        }
+
         /// Set the annotation clock (author + timestamp) for subsequent edits.
         #[wasm_bindgen(js_name = setClock)]
         pub fn set_clock(&mut self, author: String, ts: i64) {
@@ -494,6 +525,30 @@ mod wasm_impl {
         pub fn set_tool(&mut self, kind: &str) {
             let tool = parse_tool_kind(kind);
             self.component.set_tool(tool);
+        }
+
+        /// Set the highlight color used when the Highlight create-tool
+        /// commits a new annotation (WPS highlight-color dropdown). Accepts a
+        /// `#RRGGBB` string; invalid input falls back to black via
+        /// [`parse_color`].
+        #[wasm_bindgen(js_name = setHighlightColor)]
+        pub fn set_highlight_color(&mut self, color: &str) {
+            let color = parse_color(color);
+            self.component.set_highlight_color(color);
+        }
+
+        /// Set the color a markup create-tool (highlight/underline/strikeout/
+        /// squiggly) uses for new annotations - WPS gives each markup tool its
+        /// own color dropdown. `kind` is one of `"highlight"` | `"underline"`
+        /// | `"strikeout"` | `"squiggly"`; other kinds are ignored. `color`
+        /// is a `#RRGGBB` string.
+        #[wasm_bindgen(js_name = setMarkupColor)]
+        pub fn set_markup_color(&mut self, kind: &str, color: &str) {
+            let Some(kind) = parse_markup_kind(kind) else {
+                return;
+            };
+            let color = parse_color(color);
+            self.component.set_markup_color(&kind, color);
         }
 
         /// Delete the annotation with the given id string. Used by the
@@ -794,6 +849,18 @@ mod tests {
             parse_tool_kind("rect"),
             Tool::Create(AnnotationKind::Shape(ShapeKind::Rect))
         );
+    }
+
+    #[test]
+    fn parse_markup_kind_maps_and_rejects() {
+        assert_eq!(parse_markup_kind("highlight"), Some(AnnotationKind::Highlight));
+        assert_eq!(parse_markup_kind("underline"), Some(AnnotationKind::Underline));
+        assert_eq!(parse_markup_kind("strikeout"), Some(AnnotationKind::Strikeout));
+        assert_eq!(parse_markup_kind("squiggly"), Some(AnnotationKind::Squiggly));
+        // Non-markup tools and unknown strings are rejected (None -> no-op).
+        assert_eq!(parse_markup_kind("freehand"), None);
+        assert_eq!(parse_markup_kind("rect"), None);
+        assert_eq!(parse_markup_kind(""), None);
     }
 
     #[test]
