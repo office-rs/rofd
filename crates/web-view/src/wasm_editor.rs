@@ -136,7 +136,7 @@ mod wasm_impl {
     use rofd_io::{parse_ofd, save_ofd, write_ofd, PackageHandle};
     use wasm_bindgen::prelude::*;
 
-    use crate::wasm_editor::{parse_color, parse_key, parse_tool_kind, pointer_cursor_str};
+    use crate::wasm_editor::{parse_color, parse_key, parse_markup_kind, parse_tool_kind, pointer_cursor_str};
     use crate::webgpu_render_target::WebGpuRenderTarget;
 
     /// JS callback slots. Each is an `Rc<RefCell<Option<Function>>>` so the
