@@ -105,13 +105,16 @@ pub enum DragPreview {
     },
     /// Creating a Line/Arrow annotation. `start`/`current` are page-local
     /// endpoints (direction = start -> current; the arrowhead sits at
-    /// `current`). Carried separately from `Create` because a Line/Arrow is
+    /// `current`). `width` is the stroke width the created annotation will
+    /// get (page-local mm), so the preview arrowhead matches the committed
+    /// one. Carried separately from `Create` because a Line/Arrow is
     /// defined by its endpoints, not its bbox - the bbox loses which diagonal
     /// was drawn.
     CreateLine {
         kind: AnnotationKind,
         start: (f64, f64),
         current: (f64, f64),
+        width: f64,
     },
     /// Creating a freehand annotation; `path` is viewport-space points.
     CreateFreehand { path: Vec<(f64, f64)> },
@@ -360,6 +363,7 @@ fn draw_drag_preview(
             kind,
             start,
             current,
+            width,
         } => {
             // Create drags target page 0 (same as the Create rect arm).
             let Some((origin_x, origin_y)) = page_origin(doc, vp, 0) else {
@@ -375,14 +379,9 @@ fn draw_drag_preview(
                 .transform(base)
                 .draw();
             // Arrow: filled triangle head at `current` so the user sees where
-            // the arrowhead will land before releasing.
+            // the arrowhead will land before releasing. Sized from `width`
+            // (5 x width) like the committed annotation's head.
             if matches!(kind, AnnotationKind::Shape(ShapeKind::Arrow)) {
-                let bbox = RofdRect {
-                    x: start.0.min(current.0),
-                    y: start.1.min(current.1),
-                    w: (start.0 - current.0).abs(),
-                    h: (start.1 - current.1).abs(),
-                };
                 let head = arrow_head_path(
                     Point {
                         x: start.0,
@@ -392,7 +391,7 @@ fn draw_drag_preview(
                         x: current.0,
                         y: current.1,
                     },
-                    &bbox,
+                    *width,
                 );
                 painter.fill(&head, PREVIEW_COLOR).transform(base).draw();
             }
@@ -401,14 +400,21 @@ fn draw_drag_preview(
             if points.len() < 2 {
                 return;
             }
-            // Resolve the annotation's page so the preview lands under the
-            // pointer on multi-page docs (same as Move/Resize).
-            let Some(target_page_idx) = doc
-                .annotations
-                .find(id)
-                .and_then(|a| doc.pages.iter().position(|p| p.id == a.page))
-            else {
+            // Resolve the annotation (for its stroke width) and its page so
+            // the preview lands under the pointer on multi-page docs (same as
+            // Move/Resize).
+            let Some(ann) = doc.annotations.find(id) else {
                 return;
+            };
+            let Some(target_page_idx) = doc.pages.iter().position(|p| p.id == ann.page) else {
+                return;
+            };
+            // Arrow head size follows the annotation's stroke width
+            // (5 x width); a non-Shape payload cannot occur for a vertex
+            // drag, so fall back to the default 1pt stroke defensively.
+            let width = match &ann.payload {
+                rofd_dom::AnnotationPayload::Shape { width, .. } => *width,
+                _ => 0.3528,
             };
             let Some((origin_x, origin_y)) = page_origin(doc, vp, target_page_idx) else {
                 return;
@@ -431,24 +437,6 @@ fn draw_drag_preview(
             // Arrow: filled triangle head at the (possibly moved) tip, drawn
             // the same way as the CreateLine preview.
             if matches!(kind, ShapeKind::Arrow) {
-                let (mut minx, mut miny, mut maxx, mut maxy) = (
-                    f64::INFINITY,
-                    f64::INFINITY,
-                    f64::NEG_INFINITY,
-                    f64::NEG_INFINITY,
-                );
-                for (x, y) in points {
-                    minx = minx.min(*x);
-                    miny = miny.min(*y);
-                    maxx = maxx.max(*x);
-                    maxy = maxy.max(*y);
-                }
-                let bbox = RofdRect {
-                    x: minx,
-                    y: miny,
-                    w: maxx - minx,
-                    h: maxy - miny,
-                };
                 let head = arrow_head_path(
                     Point {
                         x: points[0].0,
@@ -458,7 +446,7 @@ fn draw_drag_preview(
                         x: points[1].0,
                         y: points[1].1,
                     },
-                    &bbox,
+                    width,
                 );
                 painter.fill(&head, PREVIEW_COLOR).transform(base).draw();
             }
@@ -689,6 +677,7 @@ mod tests {
             kind: AnnotationKind::Shape(ShapeKind::Line),
             start: (5.0, 5.0),
             current: (50.0, 40.0),
+            width: 0.3528,
         };
         let scene_no_drag =
             engine.composite(&doc, &vp, &fonts, &AnnotationSelection::None, None, None);
@@ -729,6 +718,7 @@ mod tests {
             kind: AnnotationKind::Shape(ShapeKind::Arrow),
             start: (5.0, 5.0),
             current: (50.0, 40.0),
+            width: 0.3528,
         };
         let scene_no_drag =
             engine.composite(&doc, &vp, &fonts, &AnnotationSelection::None, None, None);

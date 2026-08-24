@@ -59,23 +59,54 @@ pub fn line_path_points(p0: Point, p1: Point) -> PathData {
     }
 }
 
+/// Arrowhead tip-to-corner side length as a multiple of the stroke width.
+/// Matches the WPS-generated arrow in `test/sample.ofd`
+/// (side 1.7639mm at LineWidth 0.3528mm => exactly 5x).
+const ARROW_HEAD_SIDE_PER_WIDTH: f64 = 5.0;
+
+/// Arrowhead half-angle between the shaft axis and each tip->corner edge
+/// (25 degrees, measured from the WPS arrow in `test/sample.ofd`).
+const ARROW_HEAD_HALF_ANGLE: f64 = 25.0 * std::f64::consts::PI / 180.0;
+
+/// Base-corner points of the filled arrowhead triangle at `tip`, oriented
+/// along the shaft direction `angle`. Corners sit `5 x width` from the tip at
+/// +/-25 degrees off the shaft axis - the head geometry of the WPS-generated
+/// arrow in `test/sample.ofd`. A degenerate `width` (0.0, e.g. a parsed
+/// PathObject without LineWidth) falls back to the default 1pt stroke so the
+/// head stays visible.
+fn arrow_head_corners(tip: Point, angle: f64, width: f64) -> (Point, Point) {
+    let side = width.max(0.3528) * ARROW_HEAD_SIDE_PER_WIDTH;
+    let (c, s) = (angle.cos(), angle.sin());
+    let back = side * ARROW_HEAD_HALF_ANGLE.cos();
+    let perp = side * ARROW_HEAD_HALF_ANGLE.sin();
+    (
+        Point {
+            x: tip.x - c * back - s * perp,
+            y: tip.y - s * back + c * perp,
+        },
+        Point {
+            x: tip.x - c * back + s * perp,
+            y: tip.y - s * back - c * perp,
+        },
+    )
+}
+
 /// Arrow path: main diagonal line (0,0)->(w,h) plus a filled triangle head
 /// at the tip, oriented along the line direction. The head size scales with
-/// the smaller of (w, h). Emits M-L for the shaft, then M-L-L-Z for the head.
-pub fn arrow_path(r: &Rect) -> PathData {
+/// the stroke `width` (5 x line width, +/-25 degrees half-angle - matches the
+/// WPS arrow in `test/sample.ofd`). Emits M-L for the shaft, then M-L-L-Z for
+/// the head.
+pub fn arrow_path(r: &Rect, width: f64) -> PathData {
     let (w, h) = (r.w, r.h);
-    let head = w.min(h).max(1.0) * 0.25;
-    // Main line (0,0)->(w,h); triangle head at (w,h), along the line direction.
-    let angle = (h).atan2(w);
-    let (dx, dy) = (angle.cos() * head, angle.sin() * head);
-    let (nx, ny) = (-angle.sin() * head, angle.cos() * head);
+    let angle = h.atan2(w);
+    let (c1, c2) = arrow_head_corners(Point { x: w, y: h }, angle, width);
     PathData {
         commands: vec![
             PathCommand::M(0.0, 0.0),
             PathCommand::L(w, h),
-            PathCommand::M(w - dx + nx, h - dy + ny),
+            PathCommand::M(c1.x, c1.y),
             PathCommand::L(w, h),
-            PathCommand::L(w - dx - nx, h - dy - ny),
+            PathCommand::L(c2.x, c2.y),
             PathCommand::Z,
         ],
     }
@@ -83,21 +114,19 @@ pub fn arrow_path(r: &Rect) -> PathData {
 
 /// Arrow path between two explicit endpoints `p0 -> p1` (object-local coords),
 /// with the filled triangle head at `p1` oriented along the shaft direction.
-/// Head size scales with the smaller rect side (matching [`arrow_path`]). Use
+/// Head size scales with the stroke `width` (matching [`arrow_path`]). Use
 /// this when the arrow direction is known; fall back to [`arrow_path`] when
 /// only the bbox is known.
-pub fn arrow_path_points(p0: Point, p1: Point, rect: &Rect) -> PathData {
-    let head = rect.w.min(rect.h).max(1.0) * 0.25;
+pub fn arrow_path_points(p0: Point, p1: Point, width: f64) -> PathData {
     let angle = (p1.y - p0.y).atan2(p1.x - p0.x);
-    let (bx, by) = (angle.cos() * head, angle.sin() * head);
-    let (nx, ny) = (-angle.sin() * head, angle.cos() * head);
+    let (c1, c2) = arrow_head_corners(p1, angle, width);
     PathData {
         commands: vec![
             PathCommand::M(p0.x, p0.y),
             PathCommand::L(p1.x, p1.y),
-            PathCommand::M(p1.x - bx + nx, p1.y - by + ny),
+            PathCommand::M(c1.x, c1.y),
             PathCommand::L(p1.x, p1.y),
-            PathCommand::L(p1.x - bx - nx, p1.y - by - ny),
+            PathCommand::L(c2.x, c2.y),
             PathCommand::Z,
         ],
     }
@@ -222,24 +251,30 @@ mod tests {
 
     #[test]
     fn arrow_path_has_six_commands() {
-        let p = arrow_path(&Rect {
-            x: 0.0,
-            y: 0.0,
-            w: 10.0,
-            h: 10.0,
-        });
+        let p = arrow_path(
+            &Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 10.0,
+                h: 10.0,
+            },
+            0.3528,
+        );
         assert_eq!(p.commands.len(), 6);
     }
 
     #[test]
     fn arrow_path_starts_with_main_line_and_ends_with_closed_triangle() {
         // T3: M(0,0) L(w,h)  then  M(..) L(w,h) L(..) Z (filled triangle head).
-        let p = arrow_path(&Rect {
-            x: 0.0,
-            y: 0.0,
-            w: 10.0,
-            h: 10.0,
-        });
+        let p = arrow_path(
+            &Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 10.0,
+                h: 10.0,
+            },
+            0.3528,
+        );
         assert!(matches!(p.commands[0], PathCommand::M(0.0, 0.0)));
         assert!(matches!(p.commands[1], PathCommand::L(10.0, 10.0)));
         // Triangle head closes with Z (filled), not the old open two-stub form.
@@ -264,12 +299,7 @@ mod tests {
         let p = arrow_path_points(
             Point { x: 0.0, y: 0.0 },
             Point { x: 100.0, y: 50.0 },
-            &Rect {
-                x: 0.0,
-                y: 0.0,
-                w: 100.0,
-                h: 50.0,
-            },
+            0.3528,
         );
         // M, L (shaft), M, L, L, Z (head) = 6 commands.
         assert_eq!(p.commands.len(), 6);
@@ -278,6 +308,59 @@ mod tests {
         // Head tip (4th command, the L to p1) lands on p1 = (100, 50).
         assert!(matches!(p.commands[3], PathCommand::L(100.0, 50.0)));
         assert!(matches!(p.commands.last(), Some(PathCommand::Z)));
+    }
+
+    #[test]
+    fn arrow_head_matches_wps_sample_geometry() {
+        // Reproduces the WPS-generated arrow from `test/sample.ofd`
+        // (Annot ID=100): shaft (35.9894, 134.8477) -> (67.1096, 127.2268),
+        // LineWidth 0.3528; the serialized head corners are
+        // (65.7342, 128.3311) and (65.3795, 126.883) - i.e. 5 x LineWidth
+        // from the tip at +/-25 degrees off the shaft axis. Tolerance covers
+        // the file's 4-decimal coordinate rounding.
+        let p = arrow_path_points(
+            Point {
+                x: 35.9894,
+                y: 134.8477,
+            },
+            Point {
+                x: 67.1096,
+                y: 127.2268,
+            },
+            0.3528,
+        );
+        match (p.commands[2], p.commands[4]) {
+            (PathCommand::M(x1, y1), PathCommand::L(x2, y2)) => {
+                assert!((x1 - 65.7342).abs() < 0.001, "corner1.x = {x1}");
+                assert!((y1 - 128.3311).abs() < 0.001, "corner1.y = {y1}");
+                assert!((x2 - 65.3795).abs() < 0.001, "corner2.x = {x2}");
+                assert!((y2 - 126.883).abs() < 0.001, "corner2.y = {y2}");
+            }
+            _ => panic!("expected M(corner1) .. L(corner2) head corners"),
+        }
+    }
+
+    #[test]
+    fn arrow_head_degenerate_width_falls_back_to_1pt() {
+        // width = 0.0 (parsed PathObject without LineWidth) still yields a
+        // visible head sized against the default 1pt stroke.
+        let p = arrow_path_points(
+            Point { x: 0.0, y: 0.0 },
+            Point { x: 10.0, y: 0.0 },
+            0.0,
+        );
+        // Horizontal shaft: corners sit back 5*0.3528*cos(25deg) from the tip
+        // at +/-5*0.3528*sin(25deg) perpendicular.
+        match (p.commands[2], p.commands[4]) {
+            (PathCommand::M(x1, y1), PathCommand::L(x2, y2)) => {
+                let side = 0.3528 * 5.0;
+                let back = side * (25.0_f64.to_radians().cos());
+                let perp = side * (25.0_f64.to_radians().sin());
+                assert!((x1 - (10.0 - back)).abs() < 1e-9 && (y1 - perp).abs() < 1e-9);
+                assert!((x2 - (10.0 - back)).abs() < 1e-9 && (y2 + perp).abs() < 1e-9);
+            }
+            _ => panic!("expected M(corner1) .. L(corner2) head corners"),
+        }
     }
 
     #[test]

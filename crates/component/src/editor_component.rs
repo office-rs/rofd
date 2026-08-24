@@ -1705,6 +1705,7 @@ fn drag_to_preview(doc: &OfdDocument, d: &DragState, vp: &Viewport) -> Option<Dr
                     kind: kind.clone(),
                     start: start_local,
                     current: current_local,
+                    width: DEFAULT_SHAPE_WIDTH,
                 })
             } else {
                 // Resolve the page from the viewport-space `current` point
@@ -1820,10 +1821,12 @@ const DEFAULT_MARKUP_COLOR: Color = Color::Rgb(0, 0, 255);
 const DEFAULT_FREEHAND_COLOR: Color = Color::Rgb(0, 0, 0);
 /// Default shape (Rect) stroke color: red.
 const DEFAULT_SHAPE_COLOR: Color = Color::Rgb(255, 0, 0);
-/// Default freehand stroke width.
-const DEFAULT_FREEHAND_WIDTH: f64 = 1.5;
-/// Default shape stroke width.
-const DEFAULT_SHAPE_WIDTH: f64 = 2.0;
+/// Default freehand stroke width (page-local mm). Matches the line width of
+/// the graphic annotations in `test/sample.ofd` (0.3528 mm = 1 pt).
+const DEFAULT_FREEHAND_WIDTH: f64 = 0.3528;
+/// Default shape stroke width (page-local mm). Matches the line width of
+/// the graphic annotations in `test/sample.ofd` (0.3528 mm = 1 pt).
+const DEFAULT_SHAPE_WIDTH: f64 = 0.3528;
 /// Minimum viewport-space drag distance (px) for a create-drag to commit.
 /// A click-without-drag (or sub-threshold jitter) under a create tool creates
 /// NOTHING - no annotation, no history entry, no selection change. WPS-style
