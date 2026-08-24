@@ -313,7 +313,7 @@ fn draw_shape(
             // Arrow: fill a triangle head at p1 along the shaft direction.
             // Line stops here (stroke only).
             if matches!(kind, ShapeKind::Arrow) {
-                let head = arrow_head_path(p0, p1, rect);
+                let head = arrow_head_path(p0, p1, width);
                 painter
                     .fill(&head, to_peniko(stroke))
                     .transform(base)
@@ -368,22 +368,34 @@ fn line_endpoints(rect: &Rect, points: &[rofd_dom::Point]) -> (rofd_dom::Point, 
     }
 }
 
+/// Arrowhead tip-to-corner side length as a multiple of the stroke width
+/// (matches the WPS-generated arrow in `test/sample.ofd`:
+/// side 1.7639mm at LineWidth 0.3528mm => exactly 1.5x).
+const ARROW_HEAD_SIDE_PER_WIDTH: f64 = 5.0 * 1.5;
+
+/// Arrowhead half-angle between the shaft axis and each tip->corner edge
+/// (25 degrees, measured from the WPS arrow in `test/sample.ofd`).
+const ARROW_HEAD_HALF_ANGLE: f64 = 25.0 * std::f64::consts::PI / 180.0;
+
 /// Build the filled triangle arrowhead at `tip` (`p1`), oriented along the
-/// `p0 -> p1` shaft direction. The head size scales with the smaller rect
-/// side (`min(w, h) * 0.25`), matching `io::annotation_geom::arrow_path` so the
-/// rendered head matches the serialized AbbreviatedData head. Returns a
-/// closed BezPath (M-L-L-Z) ready to fill.
-pub(crate) fn arrow_head_path(p0: rofd_dom::Point, p1: rofd_dom::Point, rect: &Rect) -> BezPath {
+/// `p0 -> p1` shaft direction. The head size scales with the stroke `width`
+/// (base corners at `5 x width` from the tip, +/-25 degrees off the shaft
+/// axis), matching `io::annotation_geom::arrow_path_points` so the rendered
+/// head matches the serialized AbbreviatedData head. A degenerate `width`
+/// (0.0, e.g. a parsed PathObject without LineWidth) falls back to the
+/// default 1pt stroke. Returns a closed BezPath (M-L-L-Z) ready to fill.
+pub(crate) fn arrow_head_path(p0: rofd_dom::Point, p1: rofd_dom::Point, width: f64) -> BezPath {
     // Shared with `composite::draw_drag_preview` for the Arrow drag preview.
-    let head = rect.w.min(rect.h).max(1.0) * 0.25;
+    let side = width.max(0.3528) * ARROW_HEAD_SIDE_PER_WIDTH;
     let angle = (p1.y - p0.y).atan2(p1.x - p0.x);
-    // Unit vector back along the shaft (toward p0) and its perpendicular.
-    let (bx, by) = (angle.cos() * head, angle.sin() * head);
-    let (nx, ny) = (-angle.sin() * head, angle.cos() * head);
+    let (c, s) = (angle.cos(), angle.sin());
+    // Base corners: `back` along the reversed shaft, `perp` perpendicular.
+    let back = side * ARROW_HEAD_HALF_ANGLE.cos();
+    let perp = side * ARROW_HEAD_HALF_ANGLE.sin();
     let mut path = BezPath::new();
-    path.move_to((p1.x - bx + nx, p1.y - by + ny));
+    path.move_to((p1.x - c * back - s * perp, p1.y - s * back + c * perp));
     path.line_to((p1.x, p1.y));
-    path.line_to((p1.x - bx - nx, p1.y - by - ny));
+    path.line_to((p1.x - c * back + s * perp, p1.y - s * back - c * perp));
     path.close_path();
     path
 }

@@ -217,7 +217,7 @@ fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload) -> String 
                 // Direction-aware: when endpoints are stored, emit the actual
                 // p0 -> p1 geometry (object-local) so other OFD readers also
                 // see the drawn direction; fall back to the bbox diagonal.
-                ShapeKind::Arrow => arrow_path_from(rect, points),
+                ShapeKind::Arrow => arrow_path_from(rect, points, *width),
                 ShapeKind::Line => line_path_from(rect, points),
                 // Polygon/PolyLine handled by their own arms above (with Vertices).
                 ShapeKind::Polygon | ShapeKind::PolyLine => rect_path(rect),
@@ -471,12 +471,13 @@ fn line_path_from(rect: &Rect, points: &[rofd_dom::Point]) -> PathData {
 
 /// Build an Arrow's AbbreviatedData path (shaft + filled head) from stored
 /// endpoints (object-local) when available, falling back to the rect's
-/// TL->BR diagonal + head when only the bbox is known.
-fn arrow_path_from(rect: &Rect, points: &[rofd_dom::Point]) -> PathData {
+/// TL->BR diagonal + head when only the bbox is known. Head size follows the
+/// stroke `width` (5 x width, +/-25 degrees - WPS sample geometry).
+fn arrow_path_from(rect: &Rect, points: &[rofd_dom::Point], width: f64) -> PathData {
     if let (Some(p0), Some(p1)) = (points.first(), points.get(1)) {
-        arrow_path_points(to_object_local(p0, rect), to_object_local(p1, rect), rect)
+        arrow_path_points(to_object_local(p0, rect), to_object_local(p1, rect), width)
     } else {
-        arrow_path(rect)
+        arrow_path(rect, width)
     }
 }
 
