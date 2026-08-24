@@ -802,6 +802,13 @@ onMounted(async () => {
     });
     editor.value = ed;
     ed.setClock('rofd', Date.now());
+    // 默认打开示例文档（public/sample.ofd），失败不阻塞空编辑器。
+    try {
+      const res = await fetch(`${BASE}sample.ofd`);
+      if (res.ok) ed.loadOfd(new Uint8Array(await res.arrayBuffer()));
+    } catch (e) {
+      console.warn('[rofd] sample.ofd 加载失败:', e);
+    }
   } catch (e) {
     console.error('[rofd] editor init failed:', e);
     message.error(`编辑器初始化失败：${e instanceof Error ? e.message : String(e)}`, 8);
