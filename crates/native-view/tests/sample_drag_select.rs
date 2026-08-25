@@ -1,6 +1,6 @@
 //! Regression: drag-select on sample.ofd must work even where text-markup
 //! annotations (highlight/underline/strikeout/squiggly) cover the text.
-//! WPS 行为（spec §5.2）：markup 贴附正文文字，不是点击目标--指针穿透
+//! 按 spec §5.2：markup 贴附正文文字，不是点击目标--指针穿透
 //! 到文字选区流程。
 
 use rofd_component::{EditorComponent, EditorConfig, Tool, ViewEvent};

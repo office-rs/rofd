@@ -1,8 +1,8 @@
 <template>
-  <!-- WPS 图形批注下拉面板 — 复刻 tmp/wps/6. 图形批注下拉.png：
+  <!-- 图形批注下拉面板 — 复刻参考截图（图形批注下拉）：
        纵向单列"图标 + 文字"列表；面板 #F5F7F9、3px 圆角、柔化外阴影；
        选中项浅灰高亮底。 -->
-  <div class="wps-sm">
+  <div class="shape-menu">
     <button
       v-for="s in SHAPES"
       :key="s.kind"
@@ -22,7 +22,7 @@
 
 <script setup lang="ts">
 import type { Component } from 'vue';
-import { ArrowIcon, EllipseIcon, LineIcon, PolygonIcon, RectIcon } from './WpsIcons';
+import { ArrowIcon, EllipseIcon, LineIcon, PolygonIcon, RectIcon } from './Icons';
 
 interface ShapeItem {
   kind: string;
@@ -30,7 +30,7 @@ interface ShapeItem {
   icon: Component;
 }
 
-/** 图形批注子工具（WPS 图形下拉：矩形/椭圆/直线/箭头/多边形）。 */
+/** 图形批注子工具（矩形/椭圆/直线/箭头/多边形）。 */
 const SHAPES: ShapeItem[] = [
   { kind: 'rect', label: '矩形', icon: RectIcon },
   { kind: 'ellipse', label: '椭圆', icon: EllipseIcon },
@@ -51,7 +51,7 @@ defineEmits<{
 </script>
 
 <style scoped>
-.wps-sm {
+.shape-menu {
   min-width: 132px;
   padding: 4px;
   background: #f5f7f9;

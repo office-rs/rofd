@@ -89,11 +89,11 @@ pub enum ContextTarget {
 pub enum PointerCursor {
     #[default]
     Default,
-    /// Hand tool hovering (WPS 手型).
+    /// Hand tool hovering (手型).
     Grab,
     /// Hand tool actively dragging (pan in progress).
     Grabbing,
-    /// Text tool hovering (WPS 文本, I-beam).
+    /// Text tool hovering (文本, I-beam).
     Text,
 }
 

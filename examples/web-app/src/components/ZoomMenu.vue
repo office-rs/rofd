@@ -1,6 +1,6 @@
 <template>
-  <!-- WPS 显示比例下拉：预设比例列表（10%–500%）+ 当前值高亮。 -->
-  <div class="wps-zm">
+  <!-- 显示比例下拉：预设比例列表（10%–500%）+ 当前值高亮。 -->
+  <div class="zoom-menu">
     <button
       v-for="p in PRESETS"
       :key="p"
@@ -33,7 +33,7 @@ defineEmits<{
 </script>
 
 <style scoped>
-.wps-zm {
+.zoom-menu {
   min-width: 108px;
   padding: 4px;
   background: #f5f7f9;

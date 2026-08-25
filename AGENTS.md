@@ -232,7 +232,10 @@ examples/web-app ─► web-view ───────────┘           
 
 ---
 
-## 10. 参考项目
+## 10. 编码规范
+- 设计文档可以保留 WPS 字样，但是代码注释、代码变量、代码文件命名不要存留 WPS 字样。
+
+## 11. 参考项目
 
 - **`D:/code/reditor`** — Rust + GPU 的 OOXML 编辑器库，rofd 的分层骨架直接复刻自它。遇到"rofd 这里该怎么组织"时，先看 reditor 对应 crate（reditor-dom/reditor-ooxml/reditor-renderer/reditor-editor/reditor-component/reditor-native-view/reditor-web-view）如何处理。
 - 关键差异见 spec §2.3：rofd 无独立 layout crate（OFD 固定版式无回流）、dom 双模型（PageModel + AnnotationModel）、io 双写入路径（手术刀 + 全量）、无 Format trait、editor 操作对象是批注而非文本光标。

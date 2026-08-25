@@ -254,7 +254,7 @@ impl RenderEngine {
 
         // Selection overlay: draw the selection frame + handles on the selected
         // annotation (if Single). Drawn after all pages so handles appear on
-        // top. Handle centers come from `crate::handles` (the WPS strategy) -
+        // top. Handle centers come from `crate::handles` (the handle strategy) -
         // the same source hit_test resolves hits through, so drawing and
         // hitting never drift. Handles are screen-space (not page-local);
         // they don't scale with zoom.

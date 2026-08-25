@@ -60,17 +60,17 @@ pub fn line_path_points(p0: Point, p1: Point) -> PathData {
 }
 
 /// Arrowhead tip-to-corner side length as a multiple of the stroke width.
-/// Matches the WPS-generated arrow in `test/sample.ofd`
+/// Matches the reference arrow in `test/sample.ofd`
 /// (side 1.7639mm at LineWidth 0.3528mm => exactly 5x).
 const ARROW_HEAD_SIDE_PER_WIDTH: f64 = 5.0;
 
 /// Arrowhead half-angle between the shaft axis and each tip->corner edge
-/// (25 degrees, measured from the WPS arrow in `test/sample.ofd`).
+/// (25 degrees, measured from the reference arrow in `test/sample.ofd`).
 const ARROW_HEAD_HALF_ANGLE: f64 = 25.0 * std::f64::consts::PI / 180.0;
 
 /// Base-corner points of the filled arrowhead triangle at `tip`, oriented
 /// along the shaft direction `angle`. Corners sit `5 x width` from the tip at
-/// +/-25 degrees off the shaft axis - the head geometry of the WPS-generated
+/// +/-25 degrees off the shaft axis - the head geometry of the reference
 /// arrow in `test/sample.ofd`. A degenerate `width` (0.0, e.g. a parsed
 /// PathObject without LineWidth) falls back to the default 1pt stroke so the
 /// head stays visible.
@@ -94,7 +94,7 @@ fn arrow_head_corners(tip: Point, angle: f64, width: f64) -> (Point, Point) {
 /// Arrow path: main diagonal line (0,0)->(w,h) plus a filled triangle head
 /// at the tip, oriented along the line direction. The head size scales with
 /// the stroke `width` (5 x line width, +/-25 degrees half-angle - matches the
-/// WPS arrow in `test/sample.ofd`). Emits M-L for the shaft, then M-L-L-Z for
+/// reference arrow in `test/sample.ofd`). Emits M-L for the shaft, then M-L-L-Z for
 /// the head.
 pub fn arrow_path(r: &Rect, width: f64) -> PathData {
     let (w, h) = (r.w, r.h);
@@ -311,8 +311,8 @@ mod tests {
     }
 
     #[test]
-    fn arrow_head_matches_wps_sample_geometry() {
-        // Reproduces the WPS-generated arrow from `test/sample.ofd`
+    fn arrow_head_matches_sample_geometry() {
+        // Reproduces the reference arrow from `test/sample.ofd`
         // (Annot ID=100): shaft (35.9894, 134.8477) -> (67.1096, 127.2268),
         // LineWidth 0.3528; the serialized head corners are
         // (65.7342, 128.3311) and (65.3795, 126.883) - i.e. 5 x LineWidth

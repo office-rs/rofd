@@ -49,7 +49,7 @@ pub fn parse_key(s: &str) -> Key {
 /// back to [`Tool::Text`] (safe default). Mirrors the native-app's toolbar
 /// buttons: text / hand / highlight / underline / strikeout / squiggly
 /// / freehand / rect. `"select"` and `"textSelect"` are kept as aliases of
-/// `"text"` (the WPS-aligned unified tool - spec §3).
+/// `"text"` (the unified tool - spec §3).
 ///
 /// Pure Rust (no wasm types) so it runs under `cargo test` on native, like
 /// [`parse_key`]. The WasmEditor's `setTool` method calls this.
@@ -528,7 +528,7 @@ mod wasm_impl {
         }
 
         /// Set the highlight color used when the Highlight create-tool
-        /// commits a new annotation (WPS highlight-color dropdown). Accepts a
+        /// commits a new annotation (highlight-color dropdown). Accepts a
         /// `#RRGGBB` string; invalid input falls back to black via
         /// [`parse_color`].
         #[wasm_bindgen(js_name = setHighlightColor)]
@@ -538,7 +538,7 @@ mod wasm_impl {
         }
 
         /// Set the color a markup create-tool (highlight/underline/strikeout/
-        /// squiggly) uses for new annotations - WPS gives each markup tool its
+        /// squiggly) uses for new annotations - each markup tool gets its
         /// own color dropdown. `kind` is one of `"highlight"` | `"underline"`
         /// | `"strikeout"` | `"squiggly"`; other kinds are ignored. `color`
         /// is a `#RRGGBB` string.
