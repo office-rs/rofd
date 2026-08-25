@@ -1,5 +1,5 @@
 <template>
-  <!-- WPS 文件下拉菜单 — 像素级复刻 tmp/wps/8. 左上角文件下拉按钮.png：
+  <!-- 文件下拉菜单 — 像素级复刻参考截图（左上角文件下拉按钮）：
        面板宽 293px、背景 #F5F7F9、3px 圆角 + 柔化外阴影；菜单项行高 55px、
        27px 灰度图标 + 15px 文字 + 快捷键；悬停整行 #ECEFF2；
        "导出"行带 ▶ 子菜单箭头，hover 展开右侧子面板（宽 201px、#F3F5F8），
@@ -100,7 +100,7 @@ import {
   MenuSettingsIcon,
   PdfIcon,
   SaveDocIcon,
-} from './WpsIcons';
+} from './Icons';
 
 /** "导出"子菜单展开态（hover 联动）。 */
 const submenu = ref(false);

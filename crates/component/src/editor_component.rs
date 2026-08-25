@@ -15,7 +15,7 @@ use crate::render_target::RenderTarget;
 /// The active editing tool. The host selects a tool (e.g. via a toolbar) and
 /// the component uses it to interpret pointer drags (T3 wires the drag logic).
 ///
-/// WPS-aligned two-tool model (spec §3): `Text` is the unified tool - it
+/// Two-tool model (spec §3): `Text` is the unified tool - it
 /// selects/drags existing annotations first, and falls back to body-text
 /// selection when no annotation is hit. `Create` begins a new annotation of
 /// the given [`AnnotationKind`] on the next pointer drag.
@@ -23,7 +23,7 @@ use crate::render_target::RenderTarget;
 pub enum Tool {
     Text,
     Create(AnnotationKind),
-    /// WPS-style hand tool: drag on blank desk/page pans the viewport;
+    /// Hand tool: drag on blank desk/page pans the viewport;
     /// clicking an annotation selects it (move/resize/Delete reuse the
     /// Text interactions).
     Hand,
@@ -104,7 +104,7 @@ pub(crate) enum DragState {
     /// recomputes ranges from anchor to the current hit (preview-only UI
     /// state - no document change, no history).
     TextSelect { anchor: rofd_render::TextHit },
-    /// Press on a text-markup annotation (Text tool, WPS click-vs-drag):
+    /// Press on a text-markup annotation (Text tool, click-vs-drag):
     /// the press selects the markup; if the pointer then moves beyond
     /// [`MARKUP_DRAG_THRESHOLD_PX`] and the press point hit body text
     /// (`anchor`), the drag converts to [`DragState::TextSelect`] (the
@@ -149,12 +149,12 @@ pub struct EditorComponent {
     pub(crate) current_page: Option<usize>,
     /// Color used when the Highlight create-tool commits an annotation.
     /// Defaults to yellow (`DEFAULT_HIGHLIGHT_COLOR`); the host can override
-    /// via [`Self::set_highlight_color`] (WPS highlight-color dropdown).
+    /// via [`Self::set_highlight_color`] (highlight-color dropdown).
     pub(crate) highlight_color: Color,
     /// Colors used when the Underline/Strikeout/Squiggly create-tools commit
     /// an annotation. Each defaults to `DEFAULT_MARKUP_COLOR` (blue); the host
-    /// can override per-kind via [`Self::set_markup_color`] (WPS gives each
-    /// markup tool its own color dropdown).
+    /// can override per-kind via [`Self::set_markup_color`] (each markup tool
+    /// gets its own color dropdown).
     pub(crate) underline_color: Color,
     pub(crate) strikeout_color: Color,
     pub(crate) squiggly_color: Color,
@@ -365,14 +365,14 @@ impl EditorComponent {
     }
 
     /// Set the color the Highlight create-tool uses for new annotations
-    /// (WPS highlight-color dropdown). Affects only future creates; existing
+    /// (highlight-color dropdown). Affects only future creates; existing
     /// annotations keep their own color.
     pub fn set_highlight_color(&mut self, color: Color) {
         self.highlight_color = color;
     }
 
     /// Set the color a markup create-tool (Highlight/Underline/Strikeout/
-    /// Squiggly) uses for new annotations (WPS per-tool color dropdowns).
+    /// Squiggly) uses for new annotations (per-tool color dropdowns).
     /// Non-markup kinds are ignored. Affects only future creates.
     pub fn set_markup_color(&mut self, kind: &AnnotationKind, color: Color) {
         match kind {
@@ -535,7 +535,7 @@ impl EditorComponent {
                         });
                     }
                     Tool::Text => {
-                        // WPS 文本工具（spec §3 两工具模型）：先命中批注
+                        // 文本工具（spec §3 两工具模型）：先命中批注
                         // （选中/拖动任意类型批注），未命中再走正文文字选区，
                         // 两者皆无则清空全部选择（§5.2 互斥）。
                         if !self.pointer_down_annotation(p) {
@@ -630,7 +630,7 @@ impl EditorComponent {
             }
             ViewEvent::PointerMove { x, y } => {
                 let p = (*x, *y);
-                // MarkupPress -> TextSelect conversion (WPS click-vs-drag,
+                // MarkupPress -> TextSelect conversion (click-vs-drag,
                 // spec §5.2): once the pointer moves beyond the threshold
                 // with a body-text anchor, the markup press becomes a
                 // text-selection drag (annotation selection cleared - 互斥).
@@ -765,8 +765,8 @@ impl EditorComponent {
                         // handled above, release keeps the markup selected.
                     }
                     None => {
-                        // WPS 悬停光标（spec §3.2）：手型 = 空白 Grab、批注上
-                        // 箭头（可点选，WPS 实测）；文本 = 批注上箭头（批注
+                        // 悬停光标（spec §3.2）：手型 = 空白 Grab、批注上
+                        // 箭头（可点选）；文本 = 批注上箭头（批注
                         // 优先，点击会选中批注）> 正文文字 I 型 > 空白箭头。
                         // 创建工具不参与悬停切换。
                         match self.tool {
@@ -876,7 +876,7 @@ impl EditorComponent {
                                 let id = self.editor.create_annotation(kind.clone(), page, payload);
                                 self.editor.select(id.clone());
                                 // No spring-back: the create tool stays active after
-                                // commit (spec 3.3, WPS continuous drawing). The host
+                                // commit (spec 3.3, continuous drawing). The host
                                 // or user switches back to Select explicitly.
                                 self.after_annotation_change();
                                 self.fire_annotation_focus(&id);
@@ -1084,7 +1084,7 @@ impl EditorComponent {
     }
 
     /// Whether the annotation is a text-markup (highlight/underline/
-    /// strikeout/squiggly). WPS 行为（spec §5.2）：markup 贴附正文文字，
+    /// strikeout/squiggly). 按 spec §5.2：markup 贴附正文文字，
     /// 点击选中（click）；按住拖动则转为文字拖选（drag）--见
     /// [`DragState::MarkupPress`]。
     fn is_text_markup(doc: &rofd_dom::OfdDocument, id: &rofd_dom::AnnotationId) -> bool {
@@ -1203,7 +1203,7 @@ impl EditorComponent {
         }
     }
 
-    /// PointerDown on a text-markup annotation (WPS click-vs-drag, spec
+    /// PointerDown on a text-markup annotation (click-vs-drag, spec
     /// §5.2). The press always selects the markup; the armed drag depends
     /// on the tool:
     /// - **Hand**: like any annotation - a preview-based Move drag.
@@ -1829,8 +1829,8 @@ const DEFAULT_FREEHAND_WIDTH: f64 = 0.3528;
 const DEFAULT_SHAPE_WIDTH: f64 = 0.3528;
 /// Minimum viewport-space drag distance (px) for a create-drag to commit.
 /// A click-without-drag (or sub-threshold jitter) under a create tool creates
-/// NOTHING - no annotation, no history entry, no selection change. WPS-style
-/// continuous drawing keeps the create tool active indefinitely, so without
+/// NOTHING - no annotation, no history entry, no selection change. The
+/// continuous-drawing model keeps the create tool active indefinitely, so without
 /// this guard every stray click would accumulate an invisible zero-size
 /// annotation and flood the undo history. The distance is measured in
 /// viewport pixels (not page-local), so the gesture feels the same at any
@@ -1839,7 +1839,7 @@ const MIN_CREATE_DRAG_PX: f64 = 3.0;
 
 /// Viewport-pixel distance a markup press must travel before it converts
 /// from a click (select the markup) to a drag (select the body text
-/// beneath, WPS click-vs-drag - spec §5.2). Same scale as the adapter-side
+/// beneath, click-vs-drag - spec §5.2). Same scale as the adapter-side
 /// click slop.
 const MARKUP_DRAG_THRESHOLD_PX: f64 = 4.0;
 
@@ -2410,7 +2410,7 @@ mod tests {
 
     #[test]
     fn create_commit_keeps_tool_no_spring_back() {
-        // spec §3.3：画完一个批注停留在当前创建工具（WPS 连续绘制）。
+        // spec §3.3：画完一个批注停留在当前创建工具（连续绘制）。
         let mut c = component_with_page();
         c.set_tool(Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)));
         c.handle_event(&ViewEvent::PointerDown {
@@ -2529,7 +2529,7 @@ mod tests {
         );
     }
 
-    /// set_markup_color 按工具独立配色（WPS 每个标注工具一个颜色下拉）：
+    /// set_markup_color 按工具独立配色（每个标注工具一个颜色下拉）：
     /// 下划线用红色，创建的下划线批注 payload 即红色；且不影响高亮默认黄。
     #[test]
     fn set_markup_color_scopes_per_kind() {
@@ -3059,7 +3059,7 @@ mod tests {
         c
     }
 
-    /// Markup click-vs-drag guard (WPS 行为, spec §5.2)：pressing a Markup
+    /// Markup click-vs-drag guard (spec §5.2)：pressing a Markup
     /// annotation selects it and arms a [`DragState::MarkupPress`] - never a
     /// Resize (markup exposes no handles). Releasing in place keeps the
     /// selection and pushes no Transaction; quad_points are unchanged.
@@ -3672,7 +3672,7 @@ mod tests {
         );
         // The create tool stays active after commit (no spring-back), so the
         // user explicitly switches back to Select to continue the
-        // select/move/resize flow below (as in WPS: click the tool again).
+        // select/move/resize flow below (click the tool again).
         c.set_tool(Tool::Text);
         let id = match c.editor.selection() {
             AnnotationSelection::Single(id) => id.clone(),
@@ -4104,7 +4104,7 @@ mod tests {
         assert_eq!(rt.drawn, 1, "render drew exactly one scene");
     }
 
-    // --- P2 Task 2: WPS handle strategy + vertex-move drag ---
+    // --- P2 Task 2: handle strategy + vertex-move drag ---
 
     /// Component with one page (P0, 200x200) and one Shape annotation.
     /// Viewport: zoom=1, size=(0,0), gap=0, scroll=(0,0) so page origin is
@@ -4549,7 +4549,7 @@ mod tests {
 
     #[test]
     fn text_tool_prefers_annotation_over_body_text() {
-        // WPS 统一"文本"工具：批注优先于正文文字（spec §3 两工具模型）。
+        // 统一"文本"工具：批注优先于正文文字（spec §3 两工具模型）。
         let mut c = component_with_body_text();
         c.set_clock("t".into(), 1);
         c.editor.create_annotation(
@@ -4589,7 +4589,7 @@ mod tests {
 
     #[test]
     fn text_tool_drag_from_markup_selects_text() {
-        // WPS 行为（spec §5.2 click-vs-drag）：markup 批注上按下先选中
+        // 按 spec §5.2 click-vs-drag：markup 批注上按下先选中
         // 批注；拖动越过阈值 -> 转为文字拖选（批注选择被清空）。
         let mut c = component_with_body_text();
         c.set_clock("t".into(), 1);
@@ -4663,7 +4663,7 @@ mod tests {
 
     #[test]
     fn text_tool_hover_cursor_follows_body_text() {
-        // WPS 文本工具：悬停正文 -> I 型光标；空白处 -> 箭头（spec §3）。
+        // 文本工具：悬停正文 -> I 型光标；空白处 -> 箭头（spec §3）。
         let mut c = component_with_body_text();
         c.set_tool(Tool::Text);
         assert_eq!(c.pointer_cursor(), PointerCursor::Default);
@@ -4681,7 +4681,7 @@ mod tests {
 
     #[test]
     fn hand_tool_hover_annotation_shows_arrow() {
-        // WPS 手型工具：悬停批注 -> 箭头（可点选）；空白 -> Grab。
+        // 手型工具：悬停批注 -> 箭头（可点选）；空白 -> Grab。
         let mut c = component_with_body_text();
         c.set_clock("t".into(), 1);
         c.editor.create_annotation(

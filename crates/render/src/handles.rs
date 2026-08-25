@@ -1,4 +1,4 @@
-//! WPS-aligned selection handle strategy (spec §4.1). Single source of truth
+//! Selection handle strategy (spec §4.1). Single source of truth
 //! for which handles a selected annotation exposes and where they sit:
 //! `hit_test` (hit priority) and `composite::draw_selection_overlay`
 //! (drawing) both resolve through this module - never hard-code a second copy.
@@ -169,7 +169,7 @@ mod tests {
     ];
 
     #[test]
-    fn handle_sets_follow_wps_strategy() {
+    fn handle_sets_follow_strategy() {
         let r = Rect {
             x: 0.0,
             y: 0.0,

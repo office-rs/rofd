@@ -1,9 +1,9 @@
 <template>
   <div class="app">
-    <!-- ── 顶部功能区：WPS OFD 风格（页签行 45px #EDEFF3 + 工具行 90px 白底） ── -->
-    <header class="wps-ribbon">
+    <!-- ── 顶部功能区：页签行 45px #EDEFF3 + 工具行 90px 白底 ── -->
+    <header class="ribbon">
       <!-- 页签行：文件菜单 | 阅读/注释/编辑/签章/票据 | 品牌 -->
-      <nav class="wps-tabbar">
+      <nav class="tabbar">
         <button class="tb-menu" type="button" title="文件" :class="{ open: dropdown.kind === 'file' }" @click="toggleFileMenu">
           <svg viewBox="0 0 16 16" width="14" height="14">
             <path d="M2 3.5h12M2 8h12M2 12.5h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
@@ -27,7 +27,7 @@
       </nav>
 
       <!-- 工具行：按页签切换（v-show 保持 DOM 稳定，切换瞬时） -->
-      <div class="wps-toolbar">
+      <div class="toolbar">
         <!-- ═══════════════ 阅读 ═══════════════ -->
         <div v-show="activeTab === 'read'" class="tb-row">
           <RibbonGroup>
@@ -350,7 +350,7 @@
         <a-spin tip="正在初始化编辑器…" />
       </div>
 
-      <!-- 右键批注菜单：WPS 风格浮层 -->
+      <!-- 右键批注菜单浮层 -->
       <div v-if="ctxMenu.visible" class="ctx-menu" :style="{ left: `${ctxMenu.x}px`, top: `${ctxMenu.y}px` }">
         <div class="ctx-item" @click="deleteCtxAnnotation">删除批注</div>
       </div>
@@ -434,7 +434,7 @@ import {
   ZoomInIcon,
   ZoomLabelIcon,
   ZoomOutIcon,
-} from './components/WpsIcons';
+} from './components/Icons';
 
 // ─── 常量表 ─────────────────────────────────────────────────────────────────
 
@@ -584,7 +584,7 @@ function toggleAutoPage(): void {
 /** 从下拉箭头事件定位锚定按钮，打开对应面板（同 kind 再点即收起）。 */
 function openDropdown(kind: Exclude<DropdownKind, null>, e: Event): void {
   const target = e.target as Element | null;
-  const btn = target?.closest?.('.wps-btn') as HTMLElement | null;
+  const btn = target?.closest?.('.tool-btn') as HTMLElement | null;
   if (!btn) return;
   if (isSameGestureAsClose()) return; // 遮罩 mousedown 刚关闭：视为本次点击就是收起
   const rect = btn.getBoundingClientRect();
@@ -610,7 +610,7 @@ function toggleFileMenu(e: Event): void {
   const btn = e.currentTarget as HTMLElement | null;
   if (!btn) return;
   if (isSameGestureAsClose()) return;
-  const bar = btn.closest('.wps-tabbar') as HTMLElement | null;
+  const bar = btn.closest('.tabbar') as HTMLElement | null;
   const rect = (bar ?? btn).getBoundingClientRect();
   dropdown.kind = dropdown.kind === 'file' ? null : 'file';
   dropdown.x = btn.getBoundingClientRect().left;
@@ -652,7 +652,7 @@ function markupColorOf(kind: MarkupKind): string {
 function pickHighlightColor(color: string): void {
   highlightColor.value = color;
   editor.value?.setHighlightColor(color);
-  setTool('highlight'); // WPS 行为：选定颜色即切到高亮工具
+  setTool('highlight'); // 选定颜色即切到高亮工具
   closeDropdown();
 }
 
@@ -733,7 +733,7 @@ function save(): void {
 
 /** SDK 回调坐标是设备像素（DPR 缩放后），转 CSS 像素定位浮层。 */
 function showCtxMenu(x: number, y: number, annotationId: string | null): void {
-  if (!annotationId) return; // 点在页面/桌面上：不出菜单（WPS 同行为）
+  if (!annotationId) return; // 点在页面/桌面上：不出菜单
   const dpr = window.devicePixelRatio || 1;
   ctxMenu.x = x / dpr;
   ctxMenu.y = y / dpr;
@@ -841,9 +841,9 @@ body,
   overflow: hidden;
 }
 
-/* ─── 功能区：WPS OFD 复刻（页签行 + 工具行） ─────────────────────────── */
+/* ─── 功能区（页签行 + 工具行） ───────────────────────────────────────── */
 
-.wps-ribbon {
+.ribbon {
   flex: none;
   background: #fff;
   border-bottom: 1px solid #d3d6d8;
@@ -851,7 +851,7 @@ body,
 }
 
 /* 页签行：45px 高，#EDEFF3 浅蓝灰底（截图像素实测）。 */
-.wps-tabbar {
+.tabbar {
   display: flex;
   align-items: stretch;
   height: 45px;
@@ -930,7 +930,7 @@ body,
 }
 
 /* 工具行：90px 高白底（截图像素实测）。 */
-.wps-toolbar {
+.toolbar {
   height: 90px;
   background: #fff;
   overflow: hidden;

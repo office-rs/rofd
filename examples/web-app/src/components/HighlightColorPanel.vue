@@ -1,10 +1,10 @@
 <template>
-  <!-- WPS 标注颜色下拉面板 — 像素级复刻 tmp/wps/7. 高亮批注下拉选择颜色.png：
+  <!-- 标注颜色下拉面板 — 像素级复刻参考截图（高亮批注下拉选色）：
        高亮/下划线/删除线/波浪线工具共用（autoColor 区分"自动"默认色）。
        面板 #F4F5F7、3px 圆角、柔化外阴影；自动项 + 主题颜色 6行×9列 +
        标准颜色 1行×9列 + "其他颜色"命令行；色块 14×14、列间距 8px；
        选中态：色块外深色描边。 -->
-  <div class="wps-cp">
+  <div class="color-panel">
     <button
       type="button"
       class="cp-item"
@@ -67,7 +67,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 
-/** "自动"项默认色：高亮为荧光黄（WPS 高亮默认色）。 */
+/** "自动"项默认色：高亮为荧光黄（高亮工具默认色）。 */
 const DEFAULT_AUTO_COLOR = '#FFDD00';
 
 /** 主题颜色 6 行 × 9 列（截图像素采样，每两行深浅配对）。 */
@@ -114,7 +114,7 @@ function pick(color: string): void {
 </script>
 
 <style scoped>
-.wps-cp {
+.color-panel {
   width: 214px;
   padding: 8px 10px 6px;
   background: #f4f5f7;

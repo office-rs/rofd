@@ -1,5 +1,5 @@
 <template>
-  <!-- WPS ribbon 分组：竖分隔线隔开（不显示组名） -->
+  <!-- ribbon 分组：竖分隔线隔开（不显示组名） -->
   <div class="r-group">
     <div class="r-buttons">
       <slot />

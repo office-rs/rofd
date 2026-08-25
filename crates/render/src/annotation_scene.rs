@@ -369,12 +369,12 @@ fn line_endpoints(rect: &Rect, points: &[rofd_dom::Point]) -> (rofd_dom::Point, 
 }
 
 /// Arrowhead tip-to-corner side length as a multiple of the stroke width
-/// (matches the WPS-generated arrow in `test/sample.ofd`:
+/// (matches the reference arrow in `test/sample.ofd`:
 /// side 1.7639mm at LineWidth 0.3528mm => exactly 1.5x).
 const ARROW_HEAD_SIDE_PER_WIDTH: f64 = 5.0 * 1.5;
 
 /// Arrowhead half-angle between the shaft axis and each tip->corner edge
-/// (25 degrees, measured from the WPS arrow in `test/sample.ofd`).
+/// (25 degrees, measured from the reference arrow in `test/sample.ofd`).
 const ARROW_HEAD_HALF_ANGLE: f64 = 25.0 * std::f64::consts::PI / 180.0;
 
 /// Build the filled triangle arrowhead at `tip` (`p1`), oriented along the

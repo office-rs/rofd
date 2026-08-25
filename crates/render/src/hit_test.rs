@@ -7,7 +7,7 @@
 //! topmost-first (reverse document order), matching painter's order (later
 //! annotations paint over earlier ones).
 //!
-//! When an annotation is selected, its selection handles (per the WPS handle
+//! When an annotation is selected, its selection handles (per the handle
 //! strategy in [`crate::handles`]: 8 for rect-like payloads, 4 edge midpoints
 //! for Ellipse, point-based Vertex handles for Line/Arrow/Polygon/PolyLine,
 //! none for Markup/Freehand) are tested first - before the annotation body -
@@ -96,7 +96,7 @@ pub fn hit_test(
 
     // 1. If an annotation is selected, test its handles first (before any
     //    page/annotation body hit-test). The handle set and centers come from
-    //    `crate::handles` (the WPS strategy, spec §4.1) - the same source the
+    //    `crate::handles` (the handle strategy, spec §4.1) - the same source the
     //    selection overlay draws from, so hitting and drawing never drift.
     //    Handles are screen-space (not page-local) and stay a constant
     //    on-screen size regardless of zoom.
@@ -651,7 +651,7 @@ mod tests {
         );
     }
 
-    // --- WPS handle strategy (spec §4.1): strategy-level hit tests ---
+    // --- Handle strategy (spec §4.1): strategy-level hit tests ---
 
     /// Viewport where viewport coords == page-local coords: single page
     /// 200x200, zoom 1, size (0,0), gap 0, scroll (0,0) -> page origin (0,0).

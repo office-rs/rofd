@@ -472,7 +472,7 @@ fn line_path_from(rect: &Rect, points: &[rofd_dom::Point]) -> PathData {
 /// Build an Arrow's AbbreviatedData path (shaft + filled head) from stored
 /// endpoints (object-local) when available, falling back to the rect's
 /// TL->BR diagonal + head when only the bbox is known. Head size follows the
-/// stroke `width` (5 x width, +/-25 degrees - WPS sample geometry).
+/// stroke `width` (5 x width, +/-25 degrees - reference sample geometry).
 fn arrow_path_from(rect: &Rect, points: &[rofd_dom::Point], width: f64) -> PathData {
     if let (Some(p0), Some(p1)) = (points.first(), points.get(1)) {
         arrow_path_points(to_object_local(p0, rect), to_object_local(p1, rect), width)

@@ -457,7 +457,7 @@ export class Editor {
   /** Set the active editing tool. `kind` is one of: "text", "hand",
    * "highlight", "underline", "strikeout", "squiggly", "freehand", "rect",
    * "ellipse", "arrow", "line", "polygon".
-   * "select"/"textSelect" are accepted as aliases of "text" (WPS-style
+   * "select"/"textSelect" are accepted as aliases of "text" (the
    * unified tool: selects annotations AND drag-selects body text).
    * Unknown values fall back to "text". */
   setTool(kind: string): void {
@@ -466,13 +466,13 @@ export class Editor {
 
   /** Set the color used for newly created highlight annotations.
    * `color` is "#RRGGBB" (invalid strings fall back to black).
-   * Mirrors the WPS highlight-color dropdown on the annotate tab. */
+   * Mirrors the highlight-color dropdown on the annotate tab. */
   setHighlightColor(color: string): void {
     this.wasm.setHighlightColor(color);
   }
 
-  /** Set the color a markup create-tool uses for new annotations (WPS gives
-   * each markup tool its own color dropdown). `kind` is one of "highlight",
+  /** Set the color a markup create-tool uses for new annotations (each
+   * markup tool gets its own color dropdown). `kind` is one of "highlight",
    * "underline", "strikeout", "squiggly"; other kinds are ignored.
    * `color` is "#RRGGBB" (invalid strings fall back to black). */
   setMarkupColor(kind: string, color: string): void {
