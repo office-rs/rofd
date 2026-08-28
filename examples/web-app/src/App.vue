@@ -376,7 +376,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue';
 import { message } from 'ant-design-vue';
 import type { Component } from 'vue';
-import { Editor } from '@rofd/sdk';
+import { Editor } from '@office-rs/rofd';
 import RibbonGroup from './components/RibbonGroup.vue';
 import ToolButton from './components/ToolButton.vue';
 import FileMenu from './components/FileMenu.vue';

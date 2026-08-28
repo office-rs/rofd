@@ -481,14 +481,14 @@ git commit -m "feat(web-view): WasmEditor (wasm-bindgen surface + event handling
 - Test: `wasm-pack build` succeeds
 
 **Interfaces:**
-- Produces: `@rofd/sdk` TypeScript package wrapping the wasm exports. `Rofd.init(container, config) -> Promise<Editor>`.
+- Produces: `@office-rs/rofd` TypeScript package wrapping the wasm exports. `Rofd.init(container, config) -> Promise<Editor>`.
 
 - [ ] **Step 1: Create the SDK package**
 
 `crates/web-view/sdk/package.json`:
 ```json
 {
-  "name": "@rofd/sdk",
+  "name": "@office-rs/rofd",
   "version": "0.1.0",
   "main": "dist/rofd_web_view.js",
   "types": "dist/rofd_web_view.d.ts",
@@ -566,7 +566,7 @@ Expected: PASS (produces `rofd_web_view.js` + `rofd_web_view_bg.wasm` + `rofd_we
 
 ```bash
 git add crates/web-view/sdk/
-git commit -m "feat(web-view): TS SDK (@rofd/sdk) + wasm-pack build"
+git commit -m "feat(web-view): TS SDK (@office-rs/rofd) + wasm-pack build"
 ```
 
 ---
@@ -594,7 +594,7 @@ git commit -m "feat(web-view): TS SDK (@rofd/sdk) + wasm-pack build"
     "build:sdk": "cd ../../crates/web-view && wasm-pack build --target web --out-dir sdk/dist"
   },
   "dependencies": {
-    "@rofd/sdk": "file:../../crates/web-view/sdk"
+    "@office-rs/rofd": "file:../../crates/web-view/sdk"
   },
   "devDependencies": {
     "typescript": "^5.0.0",
@@ -626,7 +626,7 @@ git commit -m "feat(web-view): TS SDK (@rofd/sdk) + wasm-pack build"
 
 `examples/web-app/src/main.ts`:
 ```typescript
-import { Editor } from '@rofd/sdk';
+import { Editor } from '@office-rs/rofd';
 
 async function main() {
   const canvas = document.getElementById('canvas') as HTMLCanvasElement;
@@ -698,7 +698,7 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   server: { fs: { allow: ['..'] } },
-  optimizeDeps: { exclude: ['@rofd/sdk'] },
+  optimizeDeps: { exclude: ['@office-rs/rofd'] },
 });
 ```
 
@@ -737,7 +737,7 @@ git commit -m "feat(web-app): Vite web app (canvas + DOM events + file open)"
 
 ## Phase 5 Done - Definition of Done
 
-- `rofd_web_view`: WebGpuRenderTarget (WebGPU canvas + vello renderer, RenderTarget impl), WasmEditor (wasm-bindgen surface + event handling + file I/O), TS SDK (@rofd/sdk).
+- `rofd_web_view`: WebGpuRenderTarget (WebGPU canvas + vello renderer, RenderTarget impl), WasmEditor (wasm-bindgen surface + event handling + file I/O), TS SDK (@office-rs/rofd).
 - `examples/web-app`: Vite app that loads the wasm, creates a canvas, wires DOM events, file open.
 - Tests: WasmEditor parse_key (3 unit tests, native). WebGpuRenderTarget + web-app are compile-check + manual run (needs a browser).
 - `cargo check -p rofd-web-view --target wasm32-unknown-unknown` compiles. `wasm-pack build --target web` succeeds. `cd examples/web-app && npm run build` succeeds.

@@ -1,9 +1,9 @@
-# @rofd/sdk
+# @office-rs/rofd
 
-TypeScript SDK for embedding the [rofd](https://github.com/ravenq/rofd) OFD (GB/T 33190) **view + annotation** editor into any web page. Compiles the Rust editor to WebAssembly and renders via WebGPU.
+TypeScript SDK for embedding the [rofd](https://github.com/office-rs/rofd) OFD (GB/T 33190) **view + annotation** editor into any web page. Compiles the Rust editor to WebAssembly and renders via WebGPU.
 
 ```ts
-import { Editor } from '@rofd/sdk';
+import { Editor } from '@office-rs/rofd';
 
 const editor = await Editor.init(container, {
   onSaveRequest: () => download(editor.saveOfd()),
@@ -22,8 +22,8 @@ editor.loadOfd(ofdBytes);
 ## Install
 
 ```bash
-npm install @rofd/sdk
-# or: yarn add @rofd/sdk / pnpm add @rofd/sdk
+npm install @office-rs/rofd
+# or: yarn add @office-rs/rofd / pnpm add @office-rs/rofd
 ```
 
 ## Browser support
@@ -36,7 +36,7 @@ WebGPU requires Chrome / Edge 113+ (or any browser shipping WebGPU). On unsuppor
 <div id="ofd-container" style="width: 800px; height: 600px"></div>
 
 <script type="module">
-  import { Editor } from '@rofd/sdk';
+  import { Editor } from '@office-rs/rofd';
 
   const container = document.getElementById('ofd-container');
   const editor = await Editor.init(container, {
@@ -109,4 +109,4 @@ await Editor.init(container, {
 
 ## License
 
-GPL-3.0-or-later. See [LICENSE](https://github.com/ravenq/rofd/blob/main/LICENSE).
+GPL-3.0-or-later. See [LICENSE](https://github.com/office-rs/rofd/blob/main/LICENSE).

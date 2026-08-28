@@ -28,11 +28,11 @@ function corpAllResponses(): Plugin {
 export default defineConfig(({ mode }) => ({
   plugins: [vue(), corpAllResponses()],
   resolve: {
-    alias: { "@rofd/sdk": sdkEntry },
+    alias: { "@office-rs/rofd": sdkEntry },
   },
   // Keep the SDK out of dep pre-bundle: it pulls in a .wasm via
   // import.meta.url, which must be resolved by Vite's dev pipeline, not esbuild.
-  optimizeDeps: { exclude: ["@rofd/sdk"] },
+  optimizeDeps: { exclude: ["@office-rs/rofd"] },
   build: {
     target: "esnext",
     // 拆分 antd / vue 大包，避免单个 chunk 超限告警，页面加载可并行。

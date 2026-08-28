@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@ant-design/icons-vue": "^7.0.1",
-    "@rofd/sdk": "file:../../crates/web-view/sdk",
+    "@office-rs/rofd": "file:../../crates/web-view/sdk",
     "ant-design-vue": "^4.2.6",
     "vue": "^3.5.41"
   },

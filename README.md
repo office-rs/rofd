@@ -10,10 +10,10 @@ OFD（GB/T 33190）**查看 + 批注**编辑器**库**，Rust 实现，native + 
 
 ## 使用
 
-Web 端通过 npm 包 `@rofd/sdk` 集成：
+Web 端通过 npm 包 `@office-rs/rofd` 集成：
 
 ```ts
-import { Editor } from '@rofd/sdk';
+import { Editor } from '@office-rs/rofd';
 
 const container = document.getElementById('container') as HTMLElement;
 

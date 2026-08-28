@@ -85,7 +85,7 @@ examples/web-app ─► web-view ───────────┘           
 | `rofd-native-view` | `crates/native-view` | native 薄适配器：`EditorApp` + `WinitEventBridge` | component + render + io + dom + winit |
 | `rofd-web-view` | `crates/web-view` | WASM 薄适配器：`WasmEditor` + `WebGpuRenderTarget` + TS SDK | component + io + dom + vello + imaging + imaging_vello + wgpu + web-sys |
 | `native-app` | `examples/native-app` | xilem + masonry 宿主示例 | native-view + component + xilem + masonry_winit + rfd |
-| web-app | `examples/web-app` | Vite + TS 宿主示例（非 cargo 成员） | `@rofd/sdk`（= `crates/web-view/sdk`） |
+| web-app | `examples/web-app` | Vite + TS 宿主示例（非 cargo 成员） | `@office-rs/rofd`（= `crates/web-view/sdk`） |
 
 > **关键偏离 spec**：spec 设想 `component` 依赖 io 做 load/save 便利方法；**实际实现把 io 依赖下放到适配器层**（native-view / web-view 持有 `PackageHandle`、调 `parse_ofd`/`save_ofd`），`EditorComponent` 保持 io-free、更易复用。改 component 时不要往里塞 io 调用。
 
@@ -169,7 +169,7 @@ examples/web-app ─► web-view ───────────┘           
 ### rofd-web-view
 - 薄适配器：只做 DOM 事件桥、WebGPU 对接与平台能力默认装配（剪贴板等），不承载功能逻辑（§4.9）。
 - `WasmEditor`（wasm-bindgen）+ `WebGpuRenderTarget` + JS 事件桥。`wasm-pack --target web`。
-- SDK 在 `crates/web-view/sdk/`，入口 `Editor.create(canvas, fontBytes)`，发布为 npm 包 `@rofd/sdk`。
+- SDK 在 `crates/web-view/sdk/`，入口 `Editor.create(canvas, fontBytes)`，发布为 npm 包 `@office-rs/rofd`。
 - 默认字体 NotoSans + NotoSansCJKsc，`Arc<Vec<u8>>` 共享，`warmup()` 预编译 shader。
 - **WebGPU only**，无 Canvas2D 回退（Chrome/Edge 113+）。
 

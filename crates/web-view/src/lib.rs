@@ -2,7 +2,7 @@
 //!
 //! Mirrors reditor's web-view: a `create_wasm_editor` async factory handles
 //! WebGPU init + warmup, and `WasmEditor` exposes `register_font`, event
-//! handlers, and a JS callback bridge. The web SDK (`@rofd/sdk`) drives the
+//! handlers, and a JS callback bridge. The web SDK (`@office-rs/rofd`) drives the
 //! full boot flow (font loading, event binding, render loop).
 //!
 //! Only meaningful when compiled for `wasm32-unknown-unknown`. The

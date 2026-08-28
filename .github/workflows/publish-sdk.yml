@@ -9,9 +9,9 @@ name: Publish SDK
 #   1. 首次发版：必须先用 npm token 手动 publish 一次（在 npm 上创建包页面）。
 #      - 在 npmjs.com 创建一个 90 天的 granular write token（一次性的）。
 #      - 在 crates/web-view/sdk 目录下 `npm publish --access public`（带 token）。
-#   2. 在 https://www.npmjs.com/package/@rofd/sdk/access 配置 Trusted Publisher：
+#   2. 在 https://www.npmjs.com/package/@office-rs/rofd/access 配置 Trusted Publisher：
 #      - Publisher type: GitHub Actions
-#      - Organization/user: ravenq
+#      - Organization/user: office-rs
 #      - Repository: rofd
 #      - Workflow filename: publish-sdk.yml
 #   3. 删除 NPM_TOKEN secret（如已配置）。

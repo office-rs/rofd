@@ -5,8 +5,8 @@ edition = "2021"
 license = "GPL-3.0-or-later"
 authors = ["ravenq"]
 description = "Annotation command/transaction layer for the rofd OFD editor."
-repository = "https://github.com/ravenq/rofd"
-homepage = "https://github.com/ravenq/rofd#readme"
+repository = "https://github.com/office-rs/rofd"
+homepage = "https://github.com/office-rs/rofd#readme"
 keywords = ["ofd", "gbt-33190", "editor", "annotation"]
 readme = "README.md"
 
