@@ -1,17 +1,17 @@
 {
-  "name": "@rofd/sdk",
-  "version": "0.1.1",
+  "name": "@office-rs/rofd",
+  "version": "0.1.3",
   "description": "TypeScript SDK wrapping the rofd WASM editor exports.",
   "license": "GPL-3.0-or-later",
   "author": "ravenq",
-  "homepage": "https://github.com/ravenq/rofd#readme",
+  "homepage": "https://github.com/office-rs/rofd#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ravenq/rofd.git",
+    "url": "https://github.com/office-rs/rofd.git",
     "directory": "crates/web-view/sdk"
   },
   "bugs": {
-    "url": "https://github.com/ravenq/rofd/issues"
+    "url": "https://github.com/office-rs/rofd/issues"
   },
   "keywords": [
     "ofd",

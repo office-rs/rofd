@@ -1,4 +1,4 @@
-// @rofd/sdk - TypeScript SDK wrapping the rofd WASM editor.
+// @office-rs/rofd - TypeScript SDK wrapping the rofd WASM editor.
 //
 // Mirrors reditor's SDK: `Editor.init(container, config)` does the full boot
 // (load wasm -> check WebGPU -> create canvas -> create_wasm_editor -> load +
