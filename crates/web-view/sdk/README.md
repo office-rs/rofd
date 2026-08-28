@@ -2,14 +2,8 @@
 
 TypeScript SDK for embedding the [rofd](https://github.com/office-rs/rofd) OFD (GB/T 33190) **view + annotation** editor into any web page. Compiles the Rust editor to WebAssembly and renders via WebGPU.
 
-```ts
-import { Editor } from '@office-rs/rofd';
-
-const editor = await Editor.init(container, {
-  onSaveRequest: () => download(editor.saveOfd()),
-});
-editor.loadOfd(ofdBytes);
-```
+## Live Demo
+[https://office-rs.github.io/rofd/](https://office-rs.github.io/rofd/)
 
 ## Features
 
