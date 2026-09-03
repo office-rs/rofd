@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 // TS (and its `../dist/rofd_web_view.js` import) directly in dev, instead of
 // going through the `file:` dependency. Mirrors reditor's web-view wiring.
 const sdkEntry = fileURLToPath(
-  new URL("../../crates/web-view/sdk/src/index.ts", import.meta.url),
+  new URL("../web-view/sdk/src/index.ts", import.meta.url),
 );
 
 // Under COEP `require-corp` (set below), every subresource fetch needs a
@@ -49,7 +49,7 @@ export default defineConfig(({ mode }) => ({
   // 本地 dev 用默认 '/'，生产构建用 '/rofd/'。
   base: mode === "production" ? "/rofd/" : "/",
   server: {
-    // Project root is examples/web-app; `../..` is the repo root, which also
+    // Project root is crates/web-app; `../..` is the repo root, which also
     // covers crates/web-view/sdk/dist/*.wasm - without this the wasm fetch 403s.
     fs: { allow: ["../.."] },
     // Cross-origin isolation: harmless dev default for WebGPU + wasm apps, and

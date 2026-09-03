@@ -1,6 +1,6 @@
 //! rofd-native-view - Xilem + winit native adapter for rofd.
 //!
-//! The native host (examples/native-app) drives a xilem app whose toolbar is
+//! The native host (crates/native-app) drives a xilem app whose toolbar is
 //! authored with xilem views and whose OFD canvas is the built-in masonry
 //! `canvas(...)` widget. The canvas closure calls [`EditorApp::build_scene`] and
 //! replays the resulting `imaging::record::Scene` via `Painter::replay`;
