@@ -1,0 +1,26 @@
+{
+  "name": "rofd-tauri-app",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:sdk": "cd ../web-view && wasm-pack build --target web --out-dir sdk/dist",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@ant-design/icons-vue": "^7.0.1",
+    "@office-rs/rofd": "file:../web-view/sdk",
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.3",
+    "@tauri-apps/plugin-fs": "^2.5.2",
+    "ant-design-vue": "^4.2.6",
+    "vue": "^3.5.41"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "typescript": "^5.0.0",
+    "vite": "^5.0.0"
+  }
+}
