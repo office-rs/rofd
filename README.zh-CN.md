@@ -53,24 +53,6 @@ editor.loadOfd(bytes);
 
 > 仅提供 Windows 安装包：WebGPU 在 Windows 的 WebView2 上开箱即用；macOS/Linux 的系统 WebView 尚未完整支持 WebGPU，暂不构建。
 
-### 使用
-
-1. 启动 **rofd**。
-2. 通过工具栏「打开」选择本地 `.ofd` 文件（走系统原生文件对话框）。
-3. 查看并添加批注；「保存」通过系统原生保存对话框写回 `.ofd`。
-
-### 从源码运行 / 构建
-
-```bash
-cd crates/tauri-app
-npm install
-npm run build:sdk         # wasm-pack build crates/web-view -> sdk/dist
-npm run tauri dev         # 开发：起 vite + 系统 WebView 窗口
-npm run tauri build       # 打包：在 src-tauri/target/release/bundle/ 生成安装包
-```
-
-前端**复用 `crates/web-app` 源码**，仅注入原生文件桥；`src-tauri` 的 Rust 壳只负责启动窗口与注册插件。
-
 ---
 
 ## 平台支持

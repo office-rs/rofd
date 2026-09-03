@@ -53,24 +53,6 @@ Go to this repo's [Releases](../../releases) page and grab an installer from the
 
 > Windows installers only: WebGPU works out of the box on Windows via WebView2; the system WebView on macOS/Linux does not yet fully support WebGPU, so those are not built.
 
-### Usage
-
-1. Launch **rofd**.
-2. Use the toolbar "Open" to pick a local `.ofd` file (native system file dialog).
-3. View and add annotations; "Save" writes back to `.ofd` via the native save dialog.
-
-### Run / build from source
-
-```bash
-cd crates/tauri-app
-npm install
-npm run build:sdk         # wasm-pack build crates/web-view -> sdk/dist
-npm run tauri dev         # dev: launch vite + system WebView window
-npm run tauri build       # package: emit installers under src-tauri/target/release/bundle/
-```
-
-The frontend **reuses `crates/web-app` source**, only injecting a native file bridge; the `src-tauri` Rust shell merely launches the window and registers plugins.
-
 ---
 
 ## Platform support
