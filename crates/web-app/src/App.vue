@@ -366,8 +366,7 @@
       <span>{{ zoomPercent }}%</span>
     </footer>
 
-    <!-- 隐藏控件：文件选择 + 自定义颜色取色器（初值随请求面板的工具设置） -->
-    <input ref="fileInputRef" type="file" accept=".ofd" hidden @change="onFileChange" />
+    <!-- 隐藏控件：自定义颜色取色器（初值随请求面板的工具设置） -->
     <input ref="colorInputRef" type="color" hidden @change="onCustomColorChange" />
   </div>
 </template>
@@ -383,6 +382,7 @@ import FileMenu from './components/FileMenu.vue';
 import HighlightColorPanel from './components/HighlightColorPanel.vue';
 import ShapeMenu from './components/ShapeMenu.vue';
 import ZoomMenu from './components/ZoomMenu.vue';
+import { fileHost } from './host';
 import {
   ActualSizeIcon,
   ArrowIcon,
@@ -474,7 +474,6 @@ const PX_PER_MM = 96 / 25.4;
 // ─── 响应式状态 ─────────────────────────────────────────────────────────────
 
 const containerRef = ref<HTMLElement>();
-const fileInputRef = ref<HTMLInputElement>();
 const colorInputRef = ref<HTMLInputElement>();
 const editor = shallowRef<Editor | null>(null);
 
@@ -704,29 +703,16 @@ function pickBackground(color: string): void {
 
 // ─── 文件操作 ───────────────────────────────────────────────────────────────
 
-function openFile(): void {
-  fileInputRef.value?.click();
+async function openFile(): Promise<void> {
+  const bytes = await fileHost.open();
+  if (bytes) editor.value?.loadOfd(bytes);
 }
 
-async function onFileChange(): Promise<void> {
-  const file = fileInputRef.value?.files?.[0];
-  if (!file) return;
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  editor.value?.loadOfd(bytes);
-}
-
-function save(): void {
+async function save(): Promise<void> {
   const ed = editor.value;
   if (!ed) return;
-  const bytes = ed.saveOfd();
-  const blob = new Blob([bytes], { type: 'application/ofd' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'document.ofd';
-  a.click();
-  URL.revokeObjectURL(url);
-  message.success('已保存 document.ofd');
+  const ok = await fileHost.save(ed.saveOfd(), 'document.ofd');
+  if (ok) message.success('已保存 document.ofd');
 }
 
 // ─── 右键批注菜单 ───────────────────────────────────────────────────────────
