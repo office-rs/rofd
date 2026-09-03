@@ -1,0 +1,10 @@
+# 前端依赖与产物
+node_modules
+dist
+
+# 统一用 npm（package-lock.json）；忽略其他包管理器的锁文件
+pnpm-lock.yaml
+yarn.lock
+
+# Tauri 生成物（cargo tauri 自动生成，不入库）
+src-tauri/gen

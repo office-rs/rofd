@@ -1,0 +1,18 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "rofd 桌面宿主所需权限：原生打开/保存对话框 + 读写用户选中的 OFD 文件。",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "fs:allow-read-file",
+    "fs:allow-write-file",
+    {
+      "identifier": "fs:scope",
+      "allow": [{ "path": "**" }]
+    }
+  ]
+}

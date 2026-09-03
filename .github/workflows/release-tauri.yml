@@ -1,0 +1,91 @@
+name: Release Tauri App
+
+# 当一个 GitHub Release 被 published 时，构建 tauri-app 的 Windows 安装包
+# （NSIS setup.exe + MSI）并上传到该 Release 的 assets。
+#
+# 产物命名由 tauri.conf.json 的 productName=rofd 决定：
+#   - rofd_<version>_x64-setup.exe  （NSIS 安装器）
+#   - rofd_<version>_x64_en-US.msi  （MSI 安装器）
+# 安装后的程序名同为 rofd。
+#
+# 版本号来自 git tag（形如 v0.1.0 → 0.1.0），发版前写入 tauri.conf.json 与
+# package.json，与 publish-sdk.yml 的「tag 即版本」约定保持一致。
+#
+# 平台：仅 Windows。WebGPU 在 WebView2 上开箱即用；macOS/Linux 的系统 WebView
+# 尚不完整支持 WebGPU，暂不构建（见 AGENTS.md §2 tauri 宿主说明）。
+
+on:
+  release:
+    types: [published]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release-tauri:
+    runs-on: windows-latest
+    permissions:
+      contents: write   # 上传安装包到 Release assets 需要写权限
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version from git tag
+        id: tag
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          # 去掉前导 'v' 作为产物版本号
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/tauri-app/src-tauri
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 把 tag 版本写入 tauri.conf.json 与 package.json，产物文件名即带该版本。
+      - name: Sync version from tag
+        shell: bash
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            for (const f of ["crates/tauri-app/src-tauri/tauri.conf.json", "crates/tauri-app/package.json"]) {
+              const p = JSON.parse(fs.readFileSync(f, "utf8"));
+              p.version = process.env.VERSION;
+              fs.writeFileSync(f, JSON.stringify(p, null, 2) + "\n");
+            }
+          '
+
+      - name: Install tauri-app deps
+        working-directory: crates/tauri-app
+        run: npm install --no-audit --no-fund
+
+      # SDK 的 wasm 产物：tauri-action 触发 vite build（beforeBuildCommand）前必须就绪。
+      - name: Build SDK (wasm-pack)
+        working-directory: crates/tauri-app
+        run: npm run build:sdk
+
+      # 官方 action：运行 tauri build（含 beforeBuildCommand=vite build），
+      # 把生成的安装包上传到触发本次 workflow 的 Release。
+      - name: Build tauri app and upload to release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: crates/tauri-app
+          releaseId: ${{ github.event.release.id }}

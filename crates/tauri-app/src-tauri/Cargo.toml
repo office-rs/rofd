@@ -1,0 +1,24 @@
+[package]
+name = "tauri-app"
+version = "0.1.0"
+edition = "2021"
+description = "rofd Tauri 桌面宿主：把 web-app 前端封装为系统 WebView 桌面客户端"
+
+# 二进制产物名设为 rofd（与 tauri.conf.json 的 mainBinaryName 一致），
+# 让安装后的程序与中间 exe 全程叫 rofd；package 名仍是 tauri-app（workspace 成员名）。
+[[bin]]
+name = "rofd"
+path = "src/main.rs"
+
+# Tauri 构建脚本在编译期生成配置绑定（读取 tauri.conf.json）。
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+
+[features]
+# `cargo tauri dev` 默认启用自定义协议；`tauri dev` 走开发服务器时用它区分。
+custom-protocol = ["tauri/custom-protocol"]
