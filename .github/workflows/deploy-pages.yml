@@ -1,19 +1,19 @@
-name: Deploy Web App to GitHub Pages
+﻿name: Deploy Web App to GitHub Pages
 
-# 把 examples/web-app 构建为静态站点并部署到 GitHub Pages 项目页。
+# 把 crates/web-app 构建为静态站点并部署到 GitHub Pages 项目页。
 # 部署 URL：https://<user>.github.io/rofd/
 #
 # 前置条件（一次性配置）：
 #   仓库 Settings → Pages → Build and deployment → Source 选 "GitHub Actions"。
 #
 # 触发：push 到 main 分支，或手动 dispatch。
-# 产物：examples/web-app/dist 上传为 Pages artifact，由 deploy-pages action 部署。
+# 产物：crates/web-app/dist 上传为 Pages artifact，由 deploy-pages action 部署。
 
 on:
   push:
     branches: [main]
     paths:
-      - 'examples/web-app/**'
+      - 'crates/web-app/**'
       - 'crates/web-view/**'
       - 'crates/dom/**'
       - 'crates/io/**'
@@ -66,18 +66,18 @@ jobs:
         run: wasm-pack build --target web --out-dir sdk/dist
 
       - name: Install web-app deps
-        working-directory: examples/web-app
+        working-directory: crates/web-app
         run: npm install --no-audit --no-fund
 
-      # 字体文件已 commit 到 examples/web-app/public/fonts/，无需额外下载。
+      # 字体文件已 commit 到 crates/web-app/public/fonts/，无需额外下载。
       - name: Build
-        working-directory: examples/web-app
+        working-directory: crates/web-app
         run: npm run build
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: examples/web-app/dist
+          path: crates/web-app/dist
 
   deploy:
     needs: build

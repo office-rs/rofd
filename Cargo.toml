@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/dom", "crates/io", "crates/render", "crates/editor", "crates/component", "crates/native-view", "crates/web-view", "examples/native-app"]
+members = ["crates/dom", "crates/io", "crates/render", "crates/editor", "crates/component", "crates/native-view", "crates/web-view", "crates/native-app", "crates/tauri-app/src-tauri"]
 
 [workspace.dependencies]
 # 3 个发布到 crates.io 的 crate：必须带 `version` 字段（cargo publish 拒绝 path-only 依赖）。

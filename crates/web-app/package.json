@@ -5,11 +5,11 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "build:sdk": "cd ../../crates/web-view && wasm-pack build --target web --out-dir sdk/dist"
+    "build:sdk": "cd ../web-view && wasm-pack build --target web --out-dir sdk/dist"
   },
   "dependencies": {
     "@ant-design/icons-vue": "^7.0.1",
-    "@office-rs/rofd": "file:../../crates/web-view/sdk",
+    "@office-rs/rofd": "file:../web-view/sdk",
     "ant-design-vue": "^4.2.6",
     "vue": "^3.5.41"
   },
