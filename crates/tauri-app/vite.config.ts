@@ -36,6 +36,11 @@ export default defineConfig({
   plugins: [vue(), corpAllResponses()],
   resolve: {
     alias: { "@office-rs/rofd": sdkEntry },
+    // App.vue 从 ../web-app/src 导入，其裸导入（vue / ant-design-vue）按 importer
+    // 目录向上找 node_modules 会落到 web-app/node_modules —— CI 只装 tauri-app 依赖
+    // 时该目录不存在，Rollup 解析失败。dedupe 强制这些共享依赖解析到项目根
+    // （tauri-app）的 node_modules，同时避免同一份 UI 源码出现双 vue 实例。
+    dedupe: ["vue", "ant-design-vue"],
   },
   publicDir: webAppPublic,
   // Keep the SDK out of dep pre-bundle: it pulls in a .wasm via import.meta.url,
