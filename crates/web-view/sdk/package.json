@@ -39,8 +39,7 @@
   "scripts": {
     "build:wasm": "wasm-pack build --target web --out-dir sdk/dist ../",
     "build:ts": "tsc -p tsconfig.json",
-    "build": "npm run build:wasm && npm run build:ts",
-    "prepublishOnly": "npm run build"
+    "build": "npm run build:wasm && npm run build:ts"
   },
   "devDependencies": {
     "@webgpu/types": "^0.1.71",
