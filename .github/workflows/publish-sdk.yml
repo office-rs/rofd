@@ -82,6 +82,12 @@ jobs:
         working-directory: crates/web-view
         run: wasm-pack build --target web --out-dir sdk/dist
 
+      # wasm-pack 会在产物目录生成 dist/.gitignore（内容为 `*`，忽略该目录所有文件）。
+      # npm 11+ 打包时读取子目录 .gitignore，导致 dist/ 全部被排除（tarball 只剩
+      # README + package.json）。删掉它，让 files: ["dist"] 真正生效。
+      - name: Remove wasm-pack generated dist/.gitignore
+        run: rm -f crates/web-view/sdk/dist/.gitignore
+
       - name: Build TS (tsc)
         working-directory: crates/web-view/sdk
         run: npx tsc -p tsconfig.json
@@ -112,6 +118,9 @@ jobs:
         working-directory: crates/web-view/sdk
         run: npm pack --dry-run
 
+      # --ignore-scripts：不让 npm publish 再跑 prepublishOnly 重建（wasm-pack 的
+      # --out-dir 相对 sdk/ CWD 会输出到 sdk/sdk/dist 错位目录），直接用上面构建好的
+      # dist/ 打包。
       - name: Publish to npm registry (OIDC, no token)
         working-directory: crates/web-view/sdk
-        run: npm publish --access public --provenance
+        run: npm publish --access public --provenance --ignore-scripts
