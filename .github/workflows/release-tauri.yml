@@ -17,6 +17,15 @@ name: Release Tauri App
 on:
   release:
     types: [published]
+  # 手动重打安装包：release 事件只在首次 publish 触发一次，而 rerun 固定在原
+  # commit 上跑（修复构建问题后 rerun 无效）。dispatch 会 checkout main 最新
+  # 代码，把产物上传到指定 tag 的 Release assets。
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '要上传安装包的 Release tag（如 v0.1.4）'
+        required: true
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -33,9 +42,11 @@ jobs:
         id: tag
         shell: bash
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
+          # release 事件：tag 在 GITHUB_REF；dispatch 重打：取输入的 release_tag。
+          TAG="${{ github.event.release.tag_name || github.event.inputs.release_tag }}"
           # 去掉前导 'v' 作为产物版本号
           VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust toolchain
@@ -80,12 +91,23 @@ jobs:
         working-directory: crates/tauri-app
         run: npm run build:sdk
 
+      # dispatch 重打时按 tag 反查 Release id（release 事件自带 id，跳过此步）。
+      - name: Resolve release id (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        id: relid
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RID=$(gh api "repos/${{ github.repository }}/releases/tags/${{ github.event.inputs.release_tag }}" --jq '.id')
+          echo "release id: $RID"
+          echo "id=$RID" >> "$GITHUB_OUTPUT"
+
       # 官方 action：运行 tauri build（含 beforeBuildCommand=vite build），
-      # 把生成的安装包上传到触发本次 workflow 的 Release。
+      # 把生成的安装包上传到指定 Release 的 assets。
       - name: Build tauri app and upload to release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: crates/tauri-app
-          releaseId: ${{ github.event.release.id }}
+          releaseId: ${{ github.event.release.id || steps.relid.outputs.id }}
