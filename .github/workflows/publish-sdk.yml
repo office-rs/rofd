@@ -25,6 +25,15 @@ name: Publish SDK
 on:
   release:
     types: [published]
+  # 手动重发 SDK：release 事件只在首次 publish 触发一次，若发布的 npm 包有误（如
+  # 打包内容不对），unpublish 后需要重新发布。dispatch 从输入的 tag 取版本号，
+  # 用 OIDC 重新 publish（与 release 事件同样的流程）。
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '要发布的 Release tag（如 v0.1.4）'
+        required: true
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -41,7 +50,8 @@ jobs:
       - name: Read version from git tag
         id: tag
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
+          # release 事件：tag 在 GITHUB_REF；dispatch 重发：取输入的 release_tag。
+          TAG="${{ github.event.release.tag_name || github.event.inputs.release_tag }}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           # 去掉前导 'v' 作为 npm 版本号
           VERSION="${TAG#v}"
