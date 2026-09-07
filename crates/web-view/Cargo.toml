@@ -7,6 +7,13 @@ license = "GPL-3.0-or-later"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+# 禁用 wasm-pack 的 wasm-opt 优化：最新 stable rustc 生成的 wasm 含多 table
+# （reference-types），wasm-pack 缓存的 wasm-opt 解析不了（"Only 1 table
+# definition allowed in MVP"），导致 SDK 构建失败。wasm-opt 仅做体积优化，
+# 跳过不影响功能。
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
 [dependencies]
 rofd-component = { workspace = true }
 rofd-io = { workspace = true }
