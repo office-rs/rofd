@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 
 use masonry_winit::app::{AppDriver, MasonryState, MasonryUserEvent};
 use rfd::FileDialog;
-use rofd_component::{ContextTarget, PointerCursor, Tool, ViewEvent};
+use rofd_component::{ContextTarget, CreateKind, PointerCursor, Tool, ViewEvent};
 use rofd_dom::{AnnotationId, AnnotationKind, ShapeKind};
 use rofd_native_view::{EditorApp, WinitEventBridge};
 use winit::application::ApplicationHandler;
@@ -65,6 +65,18 @@ type SharedPointerCursor = Arc<Mutex<PointerCursor>>;
 fn tool_button(label: &'static str, tool: Tool) -> impl WidgetView<AppState> + use<> {
     text_button(label, move |app: &mut AppState| {
         app.editor.lock().unwrap().component.set_tool(tool.clone());
+    })
+    .padding(BTN_PAD)
+    .border_width(0.0)
+    .corner_radius(2.0)
+}
+
+/// Markup button: an ACTION over the current body-text selection, not a
+/// tool (spec 2026-09-10). Clicking applies the markup kind; without a
+/// selection this is a no-op (Task 4 adds the disabled affordance).
+fn markup_button(label: &'static str, kind: AnnotationKind) -> impl WidgetView<AppState> + use<> {
+    text_button(label, move |app: &mut AppState| {
+        app.editor.lock().unwrap().apply_markup(kind.clone());
     })
     .padding(BTN_PAD)
     .border_width(0.0)
@@ -156,21 +168,22 @@ fn app_logic(app: &mut AppState) -> std::iter::Once<xilem::WindowView<AppState>>
     let file_row =
         flex_row((btn_open, btn_save)).gap(xilem::masonry::layout::Length::const_px(2.0));
 
-    // Tool buttons, grouped: the two browse-mode tools
-    // (Hand / Text) first, then the annotation create groups. No spring-back:
-    // a create tool stays active after each commit (spec §3.3).
+    // Tool buttons, grouped: the two browse-mode tools (Hand / Text) first,
+    // then the markup actions (apply over the body-text selection, spec
+    // 2026-09-10) and the annotation create tools. No spring-back: a create
+    // tool stays active after each commit (spec §3.3).
     let btn_hand = tool_button("手型", Tool::Hand);
     // "文本" = unified tool: selects annotations AND drag-selects body text.
     let btn_text = tool_button("文本", Tool::Text);
     let group_tools =
         flex_row((btn_hand, btn_text)).gap(xilem::masonry::layout::Length::const_px(2.0));
 
-    let btn_highlight = tool_button("高亮", Tool::Create(AnnotationKind::Highlight));
-    let btn_underline = tool_button("下划线", Tool::Create(AnnotationKind::Underline));
-    let btn_strikeout = tool_button("删除线", Tool::Create(AnnotationKind::Strikeout));
-    let btn_squiggly = tool_button("波浪线", Tool::Create(AnnotationKind::Squiggly));
-    let btn_freehand = tool_button("手写", Tool::Create(AnnotationKind::Freehand));
-    let btn_rect = tool_button("矩形", Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)));
+    let btn_highlight = markup_button("高亮", AnnotationKind::Highlight);
+    let btn_underline = markup_button("下划线", AnnotationKind::Underline);
+    let btn_strikeout = markup_button("删除线", AnnotationKind::Strikeout);
+    let btn_squiggly = markup_button("波浪线", AnnotationKind::Squiggly);
+    let btn_freehand = tool_button("手写", Tool::Create(CreateKind::Freehand));
+    let btn_rect = tool_button("矩形", Tool::Create(CreateKind::Shape(ShapeKind::Rect)));
 
     // v1 native demo: wide gap between groups instead of a separator widget.
     let tool_row = flex_row((

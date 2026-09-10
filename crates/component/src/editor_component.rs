@@ -12,17 +12,36 @@ use crate::config::EditorConfig;
 use crate::event::EventOutcome;
 use crate::render_target::RenderTarget;
 
+/// The annotation kinds that CAN be a drag-create tool. Markup kinds are
+/// deliberately absent: markup is a command over the body-text selection
+/// ([`EditorComponent::apply_markup`]), never a tool (spec 2026-09-10 §4.1).
+#[derive(Debug, Clone, PartialEq)]
+pub enum CreateKind {
+    Shape(ShapeKind),
+    Freehand,
+}
+
+impl CreateKind {
+    /// The annotation kind a drag of this tool creates.
+    pub fn to_annotation_kind(&self) -> AnnotationKind {
+        match self {
+            CreateKind::Shape(s) => AnnotationKind::Shape(*s),
+            CreateKind::Freehand => AnnotationKind::Freehand,
+        }
+    }
+}
+
 /// The active editing tool. The host selects a tool (e.g. via a toolbar) and
 /// the component uses it to interpret pointer drags (T3 wires the drag logic).
 ///
 /// Two-tool model (spec §3): `Text` is the unified tool - it
 /// selects/drags existing annotations first, and falls back to body-text
 /// selection when no annotation is hit. `Create` begins a new annotation of
-/// the given [`AnnotationKind`] on the next pointer drag.
+/// the given [`CreateKind`] on the next pointer drag.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tool {
     Text,
-    Create(AnnotationKind),
+    Create(CreateKind),
     /// Hand tool: drag on blank desk/page pans the viewport;
     /// clicking an annotation selects it (move/resize/Delete reuse the
     /// Text interactions).
@@ -33,8 +52,9 @@ pub enum Tool {
 /// PointerDown/Move/Up handlers create/update/clear this, and `build_scene`
 /// maps it to a [`DragPreview`] for live rendering.
 ///
-/// `Create` covers rect-bounded kinds (Shape/Note/TextBox/...) and Freehand
-/// (accumulating a path). `Move`/`Resize` track the source annotation.
+/// `Create` covers Shape drags (rect-bounded, or endpoint-bounded Line/Arrow)
+/// and Freehand (accumulating a path). `Move`/`Resize` track the source
+/// annotation.
 ///
 /// **Preview-based drag (one undo per drag):** during PointerMove, `Move`/
 /// `Resize` do NOT call `editor.move_annotation`/`resize_annotation` (which
@@ -49,7 +69,7 @@ pub(crate) enum DragState {
     /// Creating a new annotation; `start`/`current` bound a rect, `path`
     /// accumulates Freehand points (viewport-space).
     Create {
-        kind: AnnotationKind,
+        kind: CreateKind,
         start: (f64, f64),
         current: (f64, f64),
         path: Vec<(f64, f64)>,
@@ -147,14 +167,15 @@ pub struct EditorComponent {
     /// document loaded. Updated after Scroll/Resize; when it changes,
     /// `on_page_change` fires. T4.
     pub(crate) current_page: Option<usize>,
-    /// Color used when the Highlight create-tool commits an annotation.
-    /// Defaults to yellow (`DEFAULT_HIGHLIGHT_COLOR`); the host can override
-    /// via [`Self::set_highlight_color`] (highlight-color dropdown).
+    /// Color used when a Highlight markup is applied
+    /// ([`Self::apply_markup`]). Defaults to yellow (`DEFAULT_HIGHLIGHT_COLOR`);
+    /// the host can override via [`Self::set_highlight_color`]
+    /// (highlight-color dropdown).
     pub(crate) highlight_color: Color,
-    /// Colors used when the Underline/Strikeout/Squiggly create-tools commit
-    /// an annotation. Each defaults to `DEFAULT_MARKUP_COLOR` (blue); the host
-    /// can override per-kind via [`Self::set_markup_color`] (each markup tool
-    /// gets its own color dropdown).
+    /// Colors used when an Underline/Strikeout/Squiggly markup is applied
+    /// ([`Self::apply_markup`]). Each defaults to `DEFAULT_MARKUP_COLOR`
+    /// (blue); the host can override per-kind via [`Self::set_markup_color`]
+    /// (each markup button gets its own color dropdown).
     pub(crate) underline_color: Color,
     pub(crate) strikeout_color: Color,
     pub(crate) squiggly_color: Color,
@@ -386,16 +407,17 @@ impl EditorComponent {
         });
     }
 
-    /// Set the color the Highlight create-tool uses for new annotations
-    /// (highlight-color dropdown). Affects only future creates; existing
-    /// annotations keep their own color.
+    /// Set the color a Highlight markup is applied with
+    /// ([`Self::apply_markup`]; highlight-color dropdown). Affects only future
+    /// markups; existing annotations keep their own color.
     pub fn set_highlight_color(&mut self, color: Color) {
         self.highlight_color = color;
     }
 
-    /// Set the color a markup create-tool (Highlight/Underline/Strikeout/
-    /// Squiggly) uses for new annotations (per-tool color dropdowns).
-    /// Non-markup kinds are ignored. Affects only future creates.
+    /// Set the color a markup command (Highlight/Underline/Strikeout/
+    /// Squiggly via [`Self::apply_markup`]) uses for new annotations
+    /// (per-kind color dropdowns). Non-markup kinds are ignored. Affects
+    /// only future markups.
     pub fn set_markup_color(&mut self, kind: &AnnotationKind, color: Color) {
         match kind {
             AnnotationKind::Highlight => self.highlight_color = color,
@@ -406,9 +428,9 @@ impl EditorComponent {
         }
     }
 
-    /// The color the given markup create-tool commits with (per-tool color).
-    /// Non-markup kinds fall back to `DEFAULT_MARKUP_COLOR` (unused by their
-    /// payload builders).
+    /// The color the given markup kind is applied with (per-kind color).
+    /// Non-markup kinds fall back to `DEFAULT_MARKUP_COLOR` (unreachable via
+    /// [`Self::apply_markup`], which guards the kind first).
     fn markup_color(&self, kind: &AnnotationKind) -> Color {
         match kind {
             AnnotationKind::Highlight => self.highlight_color,
@@ -862,7 +884,7 @@ impl EditorComponent {
                         } => {
                             // Degenerate-create guard: a click-without-drag
                             // (start ~= current) must commit nothing. Applies
-                            // to all create kinds (Shape/Markup/Freehand - a
+                            // to all create kinds (Shape/Freehand - a
                             // single-point Freehand click is equally inert).
                             // `drag` was already taken above, so the drag
                             // state is cleared either way.
@@ -905,14 +927,13 @@ impl EditorComponent {
                                             .unwrap_or(p)
                                     })
                                     .collect();
-                                let payload = build_create_payload(
-                                    &kind,
-                                    start_l,
-                                    current_l,
-                                    &path_local,
-                                    self.markup_color(&kind),
+                                let payload =
+                                    build_create_payload(&kind, start_l, current_l, &path_local);
+                                let id = self.editor.create_annotation(
+                                    kind.to_annotation_kind(),
+                                    page,
+                                    payload,
                                 );
-                                let id = self.editor.create_annotation(kind.clone(), page, payload);
                                 self.editor.select(id.clone());
                                 // No spring-back: the create tool stays active after
                                 // commit (spec 3.3, continuous drawing). The host
@@ -1742,11 +1763,11 @@ fn drag_to_preview(doc: &OfdDocument, d: &DragState, vp: &Viewport) -> Option<Dr
             current,
             path,
         } => {
-            if *kind == AnnotationKind::Freehand {
+            if matches!(kind, CreateKind::Freehand) {
                 Some(DragPreview::CreateFreehand { path: path.clone() })
             } else if matches!(
                 kind,
-                AnnotationKind::Shape(ShapeKind::Line) | AnnotationKind::Shape(ShapeKind::Arrow)
+                CreateKind::Shape(ShapeKind::Line) | CreateKind::Shape(ShapeKind::Arrow)
             ) {
                 // Line/Arrow are defined by their endpoints, not their bbox -
                 // carry the page-local start/current so the preview draws the
@@ -1756,7 +1777,7 @@ fn drag_to_preview(doc: &OfdDocument, d: &DragState, vp: &Viewport) -> Option<Dr
                 let current_local =
                     viewport_to_page_local(doc, vp, &page, *current).unwrap_or(*current);
                 Some(DragPreview::CreateLine {
-                    kind: kind.clone(),
+                    kind: kind.to_annotation_kind(),
                     start: start_local,
                     current: current_local,
                     width: DEFAULT_SHAPE_WIDTH,
@@ -1774,7 +1795,7 @@ fn drag_to_preview(doc: &OfdDocument, d: &DragState, vp: &Viewport) -> Option<Dr
                     viewport_to_page_local(doc, vp, &page, *current).unwrap_or(*current);
                 let rect = bbox(start_local, current_local);
                 Some(DragPreview::Create {
-                    kind: kind.clone(),
+                    kind: kind.to_annotation_kind(),
                     rect,
                 })
             }
@@ -1949,49 +1970,23 @@ fn compute_resize(handle: &HandlePos, anchor: (f64, f64), orig: Rect, point: (f6
 /// Build the [`AnnotationPayload`] for a newly created annotation from the
 /// drag geometry.
 ///
-/// - Markup (Highlight/Underline/Strikeout/Squiggly): quad_points = [start, current].
 /// - Freehand: path from accumulated `path` points (M + L commands).
 /// - Shape: rect = bbox(start, current). Line/Arrow additionally store
 ///   `points = [start, current]` so the draw direction (and arrowhead
 ///   position) is preserved - the bbox alone loses which diagonal was drawn.
 ///   Rect/Ellipse store empty `points` (no endpoint direction).
+///
+/// Only drag-createable kinds exist here (spec 2026-09-10 §4.1): markup is
+/// built from a body-text selection by [`EditorComponent::apply_markup`],
+/// and Note/TextBox/... are created programmatically, not by a tool drag.
 fn build_create_payload(
-    kind: &AnnotationKind,
+    kind: &CreateKind,
     start: (f64, f64),
     current: (f64, f64),
     path: &[(f64, f64)],
-    markup_color: Color,
 ) -> AnnotationPayload {
     match kind {
-        AnnotationKind::Highlight => AnnotationPayload::Markup {
-            quad_points: vec![
-                Point {
-                    x: start.0,
-                    y: start.1,
-                },
-                Point {
-                    x: current.0,
-                    y: current.1,
-                },
-            ],
-            color: markup_color,
-        },
-        AnnotationKind::Underline | AnnotationKind::Strikeout | AnnotationKind::Squiggly => {
-            AnnotationPayload::Markup {
-                quad_points: vec![
-                    Point {
-                        x: start.0,
-                        y: start.1,
-                    },
-                    Point {
-                        x: current.0,
-                        y: current.1,
-                    },
-                ],
-                color: markup_color,
-            }
-        }
-        AnnotationKind::Freehand => {
+        CreateKind::Freehand => {
             let commands = path
                 .iter()
                 .enumerate()
@@ -2009,7 +2004,7 @@ fn build_create_payload(
                 width: DEFAULT_FREEHAND_WIDTH,
             }
         }
-        AnnotationKind::Shape(shape_kind) => {
+        CreateKind::Shape(shape_kind) => {
             // Line/Arrow carry their two endpoints in `points` (direction =
             // start -> current; the arrowhead sits at `current`). The bbox
             // `rect` alone loses which diagonal was drawn, so the endpoints
@@ -2037,34 +2032,6 @@ fn build_create_payload(
                 points,
             }
         }
-        // Note/TextBox/Stamp/Watermark: use bbox as rect with minimal defaults.
-        // The host can refine via property panels later.
-        AnnotationKind::Note => AnnotationPayload::Note {
-            rect: bbox(start, current),
-            color: Color::Rgb(255, 200, 0),
-            content: String::new(),
-            icon: rofd_dom::NoteIcon::Note,
-        },
-        AnnotationKind::TextBox => AnnotationPayload::TextBox {
-            rect: bbox(start, current),
-            content: String::new(),
-            font: rofd_dom::FontId::new(""),
-            size: 12.0,
-            color: Color::Rgb(0, 0, 0),
-        },
-        AnnotationKind::Stamp => AnnotationPayload::Stamp {
-            rect: bbox(start, current),
-            image: rofd_dom::ImageId::new(""),
-        },
-        AnnotationKind::Watermark => AnnotationPayload::Watermark {
-            rect: bbox(start, current),
-            content: String::new(),
-            opacity: 0.3,
-            angle: 45.0,
-            font: rofd_dom::FontId::new(""),
-            size: 48.0,
-            color: Color::Rgb(200, 200, 200),
-        },
     }
 }
 
@@ -2409,7 +2376,7 @@ mod tests {
     fn set_tool_changes_tool_state() {
         let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
         assert!(matches!(c.tool, Tool::Text));
-        c.set_tool(Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)));
+        c.set_tool(Tool::Create(CreateKind::Shape(ShapeKind::Rect)));
         assert!(matches!(c.tool, Tool::Create(_)));
         c.set_tool(Tool::Text);
         assert!(matches!(c.tool, Tool::Text));
@@ -2418,7 +2385,7 @@ mod tests {
     #[test]
     fn create_rect_via_drag() {
         let mut c = component_with_note();
-        c.set_tool(Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)));
+        c.set_tool(Tool::Create(CreateKind::Shape(ShapeKind::Rect)));
         c.handle_event(&ViewEvent::PointerDown {
             button: MouseButton::Left,
             x: 10.0,
@@ -2438,7 +2405,7 @@ mod tests {
             "new rect selected"
         );
         assert!(
-            matches!(c.tool, Tool::Create(AnnotationKind::Shape(ShapeKind::Rect))),
+            matches!(c.tool, Tool::Create(CreateKind::Shape(ShapeKind::Rect))),
             "tool stays on the create tool after commit (no spring-back)"
         );
         // Verify the annotation was created with the expected rect.
@@ -2466,7 +2433,7 @@ mod tests {
     fn create_commit_keeps_tool_no_spring_back() {
         // spec §3.3：画完一个批注停留在当前创建工具（连续绘制）。
         let mut c = component_with_page();
-        c.set_tool(Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)));
+        c.set_tool(Tool::Create(CreateKind::Shape(ShapeKind::Rect)));
         c.handle_event(&ViewEvent::PointerDown {
             button: MouseButton::Left,
             x: 10.0,
@@ -2481,7 +2448,7 @@ mod tests {
             y: 60.0,
         });
         assert!(
-            matches!(c.tool, Tool::Create(AnnotationKind::Shape(ShapeKind::Rect))),
+            matches!(c.tool, Tool::Create(CreateKind::Shape(ShapeKind::Rect))),
             "tool stays on the create tool (no spring-back)"
         );
         // 第二次拖拽直接画第二个批注。
@@ -2524,7 +2491,7 @@ mod tests {
     #[test]
     fn create_click_without_drag_creates_nothing() {
         let mut c = component_with_page();
-        c.set_tool(Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)));
+        c.set_tool(Tool::Create(CreateKind::Shape(ShapeKind::Rect)));
         let history_before = c.editor.history_len();
         c.handle_event(&ViewEvent::PointerDown {
             button: MouseButton::Left,
@@ -2550,7 +2517,7 @@ mod tests {
             "no selection change"
         );
         assert!(
-            matches!(c.tool, Tool::Create(AnnotationKind::Shape(ShapeKind::Rect))),
+            matches!(c.tool, Tool::Create(CreateKind::Shape(ShapeKind::Rect))),
             "tool stays Create (no spring-back still holds)"
         );
         assert!(c.drag.is_none(), "suppressed click leaves no drag state");
@@ -2561,7 +2528,7 @@ mod tests {
     #[test]
     fn create_drag_slightly_above_threshold_still_creates() {
         let mut c = component_with_page();
-        c.set_tool(Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)));
+        c.set_tool(Tool::Create(CreateKind::Shape(ShapeKind::Rect)));
         c.handle_event(&ViewEvent::PointerDown {
             button: MouseButton::Left,
             x: 10.0,
@@ -2583,35 +2550,14 @@ mod tests {
         );
     }
 
-    /// set_markup_color 按工具独立配色（每个标注工具一个颜色下拉）：
-    /// 下划线用红色，创建的下划线批注 payload 即红色；且不影响高亮默认黄。
+    /// set_markup_color 按种类独立配色（每个 markup 按钮一个颜色下拉）：
+    /// 下划线设红不影响高亮默认黄；非 markup kind 是 no-op。设色经
+    /// apply_markup 生效的断言见 apply_markup_uses_per_kind_color（markup
+    /// 自 2026-09-10 起不再是工具，无拖画路径）。
     #[test]
     fn set_markup_color_scopes_per_kind() {
         let mut c = component_with_page();
-        c.set_clock("t".into(), 1);
         c.set_markup_color(&AnnotationKind::Underline, Color::Rgb(255, 0, 0));
-        c.set_tool(Tool::Create(AnnotationKind::Underline));
-        c.handle_event(&ViewEvent::PointerDown {
-            button: MouseButton::Left,
-            x: 10.0,
-            y: 10.0,
-            modifiers: Modifiers::default(),
-            click_count: 1,
-        });
-        c.handle_event(&ViewEvent::PointerMove { x: 40.0, y: 14.0 });
-        c.handle_event(&ViewEvent::PointerUp {
-            button: MouseButton::Left,
-            x: 40.0,
-            y: 14.0,
-        });
-        assert_eq!(annotation_count(&c), 1);
-        let anns = c.document().annotations.for_page(&PageId::new("P0"));
-        match &anns[0].payload {
-            AnnotationPayload::Markup { color, .. } => {
-                assert_eq!(*color, Color::Rgb(255, 0, 0), "underline uses its color");
-            }
-            _ => panic!("expected Markup payload"),
-        }
         // 高亮保持默认黄（per-kind 隔离）。
         assert_eq!(c.highlight_color, Color::Rgb(255, 255, 0));
         assert_eq!(c.underline_color, Color::Rgb(255, 0, 0));
@@ -2626,7 +2572,7 @@ mod tests {
     #[test]
     fn create_freehand_click_without_drag_creates_nothing() {
         let mut c = component_with_page();
-        c.set_tool(Tool::Create(AnnotationKind::Freehand));
+        c.set_tool(Tool::Create(CreateKind::Freehand));
         let history_before = c.editor.history_len();
         c.handle_event(&ViewEvent::PointerDown {
             button: MouseButton::Left,
@@ -2656,7 +2602,7 @@ mod tests {
         // loses which diagonal was drawn, so without `points` a TR->BL drag
         // would render as the wrong line.
         let mut c = component_with_note();
-        c.set_tool(Tool::Create(AnnotationKind::Shape(ShapeKind::Line)));
+        c.set_tool(Tool::Create(CreateKind::Shape(ShapeKind::Line)));
         c.handle_event(&ViewEvent::PointerDown {
             button: MouseButton::Left,
             x: 10.0,
@@ -2701,7 +2647,7 @@ mod tests {
         // even though the bbox is the same as a TL -> BR drag. This is the
         // case that a rect-only model gets backwards.
         let mut c = component_with_note();
-        c.set_tool(Tool::Create(AnnotationKind::Shape(ShapeKind::Arrow)));
+        c.set_tool(Tool::Create(CreateKind::Shape(ShapeKind::Arrow)));
         c.handle_event(&ViewEvent::PointerDown {
             button: MouseButton::Left,
             x: 50.0,
@@ -2775,7 +2721,7 @@ mod tests {
             size: (0.0, 0.0),
             page_gap: 0.0,
         };
-        c.set_tool(Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)));
+        c.set_tool(Tool::Create(CreateKind::Shape(ShapeKind::Rect)));
         c.handle_event(&ViewEvent::PointerDown {
             button: MouseButton::Left,
             x: 40.0,
@@ -3705,7 +3651,7 @@ mod tests {
 
         // --- Step 1: CREATE via drag (set_tool Create + PointerDown/Move/Up).
         // Drag from (20,20) to (80,80) -> bbox = (20,20,60,60). ---
-        c.set_tool(Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)));
+        c.set_tool(Tool::Create(CreateKind::Shape(ShapeKind::Rect)));
         c.handle_event(&ViewEvent::PointerDown {
             button: MouseButton::Left,
             x: 20.0,
@@ -3721,7 +3667,7 @@ mod tests {
         });
         assert!(create_outcome.needs_repaint, "create needs repaint");
         assert!(
-            matches!(c.tool, Tool::Create(AnnotationKind::Shape(ShapeKind::Rect))),
+            matches!(c.tool, Tool::Create(CreateKind::Shape(ShapeKind::Rect))),
             "tool stays on the create tool after commit (no spring-back)"
         );
         // The create tool stays active after commit (no spring-back), so the
@@ -4124,7 +4070,7 @@ mod tests {
     #[test]
     fn c3_smoke_render_after_full_flow() {
         let mut c = component_with_page();
-        c.set_tool(Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)));
+        c.set_tool(Tool::Create(CreateKind::Shape(ShapeKind::Rect)));
         c.handle_event(&ViewEvent::PointerDown {
             button: MouseButton::Left,
             x: 20.0,
@@ -5021,6 +4967,20 @@ mod tests {
         assert!(!c.can_undo());
         // 全程选区回调不 fire（选区值未变）。
         assert_eq!(*fired.lock().unwrap(), before);
+    }
+
+    // --- 2026-09-10 Task 3: CreateKind 类型收紧（markup 不再是工具） ---
+
+    #[test]
+    fn create_tool_cannot_be_markup_kind() {
+        // 类型即约束：markup 无法构造为 Create 工具（编译期保证，这里仅
+        // 验证 Create(CreateKind) 的 kind 映射正确）。
+        let tool = Tool::Create(CreateKind::Shape(ShapeKind::Rect));
+        assert_eq!(tool, Tool::Create(CreateKind::Shape(ShapeKind::Rect)));
+        assert_eq!(
+            CreateKind::Freehand.to_annotation_kind(),
+            AnnotationKind::Freehand
+        );
     }
 
     #[test]

@@ -12,7 +12,7 @@
 //!
 //! [`parse_key`] and its tests are NOT cfg-gated - pure Rust, run on native.
 
-use rofd_component::{Key, PointerCursor, Tool};
+use rofd_component::{CreateKind, Key, PointerCursor, Tool};
 use rofd_dom::{AnnotationKind, ShapeKind};
 
 // ─── parse_key (native + wasm) ───────────────────────────────────────────────
@@ -47,9 +47,8 @@ pub fn parse_key(s: &str) -> Key {
 
 /// Map a JS-friendly tool-kind string to a [`Tool`]. Unknown strings fall
 /// back to [`Tool::Text`] (safe default). Mirrors the native-app's toolbar
-/// buttons: text / hand / highlight / underline / strikeout / squiggly
-/// / freehand / rect. `"select"` and `"textSelect"` are kept as aliases of
-/// `"text"` (the unified tool - spec §3).
+/// buttons: text / hand / freehand / rect. `"select"` and `"textSelect"` are
+/// kept as aliases of `"text"` (the unified tool - spec §3).
 ///
 /// Pure Rust (no wasm types) so it runs under `cargo test` on native, like
 /// [`parse_key`]. The WasmEditor's `setTool` method calls this.
@@ -57,16 +56,15 @@ pub fn parse_tool_kind(kind: &str) -> Tool {
     match kind {
         "text" | "select" | "textSelect" => Tool::Text,
         "hand" => Tool::Hand,
-        "highlight" => Tool::Create(AnnotationKind::Highlight),
-        "underline" => Tool::Create(AnnotationKind::Underline),
-        "strikeout" => Tool::Create(AnnotationKind::Strikeout),
-        "squiggly" => Tool::Create(AnnotationKind::Squiggly),
-        "freehand" => Tool::Create(AnnotationKind::Freehand),
-        "rect" => Tool::Create(AnnotationKind::Shape(ShapeKind::Rect)),
-        "ellipse" => Tool::Create(AnnotationKind::Shape(ShapeKind::Ellipse)),
-        "arrow" => Tool::Create(AnnotationKind::Shape(ShapeKind::Arrow)),
-        "line" => Tool::Create(AnnotationKind::Shape(ShapeKind::Line)),
-        "polygon" => Tool::Create(AnnotationKind::Shape(ShapeKind::Polygon)),
+        // NOTE: markup kinds ("highlight"/"underline"/"strikeout"/"squiggly")
+        // are NOT tools (spec 2026-09-10): they fall through to Text. Use
+        // applyMarkup over a body-text selection instead.
+        "freehand" => Tool::Create(CreateKind::Freehand),
+        "rect" => Tool::Create(CreateKind::Shape(ShapeKind::Rect)),
+        "ellipse" => Tool::Create(CreateKind::Shape(ShapeKind::Ellipse)),
+        "arrow" => Tool::Create(CreateKind::Shape(ShapeKind::Arrow)),
+        "line" => Tool::Create(CreateKind::Shape(ShapeKind::Line)),
+        "polygon" => Tool::Create(CreateKind::Shape(ShapeKind::Polygon)),
         _ => Tool::Text,
     }
 }
@@ -845,22 +843,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_tool_kind_markup_variants() {
+    fn parse_tool_kind_maps_markup_strings_to_text() {
+        // markup 不再是工具（spec 2026-09-10 §3 方案 A）：旧字符串降级为 Text。
+        for s in ["highlight", "underline", "strikeout", "squiggly"] {
+            assert_eq!(
+                parse_tool_kind(s),
+                Tool::Text,
+                "{s} must not be a create tool"
+            );
+        }
         assert_eq!(
-            parse_tool_kind("highlight"),
-            Tool::Create(AnnotationKind::Highlight)
-        );
-        assert_eq!(
-            parse_tool_kind("underline"),
-            Tool::Create(AnnotationKind::Underline)
-        );
-        assert_eq!(
-            parse_tool_kind("strikeout"),
-            Tool::Create(AnnotationKind::Strikeout)
-        );
-        assert_eq!(
-            parse_tool_kind("squiggly"),
-            Tool::Create(AnnotationKind::Squiggly)
+            parse_tool_kind("freehand"),
+            Tool::Create(CreateKind::Freehand)
         );
     }
 
@@ -868,11 +862,11 @@ mod tests {
     fn parse_tool_kind_freehand_and_rect() {
         assert_eq!(
             parse_tool_kind("freehand"),
-            Tool::Create(AnnotationKind::Freehand)
+            Tool::Create(CreateKind::Freehand)
         );
         assert_eq!(
             parse_tool_kind("rect"),
-            Tool::Create(AnnotationKind::Shape(ShapeKind::Rect))
+            Tool::Create(CreateKind::Shape(ShapeKind::Rect))
         );
     }
 

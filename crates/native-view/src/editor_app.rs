@@ -103,6 +103,16 @@ impl EditorApp {
     pub fn set_clock(&mut self, author: String, ts: i64) {
         self.component.set_clock(author, ts);
     }
+
+    /// Apply a markup annotation over the current body-text selection
+    /// (highlight/underline/strikeout/squiggly). Returns the new id, or
+    /// None when there is no selection / the kind is not markup.
+    pub fn apply_markup(
+        &mut self,
+        kind: rofd_dom::AnnotationKind,
+    ) -> Option<rofd_dom::AnnotationId> {
+        self.component.apply_markup(kind)
+    }
 }
 
 #[cfg(test)]
