@@ -532,10 +532,13 @@ mod wasm_impl {
         }
 
         /// Set the active editing tool. `kind` is a JS-friendly string:
-        /// `"text"` | `"hand"` | `"highlight"` | `"underline"` |
-        /// `"strikeout"` | `"squiggly"` | `"freehand"` | `"rect"`.
+        /// `"text"` | `"hand"` | `"freehand"` | `"rect"` | `"ellipse"` |
+        /// `"arrow"` | `"line"` | `"polygon"`.
         /// `"select"` / `"textSelect"` are accepted as aliases of `"text"`.
-        /// Unknown strings fall back to `Text` (safe default).
+        /// Markup kinds (`"highlight"` / `"underline"` / `"strikeout"` /
+        /// `"squiggly"`) are no longer tools (spec 2026-09-10) and fall back
+        /// to `Text`, like any unknown string - use `applyMarkup` on the
+        /// body-text selection instead.
         /// Mirrors the native-app's toolbar buttons.
         #[wasm_bindgen(js_name = setTool)]
         pub fn set_tool(&mut self, kind: &str) {
@@ -543,7 +546,7 @@ mod wasm_impl {
             self.component.set_tool(tool);
         }
 
-        /// Set the highlight color used when the Highlight create-tool
+        /// Set the highlight color used when `applyMarkup("highlight")`
         /// commits a new annotation (highlight-color dropdown). Accepts a
         /// `#RRGGBB` string; invalid input falls back to black via
         /// [`parse_color`].
@@ -553,11 +556,11 @@ mod wasm_impl {
             self.component.set_highlight_color(color);
         }
 
-        /// Set the color a markup create-tool (highlight/underline/strikeout/
-        /// squiggly) uses for new annotations - each markup tool gets its
-        /// own color dropdown. `kind` is one of `"highlight"` | `"underline"`
-        /// | `"strikeout"` | `"squiggly"`; other kinds are ignored. `color`
-        /// is a `#RRGGBB` string.
+        /// Set the color `applyMarkup` uses for new annotations of the given
+        /// markup kind (highlight/underline/strikeout/squiggly - each kind
+        /// gets its own color dropdown). `kind` is one of `"highlight"` |
+        /// `"underline"` | `"strikeout"` | `"squiggly"`; other kinds are
+        /// ignored. `color` is a `#RRGGBB` string.
         #[wasm_bindgen(js_name = setMarkupColor)]
         pub fn set_markup_color(&mut self, kind: &str, color: &str) {
             let Some(kind) = parse_markup_kind(kind) else {

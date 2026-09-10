@@ -464,24 +464,25 @@ export class Editor {
   }
 
   /** Set the active editing tool. `kind` is one of: "text", "hand",
-   * "highlight", "underline", "strikeout", "squiggly", "freehand", "rect",
-   * "ellipse", "arrow", "line", "polygon".
+   * "freehand", "rect", "ellipse", "arrow", "line", "polygon".
    * "select"/"textSelect" are accepted as aliases of "text" (the
    * unified tool: selects annotations AND drag-selects body text).
-   * Unknown values fall back to "text". */
+   * Markup values ("highlight", "underline", "strikeout", "squiggly")
+   * are no longer tools and fall back to "text", like unknown values -
+   * use applyMarkup(kind) on the current body-text selection instead. */
   setTool(kind: string): void {
     this.wasm.setTool(kind);
   }
 
-  /** Set the color used for newly created highlight annotations.
-   * `color` is "#RRGGBB" (invalid strings fall back to black).
+  /** Set the color used when applyMarkup('highlight') creates a new
+   * annotation. `color` is "#RRGGBB" (invalid strings fall back to black).
    * Mirrors the highlight-color dropdown on the annotate tab. */
   setHighlightColor(color: string): void {
     this.wasm.setHighlightColor(color);
   }
 
-  /** Set the color a markup create-tool uses for new annotations (each
-   * markup tool gets its own color dropdown). `kind` is one of "highlight",
+  /** Set the color applyMarkup(kind) uses for new annotations (each markup
+   * kind gets its own color dropdown). `kind` is one of "highlight",
    * "underline", "strikeout", "squiggly"; other kinds are ignored.
    * `color` is "#RRGGBB" (invalid strings fall back to black). */
   setMarkupColor(kind: string, color: string): void {
