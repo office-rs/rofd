@@ -11,3 +11,8 @@ pub use config::EditorConfig;
 pub use editor_component::{EditorComponent, Tool};
 pub use event::{EventOutcome, Key, Modifiers, MouseButton, ScrollDirection, ViewEvent};
 pub use render_target::RenderTarget;
+
+// Re-exported so adapters can name the body-text selection type (public API
+// surface of `text_selection()`/`on_text_selection_change`) without taking a
+// direct rofd-render dependency.
+pub use rofd_render::BodyTextSelection;

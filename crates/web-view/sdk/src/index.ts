@@ -69,7 +69,9 @@ interface WasmEditor {
   setOnPointerCursor(cb: ((shape: string) => void) | null): void;
   setOnCopy(cb: ((text: string) => void) | null): void;
   getSelectedText(): string | null;
-  createHighlightFromSelection(color: string): string | null;
+  applyMarkup(kind: 'highlight' | 'underline' | 'strikeout' | 'squiggly'): string | null;
+  hasTextSelection(): boolean;
+  setOnTextSelectionChange(cb: (() => void) | null): void;
   setTool(kind: string): void;
   setHighlightColor(color: string): void;
   setMarkupColor(kind: string, color: string): void;
@@ -84,6 +86,9 @@ export interface FontSource {
   url?: string;
   data?: Uint8Array;
 }
+
+/** The four text-markup annotation kinds (actions over a body-text selection). */
+export type MarkupKind = 'highlight' | 'underline' | 'strikeout' | 'squiggly';
 
 /** Configuration for `Editor.init`. */
 export interface EditorConfig {
@@ -118,6 +123,9 @@ export interface EditorConfig {
    * (inside the user-activation window); pass `clipboard: false` and use
    * this to handle copying yourself. */
   onCopy?: (text: string) => void;
+  /** Fired when the body-text selection appears/changes/clears (signal-only;
+   * query hasTextSelection()/getSelectedText() afterwards). */
+  onTextSelectionChange?: () => void;
   /** Set false to disable the default Ctrl+C -> clipboard wiring. */
   clipboard?: boolean;
 }
@@ -217,6 +225,7 @@ export class Editor {
     if (config?.onAnnotationInteract) wasmEditor.setOnAnnotationInteract(config.onAnnotationInteract);
     if (config?.onPageChange) wasmEditor.setOnPageChange(config.onPageChange);
     if (config?.onZoomChange) wasmEditor.setOnZoomChange(config.onZoomChange);
+    if (config?.onTextSelectionChange) wasmEditor.setOnTextSelectionChange(config.onTextSelectionChange);
 
     // Pointer cursor: the wasm side reports CSS cursor names directly
     // ("default"/"grab"/"grabbing"/"text"), so no mapping is needed here.
@@ -485,11 +494,24 @@ export class Editor {
     return this.wasm.getSelectedText();
   }
 
-  /** Convert the current body-text selection into a Highlight annotation.
-   * `color` is "#RRGGBB" (invalid strings fall back to black). Returns the
-   * new annotation's id, or null when there is no selection. */
-  createHighlightFromSelection(color: string): string | null {
-    return this.wasm.createHighlightFromSelection(color);
+  /** Convert the current body-text selection into a markup annotation of the
+   * given kind. Color is the per-kind default (setMarkupColor). Returns the
+   * new annotation's id, or null when there is no selection. The selection is
+   * kept so further markups can stack on the same range. */
+  applyMarkup(kind: MarkupKind): string | null {
+    return this.wasm.applyMarkup(kind);
+  }
+
+  /** Whether a body-text selection currently exists (markup buttons' enabled
+   * state). */
+  hasTextSelection(): boolean {
+    return this.wasm.hasTextSelection();
+  }
+
+  /** Fired when the body-text selection appears/changes/clears. Signal-only;
+   * query hasTextSelection()/getSelectedText() afterwards. */
+  setOnTextSelectionChange(cb: (() => void) | null): void {
+    this.wasm.setOnTextSelectionChange(cb);
   }
 
   /** Delete the annotation with the given id string. Returns false if no

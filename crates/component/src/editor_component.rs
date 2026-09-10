@@ -343,7 +343,10 @@ impl EditorComponent {
     /// host should request a repaint.
     pub fn undo(&mut self) -> bool {
         if self.editor.undo() {
-            self.after_annotation_change();
+            // undo/redo 不触碰正文（body 只读），选区仍然有效（spec
+            // 2026-09-10 §6.1）——不走清选区的 after_annotation_change，
+            // 选区值不变 -> 不 fire text_selection_change。
+            self.notify_document_change();
             true
         } else {
             false
@@ -352,7 +355,7 @@ impl EditorComponent {
     /// Redo the last undone command (same path as Ctrl+Y / Ctrl+Shift+Z).
     pub fn redo(&mut self) -> bool {
         if self.editor.redo() {
-            self.after_annotation_change();
+            self.notify_document_change();
             true
         } else {
             false
@@ -459,14 +462,25 @@ impl EditorComponent {
         self.after_annotation_change();
     }
 
-    /// Convert the current body-text selection into a Highlight annotation
-    /// (spec §5.4): one Markup quad per selected line (page-local tl/br
-    /// pairs), via the existing `create_annotation` command - undoable and
-    /// saved like any annotation. Clears the selection on success.
-    pub fn create_highlight_from_selection(
-        &mut self,
-        color: Color,
-    ) -> Option<rofd_dom::AnnotationId> {
+    /// Convert the current body-text selection into a markup annotation
+    /// (Highlight/Underline/Strikeout/Squiggly): one Markup quad per selected
+    /// line (page-local tl/br pairs), colored by the per-kind default
+    /// ([`Self::set_markup_color`]). Walks `create_annotation` (one
+    /// Transaction = one undo). Unlike other annotation mutations this KEEPS
+    /// the selection - the body text it refers to never changes - so the host
+    /// can stack further markups on the same range (spec 2026-09-10 §5.1).
+    /// Non-markup kinds and a missing/empty selection return `None` with no
+    /// side effects (no annotation, no history, no callbacks).
+    pub fn apply_markup(&mut self, kind: AnnotationKind) -> Option<rofd_dom::AnnotationId> {
+        if !matches!(
+            kind,
+            AnnotationKind::Highlight
+                | AnnotationKind::Underline
+                | AnnotationKind::Strikeout
+                | AnnotationKind::Squiggly
+        ) {
+            return None;
+        }
         let sel = self.text_selection.clone()?;
         let page_id = sel.page.clone();
         let rects = rofd_render::text_selection_rects(self.editor.document(), &self.viewport, &sel);
@@ -491,12 +505,17 @@ impl EditorComponent {
             quad_points.push(Point { x: tl.0, y: tl.1 });
             quad_points.push(Point { x: br.0, y: br.1 });
         }
+        let color = self.markup_color(&kind);
         let id = self.editor.create_annotation(
-            AnnotationKind::Highlight,
+            kind,
             page_id,
             AnnotationPayload::Markup { quad_points, color },
         );
-        self.after_annotation_change();
+        // Markup creation never invalidates body text (spec 2026-09-10
+        // §6.1)：不走清选区的 after_annotation_change（Some -> None -> Some
+        // 会让 text_selection_change 双发），只做 modified + on_change +
+        // annotation 失效通知。选区值全程不变 -> 不 fire 回调。
+        self.notify_document_change();
         self.fire_selection_change();
         Some(id)
     }
@@ -1288,14 +1307,10 @@ impl EditorComponent {
         use crate::event::Key;
         // Ctrl+Z: undo
         if modifiers.control && !modifiers.shift && matches!(key, Key::Char('z') | Key::Char('Z')) {
-            if self.editor.undo() {
-                self.after_annotation_change();
-                return EventOutcome {
-                    needs_repaint: true,
-                };
-            }
+            // 经 self.undo()（而非直接 editor.undo()）：键盘路径同样保留文字
+            // 选区（spec 2026-09-10 §6.1）。
             return EventOutcome {
-                needs_repaint: false,
+                needs_repaint: self.undo(),
             };
         }
         // Ctrl+Y or Ctrl+Shift+Z: redo
@@ -1304,14 +1319,8 @@ impl EditorComponent {
                 && modifiers.shift
                 && matches!(key, Key::Char('z') | Key::Char('Z')))
         {
-            if self.editor.redo() {
-                self.after_annotation_change();
-                return EventOutcome {
-                    needs_repaint: true,
-                };
-            }
             return EventOutcome {
-                needs_repaint: false,
+                needs_repaint: self.redo(),
             };
         }
         // Ctrl+S: save request
@@ -1428,11 +1437,21 @@ impl EditorComponent {
         }
     }
 
-    // Called by annotation-mutating commands (text editing, undo/redo, delete).
+    // Called by annotation-mutating commands (text editing, delete, program-
+    // matic create/move/resize): a document change invalidates the body-text
+    // selection (spec §5.1), so it is cleared through the choke point (which
+    // fires on_text_selection_change), then the change is broadcast.
     fn after_annotation_change(&mut self) {
-        self.modified = true;
-        // 文档变更 -> 文字选区失效（spec §5.1）。
         self.set_text_selection(None);
+        self.notify_document_change();
+    }
+
+    // The shared tail of every annotation mutation: bump the modified flag
+    // and fire `on_change` (the host invalidates caches + repaints). Used
+    // directly by the selection-preserving paths (apply_markup, undo, redo)
+    // where the body-text selection must survive untouched.
+    fn notify_document_change(&mut self) {
+        self.modified = true;
         if let Some(cb) = &self.callbacks.on_change {
             cb(self.editor.document());
         }
@@ -4879,11 +4898,10 @@ mod tests {
         assert!(c.text_selection().is_none());
     }
 
-    // --- P3 Task 5: selection -> Highlight annotation ---
+    // --- 2026-09-10 Task 2: apply_markup（选中转 markup，保留选区） ---
 
-    #[test]
-    fn create_highlight_from_selection_makes_markup_quads_and_undo_removes() {
-        let mut c = component_with_body_text();
+    /// 拖选两行（helper 与旧测试一致）：pd(31,25) -> Move(16,45) -> Up。
+    fn drag_select_two_lines(c: &mut EditorComponent) {
         c.set_tool(Tool::Text);
         c.handle_event(&pd(31.0, 25.0));
         c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
@@ -4892,34 +4910,35 @@ mod tests {
             x: 16.0,
             y: 45.0,
         });
+    }
+
+    #[test]
+    fn apply_markup_makes_quads_keeps_selection_and_undo_keeps_selection() {
+        let mut c = component_with_body_text();
+        drag_select_two_lines(&mut c);
         let id = c
-            .create_highlight_from_selection(Color::Rgb(255, 255, 0))
+            .apply_markup(AnnotationKind::Highlight)
             .expect("highlight created");
-        // 选区已清空（成功后清空，spec §5.4）。
-        assert!(c.text_selection().is_none());
+        // 保留选区（spec §6.1：应用成功后保留）。
+        assert!(
+            c.text_selection().is_some(),
+            "selection retained after apply"
+        );
         let ann = c.document().annotations.find(&id).unwrap();
         match &ann.payload {
             AnnotationPayload::Markup { quad_points, color } => {
+                // per-kind 默认高亮色 = 黄（DEFAULT_HIGHLIGHT_COLOR）。
                 assert_eq!(*color, Color::Rgb(255, 255, 0));
-                // 两行 -> 两个 quad（4 个点），页局部坐标（viewport=页局部因 zoom1/origin0）。
+                // 两行 -> 两个 quad（4 个点），页局部坐标。
                 assert_eq!(quad_points.len(), 4);
-                assert_eq!(
-                    quad_points[0],
-                    Point { x: 30.0, y: 20.0 },
-                    "line0 tl: cell2 x=20 + boundary 10"
-                );
-                assert_eq!(
-                    quad_points[1],
-                    Point { x: 50.0, y: 32.5 },
-                    "line0 br: cell3 x+adv=40 + boundary 10"
-                );
-                assert_eq!(quad_points[2], Point { x: 10.0, y: 40.0 }, "line1 tl");
-                assert_eq!(quad_points[3], Point { x: 20.0, y: 52.5 }, "line1 br");
+                assert_eq!(quad_points[0], Point { x: 30.0, y: 20.0 });
+                assert_eq!(quad_points[1], Point { x: 50.0, y: 32.5 });
+                assert_eq!(quad_points[2], Point { x: 10.0, y: 40.0 });
+                assert_eq!(quad_points[3], Point { x: 20.0, y: 52.5 });
             }
             _ => panic!("expected Markup payload"),
         }
-        // 可 undo（走 create_annotation 命令）。
-        assert!(c.can_undo());
+        // undo 移除批注，且选区保留（spec §6.1：undo 不清选区）。
         c.handle_event(&ViewEvent::KeyDown {
             key: Key::Char('z'),
             modifiers: Modifiers {
@@ -4929,17 +4948,79 @@ mod tests {
         });
         assert!(
             c.document().annotations.find(&id).is_none(),
-            "undo removes highlight"
+            "undo removes markup"
+        );
+        assert!(c.text_selection().is_some(), "selection survives undo");
+        // redo 恢复，选区仍在。
+        c.redo();
+        assert!(
+            c.document().annotations.find(&id).is_some(),
+            "redo restores markup"
+        );
+        assert!(c.text_selection().is_some(), "selection survives redo");
+    }
+
+    #[test]
+    fn apply_markup_without_selection_is_none_no_history() {
+        let mut c = component_with_body_text();
+        c.set_tool(Tool::Text);
+        assert!(c.apply_markup(AnnotationKind::Highlight).is_none());
+        assert!(!c.can_undo(), "no transaction on no-op");
+    }
+
+    #[test]
+    fn apply_markup_rejects_non_markup_kind() {
+        let mut c = component_with_body_text();
+        drag_select_two_lines(&mut c);
+        assert!(c.apply_markup(AnnotationKind::Note).is_none());
+        assert!(!c.can_undo());
+        assert!(
+            c.text_selection().is_some(),
+            "no-op must not clear selection"
         );
     }
 
     #[test]
-    fn create_highlight_without_selection_is_none() {
+    fn apply_markup_uses_per_kind_color() {
         let mut c = component_with_body_text();
-        c.set_tool(Tool::Text);
-        assert!(c
-            .create_highlight_from_selection(Color::Rgb(255, 255, 0))
-            .is_none());
+        drag_select_two_lines(&mut c);
+        c.set_markup_color(&AnnotationKind::Squiggly, Color::Rgb(1, 2, 3));
+        let id = c.apply_markup(AnnotationKind::Squiggly).unwrap();
+        let ann = c.document().annotations.find(&id).unwrap();
+        match &ann.payload {
+            AnnotationPayload::Markup { color, .. } => assert_eq!(*color, Color::Rgb(1, 2, 3)),
+            _ => panic!("expected Markup payload"),
+        }
+    }
+
+    #[test]
+    fn apply_markup_stacks_and_does_not_fire_text_selection_change() {
+        let mut c = component_with_body_text();
+        let fired = Arc::new(Mutex::new(0u32));
+        let f = fired.clone();
+        c.on_text_selection_change(move |_sel| {
+            *f.lock().unwrap() += 1;
+        });
+        drag_select_two_lines(&mut c);
+        let before = *fired.lock().unwrap();
+        let id1 = c.apply_markup(AnnotationKind::Underline).unwrap();
+        let id2 = c.apply_markup(AnnotationKind::Underline).unwrap();
+        assert_ne!(id1, id2, "stacking creates independent annotations");
+        let count = c
+            .document()
+            .annotations
+            .by_page
+            .values()
+            .flatten()
+            .filter(|a| a.kind == AnnotationKind::Underline)
+            .count();
+        assert_eq!(count, 2);
+        // undo 两次逐条撤销。
+        assert!(c.undo());
+        assert!(c.undo());
+        assert!(!c.can_undo());
+        // 全程选区回调不 fire（选区值未变）。
+        assert_eq!(*fired.lock().unwrap(), before);
     }
 
     #[test]
