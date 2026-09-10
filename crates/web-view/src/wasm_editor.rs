@@ -102,7 +102,8 @@ pub fn pointer_cursor_str(c: PointerCursor) -> &'static str {
 /// typos, not an error worth surfacing.
 ///
 /// Pure Rust (no wasm types) so it runs under `cargo test` on native, like
-/// [`parse_key`]. The WasmEditor's `createHighlightFromSelection` calls this.
+/// [`parse_key`]. The WasmEditor's `setHighlightColor`/`setMarkupColor` call
+/// this.
 pub fn parse_color(s: &str) -> rofd_dom::Color {
     // ASCII check first: slicing multi-byte UTF-8 mid-char would panic, and
     // only ASCII hex digits are valid anyway.
@@ -128,8 +129,8 @@ mod wasm_impl {
     use std::rc::Rc;
 
     use rofd_component::{
-        ContextTarget, EditorComponent, EditorConfig, Modifiers, MouseButton, PointerCursor,
-        ScrollDirection, ViewEvent,
+        BodyTextSelection, ContextTarget, EditorComponent, EditorConfig, Modifiers, MouseButton,
+        PointerCursor, ScrollDirection, ViewEvent,
     };
     use rofd_dom::{AnnotationId, AnnotationSelection, OfdDocument, OfdWarning};
     use rofd_editor::TextCursor;
@@ -159,6 +160,7 @@ mod wasm_impl {
         pub on_zoom_change: Rc<RefCell<Option<js_sys::Function>>>,
         pub on_pointer_cursor: Rc<RefCell<Option<js_sys::Function>>>,
         pub on_copy: Rc<RefCell<Option<js_sys::Function>>>,
+        pub on_text_selection_change: Rc<RefCell<Option<js_sys::Function>>>,
     }
 
     /// wasm-bindgen editor surface for the web.
@@ -300,16 +302,30 @@ mod wasm_impl {
             self.component.selected_text()
         }
 
-        /// Convert the current body-text selection into a Highlight
-        /// annotation. Returns the new annotation's id string, or null when
-        /// there is no selection. `color` is `"#RRGGBB"` (invalid strings
-        /// fall back to black - see [`parse_color`]).
-        #[wasm_bindgen(js_name = createHighlightFromSelection)]
-        pub fn create_highlight_from_selection(&mut self, color: &str) -> Option<String> {
-            let parsed = parse_color(color);
-            self.component
-                .create_highlight_from_selection(parsed)
-                .map(|id| id.0)
+        /// Convert the current body-text selection into a markup annotation
+        /// of the given kind ("highlight" | "underline" | "strikeout" |
+        /// "squiggly"; other strings return null). Color is the per-kind
+        /// default (setMarkupColor). Returns the new annotation's id, or
+        /// null when there is no selection. The selection is kept so further
+        /// markups can stack on the same range.
+        #[wasm_bindgen(js_name = applyMarkup)]
+        pub fn apply_markup(&mut self, kind: &str) -> Option<String> {
+            let kind = parse_markup_kind(kind)?;
+            self.component.apply_markup(kind).map(|id| id.0.clone())
+        }
+
+        /// Whether a body-text selection currently exists (markup buttons'
+        /// enabled state).
+        #[wasm_bindgen(js_name = hasTextSelection)]
+        pub fn has_text_selection(&self) -> bool {
+            self.component.has_text_selection()
+        }
+
+        /// Register the text-selection-change callback (signal-only, no
+        /// payload; query hasTextSelection/getSelectedText afterwards).
+        #[wasm_bindgen(js_name = setOnTextSelectionChange)]
+        pub fn set_on_text_selection_change(&mut self, callback: Option<js_sys::Function>) {
+            *self.callbacks.on_text_selection_change.borrow_mut() = callback;
         }
 
         // ─── Event Handlers ─────────────────────────────────────────────────
@@ -695,6 +711,13 @@ mod wasm_impl {
             self.component.on_copy(Box::new(move |text: String| {
                 call_js1_str(&on_copy_js, &text);
             }));
+
+            let on_text_selection_change_js = self.callbacks.on_text_selection_change.clone();
+            self.component.on_text_selection_change(Box::new(
+                move |_sel: Option<&BodyTextSelection>| {
+                    call_js0(&on_text_selection_change_js);
+                },
+            ));
         }
     }
 
