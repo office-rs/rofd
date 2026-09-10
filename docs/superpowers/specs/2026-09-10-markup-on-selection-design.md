@@ -153,11 +153,16 @@ setOnTextSelectionChange(cb: () => void): void   // 无参触发，宿主再查�
 | 点画布空白 | 清除 | ✅ |
 | 点任何批注（含 markup，互斥 spec §5.2） | 清除 | ✅ |
 | 切工具 / 加载新文档 | 清除 | ✅ |
+| 可见页切换（滚动跨页 / 翻页） | 清除 | ✅ |
 | **apply_markup 成功** | **保留** | ❌（值未变） |
 | undo / redo / zoom / scroll | 保留 | ❌（逻辑区间，矩形每帧现算） |
 
 关键机制：点击工具栏按钮发生在 canvas 之外，pointer 事件不进 component，
 选区天然存活——无需"选区粘滞"补丁。
+
+"可见页切换清除"一行是既有代码现状的补记（非本 spec 新增行为）：
+`maybe_fire_page_change` 在可见页变化时清文字选区；单页视口模型下选区
+本就绑定所在页，不跨页存活。
 
 ### 6.2 叠加与撤销语义
 
@@ -204,6 +209,7 @@ component 单测（核心，全部经 `ViewEvent` 驱动的真实拖选构造选
 9. `set_tool` 清选区并 fire。
 10. 类型收紧回归：`build_create_payload` 删 Markup 分支后 Shape/Freehand
     创建测试仍绿。
+11. apply 后新批注不处于选中态（Delete 不误删）。
 
 web-view：`parse_tool_kind("highlight") == Tool::Text`（纯 Rust 测试，native 跑）。
 

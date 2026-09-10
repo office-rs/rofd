@@ -5,6 +5,7 @@
       class="tool-btn"
       :class="{ active, disabled: disabled || actionDisabled, 'has-dropdown': hasDropdown }"
       :disabled="disabled"
+      :aria-disabled="disabled || actionDisabled"
       tabindex="-1"
       @click="!actionDisabled && $emit('click')"
     >
