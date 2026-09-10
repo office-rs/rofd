@@ -136,7 +136,9 @@ mod wasm_impl {
     use rofd_io::{parse_ofd, save_ofd, write_ofd, PackageHandle};
     use wasm_bindgen::prelude::*;
 
-    use crate::wasm_editor::{parse_color, parse_key, parse_markup_kind, parse_tool_kind, pointer_cursor_str};
+    use crate::wasm_editor::{
+        parse_color, parse_key, parse_markup_kind, parse_tool_kind, pointer_cursor_str,
+    };
     use crate::webgpu_render_target::WebGpuRenderTarget;
 
     /// JS callback slots. Each is an `Rc<RefCell<Option<Function>>>` so the
@@ -853,10 +855,22 @@ mod tests {
 
     #[test]
     fn parse_markup_kind_maps_and_rejects() {
-        assert_eq!(parse_markup_kind("highlight"), Some(AnnotationKind::Highlight));
-        assert_eq!(parse_markup_kind("underline"), Some(AnnotationKind::Underline));
-        assert_eq!(parse_markup_kind("strikeout"), Some(AnnotationKind::Strikeout));
-        assert_eq!(parse_markup_kind("squiggly"), Some(AnnotationKind::Squiggly));
+        assert_eq!(
+            parse_markup_kind("highlight"),
+            Some(AnnotationKind::Highlight)
+        );
+        assert_eq!(
+            parse_markup_kind("underline"),
+            Some(AnnotationKind::Underline)
+        );
+        assert_eq!(
+            parse_markup_kind("strikeout"),
+            Some(AnnotationKind::Strikeout)
+        );
+        assert_eq!(
+            parse_markup_kind("squiggly"),
+            Some(AnnotationKind::Squiggly)
+        );
         // Non-markup tools and unknown strings are rejected (None -> no-op).
         assert_eq!(parse_markup_kind("freehand"), None);
         assert_eq!(parse_markup_kind("rect"), None);

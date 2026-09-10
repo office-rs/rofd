@@ -344,11 +344,7 @@ mod tests {
     fn arrow_head_degenerate_width_falls_back_to_1pt() {
         // width = 0.0 (parsed PathObject without LineWidth) still yields a
         // visible head sized against the default 1pt stroke.
-        let p = arrow_path_points(
-            Point { x: 0.0, y: 0.0 },
-            Point { x: 10.0, y: 0.0 },
-            0.0,
-        );
+        let p = arrow_path_points(Point { x: 0.0, y: 0.0 }, Point { x: 10.0, y: 0.0 }, 0.0);
         // Horizontal shaft: corners sit back 5*0.3528*cos(25deg) from the tip
         // at +/-5*0.3528*sin(25deg) perpendicular.
         match (p.commands[2], p.commands[4]) {
