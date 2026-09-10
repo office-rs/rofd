@@ -491,6 +491,8 @@ impl EditorComponent {
     /// Transaction = one undo). Unlike other annotation mutations this KEEPS
     /// the selection - the body text it refers to never changes - so the host
     /// can stack further markups on the same range (spec 2026-09-10 §5.1).
+    /// The new annotation itself is NOT left selected (spec §6.2: Delete must
+    /// not misfire on a just-applied markup).
     /// Non-markup kinds and a missing/empty selection return `None` with no
     /// side effects (no annotation, no history, no callbacks).
     pub fn apply_markup(&mut self, kind: AnnotationKind) -> Option<rofd_dom::AnnotationId> {
@@ -533,6 +535,11 @@ impl EditorComponent {
             page_id,
             AnnotationPayload::Markup { quad_points, color },
         );
+        // editor 层 create_annotation 的通用约定把 selection_after 设为
+        // Single(id)，但 markup 应用后不应处于选中态（spec §5.1/§6.2：
+        // Delete 不误删）。文本选区存活时批注选区必为 None（§5.2 互斥），
+        // 事务的 selection_before 也捕获为 None，undo 还原后同样无选中。
+        self.editor.clear_selection();
         // Markup creation never invalidates body text (spec 2026-09-10
         // §6.1)：不走清选区的 after_annotation_change（Some -> None -> Some
         // 会让 text_selection_change 双发），只做 modified + on_change +
@@ -4940,6 +4947,58 @@ mod tests {
     }
 
     #[test]
+    fn apply_markup_does_not_select_new_annotation() {
+        let mut c = component_with_body_text();
+        drag_select_two_lines(&mut c);
+        let id = c
+            .apply_markup(AnnotationKind::Highlight)
+            .expect("highlight created");
+        // 应用后新批注不处于选中态（spec §5.1/§6.2：Delete 不误删）。
+        assert!(
+            matches!(c.selection(), AnnotationSelection::None),
+            "new markup must not be selected"
+        );
+        // 正文选区保留（可继续叠加 / 复制）。
+        assert!(c.text_selection().is_some());
+        // 批注本身确实创建成功。
+        assert!(c.document().annotations.find(&id).is_some());
+    }
+
+    #[test]
+    fn apply_markup_all_kinds_default_color_not_selected_one_txn() {
+        // 四种 markup 逐个应用：kind 正确、per-kind 默认色、不选中、
+        // 每次 apply 恰好一个 Transaction（一次 undo 撤一条）。
+        for (kind, default_color) in [
+            (AnnotationKind::Highlight, Color::Rgb(255, 255, 0)),
+            (AnnotationKind::Underline, Color::Rgb(0, 0, 255)),
+            (AnnotationKind::Strikeout, Color::Rgb(0, 0, 255)),
+            (AnnotationKind::Squiggly, Color::Rgb(0, 0, 255)),
+        ] {
+            let mut c = component_with_body_text();
+            drag_select_two_lines(&mut c);
+            let history_before = c.editor.history_len();
+            let id = c.apply_markup(kind.clone()).expect("markup created");
+            let ann = c.document().annotations.find(&id).unwrap();
+            assert_eq!(ann.kind, kind);
+            match &ann.payload {
+                AnnotationPayload::Markup { color, .. } => {
+                    assert_eq!(*color, default_color, "{kind:?}: per-kind default color");
+                }
+                _ => panic!("expected Markup payload"),
+            }
+            assert!(
+                matches!(c.selection(), AnnotationSelection::None),
+                "{kind:?}: new markup must not be selected"
+            );
+            assert_eq!(
+                c.editor.history_len(),
+                history_before + 1,
+                "{kind:?}: exactly one transaction per apply"
+            );
+        }
+    }
+
+    #[test]
     fn apply_markup_stacks_and_does_not_fire_text_selection_change() {
         let mut c = component_with_body_text();
         let fired = Arc::new(Mutex::new(0u32));
@@ -4952,6 +5011,11 @@ mod tests {
         let id1 = c.apply_markup(AnnotationKind::Underline).unwrap();
         let id2 = c.apply_markup(AnnotationKind::Underline).unwrap();
         assert_ne!(id1, id2, "stacking creates independent annotations");
+        // 叠加后同样不选中（最新一条也不选中）。
+        assert!(
+            matches!(c.selection(), AnnotationSelection::None),
+            "stacked markup must not be selected"
+        );
         let count = c
             .document()
             .annotations
@@ -4961,8 +5025,13 @@ mod tests {
             .filter(|a| a.kind == AnnotationKind::Underline)
             .count();
         assert_eq!(count, 2);
-        // undo 两次逐条撤销。
+        // undo 两次逐条撤销；undo 不得复活选中态（selection_before 捕获
+        // 时即 None，互斥不变量保证）。
         assert!(c.undo());
+        assert!(
+            matches!(c.selection(), AnnotationSelection::None),
+            "undo must not resurrect a selection"
+        );
         assert!(c.undo());
         assert!(!c.can_undo());
         // 全程选区回调不 fire（选区值未变）。
