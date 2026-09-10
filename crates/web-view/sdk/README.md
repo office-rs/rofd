@@ -8,7 +8,7 @@ TypeScript SDK for embedding the [rofd](https://github.com/office-rs/rofd) OFD (
 ## Features
 
 - **View** OFD body (read-only render).
-- **Annotate** with highlight / underline / strikeout / squiggly / freehand / rect / free-text.
+- **Annotate** — select body text and apply highlight / underline / strikeout / squiggly via `applyMarkup`, or draw with the freehand / rect / free-text tools.
 - **Surgical save** — re-serializes annotations and preserves untouched body entries byte-for-byte.
 - **WebGPU only** — no Canvas2D fallback. Chrome / Edge 113+ required.
 - **Zero framework** — drop into any HTML page; the SDK owns the canvas, event binding, and render loop.
@@ -60,7 +60,10 @@ WebGPU requires Chrome / Edge 113+ (or any browser shipping WebGPU). On unsuppor
 | `loadOfd(bytes: Uint8Array)` | Load an `.ofd` package from raw bytes. |
 | `saveOfd(): Uint8Array` | Serialize the current document back to OFD package bytes. |
 | `setClock(author: string, ts: number)` | Inject author + timestamp (ms) for subsequent edits. **Call before any annotation edit.** |
-| `setTool(kind: string)` | Switch the active tool. One of: `select`, `highlight`, `underline`, `strikeout`, `squiggly`, `freehand`, `rect`. Unknown values fall back to `select`. |
+| `setTool(kind: string)` | Switch the active tool. One of: `select` (text), `hand`, `freehand`, `rect`, `ellipse`, `arrow`, `line`, `polygon`. Unknown values — including the legacy markup strings `highlight` / `underline` / `strikeout` / `squiggly` — fall back to the text tool. |
+| `applyMarkup(kind: MarkupKind): string \| null` | Convert the current body-text selection into a markup annotation (`highlight` / `underline` / `strikeout` / `squiggly`; color via `setMarkupColor`). Returns the new annotation id, or `null` when there is no selection. The selection is kept so further markups can stack on the same range. |
+| `hasTextSelection(): boolean` | Whether a body-text selection currently exists (drives markup-button enabled state). |
+| `setOnTextSelectionChange(cb)` | Subscribe to the body-text selection appearing / changing / clearing. Signal-only — query `hasTextSelection()` / `getSelectedText()` afterwards. |
 | `deleteAnnotation(id: string): boolean` | Delete the annotation with the given id. |
 | `deleteSelected(): number` | Delete all currently-selected annotations; returns the count. |
 | `handleScrollPage(direction: 'up' \| 'down')` | Scroll by one page height. |
@@ -74,6 +77,7 @@ WebGPU requires Chrome / Edge 113+ (or any browser shipping WebGPU). On unsuppor
 |---|---|
 | `onChange` | Document changed (render loop re-renders). |
 | `onSelectionChange` | Selection set changed. |
+| `onTextSelectionChange` | Body-text selection appeared / changed / cleared. |
 | `onCursorChange` | Caret / cursor moved. |
 | `onSaveRequest` | Ctrl+S pressed — host should prompt for path or auto-save. |
 | `onContextMenu(x, y, annotationId)` | Right-click. `annotationId` is `null` when hitting page body or desk background. |
