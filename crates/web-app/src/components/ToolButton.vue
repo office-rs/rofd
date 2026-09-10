@@ -3,10 +3,10 @@
     <button
       type="button"
       class="tool-btn"
-      :class="{ active, disabled: disabled, 'has-dropdown': hasDropdown }"
+      :class="{ active, disabled: disabled || actionDisabled, 'has-dropdown': hasDropdown }"
       :disabled="disabled"
       tabindex="-1"
-      @click="$emit('click')"
+      @click="!actionDisabled && $emit('click')"
     >
       <span class="tool-btn-body">
         <span v-if="$slots.default" class="tool-btn-icon"><slot /></span>
@@ -40,6 +40,9 @@ defineProps<{
   label: string;
   active?: boolean;
   disabled?: boolean;
+  /** 主动作禁用（灰显、点击无效），但下拉箭头仍可点（markup 按钮：
+   *  无选区时主键禁用、颜色面板仍可预选颜色）。 */
+  actionDisabled?: boolean;
   hasDropdown?: boolean;
   /** 按钮内嵌值（如 "100%"），与图标并列显示（大组合控件） */
   value?: string;

@@ -137,16 +137,44 @@
           </RibbonGroup>
 
           <RibbonGroup>
-            <ToolButton label="高亮" tooltip="高亮批注：拖选正文文本高亮" :active="activeTool === 'highlight'" has-dropdown @click="setTool('highlight')" @dropdown="openDropdown('highlight', $event)">
+            <ToolButton
+              label="高亮"
+              tooltip="高亮批注：选中正文文字后点击"
+              has-dropdown
+              :action-disabled="!hasTextSelection"
+              @click="applyMarkup('highlight')"
+              @dropdown="openDropdown('highlight', $event)"
+            >
               <HighlightIcon :color="highlightColor" />
             </ToolButton>
-            <ToolButton label="下划线" tooltip="下划线批注（下拉选择颜色）" :active="activeTool === 'underline'" has-dropdown @click="setTool('underline')" @dropdown="openDropdown('underline', $event)">
+            <ToolButton
+              label="下划线"
+              tooltip="下划线批注：选中正文文字后点击（下拉选颜色）"
+              has-dropdown
+              :action-disabled="!hasTextSelection"
+              @click="applyMarkup('underline')"
+              @dropdown="openDropdown('underline', $event)"
+            >
               <UnderlineIcon :color="underlineColor" />
             </ToolButton>
-            <ToolButton label="删除线" tooltip="删除线批注（下拉选择颜色）" :active="activeTool === 'strikeout'" has-dropdown @click="setTool('strikeout')" @dropdown="openDropdown('strikeout', $event)">
+            <ToolButton
+              label="删除线"
+              tooltip="删除线批注：选中正文文字后点击（下拉选颜色）"
+              has-dropdown
+              :action-disabled="!hasTextSelection"
+              @click="applyMarkup('strikeout')"
+              @dropdown="openDropdown('strikeout', $event)"
+            >
               <StrikeoutIcon :color="strikeoutColor" />
             </ToolButton>
-            <ToolButton label="波浪线" tooltip="波浪线批注（下拉选择颜色）" :active="activeTool === 'squiggly'" has-dropdown @click="setTool('squiggly')" @dropdown="openDropdown('squiggly', $event)">
+            <ToolButton
+              label="波浪线"
+              tooltip="波浪线批注：选中正文文字后点击（下拉选颜色）"
+              has-dropdown
+              :action-disabled="!hasTextSelection"
+              @click="applyMarkup('squiggly')"
+              @dropdown="openDropdown('squiggly', $event)"
+            >
               <SquigglyIcon :color="squigglyColor" />
             </ToolButton>
           </RibbonGroup>
@@ -372,6 +400,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 
 import { message } from 'ant-design-vue';
 import type { Component } from 'vue';
 import { Editor } from '@office-rs/rofd';
+import type { MarkupKind } from '@office-rs/rofd';
 import RibbonGroup from './components/RibbonGroup.vue';
 import ToolButton from './components/ToolButton.vue';
 import FileMenu from './components/FileMenu.vue';
@@ -481,6 +510,8 @@ const highlightColor = ref('#FFDD00');
 const underlineColor = ref('#0000FF');
 const strikeoutColor = ref('#0000FF');
 const squigglyColor = ref('#0000FF');
+/** 正文文字选区是否存在（markup 按钮禁用态；spec 2026-09-10 R1）。 */
+const hasTextSelection = ref(false);
 const pageIndex = ref(0);
 const zoom = ref(PX_PER_MM);
 const zoomPercent = computed(() => Math.round((zoom.value / PX_PER_MM) * 100));
@@ -497,9 +528,6 @@ const shapeIcon = computed(() => SHAPE_TOOLS[activeShape.value]?.icon ?? RectIco
 const shapeLabel = computed(() => SHAPE_TOOLS[activeShape.value]?.label ?? '矩形');
 const isShapeTool = computed(() => activeTool.value in SHAPE_TOOLS);
 
-/** 标注工具（颜色下拉共用 HighlightColorPanel，取色回写各自颜色）。 */
-type MarkupKind = 'highlight' | 'underline' | 'strikeout' | 'squiggly';
-
 /** 下拉浮层：kind 决定渲染哪个面板，x/y 为锚定按钮左下角（viewport 坐标）。 */
 type DropdownKind = 'file' | MarkupKind | 'shape' | 'zoom' | 'background' | null;
 const dropdown = reactive<{ kind: DropdownKind; x: number; y: number }>({ kind: null, x: 0, y: 0 });
@@ -510,8 +538,17 @@ const ctxMenu = reactive({ visible: false, x: 0, y: 0, id: '' });
 
 function setTool(kind: string): void {
   activeTool.value = kind;
-  if (kind in SHAPE_TOOLS) activeShape.value = kind;
+  if (kind in SHAPE_TOOLS) {
+    activeShape.value = kind;
+  }
   editor.value?.setTool(kind);
+}
+
+/** markup 四种是选区上的动作而非工具：无选区时按钮禁用（不会走到这里）。
+ * 一次点击 = 一条批注 = 一次撤销；选区保留可继续叠加。 */
+function applyMarkup(kind: MarkupKind): void {
+  editor.value?.applyMarkup(kind);
+  refreshHistoryState();
 }
 
 function refreshHistoryState(): void {
@@ -647,17 +684,25 @@ function markupColorOf(kind: MarkupKind): string {
 function pickHighlightColor(color: string): void {
   highlightColor.value = color;
   editor.value?.setHighlightColor(color);
-  setTool('highlight'); // 选定颜色即切到高亮工具
+  if (hasTextSelection.value) {
+    applyMarkup('highlight'); // 选色即应用（R4）
+  }
   closeDropdown();
 }
 
-/** 线类工具选色：颜色独立配置（setMarkupColor），选定即切到该工具。 */
+/** 线类工具选色：颜色独立配置（setMarkupColor），有选区即应用（R4）。 */
 function pickMarkupColor(kind: Exclude<MarkupKind, 'highlight'>, color: string): void {
-  if (kind === 'underline') underlineColor.value = color;
-  else if (kind === 'strikeout') strikeoutColor.value = color;
-  else squigglyColor.value = color;
+  if (kind === 'underline') {
+    underlineColor.value = color;
+  } else if (kind === 'strikeout') {
+    strikeoutColor.value = color;
+  } else {
+    squigglyColor.value = color;
+  }
   editor.value?.setMarkupColor(kind, color);
-  setTool(kind);
+  if (hasTextSelection.value) {
+    applyMarkup(kind);
+  }
   closeDropdown();
 }
 
@@ -780,6 +825,10 @@ onMounted(async () => {
       },
       onZoomChange: (z) => {
         zoom.value = z;
+      },
+      // 文字选区出现/变化/清除（信号回调）：驱动 markup 按钮禁用态。
+      onTextSelectionChange: () => {
+        hasTextSelection.value = editor.value?.hasTextSelection() ?? false;
       },
     });
     editor.value = ed;
