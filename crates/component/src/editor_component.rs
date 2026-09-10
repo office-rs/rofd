@@ -222,7 +222,7 @@ impl EditorComponent {
         // document; its geometry is meaningless after the swap.
         self.drag = None;
         // Body-text selection belongs to the old document's pages.
-        self.text_selection = None;
+        self.set_text_selection(None);
         self.editor.load_document(doc);
         self.font_store = Some(self.build_font_store());
         self.modified = false;
@@ -234,7 +234,7 @@ impl EditorComponent {
 
     pub fn new_document(&mut self) {
         self.drag = None;
-        self.text_selection = None;
+        self.set_text_selection(None);
         self.editor.load_document(OfdDocument::default());
         self.font_store = Some(self.build_font_store());
         self.modified = false;
@@ -253,6 +253,25 @@ impl EditorComponent {
     /// The current body-text selection (TextSelect tool), if any (spec §5.1).
     pub fn text_selection(&self) -> Option<&rofd_render::BodyTextSelection> {
         self.text_selection.as_ref()
+    }
+    /// Whether a body-text selection currently exists (markup buttons'
+    /// enabled state; spec 2026-09-10 §5.1).
+    pub fn has_text_selection(&self) -> bool {
+        self.text_selection.is_some()
+    }
+
+    /// Central mutator for the body-text selection: assigns only when the
+    /// value actually changed, then fires `on_text_selection_change`. This
+    /// is the callback's single choke point - direct field writes would miss
+    /// or double-fire.
+    pub(crate) fn set_text_selection(&mut self, sel: Option<rofd_render::BodyTextSelection>) {
+        if self.text_selection.as_ref() == sel.as_ref() {
+            return;
+        }
+        self.text_selection = sel;
+        if let Some(cb) = &self.callbacks.on_text_selection_change {
+            cb(self.text_selection.as_ref());
+        }
     }
     /// The selected body text, joined with `\n` between TextCodes (same code
     /// never spans a newline; different codes are different lines).
@@ -355,7 +374,7 @@ impl EditorComponent {
     pub fn set_tool(&mut self, tool: Tool) {
         self.tool = tool;
         self.drag = None;
-        self.text_selection = None;
+        self.set_text_selection(None);
         self.set_pointer_cursor(match self.tool {
             Tool::Hand => PointerCursor::Grab,
             // Text 工具的光标随悬停目标动态变化（PointerMove 无拖拽分支）：
@@ -568,12 +587,12 @@ impl EditorComponent {
                                         .unwrap_or_default();
                                     // 单击不拖 -> 零宽 caret range 不算选区。
                                     ranges.retain(|r| r.end > r.start);
-                                    self.text_selection = (!ranges.is_empty()).then_some(
+                                    self.set_text_selection((!ranges.is_empty()).then_some(
                                         rofd_render::BodyTextSelection {
                                             page: page_id,
                                             ranges,
                                         },
-                                    );
+                                    ));
                                     // 拖选 arm：仅 2（双击选词）/3（三击选段）
                                     // 不 arm。0（宿主未提供计数，见 web
                                     // pointerdown 的 detail=0）与 ≥4 均按
@@ -583,7 +602,7 @@ impl EditorComponent {
                                     }
                                 }
                                 None => {
-                                    self.text_selection = None;
+                                    self.set_text_selection(None);
                                     self.clear_selection_and_cursor();
                                 }
                             }
@@ -747,13 +766,14 @@ impl EditorComponent {
                                         rofd_render::body_text_ranges_between(page, anchor, &hit);
                                     // 零宽（拖回锚点）不算选区（spec §5.1）。
                                     if ranges.is_empty() {
-                                        self.text_selection = None;
+                                        self.set_text_selection(None);
                                     } else {
-                                        self.text_selection =
-                                            Some(rofd_render::BodyTextSelection {
+                                        self.set_text_selection(Some(
+                                            rofd_render::BodyTextSelection {
                                                 page: hit.page.clone(),
                                                 ranges,
-                                            });
+                                            },
+                                        ));
                                     }
                                 }
                             }
@@ -1108,7 +1128,7 @@ impl EditorComponent {
             }
         }
         // 互斥（spec §5.2）：选中批注即清空文字选区。
-        self.text_selection = None;
+        self.set_text_selection(None);
         match target {
             rofd_render::HitTarget::Handle(id, h) => {
                 let was_selected = self.editor.selection().contains(&id);
@@ -1213,7 +1233,7 @@ impl EditorComponent {
     ///   to [`DragState::TextSelect`] (drag-select the text beneath).
     fn pointer_down_markup(&mut self, id: rofd_dom::AnnotationId, p: (f64, f64)) -> bool {
         // 互斥（spec §5.2）：选中批注即清空文字选区。
-        self.text_selection = None;
+        self.set_text_selection(None);
         let was_selected = self.editor.selection().contains(&id);
         self.editor.select(id.clone());
         if !was_selected {
@@ -1412,7 +1432,7 @@ impl EditorComponent {
     fn after_annotation_change(&mut self) {
         self.modified = true;
         // 文档变更 -> 文字选区失效（spec §5.1）。
-        self.text_selection = None;
+        self.set_text_selection(None);
         if let Some(cb) = &self.callbacks.on_change {
             cb(self.editor.document());
         }
@@ -1499,7 +1519,7 @@ impl EditorComponent {
         if new_page != self.current_page {
             self.current_page = new_page;
             // 页变了 -> 清空文字选区（spec §5.1：单页语义，不跨页）。
-            self.text_selection = None;
+            self.set_text_selection(None);
             if let Some(idx) = new_page {
                 self.fire_page_change(idx);
             }
@@ -1563,6 +1583,21 @@ impl EditorComponent {
     #[cfg(target_arch = "wasm32")]
     pub fn on_selection_change(&mut self, cb: impl Fn(&AnnotationSelection) + 'static) {
         self.callbacks.on_selection_change = Some(Box::new(cb));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn on_text_selection_change(
+        &mut self,
+        cb: impl Fn(Option<&rofd_render::BodyTextSelection>) + 'static + Send,
+    ) {
+        self.callbacks.on_text_selection_change = Some(Box::new(cb));
+    }
+    #[cfg(target_arch = "wasm32")]
+    pub fn on_text_selection_change(
+        &mut self,
+        cb: impl Fn(Option<&rofd_render::BodyTextSelection>) + 'static,
+    ) {
+        self.callbacks.on_text_selection_change = Some(Box::new(cb));
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -5037,5 +5072,69 @@ mod tests {
             },
         });
         assert_eq!(*got.lock().unwrap(), "");
+    }
+
+    // --- 2026-09-10 Task 1: text_selection_change 回调收口 ---
+
+    #[test]
+    fn text_selection_change_fires_on_form_same_value_and_clear() {
+        let mut c = component_with_body_text();
+        let fired = Arc::new(Mutex::new(0u32));
+        let f = fired.clone();
+        c.on_text_selection_change(move |_sel| {
+            *f.lock().unwrap() += 1;
+        });
+        c.set_tool(Tool::Text);
+        // 拖选形成选区：PointerDown 零宽（None→None 不 fire）+ Move 形成 Some（fire 1 次）。
+        c.handle_event(&pd(31.0, 25.0));
+        c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 16.0,
+            y: 45.0,
+        });
+        assert!(c.text_selection().is_some());
+        assert_eq!(
+            *fired.lock().unwrap(),
+            1,
+            "forming the selection fires once"
+        );
+        // 同值重复赋值不 fire。
+        let before = *fired.lock().unwrap();
+        let sel = c.text_selection().cloned();
+        c.set_text_selection(sel);
+        assert_eq!(*fired.lock().unwrap(), before, "same value must not fire");
+        // 空白按下清除 -> fire。
+        c.handle_event(&pd(150.0, 150.0));
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 150.0,
+            y: 150.0,
+        });
+        assert!(c.text_selection().is_none());
+        assert_eq!(*fired.lock().unwrap(), before + 1, "clearing fires once");
+    }
+
+    #[test]
+    fn switching_tool_clears_selection_and_fires() {
+        let mut c = component_with_body_text();
+        let fired = Arc::new(Mutex::new(0u32));
+        let f = fired.clone();
+        c.on_text_selection_change(move |_sel| {
+            *f.lock().unwrap() += 1;
+        });
+        c.set_tool(Tool::Text);
+        c.handle_event(&pd(31.0, 25.0));
+        c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 16.0,
+            y: 45.0,
+        });
+        let before = *fired.lock().unwrap();
+        c.set_tool(Tool::Hand);
+        assert!(c.text_selection().is_none());
+        assert_eq!(*fired.lock().unwrap(), before + 1);
+        assert!(!c.has_text_selection());
     }
 }

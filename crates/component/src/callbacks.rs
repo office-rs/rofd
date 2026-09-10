@@ -7,7 +7,8 @@ use rofd_editor::{AnnotationSelection, TextCursor};
 // &AnnotationId; on_context_menu passes ((f64,f64), ContextTarget);
 // on_page_change passes usize; on_zoom_change passes f64; on_warning passes
 // &[OfdWarning]; on_pointer_cursor passes PointerCursor; on_copy passes
-// String (the selected body text).
+// String (the selected body text); on_text_selection_change passes
+// Option<&rofd_render::BodyTextSelection>.
 //
 // Target-gated `Send`: the host (Phase 4b native) requires `Send` callbacks. On native
 // targets the aliases below add `+ Send`; on wasm they do not (wasm is single-threaded).
@@ -36,6 +37,8 @@ pub type OnZoomChange = dyn Fn(f64) + Send;
 #[cfg(not(target_arch = "wasm32"))]
 pub type OnPointerCursor = dyn Fn(PointerCursor) + Send;
 #[cfg(not(target_arch = "wasm32"))]
+pub type OnTextSelectionChange = dyn Fn(Option<&rofd_render::BodyTextSelection>) + Send;
+#[cfg(not(target_arch = "wasm32"))]
 pub type OnWarning = dyn Fn(&[OfdWarning]) + Send;
 pub type OnCopy = dyn Fn(String);
 
@@ -59,6 +62,8 @@ pub type OnPageChange = dyn Fn(usize);
 pub type OnZoomChange = dyn Fn(f64);
 #[cfg(target_arch = "wasm32")]
 pub type OnPointerCursor = dyn Fn(PointerCursor);
+#[cfg(target_arch = "wasm32")]
+pub type OnTextSelectionChange = dyn Fn(Option<&rofd_render::BodyTextSelection>);
 #[cfg(target_arch = "wasm32")]
 pub type OnWarning = dyn Fn(&[OfdWarning]);
 // `OnCopy` has no wasm variant - it is defined once above (non-Send on all targets).
@@ -109,6 +114,7 @@ pub struct Callbacks {
     pub on_page_change: Option<Box<OnPageChange>>,
     pub on_zoom_change: Option<Box<OnZoomChange>>,
     pub on_pointer_cursor: Option<Box<OnPointerCursor>>,
+    pub on_text_selection_change: Option<Box<OnTextSelectionChange>>,
     pub on_warning: Option<Box<OnWarning>>,
     pub on_copy: Option<Box<OnCopy>>,
 }
