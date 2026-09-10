@@ -58,6 +58,11 @@ type SharedContextMenu = Arc<Mutex<Option<AnnotationId>>>;
 /// callback (flag-pattern, like `context_menu_target`). `app_logic` reads it
 /// on each rebuild and maps it to the declarative window cursor.
 type SharedPointerCursor = Arc<Mutex<PointerCursor>>;
+/// Whether a body-text selection exists - markup buttons' enabled state.
+/// Pushed by on_text_selection_change (flag-pattern, like pointer_cursor);
+/// the callback also wakes the app so app_logic rebuilds and the buttons
+/// refresh.
+type SharedHasSelection = Arc<Mutex<bool>>;
 
 /// Build a toolbar tool button. On click it sets the component's active tool
 /// to `tool`. Mirrors the `btn_open`/`btn_save` pattern (text_button + padding
@@ -72,12 +77,16 @@ fn tool_button(label: &'static str, tool: Tool) -> impl WidgetView<AppState> + u
 }
 
 /// Markup button: an ACTION over the current body-text selection, not a
-/// tool (spec 2026-09-10). Clicking applies the markup kind; without a
-/// selection this is a no-op (Task 4 adds the disabled affordance).
-fn markup_button(label: &'static str, kind: AnnotationKind) -> impl WidgetView<AppState> + use<> {
+/// tool (spec 2026-09-10). Disabled (grayed) without a selection.
+fn markup_button(
+    label: &'static str,
+    kind: AnnotationKind,
+    disabled: bool,
+) -> impl WidgetView<AppState> + use<> {
     text_button(label, move |app: &mut AppState| {
         app.editor.lock().unwrap().apply_markup(kind.clone());
     })
+    .disabled(disabled)
     .padding(BTN_PAD)
     .border_width(0.0)
     .corner_radius(2.0)
@@ -90,6 +99,7 @@ struct AppState {
     wake_proxy: SharedWakeProxy,
     window_id: xilem::WindowId,
     pointer_cursor: SharedPointerCursor,
+    has_selection: SharedHasSelection,
 }
 
 impl xilem::AppState for AppState {
@@ -178,10 +188,11 @@ fn app_logic(app: &mut AppState) -> std::iter::Once<xilem::WindowView<AppState>>
     let group_tools =
         flex_row((btn_hand, btn_text)).gap(xilem::masonry::layout::Length::const_px(2.0));
 
-    let btn_highlight = markup_button("高亮", AnnotationKind::Highlight);
-    let btn_underline = markup_button("下划线", AnnotationKind::Underline);
-    let btn_strikeout = markup_button("删除线", AnnotationKind::Strikeout);
-    let btn_squiggly = markup_button("波浪线", AnnotationKind::Squiggly);
+    let has_selection = *app.has_selection.lock().unwrap();
+    let btn_highlight = markup_button("高亮", AnnotationKind::Highlight, !has_selection);
+    let btn_underline = markup_button("下划线", AnnotationKind::Underline, !has_selection);
+    let btn_strikeout = markup_button("删除线", AnnotationKind::Strikeout, !has_selection);
+    let btn_squiggly = markup_button("波浪线", AnnotationKind::Squiggly, !has_selection);
     let btn_freehand = tool_button("手写", Tool::Create(CreateKind::Freehand));
     let btn_rect = tool_button("矩形", Tool::Create(CreateKind::Shape(ShapeKind::Rect)));
 
@@ -524,12 +535,33 @@ fn main() -> Result<(), winit::error::EventLoopError> {
             .on_pointer_cursor(move |c| *pc.lock().unwrap() = c);
     }
 
+    // Text-selection state: the component fires on_text_selection_change
+    // whenever the body-text selection appears/changes/clears. The callback
+    // stashes the flag and wakes the app so app_logic rebuilds and the
+    // markup buttons' disabled state refreshes.
+    let has_selection: SharedHasSelection = Arc::new(Mutex::new(false));
+    {
+        let hs = has_selection.clone();
+        let wp = wake_proxy.clone();
+        editor
+            .lock()
+            .unwrap()
+            .component
+            .on_text_selection_change(move |sel| {
+                *hs.lock().unwrap() = sel.is_some();
+                if let Some(proxy) = wp.lock().unwrap().as_ref() {
+                    let _ = proxy.message(());
+                }
+            });
+    }
+
     let app_state = AppState {
         editor: editor.clone(),
         canvas_widget_id: canvas_widget_id.clone(),
         wake_proxy: wake_proxy.clone(),
         window_id,
         pointer_cursor: pointer_cursor.clone(),
+        has_selection: has_selection.clone(),
     };
 
     // Xilem::new takes an app_logic returning a window iterator (vs
