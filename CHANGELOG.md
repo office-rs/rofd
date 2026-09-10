@@ -11,6 +11,11 @@ Breaking release of the npm SDK: markup annotations (highlight / underline /
 strikeout / squiggly) are no longer creation tools — you select body text
 first, then apply.
 
+Note: the Rust crates carry matching workspace-internal changes (the
+`rofd-component` `Tool` enum tightening and the removal of
+`create_highlight_from_selection`), but they are not published to
+crates.io — the published, semver-tracked surface is the npm SDK alone.
+
 ### Breaking
 - **`createHighlightFromSelection(color)` removed.** Use `applyMarkup(kind)`
   instead. Per-kind colors are configured through the existing

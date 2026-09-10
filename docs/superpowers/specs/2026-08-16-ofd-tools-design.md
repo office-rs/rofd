@@ -218,6 +218,9 @@ body 保持只读；选区不进 dom、不进 editor 历史、不落盘。渲染
   `Markup.quad_points`（页局部坐标），走现有 `create_annotation(Highlight,
   Markup)` 命令，可 undo、可保存；成功后清空选区。
 
+  > **注**：本段已被 2026-09-10-markup-on-selection-design.md 取代（选中后按钮
+  > 应用，应用后保留选区）。
+
 ### 5.5 涉及范围
 
 - `crates/render`：`hit_test_body_text`、`text_selection_rects`、几何抽取、
