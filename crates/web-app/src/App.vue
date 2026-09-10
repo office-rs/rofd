@@ -359,10 +359,6 @@
     <!-- ── 底部状态栏 ── -->
     <footer class="statusbar">
       <span>第 {{ pageIndex + 1 }} 页</span>
-      <span class="sb-actions">
-        <button type="button" class="sb-btn" title="打开 OFD 文件" @click="openFile">打开</button>
-        <button type="button" class="sb-btn" title="保存 (Ctrl+S)" @click="save">保存</button>
-      </span>
       <span>{{ zoomPercent }}%</span>
     </footer>
 
@@ -1043,25 +1039,5 @@ body,
   background: #fff;
   border-top: 1px solid #e5e6eb;
   user-select: none;
-}
-
-.sb-actions {
-  display: inline-flex;
-  gap: 8px;
-}
-
-.sb-btn {
-  padding: 2px 10px;
-  border: 1px solid #d3d6d8;
-  border-radius: 3px;
-  background: #fff;
-  font-size: 12px;
-  color: #3d3e3e;
-  cursor: pointer;
-}
-
-.sb-btn:hover {
-  border-color: #1470c8;
-  color: #1470c8;
 }
 </style>
