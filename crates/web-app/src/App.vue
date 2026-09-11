@@ -827,6 +827,7 @@ onMounted(async () => {
         zoom.value = z;
       },
       // 文字选区出现/变化/清除（信号回调）：驱动 markup 按钮禁用态。
+      // SDK 将回调推迟到微任务（deferCb），这里可安全回查编辑器。
       onTextSelectionChange: () => {
         hasTextSelection.value = editor.value?.hasTextSelection() ?? false;
       },
