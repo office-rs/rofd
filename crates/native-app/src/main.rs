@@ -555,6 +555,20 @@ fn main() -> Result<(), winit::error::EventLoopError> {
             });
     }
 
+    // Document changes (annotation created/edited/deleted, undo/redo): wake
+    // the app so the canvas repaints. Programmatic mutations (e.g. the
+    // markup buttons' apply_markup) fire on_change outside pointer-event
+    // handling; without this wake nothing marks the canvas widget dirty, so
+    // the change stays invisible until the next pointer interaction.
+    {
+        let wp = wake_proxy.clone();
+        editor.lock().unwrap().component.on_change(move |_doc| {
+            if let Some(proxy) = wp.lock().unwrap().as_ref() {
+                let _ = proxy.message(());
+            }
+        });
+    }
+
     let app_state = AppState {
         editor: editor.clone(),
         canvas_widget_id: canvas_widget_id.clone(),
