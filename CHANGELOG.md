@@ -40,6 +40,14 @@ crates.io — the published, semver-tracked surface is the npm SDK alone.
   tool, then clicking a toolbar button (or picking a color). Markup buttons
   disable while no text is selected.
 
+### Fixed
+- Host callbacks are now deferred to a microtask before invocation. A handler
+  that called back into the editor synchronously (e.g. querying
+  `hasTextSelection()` inside `onTextSelectionChange`) re-entered the wasm
+  object's borrow, which wasm-bindgen rejects with "recursive use of an
+  object detected" — and the error was swallowed, so markup buttons stayed
+  permanently disabled after selecting text.
+
 ## v0.1.4
 
 This release introduces a **Tauri desktop client** for Windows and restructures

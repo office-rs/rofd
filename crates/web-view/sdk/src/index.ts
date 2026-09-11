@@ -140,6 +140,26 @@ const DEFAULT_FONTS: FontSource[] = [
 ];
 
 /**
+ * Wrap a host callback so it runs in a microtask instead of synchronously.
+ *
+ * Rust fires callbacks from inside wasm exports that hold a mutable borrow
+ * on the WasmEditor (e.g. handlePointerMove -> text-selection change). A
+ * handler that immediately calls back into the same editor (querying state,
+ * saving, ...) re-enters that borrow and wasm-bindgen throws
+ * "recursive use of an object detected". Deferring to a microtask runs the
+ * handler after the export has returned and the borrow is released; the
+ * "signal-only, query afterwards" callback contract relies on this.
+ *
+ * Microtasks still run within the same task tick, so browser user
+ * activation (clipboard writes etc.) is preserved.
+ */
+function deferCb<A extends unknown[]>(cb: (...args: A) => void): (...args: A) => void {
+  return (...args: A) => {
+    queueMicrotask(() => cb(...args));
+  };
+}
+
+/**
  * rofd web editor. Created via [`Editor.init`]; the SDK owns the canvas, the
  * wasm editor, DOM event binding, and the render loop.
  *
@@ -214,18 +234,19 @@ export class Editor {
       }
     }
 
-    // 6. Register callbacks.
-    if (config?.onChange) wasmEditor.setOnChange(config.onChange);
-    if (config?.onSelectionChange) wasmEditor.setOnSelectionChange(config.onSelectionChange);
-    if (config?.onCursorChange) wasmEditor.setOnCursorChange(config.onCursorChange);
-    if (config?.onSaveRequest) wasmEditor.setOnSaveRequest(config.onSaveRequest);
-    if (config?.onContextMenu) wasmEditor.setOnContextMenu(config.onContextMenu);
-    if (config?.onWarning) wasmEditor.setOnWarning(config.onWarning);
-    if (config?.onAnnotationFocus) wasmEditor.setOnAnnotationFocus(config.onAnnotationFocus);
-    if (config?.onAnnotationInteract) wasmEditor.setOnAnnotationInteract(config.onAnnotationInteract);
-    if (config?.onPageChange) wasmEditor.setOnPageChange(config.onPageChange);
-    if (config?.onZoomChange) wasmEditor.setOnZoomChange(config.onZoomChange);
-    if (config?.onTextSelectionChange) wasmEditor.setOnTextSelectionChange(config.onTextSelectionChange);
+    // 6. Register callbacks (deferred: handlers run in a microtask so they
+    // may freely call back into the editor - see deferCb).
+    if (config?.onChange) wasmEditor.setOnChange(deferCb(config.onChange));
+    if (config?.onSelectionChange) wasmEditor.setOnSelectionChange(deferCb(config.onSelectionChange));
+    if (config?.onCursorChange) wasmEditor.setOnCursorChange(deferCb(config.onCursorChange));
+    if (config?.onSaveRequest) wasmEditor.setOnSaveRequest(deferCb(config.onSaveRequest));
+    if (config?.onContextMenu) wasmEditor.setOnContextMenu(deferCb(config.onContextMenu));
+    if (config?.onWarning) wasmEditor.setOnWarning(deferCb(config.onWarning));
+    if (config?.onAnnotationFocus) wasmEditor.setOnAnnotationFocus(deferCb(config.onAnnotationFocus));
+    if (config?.onAnnotationInteract) wasmEditor.setOnAnnotationInteract(deferCb(config.onAnnotationInteract));
+    if (config?.onPageChange) wasmEditor.setOnPageChange(deferCb(config.onPageChange));
+    if (config?.onZoomChange) wasmEditor.setOnZoomChange(deferCb(config.onZoomChange));
+    if (config?.onTextSelectionChange) wasmEditor.setOnTextSelectionChange(deferCb(config.onTextSelectionChange));
 
     // Pointer cursor: the wasm side reports CSS cursor names directly
     // ("default"/"grab"/"grabbing"/"text"), so no mapping is needed here.
@@ -235,8 +256,9 @@ export class Editor {
 
     // Copy: on Ctrl+C with a live TextSelect selection, forward the text.
     // The default writes to the system clipboard; the subscription happens
-    // here (at create time) so the callback chain fires synchronously from
-    // the keydown event, inside the browser's user-activation window.
+    // here (at create time) so the callback chain fires from the keydown
+    // event within the browser's user-activation window (microtask deferral
+    // keeps it in the same tick; see deferCb).
     const onCopy =
       config?.onCopy ??
       (config?.clipboard === false
@@ -244,7 +266,7 @@ export class Editor {
         : (text: string) => {
             void navigator.clipboard.writeText(text);
           });
-    if (onCopy) wasmEditor.setOnCopy(onCopy);
+    if (onCopy) wasmEditor.setOnCopy(deferCb(onCopy));
 
     // 7. Create wrapper + bind DOM events.
     const editor = new Editor(wasmEditor, canvas);
@@ -510,9 +532,11 @@ export class Editor {
   }
 
   /** Fired when the body-text selection appears/changes/clears. Signal-only;
-   * query hasTextSelection()/getSelectedText() afterwards. */
+   * query hasTextSelection()/getSelectedText() afterwards. Handlers are
+   * deferred to a microtask (see deferCb) so they may call back into the
+   * editor without re-entering the wasm borrow. */
   setOnTextSelectionChange(cb: (() => void) | null): void {
-    this.wasm.setOnTextSelectionChange(cb);
+    this.wasm.setOnTextSelectionChange(cb && deferCb(cb));
   }
 
   /** Delete the annotation with the given id string. Returns false if no

@@ -131,6 +131,12 @@ setOnTextSelectionChange(cb: () => void): void   // 无参触发，宿主再查�
 
 回调无参、宿主查询的约定与既有 `onSelectionChange` 一致。
 
+**实现注记（2026-09-11）**：SDK 侧所有宿主回调经 `deferCb` 推迟到微任务执行。
+Rust 在持有 WasmEditor 借用的 wasm 导出（如 `handlePointerMove`）内同步触发回调，
+宿主处理器若立刻回查编辑器（`hasTextSelection()` 等）会重入借用，
+wasm-bindgen 抛 "recursive use of an object detected" 且被 `let _ =` 吞掉。
+推迟到微任务后「信号回调、事后查询」契约才真正成立。移除 `deferCb` 属回归。
+
 ### 5.3 宿主（App.vue / native-app）
 
 - 4 个按钮：`:disabled="!hasTextSelection"`，点击 → `applyMarkup(kind)`；
