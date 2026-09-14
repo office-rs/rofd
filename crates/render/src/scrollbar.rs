@@ -5,7 +5,10 @@
 //! top-of-scene paint pass. The component owns the drag state machine; this
 //! module never reads a clock or touches platform types (AGENTS §4.4/§4.9).
 
-use imaging::kurbo::Rect;
+use imaging::kurbo::{Line, Rect, Stroke};
+use imaging::peniko::Color;
+use imaging::record::Scene;
+use imaging::Painter;
 use rofd_dom::OfdDocument;
 
 use crate::viewport::Viewport;
@@ -233,6 +236,75 @@ fn bar(axis: Axis, track: Rect, fraction: f64, len_fraction: f64) -> BarGeom {
     BarGeom { axis, track, thumb }
 }
 
+/// Per-axis visual state driving the thumb color. `active` (drag in progress)
+/// wins over `hover`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ScrollbarVisual {
+    pub hover: Option<Axis>,
+    pub active: Option<Axis>,
+}
+
+const TRACK_COLOR: Color = Color::from_rgba8(0xF1, 0xF1, 0xF1, 0xFF);
+const TRACK_BORDER_COLOR: Color = Color::from_rgba8(0xD9, 0xD9, 0xD9, 0xFF);
+const THUMB_COLOR: Color = Color::from_rgba8(0xC1, 0xC1, 0xC1, 0xFF);
+const THUMB_HOVER_COLOR: Color = Color::from_rgba8(0xA8, 0xA8, 0xA8, 0xFF);
+const THUMB_ACTIVE_COLOR: Color = Color::from_rgba8(0x8C, 0x8C, 0x8C, 0xFF);
+
+/// Paint the scrollbar chrome on top of an already-composited scene. Tracks,
+/// thumbs and the corner are drawn last so they always cover page content.
+/// Zero-area tracks (degenerate viewport sizes) are skipped.
+pub fn paint_scrollbars(scene: &mut Scene, layout: &ScrollbarLayout, visual: ScrollbarVisual) {
+    let mut painter = Painter::new(scene);
+
+    if let Some(bar) = layout.vertical {
+        // Nested guard (not an early return): a degenerate v-track must not
+        // skip the horizontal bar below it.
+        if bar.track.height() > 0.0 {
+            painter.fill_rect(bar.track, TRACK_COLOR);
+            // 1px separator on the content-facing (left) edge.
+            painter
+                .stroke(
+                    Line::new((bar.track.x0, bar.track.y0), (bar.track.x0, bar.track.y1)),
+                    &Stroke::new(1.0_f64),
+                    TRACK_BORDER_COLOR,
+                )
+                .draw();
+            painter.fill_rect(bar.thumb, thumb_color(Axis::Vertical, visual));
+        }
+    }
+    if let Some(bar) = layout.horizontal {
+        if bar.track.width() > 0.0 {
+            painter.fill_rect(bar.track, TRACK_COLOR);
+            // 1px separator on the content-facing (top) edge.
+            painter
+                .stroke(
+                    Line::new((bar.track.x0, bar.track.y0), (bar.track.x1, bar.track.y0)),
+                    &Stroke::new(1.0_f64),
+                    TRACK_BORDER_COLOR,
+                )
+                .draw();
+            painter.fill_rect(bar.thumb, thumb_color(Axis::Horizontal, visual));
+        }
+    }
+    // `corner` is already None for non-positive viewport dims (Task 1), so a
+    // positive-area check here is belt-and-braces.
+    if let Some(corner) = layout.corner {
+        if corner.width() > 0.0 && corner.height() > 0.0 {
+            painter.fill_rect(corner, TRACK_COLOR);
+        }
+    }
+}
+
+fn thumb_color(axis: Axis, visual: ScrollbarVisual) -> Color {
+    if visual.active == Some(axis) {
+        THUMB_ACTIVE_COLOR
+    } else if visual.hover == Some(axis) {
+        THUMB_HOVER_COLOR
+    } else {
+        THUMB_COLOR
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,5 +520,80 @@ mod hit_tests {
         // Degenerate zero-size tracks never hit.
         let l0 = layout_for((0.0, 0.0), &[(200.0, 200.0)], (0.0, 0.0));
         assert_eq!(hit_scrollbar(&l0, (0.0, 0.0)), None);
+    }
+}
+
+#[cfg(test)]
+mod paint_tests {
+    use super::*;
+    use imaging::record::{Command, Draw, Scene};
+    use rofd_dom::{OfdDocument, Page, PageId, Rect as RofdRect};
+
+    fn count_fills(scene: &Scene) -> usize {
+        scene
+            .commands()
+            .iter()
+            .filter(|cmd| {
+                matches!(cmd, Command::Draw(id) if matches!(scene.draw_op(*id), Draw::Fill { .. }))
+            })
+            .count()
+    }
+
+    fn layout_for(size: (f64, f64), pages: &[(f64, f64)]) -> ScrollbarLayout {
+        let mut doc = OfdDocument::default();
+        for (i, &(w, h)) in pages.iter().enumerate() {
+            doc.pages.push(Page {
+                id: PageId::new(format!("P{i}")),
+                physical_box: RofdRect {
+                    x: 0.0,
+                    y: 0.0,
+                    w,
+                    h,
+                },
+                layers: vec![],
+                template: None,
+            });
+        }
+        let vp = Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size,
+            page_gap: 0.0,
+        };
+        scrollbar_layout(&doc, &vp)
+    }
+
+    #[test]
+    fn paints_nothing_without_bars() {
+        let mut scene = Scene::new();
+        let l = layout_for((500.0, 700.0), &[(200.0, 300.0)]);
+        paint_scrollbars(&mut scene, &l, ScrollbarVisual::default());
+        assert_eq!(count_fills(&scene), 0);
+    }
+
+    #[test]
+    fn paints_both_bars_and_corner() {
+        let mut scene = Scene::new();
+        let l = layout_for((200.0, 200.0), &[(195.0, 400.0)]);
+        paint_scrollbars(&mut scene, &l, ScrollbarVisual::default());
+        // 2 tracks + 2 thumbs + 1 corner = 5 fills.
+        assert_eq!(count_fills(&scene), 5);
+    }
+
+    #[test]
+    fn paints_single_bar_without_corner() {
+        // 180-wide page: vertical bar only (no corner, no horizontal track).
+        let mut scene = Scene::new();
+        let l = layout_for((200.0, 200.0), &[(180.0, 400.0)]);
+        paint_scrollbars(&mut scene, &l, ScrollbarVisual::default());
+        assert_eq!(count_fills(&scene), 2);
+    }
+
+    #[test]
+    fn skips_degenerate_zero_area_tracks() {
+        let mut scene = Scene::new();
+        let l = layout_for((0.0, 0.0), &[(200.0, 200.0)]);
+        paint_scrollbars(&mut scene, &l, ScrollbarVisual::default());
+        assert_eq!(count_fills(&scene), 0, "zero-area chrome is never painted");
     }
 }
