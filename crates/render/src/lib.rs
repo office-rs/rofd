@@ -16,6 +16,7 @@ pub mod handles;
 pub mod hit_test;
 pub mod image;
 pub mod path;
+pub mod scrollbar;
 pub mod text;
 pub mod viewport;
 
@@ -32,6 +33,10 @@ pub use handles::{annotation_handle_positions, annotation_handles, handle_center
 pub use hit_test::{annotation_local_rect, hit_test, HandlePos, HitTarget};
 pub use image::decode_image;
 pub use path::path_to_bezpath;
+pub use scrollbar::{
+    content_metrics, scroll_x_margin, scroll_y_max, scrollbar_layout, Axis, BarGeom,
+    ScrollbarLayout, SCROLLBAR_THICKNESS, THUMB_INSET, THUMB_MIN_LEN, TRACK_PAGE_RATIO,
+};
 pub use text::{shape_text, FontStore, ShapedGlyph};
 pub use viewport::{clamp_scroll, Viewport, PX_PER_MM};
 
