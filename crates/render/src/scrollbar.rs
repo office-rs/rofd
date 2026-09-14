@@ -183,7 +183,9 @@ fn contains_with_area(r: Rect, x: f64, y: f64) -> bool {
 
 pub fn hit_scrollbar(layout: &ScrollbarLayout, point: (f64, f64)) -> Option<ScrollbarHit> {
     let (x, y) = point;
-    // Corner wins (it overlaps both tracks' end regions).
+    // Corner is checked first (spec §3.5 ordering): its square abuts the end
+    // regions of both tracks (the tracks end exactly at its edges, no
+    // overlap), so a point inside it must not page either bar.
     if let Some(c) = layout.corner {
         if contains_with_area(c, x, y) {
             return Some(ScrollbarHit::Corner);
@@ -502,7 +504,10 @@ mod hit_tests {
     fn hits_horizontal_thumb_and_corner() {
         // Two-pass case: 195x400 in 200x200 -> both bars + corner [188,200]^2.
         let l = layout_for((200.0, 200.0), &[(195.0, 400.0)], (0.0, 0.0));
-        // hbar thumb: track y [188,200], thumb y [190,198], starts x=2.
+        // hbar thumb: track y [188,200], thumb y [190,198]. At scroll 0 the
+        // centered x-margin gives fraction 0.5 (x_margin = (195-188)/2 = 3.5),
+        // so the thumb starts at 2 + 0.5*travel ~= 3.37; point x=50 is well
+        // inside it.
         assert_eq!(
             hit_scrollbar(&l, (50.0, 194.0)),
             Some(ScrollbarHit::HorizontalThumb)

@@ -33,15 +33,16 @@ pub struct Viewport {
     pub page_gap: f64,
 }
 
-/// Clamp a viewport scroll offset so the page stack covers the viewport as
-/// far as possible (paper-on-desk: the paper can never be scrolled entirely
-/// off the desk).
+/// Clamp a viewport scroll offset so the page stack covers the content region
+/// as far as possible (paper-on-desk: the paper can never be scrolled
+/// entirely off the desk).
 ///
-/// X uses the widest page: when every page is narrower than the viewport the
-/// stack stays centered and `scroll.0` pins to 0. Y allows scrolling from the
-/// initial top position (`scroll.1 == 0`) down to the last page's bottom
-/// edge reaching the viewport bottom; when the whole stack is shorter than
-/// the viewport, `scroll.1` pins to 0.
+/// X uses the widest page: when every page is narrower than the content
+/// region (the viewport minus any visible scrollbar strips) the stack stays
+/// centered and `scroll.0` pins to 0. Y allows scrolling from the initial
+/// top position (`scroll.1 == 0`) down to the last page's bottom edge
+/// reaching the content region's bottom; when the whole stack is shorter
+/// than the content region, `scroll.1` pins to 0.
 ///
 /// Geometry mirrors [`crate::composite::page_origin`]: `page_x = max(0,
 /// (size.0 - page_w) / 2) + scroll.0`, `page_y = page_gap - scroll.1 + ...`.
