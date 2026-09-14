@@ -242,6 +242,9 @@ impl EditorComponent {
         // Clear any in-progress drag (Pan/Move/Resize) from the previous
         // document; its geometry is meaningless after the swap.
         self.drag = None;
+        // A new document starts at the top (zoom is intentionally kept - the
+        // user's chosen display ratio survives document switches).
+        self.viewport.scroll = (0.0, 0.0);
         // Body-text selection belongs to the old document's pages.
         self.set_text_selection(None);
         self.editor.load_document(doc);
@@ -255,6 +258,9 @@ impl EditorComponent {
 
     pub fn new_document(&mut self) {
         self.drag = None;
+        // A new document starts at the top (zoom is intentionally kept - the
+        // user's chosen display ratio survives document switches).
+        self.viewport.scroll = (0.0, 0.0);
         self.set_text_selection(None);
         self.editor.load_document(OfdDocument::default());
         self.font_store = Some(self.build_font_store());
@@ -450,6 +456,16 @@ impl EditorComponent {
                 cb(cursor);
             }
         }
+    }
+
+    /// Add a wheel/keyboard/track-page delta to the viewport scroll, clamp to
+    /// the content region (single chokepoint - spec §3.3) and refresh the
+    /// visible page. View-only: never touches the document or undo history.
+    fn apply_scroll_delta(&mut self, dx: f64, dy: f64) {
+        self.viewport.scroll.0 += dx;
+        self.viewport.scroll.1 += dy;
+        self.viewport.scroll = rofd_render::clamp_scroll(self.editor.document(), &self.viewport);
+        self.maybe_fire_page_change();
     }
 
     // Command pass-throughs. The host calls these for programmatic annotation
@@ -1037,9 +1053,7 @@ impl EditorComponent {
                 }
             }
             ViewEvent::Scroll { dx, dy } => {
-                self.viewport.scroll.0 += dx;
-                self.viewport.scroll.1 += dy;
-                self.maybe_fire_page_change();
+                self.apply_scroll_delta(*dx, *dy);
                 EventOutcome {
                     needs_repaint: true,
                 }
@@ -1047,6 +1061,8 @@ impl EditorComponent {
             ViewEvent::Zoom { factor } => {
                 let old_zoom = self.viewport.zoom;
                 self.viewport.zoom *= factor;
+                self.viewport.scroll =
+                    rofd_render::clamp_scroll(self.editor.document(), &self.viewport);
                 // Only fire on_zoom_change if the zoom actually changed (a
                 // factor of 1.0 is a no-op). ZoomAt already has this guard (T2).
                 if (self.viewport.zoom - old_zoom).abs() > f64::EPSILON {
@@ -1061,6 +1077,8 @@ impl EditorComponent {
             }
             ViewEvent::Resize { width, height } => {
                 self.viewport.size = (*width, *height);
+                self.viewport.scroll =
+                    rofd_render::clamp_scroll(self.editor.document(), &self.viewport);
                 self.maybe_fire_page_change();
                 EventOutcome {
                     needs_repaint: true,
@@ -1075,11 +1093,11 @@ impl EditorComponent {
                     .map(|p| p.physical_box.h * self.viewport.zoom)
                     .unwrap_or(0.0);
                 let delta = page_h + self.viewport.page_gap;
-                self.viewport.scroll.1 += match direction {
+                let dy = match direction {
                     ScrollDirection::Down => delta,
                     ScrollDirection::Up => -delta,
                 };
-                self.maybe_fire_page_change();
+                self.apply_scroll_delta(0.0, dy);
                 EventOutcome {
                     needs_repaint: true,
                 }
@@ -1096,6 +1114,8 @@ impl EditorComponent {
                 let ratio = self.viewport.zoom / old_zoom;
                 self.viewport.scroll.0 = center.0 - (center.0 - self.viewport.scroll.0) * ratio;
                 self.viewport.scroll.1 = center.1 - (center.1 - self.viewport.scroll.1) * ratio;
+                self.viewport.scroll =
+                    rofd_render::clamp_scroll(self.editor.document(), &self.viewport);
                 if (self.viewport.zoom - old_zoom).abs() > f64::EPSILON {
                     self.fire_zoom_change(self.viewport.zoom);
                 }
@@ -2210,12 +2230,140 @@ mod tests {
         c
     }
 
+    /// Single page 180x400, zoom 1, page_gap 0, viewport 200x200. Vertical
+    /// overflow only (180 < 200-12=188, so no horizontal bar): region
+    /// 188x200, y_max = 200, x pinned to 0.
+    fn component_with_tall_page() -> EditorComponent {
+        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        c.set_clock("t".into(), 1);
+        let mut doc = OfdDocument::default();
+        doc.pages.push(Page {
+            id: PageId::new("P0"),
+            physical_box: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 180.0,
+                h: 400.0,
+            },
+            layers: vec![Layer::default()],
+            template: None,
+        });
+        c.load_document(doc);
+        c.viewport = rofd_render::Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (200.0, 200.0),
+            page_gap: 0.0,
+        };
+        c
+    }
+
+    #[test]
+    fn wheel_scroll_clamps_at_top() {
+        let mut c = component_with_tall_page();
+        c.handle_event(&ViewEvent::Scroll {
+            dx: 0.0,
+            dy: -500.0,
+        });
+        assert_eq!(
+            c.viewport.scroll.1, 0.0,
+            "cannot scroll above the first page top"
+        );
+    }
+
+    #[test]
+    fn wheel_scroll_clamps_at_bottom() {
+        let mut c = component_with_tall_page();
+        c.handle_event(&ViewEvent::Scroll {
+            dx: 0.0,
+            dy: 9999.0,
+        });
+        assert_eq!(
+            c.viewport.scroll.1, 200.0,
+            "cannot scroll past the last page bottom"
+        );
+    }
+
+    #[test]
+    fn scroll_page_clamps_to_bounds() {
+        let mut c = component_with_tall_page();
+        c.handle_event(&ViewEvent::ScrollPage {
+            direction: ScrollDirection::Down,
+        });
+        // delta is page_h + gap = 400, clamped to y_max 200.
+        assert_eq!(c.viewport.scroll.1, 200.0);
+        c.handle_event(&ViewEvent::ScrollPage {
+            direction: ScrollDirection::Up,
+        });
+        // 200 - 400 = -200, clamped back to 0.
+        assert_eq!(c.viewport.scroll.1, 0.0);
+    }
+
+    #[test]
+    fn zoom_out_reclamps_overshoot_scroll() {
+        let mut c = component_with_tall_page();
+        c.handle_event(&ViewEvent::Scroll { dx: 0.0, dy: 200.0 });
+        assert_eq!(c.viewport.scroll.1, 200.0);
+        // Zoom out 0.5x: content becomes 200 tall and fits the 200px viewport
+        // (no bar) -> y_max 0, scroll must come back into bounds.
+        c.handle_event(&ViewEvent::Zoom { factor: 0.5 });
+        assert_eq!(
+            c.viewport.scroll.1, 0.0,
+            "zoom-out pulls scroll back in bounds"
+        );
+    }
+
+    #[test]
+    fn resize_reclamps_overshoot_scroll() {
+        let mut c = component_with_tall_page();
+        c.handle_event(&ViewEvent::Scroll { dx: 0.0, dy: 200.0 });
+        assert_eq!(c.viewport.scroll.1, 200.0);
+        // Grow the viewport to 500px tall: content fits, y_max becomes 0.
+        c.handle_event(&ViewEvent::Resize {
+            width: 200.0,
+            height: 500.0,
+        });
+        assert_eq!(
+            c.viewport.scroll.1, 0.0,
+            "growing the viewport pulls scroll back in bounds"
+        );
+    }
+
+    #[test]
+    fn load_document_resets_scroll_to_origin() {
+        let mut c = component_with_tall_page();
+        c.handle_event(&ViewEvent::Scroll { dx: 0.0, dy: 150.0 });
+        assert_eq!(c.viewport.scroll.1, 150.0);
+        let mut doc = OfdDocument::default();
+        doc.pages.push(Page {
+            id: PageId::new("Q0"),
+            physical_box: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 180.0,
+                h: 400.0,
+            },
+            layers: vec![Layer::default()],
+            template: None,
+        });
+        c.load_document(doc);
+        assert_eq!(
+            c.viewport.scroll,
+            (0.0, 0.0),
+            "new document starts at the top"
+        );
+        // Zoom is preserved across document switches.
+        assert_eq!(c.viewport.zoom, 1.0);
+    }
+
     #[test]
     fn scroll_updates_viewport() {
-        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
-        let outcome = c.handle_event(&ViewEvent::Scroll { dx: 10.0, dy: 20.0 });
+        let mut c = component_with_tall_page();
+        // 400px wide viewport: vertical bar only, horizontal margin 0.
+        c.viewport.size = (400.0, 200.0);
+        let outcome = c.handle_event(&ViewEvent::Scroll { dx: 0.0, dy: 20.0 });
         assert!(outcome.needs_repaint);
-        assert_eq!(c.viewport.scroll, (10.0, 20.0));
+        assert_eq!(c.viewport.scroll, (0.0, 20.0));
     }
 
     #[test]
@@ -3516,32 +3664,32 @@ mod tests {
     #[test]
     fn scroll_page_moves_by_page_height() {
         let mut c = component_with_note();
-        c.viewport.size = (800.0, 600.0);
-        let page_h = c.editor.document().pages[0].physical_box.h * c.viewport.zoom;
+        c.viewport.size = (800.0, 100.0);
         let outcome = c.handle_event(&ViewEvent::ScrollPage {
             direction: ScrollDirection::Down,
         });
         assert!(outcome.needs_repaint);
+        // delta 200 against y_max 100 -> clamped to the bottom.
         assert!(
-            (c.viewport.scroll.1 - page_h - c.viewport.page_gap).abs() < 0.01,
-            "scrolled down one page"
+            (c.viewport.scroll.1 - 100.0).abs() < 0.01,
+            "scrolled down one page and clamped to bottom"
         );
     }
 
     #[test]
     fn scroll_page_up_moves_negative() {
         let mut c = component_with_note();
-        c.viewport.size = (800.0, 600.0);
+        c.viewport.size = (800.0, 100.0);
         // Start with some downward scroll so Up has a visible effect.
         c.viewport.scroll.1 = 500.0;
-        let page_h = c.editor.document().pages[0].physical_box.h * c.viewport.zoom;
         let outcome = c.handle_event(&ViewEvent::ScrollPage {
             direction: ScrollDirection::Up,
         });
         assert!(outcome.needs_repaint);
+        // Start 500 (set directly); 500-200=300 -> clamped to 100.
         assert!(
-            (c.viewport.scroll.1 - (500.0 - page_h - c.viewport.page_gap)).abs() < 0.01,
-            "scrolled up one page from 500"
+            (c.viewport.scroll.1 - 100.0).abs() < 0.01,
+            "scrolled up one page, clamped to bounds"
         );
     }
 
@@ -3549,28 +3697,20 @@ mod tests {
     fn zoom_at_keeps_center_point_stable() {
         let mut c = component_with_note();
         c.viewport.zoom = 1.0;
-        c.viewport.scroll = (100.0, 100.0);
-        let center = (400.0, 300.0);
+        c.viewport.size = (400.0, 200.0);
+        c.viewport.scroll = (0.0, 150.0);
+        let center = (0.0, 100.0);
         let outcome = c.handle_event(&ViewEvent::ZoomAt {
             factor: 2.0,
             center,
         });
         assert!(outcome.needs_repaint);
-        // zoom doubled
         assert!((c.viewport.zoom - 2.0).abs() < 0.01);
-        // center point should map to the same document position:
-        // new_scroll = center - (center - old_scroll) * (new_zoom / old_zoom)
-        let ratio = 2.0 / 1.0;
-        let expected_x = center.0 - (center.0 - 100.0) * ratio;
-        let expected_y = center.1 - (center.1 - 100.0) * ratio;
-        assert!(
-            (c.viewport.scroll.0 - expected_x).abs() < 0.01,
-            "scroll.x adjusted for center anchor"
-        );
-        assert!(
-            (c.viewport.scroll.1 - expected_y).abs() < 0.01,
-            "scroll.y adjusted for center anchor"
-        );
+        // Anchor math gives y = 100 - (100-150)*2 = 200; after zoom the content
+        // is 400 tall, two-pass region 388x188, y_max 212 -> 200 stays in
+        // bounds. x pins to 0 (x_margin 6, anchor x 0 -> 0).
+        assert!((c.viewport.scroll.0 - 0.0).abs() < 0.01);
+        assert!((c.viewport.scroll.1 - 200.0).abs() < 0.01);
     }
 
     #[test]
