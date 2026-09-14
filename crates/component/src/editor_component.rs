@@ -120,6 +120,10 @@ pub(crate) enum DragState {
     /// on y: dragging the pointer down moves content down). View-only; no
     /// document mutation and no undo record.
     Pan { last: (f64, f64) },
+    /// Dragging a scrollbar thumb. `grab` is the press-time pointer offset
+    /// along the bar from the thumb's start (so the grabbed point stays under
+    /// the cursor - absolute mapping). View-only; no undo record.
+    ScrollThumb { axis: rofd_render::Axis, grab: f64 },
     /// Selecting body text: `anchor` is the press-time hit; PointerMove
     /// recomputes ranges from anchor to the current hit (preview-only UI
     /// state - no document change, no history).
@@ -411,12 +415,7 @@ impl EditorComponent {
         self.tool = tool;
         self.drag = None;
         self.set_text_selection(None);
-        self.set_pointer_cursor(match self.tool {
-            Tool::Hand => PointerCursor::Grab,
-            // Text 工具的光标随悬停目标动态变化（PointerMove 无拖拽分支）：
-            // 正文文字上为 I 型，其余区域为箭头。
-            _ => PointerCursor::Default,
-        });
+        self.set_tool_pointer_cursor();
     }
 
     /// Set the color a Highlight markup is applied with
@@ -464,12 +463,111 @@ impl EditorComponent {
         }
     }
 
+    /// Cursor implied by the current tool alone (scrollbar hover overrides it).
+    fn set_tool_pointer_cursor(&mut self) {
+        let cursor = match self.tool {
+            Tool::Hand => PointerCursor::Grab,
+            // Text tool cursor varies with the hover target; blank area = arrow.
+            _ => PointerCursor::Default,
+        };
+        self.set_pointer_cursor(cursor);
+    }
+
     /// Add a wheel/keyboard/track-page delta to the viewport scroll, clamp to
     /// the content region (single chokepoint - spec §3.3) and refresh the
     /// visible page. View-only: never touches the document or undo history.
     fn apply_scroll_delta(&mut self, dx: f64, dy: f64) {
         self.viewport.scroll.0 += dx;
         self.viewport.scroll.1 += dy;
+        self.viewport.scroll = rofd_render::clamp_scroll(self.editor.document(), &self.viewport);
+        self.maybe_fire_page_change();
+    }
+
+    /// Chrome-first pointer press on scrollbar chrome. Thumbs start a
+    /// view-only [`DragState::ScrollThumb`] drag; tracks page by
+    /// [`rofd_render::TRACK_PAGE_RATIO`] of the content region; the corner is
+    /// inert. Never touches the document, selection or undo history.
+    fn scrollbar_press(
+        &mut self,
+        layout: &rofd_render::ScrollbarLayout,
+        hit: rofd_render::ScrollbarHit,
+        p: (f64, f64),
+    ) -> EventOutcome {
+        use rofd_render::{Axis, ScrollbarHit};
+        match hit {
+            ScrollbarHit::VerticalThumb => {
+                let bar = layout.vertical.expect("vertical thumb hit implies a vbar");
+                self.drag = Some(DragState::ScrollThumb {
+                    axis: Axis::Vertical,
+                    grab: p.1 - bar.thumb.y0,
+                });
+                self.scrollbar_hover = Some(Axis::Vertical);
+                self.set_pointer_cursor(PointerCursor::ResizeV);
+            }
+            ScrollbarHit::HorizontalThumb => {
+                let bar = layout
+                    .horizontal
+                    .expect("horizontal thumb hit implies an hbar");
+                self.drag = Some(DragState::ScrollThumb {
+                    axis: Axis::Horizontal,
+                    grab: p.0 - bar.thumb.x0,
+                });
+                self.scrollbar_hover = Some(Axis::Horizontal);
+                self.set_pointer_cursor(PointerCursor::ResizeH);
+            }
+            ScrollbarHit::VerticalTrack { page_up } => {
+                let d = rofd_render::TRACK_PAGE_RATIO * layout.content_size.1;
+                self.apply_scroll_delta(0.0, if page_up { -d } else { d });
+            }
+            ScrollbarHit::HorizontalTrack { page_left } => {
+                let d = rofd_render::TRACK_PAGE_RATIO * layout.content_size.0;
+                self.apply_scroll_delta(if page_left { -d } else { d }, 0.0);
+            }
+            ScrollbarHit::Corner => {}
+        }
+        EventOutcome {
+            needs_repaint: true,
+        }
+    }
+
+    /// Map an in-progress thumb drag to absolute scroll. The grabbed point
+    /// stays under the cursor: thumb start = pointer - grab, and the scroll
+    /// fraction is the inverse of the paint formula in
+    /// [`rofd_render::scrollbar_layout`]. View-only: no document or undo change.
+    fn scroll_thumb_drag(&mut self, axis: rofd_render::Axis, grab: f64, p: (f64, f64)) {
+        let layout = rofd_render::scrollbar_layout(self.editor.document(), &self.viewport);
+        let (content_w, content_h) =
+            rofd_render::content_metrics(self.editor.document(), &self.viewport);
+        let (region_w, region_h) = layout.content_size;
+        match axis {
+            rofd_render::Axis::Vertical => {
+                let Some(bar) = layout.vertical else {
+                    return;
+                };
+                let travel =
+                    bar.track.height() - bar.thumb.height() - 2.0 * rofd_render::THUMB_INSET;
+                if travel <= 0.0 {
+                    return;
+                }
+                // Inverse of the paint formula: thumb start = pointer - grab,
+                // fraction = (start - THUMB_INSET) / travel.
+                let fraction = ((p.1 - grab - rofd_render::THUMB_INSET) / travel).clamp(0.0, 1.0);
+                let y_max = rofd_render::scroll_y_max(content_h, region_h);
+                self.viewport.scroll.1 = fraction * y_max;
+            }
+            rofd_render::Axis::Horizontal => {
+                let Some(bar) = layout.horizontal else {
+                    return;
+                };
+                let travel = bar.track.width() - bar.thumb.width() - 2.0 * rofd_render::THUMB_INSET;
+                if travel <= 0.0 {
+                    return;
+                }
+                let fraction = ((p.0 - grab - rofd_render::THUMB_INSET) / travel).clamp(0.0, 1.0);
+                let x_margin = rofd_render::scroll_x_margin(content_w, region_w);
+                self.viewport.scroll.0 = fraction * 2.0 * x_margin - x_margin;
+            }
+        }
         self.viewport.scroll = rofd_render::clamp_scroll(self.editor.document(), &self.viewport);
         self.maybe_fire_page_change();
     }
@@ -596,8 +694,10 @@ impl EditorComponent {
             drag_preview.as_ref(),
         );
         let layout = rofd_render::scrollbar_layout(self.editor.document(), &self.viewport);
-        // Task 7 replaces `None` with the active ScrollThumb axis.
-        let active = None;
+        let active = match &self.drag {
+            Some(DragState::ScrollThumb { axis, .. }) => Some(*axis),
+            _ => None,
+        };
         rofd_render::paint_scrollbars(
             &mut scene,
             &layout,
@@ -625,6 +725,12 @@ impl EditorComponent {
                 ..
             } => {
                 let p = (*x, *y);
+                // Chrome wins over every tool and every annotation: presses on
+                // scrollbar thumbs/tracks/corner never reach the page.
+                let layout = rofd_render::scrollbar_layout(self.editor.document(), &self.viewport);
+                if let Some(hit) = rofd_render::hit_scrollbar(&layout, p) {
+                    return self.scrollbar_press(&layout, hit, p);
+                }
                 match &self.tool {
                     Tool::Create(kind) => {
                         // Start a create-drag. The payload is built on PointerUp.
@@ -731,6 +837,17 @@ impl EditorComponent {
             }
             ViewEvent::PointerMove { x, y } => {
                 let p = (*x, *y);
+                if let Some(DragState::ScrollThumb { axis, grab }) = self.drag.as_ref() {
+                    // Copy the f64/Copy values out to end the `self.drag`
+                    // borrow before the &mut self call below (same pattern as
+                    // the Pan arm further down).
+                    let axis = *axis;
+                    let grab = *grab;
+                    self.scroll_thumb_drag(axis, grab, p);
+                    return EventOutcome {
+                        needs_repaint: true,
+                    };
+                }
                 // Scrollbar thumb hover takes cursor priority over tools but
                 // does not consume the move otherwise: when not over a thumb
                 // the existing per-tool hover logic below runs normally.
@@ -905,6 +1022,11 @@ impl EditorComponent {
                         // body-text anchor): stay a press; conversion is
                         // handled above, release keeps the markup selected.
                     }
+                    Some(DragState::ScrollThumb { .. }) => {
+                        // Unreachable: ScrollThumb moves return at the top of
+                        // PointerMove before this match. Required for
+                        // exhaustiveness.
+                    }
                     None => {
                         // 悬停光标（spec §3.2）：手型 = 空白 Grab、批注上
                         // 箭头（可点选）；文本 = 批注上箭头（批注
@@ -952,6 +1074,8 @@ impl EditorComponent {
             }
             ViewEvent::PointerUp {
                 button: MouseButton::Left,
+                x,
+                y,
                 ..
             } => {
                 if let Some(drag) = self.drag.take() {
@@ -1092,6 +1216,34 @@ impl EditorComponent {
                             // View-only pan: nothing to commit. The drag ended,
                             // so the hand tool returns to the hovering cursor.
                             self.set_pointer_cursor(PointerCursor::Grab);
+                        }
+                        DragState::ScrollThumb { .. } => {
+                            // View-only drag: nothing to commit. Recompute the
+                            // hover/cursor from the release point (the thumb
+                            // may still be under the pointer).
+                            let layout = rofd_render::scrollbar_layout(
+                                self.editor.document(),
+                                &self.viewport,
+                            );
+                            let over = match rofd_render::hit_scrollbar(&layout, (*x, *y)) {
+                                Some(rofd_render::ScrollbarHit::VerticalThumb) => {
+                                    Some(rofd_render::Axis::Vertical)
+                                }
+                                Some(rofd_render::ScrollbarHit::HorizontalThumb) => {
+                                    Some(rofd_render::Axis::Horizontal)
+                                }
+                                _ => None,
+                            };
+                            self.scrollbar_hover = over;
+                            match over {
+                                Some(rofd_render::Axis::Vertical) => {
+                                    self.set_pointer_cursor(PointerCursor::ResizeV)
+                                }
+                                Some(rofd_render::Axis::Horizontal) => {
+                                    self.set_pointer_cursor(PointerCursor::ResizeH)
+                                }
+                                None => self.set_tool_pointer_cursor(),
+                            }
                         }
                         // Text-select drag: the selection was updated live on
                         // each PointerMove; nothing to commit (pure UI state).
@@ -1955,9 +2107,11 @@ fn drag_to_preview(doc: &OfdDocument, d: &DragState, vp: &Viewport) -> Option<Dr
         // TextSelect is likewise preview-only (the live selection rects come
         // from `text_selection`, drawn by composite via text_selection_rects).
         // MarkupPress shows the (already-selected) markup - no preview either.
-        DragState::Pan { .. } | DragState::TextSelect { .. } | DragState::MarkupPress { .. } => {
-            None
-        }
+        // ScrollThumb is view-only chrome (thumb drag never touches docs).
+        DragState::Pan { .. }
+        | DragState::TextSelect { .. }
+        | DragState::MarkupPress { .. }
+        | DragState::ScrollThumb { .. } => None,
     }
 }
 
@@ -4151,6 +4305,129 @@ mod tests {
             x: to.0,
             y: to.1,
         });
+    }
+
+    /// Single left-button PointerDown at `(x, y)` (no modifiers, single click).
+    fn thumb_pd(x: f64, y: f64) -> ViewEvent {
+        ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        }
+    }
+
+    #[test]
+    fn vertical_thumb_drag_maps_absolutely_and_creates_no_undo() {
+        // Tall page: thumb y [2,102], travel 96, y_max 200. Press 8px below
+        // the thumb's top edge; drag so the thumb sits halfway (start =
+        // 2 + 48 = 50) -> pointer y = 50 + grab 8 = 58 -> scroll 100.
+        let mut c = component_with_tall_page();
+        c.handle_event(&thumb_pd(194.0, 10.0));
+        assert!(matches!(
+            c.drag,
+            Some(DragState::ScrollThumb {
+                axis: rofd_render::Axis::Vertical,
+                ..
+            })
+        ));
+        c.handle_event(&ViewEvent::PointerMove { x: 194.0, y: 58.0 });
+        assert!(
+            (c.viewport.scroll.1 - 100.0).abs() < 0.01,
+            "half-drag -> half y_max"
+        );
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 194.0,
+            y: 58.0,
+        });
+        assert!(c.drag.is_none());
+        assert!(
+            !c.can_undo(),
+            "thumb drag is a view change, not a doc change"
+        );
+        assert!(!c.is_modified());
+    }
+
+    #[test]
+    fn thumb_drag_clamps_past_bottom() {
+        let mut c = component_with_tall_page();
+        c.handle_event(&thumb_pd(194.0, 10.0));
+        c.handle_event(&ViewEvent::PointerMove {
+            x: 194.0,
+            y: 9999.0,
+        });
+        assert_eq!(
+            c.viewport.scroll.1, 200.0,
+            "dragging past the track clamps to y_max"
+        );
+    }
+
+    #[test]
+    fn track_click_pages_by_region_ratio() {
+        // region_h 200 -> page delta 0.9 * 200 = 180. Click the track below
+        // the thumb (thumb ends at y=102).
+        let mut c = component_with_tall_page();
+        c.handle_event(&thumb_pd(194.0, 150.0));
+        assert!(c.drag.is_none(), "track click is instantaneous, no drag");
+        assert!((c.viewport.scroll.1 - 180.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn scrollbar_press_swallows_event_before_annotation() {
+        // Page is 180 wide; a note with page-local rect x [80,180] lands at
+        // viewport x [90,190] (page is centered with origin x=10), so it
+        // reaches UNDER the vertical bar (x 188..200). Pressing the bar must
+        // not select or drag it.
+        let mut c = component_with_tall_page();
+        c.editor.create_annotation(
+            AnnotationKind::Note,
+            PageId::new("P0"),
+            AnnotationPayload::Note {
+                rect: Rect {
+                    x: 80.0,
+                    y: 0.0,
+                    w: 100.0,
+                    h: 100.0,
+                },
+                color: Color::Rgb(0, 0, 0),
+                content: "x".into(),
+                icon: NoteIcon::Note,
+            },
+        );
+        // Direct editor create leaves the note selected; reset so the test
+        // starts from a clean selection (chrome must not re-select it).
+        c.editor.clear_selection();
+        c.handle_event(&thumb_pd(194.0, 50.0));
+        assert!(matches!(c.drag, Some(DragState::ScrollThumb { .. })));
+        assert_eq!(
+            c.selection(),
+            &AnnotationSelection::None,
+            "annotation under bar not selected"
+        );
+        c.handle_event(&ViewEvent::PointerMove { x: 194.0, y: 120.0 });
+        assert_eq!(
+            c.selection(),
+            &AnnotationSelection::None,
+            "drag never selects/moves annotation"
+        );
+    }
+
+    #[test]
+    fn thumb_drag_fires_page_change_across_boundary() {
+        // Two 200x200 pages in 200x200: both bars, region 188, y_max 212.
+        // Drag the thumb fully down -> viewport center lands on page 1.
+        let mut c = component_with_two_pages();
+        let fired = Arc::new(Mutex::new(None));
+        let f = fired.clone();
+        c.on_page_change(move |idx| *f.lock().unwrap() = Some(idx));
+        c.handle_event(&thumb_pd(194.0, 10.0));
+        c.handle_event(&ViewEvent::PointerMove {
+            x: 194.0,
+            y: 9999.0,
+        });
+        assert_eq!(*fired.lock().unwrap(), Some(1));
     }
 
     #[test]
