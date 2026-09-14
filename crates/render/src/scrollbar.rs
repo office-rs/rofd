@@ -601,4 +601,44 @@ mod paint_tests {
         paint_scrollbars(&mut scene, &l, ScrollbarVisual::default());
         assert_eq!(count_fills(&scene), 0, "zero-area chrome is never painted");
     }
+
+    #[test]
+    fn paint_appends_chrome_without_clearing_scene() {
+        // Append-not-clear contract relied on by
+        // EditorComponent::build_scene: the composited page scene is passed
+        // in already populated, and the chrome must be appended AFTER it with
+        // the thumb last, never replacing it.
+        let mut scene = Scene::new();
+        // Pre-existing content authored with the same Painter call shape the
+        // track fill uses.
+        Painter::new(&mut scene).fill_rect(Rect::new(0.0, 0.0, 10.0, 10.0), TRACK_COLOR);
+        assert_eq!(count_fills(&scene), 1);
+        // Vertical-bar-only fixture: track fill + separator stroke + thumb fill.
+        let l = layout_for((200.0, 200.0), &[(180.0, 400.0)]);
+        paint_scrollbars(&mut scene, &l, ScrollbarVisual::default());
+        assert_eq!(count_fills(&scene), 3, "chrome adds two fills, clears none");
+        // Full draw order: pre-existing fill stays first, the separator stroke
+        // is emitted between the two chrome fills, and the thumb fill is the
+        // FINAL draw so it paints on top of the page content.
+        let draws: Vec<&Draw> = scene
+            .commands()
+            .iter()
+            .filter_map(|cmd| match cmd {
+                Command::Draw(id) => Some(scene.draw_op(*id)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            draws.len(),
+            4,
+            "pre fill + track fill + separator stroke + thumb fill"
+        );
+        assert!(matches!(draws[0], Draw::Fill { .. }), "content kept first");
+        assert!(matches!(draws[1], Draw::Fill { .. }), "track appended");
+        assert!(
+            matches!(draws[2], Draw::Stroke { .. }),
+            "separator appended"
+        );
+        assert!(matches!(draws[3], Draw::Fill { .. }), "thumb painted last");
+    }
 }
