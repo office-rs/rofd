@@ -410,10 +410,13 @@ impl EditorComponent {
     }
 
     /// Set the active editing tool. Switching tools cancels any in-progress
-    /// drag (clears `drag`) and the body-text selection (spec §5.1).
+    /// drag (clears `drag`), the body-text selection (spec §5.1) and a
+    /// scrollbar hover (a pointer parked on a thumb must not leave the
+    /// hover-painted thumb / resize cursor until the next canvas move).
     pub fn set_tool(&mut self, tool: Tool) {
         self.tool = tool;
         self.drag = None;
+        self.scrollbar_hover = None;
         self.set_text_selection(None);
         self.set_tool_pointer_cursor();
     }
@@ -851,7 +854,12 @@ impl EditorComponent {
                 // Scrollbar thumb hover takes cursor priority over tools but
                 // does not consume the move otherwise: when not over a thumb
                 // the existing per-tool hover logic below runs normally.
+                // Native hosts only repaint on needs_repaint, so repaint on
+                // hover TRANSITIONS (enter / v<->h switch / leave), not on
+                // every move while the pointer stays inside one thumb.
+                let mut scrollbar_hover_cleared = false;
                 if self.drag.is_none() {
+                    let prev_hover = self.scrollbar_hover;
                     let layout =
                         rofd_render::scrollbar_layout(self.editor.document(), &self.viewport);
                     let over = match rofd_render::hit_scrollbar(&layout, p) {
@@ -870,8 +878,14 @@ impl EditorComponent {
                             rofd_render::Axis::Horizontal => PointerCursor::ResizeH,
                         });
                         return EventOutcome {
-                            needs_repaint: true,
+                            needs_repaint: prev_hover != Some(axis),
                         };
+                    }
+                    if prev_hover.is_some() {
+                        // The pointer just left a thumb: the thumb must drop
+                        // its hover color, so request a repaint at the arm
+                        // tail even though no drag is active.
+                        scrollbar_hover_cleared = true;
                     }
                     // Leaving a thumb: clear a stale resize cursor for tools
                     // whose own hover branch leaves the cursor untouched
@@ -1062,14 +1076,8 @@ impl EditorComponent {
                         }
                     }
                 }
-                if self.drag.is_some() {
-                    EventOutcome {
-                        needs_repaint: true,
-                    }
-                } else {
-                    EventOutcome {
-                        needs_repaint: false,
-                    }
+                EventOutcome {
+                    needs_repaint: self.drag.is_some() || scrollbar_hover_cleared,
                 }
             }
             ViewEvent::PointerUp {
@@ -2469,6 +2477,36 @@ mod tests {
         c
     }
 
+    /// Single page 400x100, zoom 1, page_gap 0, viewport 200x200. Horizontal
+    /// overflow only (100 < 200-12=188, so no vertical bar): content region
+    /// 200x188, x_margin = 100, h-track (0,188)-(200,200), thumb length 100,
+    /// travel 96. The resting thumb is centered (fraction 0.5 at scroll 0):
+    /// x [50,150], y [190,198].
+    fn component_with_wide_page() -> EditorComponent {
+        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        c.set_clock("t".into(), 1);
+        let mut doc = OfdDocument::default();
+        doc.pages.push(Page {
+            id: PageId::new("P0"),
+            physical_box: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 400.0,
+                h: 100.0,
+            },
+            layers: vec![Layer::default()],
+            template: None,
+        });
+        c.load_document(doc);
+        c.viewport = rofd_render::Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (200.0, 200.0),
+            page_gap: 0.0,
+        };
+        c
+    }
+
     #[test]
     fn hover_over_vertical_thumb_requests_resize_cursor() {
         let mut c = component_with_tall_page();
@@ -2484,6 +2522,51 @@ mod tests {
         // Back over page/desk content: Text tool restores the default cursor.
         c.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 50.0 });
         assert_eq!(c.pointer_cursor(), PointerCursor::Default);
+    }
+
+    #[test]
+    fn thumb_hover_repaints_only_on_transition() {
+        // Native hosts repaint only when the outcome requests it: hovering must
+        // request a repaint on entry (thumb gains the hover color) and on
+        // leave (it loses the color again), but NOT for moves that stay within
+        // the same thumb.
+        let mut c = component_with_tall_page();
+        // Enter the v-thumb [190,198]x[2,102].
+        let o = c.handle_event(&ViewEvent::PointerMove { x: 194.0, y: 50.0 });
+        assert!(o.needs_repaint, "entering the thumb repaints it as hovered");
+        assert_eq!(c.pointer_cursor(), PointerCursor::ResizeV);
+        // Stay within the same thumb: no visual state transition.
+        let o = c.handle_event(&ViewEvent::PointerMove { x: 194.0, y: 51.0 });
+        assert!(
+            !o.needs_repaint,
+            "moving within the same thumb must not request a repaint"
+        );
+        // Leave: the thumb must drop its hover color.
+        let o = c.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 50.0 });
+        assert!(
+            o.needs_repaint,
+            "leaving the thumb must repaint it unhovered"
+        );
+        assert_eq!(c.pointer_cursor(), PointerCursor::Default);
+    }
+
+    #[test]
+    fn set_tool_clears_scrollbar_hover() {
+        // A toolbar tool switch while the pointer is parked on a thumb must
+        // not leave the hover-painted thumb / resize cursor until the next
+        // canvas pointer move.
+        let mut c = component_with_tall_page();
+        c.handle_event(&ViewEvent::PointerMove { x: 194.0, y: 50.0 });
+        assert_eq!(
+            c.scrollbar_hover,
+            Some(rofd_render::Axis::Vertical),
+            "precondition: thumb is hovered"
+        );
+        c.set_tool(Tool::Hand);
+        assert!(
+            c.scrollbar_hover.is_none(),
+            "switching tools clears scrollbar hover state"
+        );
     }
 
     #[test]
@@ -4377,9 +4460,11 @@ mod tests {
     #[test]
     fn scrollbar_press_swallows_event_before_annotation() {
         // Page is 180 wide; a note with page-local rect x [80,180] lands at
-        // viewport x [90,190] (page is centered with origin x=10), so it
-        // reaches UNDER the vertical bar (x 188..200). Pressing the bar must
-        // not select or drag it.
+        // viewport x [90,190] (page is centered with origin x=10). Point
+        // x=190 is BOTH the inclusive right edge of the note AND the
+        // inclusive left edge of the resting v-thumb [190,198]x[2,102] - a
+        // point chrome and the annotation both claim. Chrome must win: the
+        // press must not select or drag the note.
         let mut c = component_with_tall_page();
         c.editor.create_annotation(
             AnnotationKind::Note,
@@ -4399,14 +4484,14 @@ mod tests {
         // Direct editor create leaves the note selected; reset so the test
         // starts from a clean selection (chrome must not re-select it).
         c.editor.clear_selection();
-        c.handle_event(&thumb_pd(194.0, 50.0));
+        c.handle_event(&thumb_pd(190.0, 50.0));
         assert!(matches!(c.drag, Some(DragState::ScrollThumb { .. })));
         assert_eq!(
             c.selection(),
             &AnnotationSelection::None,
             "annotation under bar not selected"
         );
-        c.handle_event(&ViewEvent::PointerMove { x: 194.0, y: 120.0 });
+        c.handle_event(&ViewEvent::PointerMove { x: 190.0, y: 120.0 });
         assert_eq!(
             c.selection(),
             &AnnotationSelection::None,
@@ -4428,6 +4513,86 @@ mod tests {
             y: 9999.0,
         });
         assert_eq!(*fired.lock().unwrap(), Some(1));
+    }
+
+    #[test]
+    fn horizontal_thumb_drag_maps_absolutely_and_creates_no_undo() {
+        // Wide page: resting h-thumb x [50,150], y [190,198], travel 96,
+        // x_margin 100. Press 8px right of the thumb start.
+        let mut c = component_with_wide_page();
+        c.handle_event(&thumb_pd(58.0, 194.0));
+        assert!(matches!(
+            c.drag,
+            Some(DragState::ScrollThumb {
+                axis: rofd_render::Axis::Horizontal,
+                ..
+            })
+        ));
+        c.handle_event(&ViewEvent::PointerMove { x: 34.0, y: 194.0 });
+        // fraction = (34 - grab 8 - inset 2) / 96 = 0.25
+        // -> scroll.0 = 0.25 * (2 * 100) - 100 = -50.
+        assert!(
+            (c.viewport.scroll.0 - (-50.0)).abs() < 0.01,
+            "quarter-drag -> quarter of the centered x-range"
+        );
+        c.handle_event(&ViewEvent::PointerMove {
+            x: 9999.0,
+            y: 194.0,
+        });
+        assert!(
+            (c.viewport.scroll.0 - 100.0).abs() < 0.01,
+            "dragging past the track clamps to +x_margin"
+        );
+        // After the full drag the thumb spans x [98,198]; release at
+        // (150,194) is still over it, so the resize-H cursor persists.
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 150.0,
+            y: 194.0,
+        });
+        assert!(c.drag.is_none());
+        assert_eq!(c.pointer_cursor(), PointerCursor::ResizeH);
+        assert!(
+            !c.can_undo(),
+            "thumb drag is a view change, not a doc change"
+        );
+        assert!(!c.is_modified());
+    }
+
+    #[test]
+    fn horizontal_track_click_pages_then_clamps() {
+        // region_w 200 -> page delta 0.9 * 200 = 180, clamped to x_margin 100.
+        // Click in the track beyond the resting thumb end (x=150) pages right.
+        let mut c = component_with_wide_page();
+        c.handle_event(&thumb_pd(180.0, 194.0));
+        assert!(c.drag.is_none(), "track click is instantaneous, no drag");
+        assert!(
+            (c.viewport.scroll.0 - 100.0).abs() < 0.01,
+            "page-right clamps to +x_margin"
+        );
+        // A fresh component: click before the resting thumb start (x=50)
+        // pages left and clamps at -x_margin.
+        let mut c = component_with_wide_page();
+        c.handle_event(&thumb_pd(20.0, 194.0));
+        assert!(c.drag.is_none(), "track click is instantaneous, no drag");
+        assert!(
+            (c.viewport.scroll.0 - (-100.0)).abs() < 0.01,
+            "page-left clamps to -x_margin"
+        );
+    }
+
+    #[test]
+    fn corner_press_is_inert() {
+        // Two-page fixture shows both bars; the corner square is
+        // [188,200]^2. A press there must neither drag nor page.
+        let mut c = component_with_two_pages();
+        c.handle_event(&thumb_pd(194.0, 194.0));
+        assert!(c.drag.is_none(), "corner never starts a drag");
+        assert_eq!(
+            c.viewport.scroll,
+            (0.0, 0.0),
+            "corner never pages either bar"
+        );
     }
 
     #[test]
