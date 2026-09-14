@@ -45,30 +45,23 @@ pub struct Viewport {
 ///
 /// Geometry mirrors [`crate::composite::page_origin`]: `page_x = max(0,
 /// (size.0 - page_w) / 2) + scroll.0`, `page_y = page_gap - scroll.1 + ...`.
-/// Shared single implementation (spec §3.1) - the hand tool's pan drag calls
-/// this; wheel `Scroll` may adopt it later.
+/// Shared single implementation (spec §3.2): every component scroll entry
+/// (wheel, scroll-page, zoom, resize, pan, thumb drag) clamps through here,
+/// using the content region AFTER visible scrollbar strips are reserved.
 pub fn clamp_scroll(doc: &OfdDocument, vp: &Viewport) -> (f64, f64) {
     if doc.pages.is_empty() {
         return (0.0, 0.0);
     }
-    let widest = doc
-        .pages
-        .iter()
-        .map(|p| p.physical_box.w * vp.zoom)
-        .fold(f64::MIN, f64::max);
-    let x_margin = (widest - vp.size.0) / 2.0;
+    let layout = crate::scrollbar::scrollbar_layout(doc, vp);
+    let (content_w, content_h) = crate::scrollbar::content_metrics(doc, vp);
+    let (region_w, region_h) = layout.content_size;
+    let x_margin = crate::scrollbar::scroll_x_margin(content_w, region_w);
+    let y_max = crate::scrollbar::scroll_y_max(content_h, region_h);
     let x = if x_margin <= 0.0 {
         0.0
     } else {
         vp.scroll.0.clamp(-x_margin, x_margin)
     };
-    let inner_h: f64 = doc
-        .pages
-        .iter()
-        .map(|p| p.physical_box.h * vp.zoom)
-        .sum::<f64>()
-        + vp.page_gap * doc.pages.len().saturating_sub(1) as f64;
-    let y_max = (vp.page_gap + inner_h - vp.size.1).max(0.0);
     let y = vp.scroll.1.clamp(0.0, y_max);
     (x, y)
 }
@@ -108,16 +101,17 @@ mod clamp_tests {
     #[test]
     fn clamps_both_axes_when_content_exceeds_viewport() {
         // 两页 400x300mm，zoom=2 -> 每页 800x600px，视口 500x700，gap=20。
-        // X: 最宽页 800 > 500 -> 余量 (800-500)/2 = 150 -> x ∈ [-150, 150]。
-        // Y: 内容高 = 600*2 + 20 = 1220；y_max = gap + 1220 - 700 = 540 -> y ∈ [0, 540]。
+        // 两轴都出滚动条后内容区为 488x688。
+        // X: x_margin = (800-488)/2 = 156 -> x ∈ [-156, 156]。
+        // Y: content_h = 20 + (600+20+600) = 1240；y_max = 1240-688 = 552。
         let doc = doc_of(&[(400.0, 300.0), (400.0, 300.0)]);
         assert_eq!(
             clamp_scroll(&doc, &vp((500.0, 700.0), 2.0, (500.0, 1000.0))),
-            (150.0, 540.0)
+            (156.0, 552.0)
         );
         assert_eq!(
             clamp_scroll(&doc, &vp((500.0, 700.0), 2.0, (-500.0, -5.0))),
-            (-150.0, 0.0)
+            (-156.0, 0.0)
         );
     }
 
