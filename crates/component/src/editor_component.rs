@@ -156,6 +156,9 @@ pub struct EditorComponent {
     /// the zoom-change guard: `set_pointer_cursor` only fires
     /// `on_pointer_cursor` when the value actually changes.
     pub(crate) pointer_cursor: PointerCursor,
+    /// Axis whose thumb the pointer is hovering (drives thumb hover color and
+    /// the resize cursor). Cleared when not over a thumb.
+    pub(crate) scrollbar_hover: Option<rofd_render::Axis>,
     /// In-progress pointer drag, if any. `None` when no drag is active.
     pub(crate) drag: Option<DragState>,
     /// Current body-text selection (TextSelect tool). Pure UI state - never
@@ -198,6 +201,7 @@ impl EditorComponent {
             modified: false,
             tool: Tool::Text,
             pointer_cursor: PointerCursor::Default,
+            scrollbar_hover: None,
             drag: None,
             text_selection: None,
             current_page: None,
@@ -245,6 +249,7 @@ impl EditorComponent {
         // A new document starts at the top (zoom is intentionally kept - the
         // user's chosen display ratio survives document switches).
         self.viewport.scroll = (0.0, 0.0);
+        self.scrollbar_hover = None;
         // Body-text selection belongs to the old document's pages.
         self.set_text_selection(None);
         self.editor.load_document(doc);
@@ -261,6 +266,7 @@ impl EditorComponent {
         // A new document starts at the top (zoom is intentionally kept - the
         // user's chosen display ratio survives document switches).
         self.viewport.scroll = (0.0, 0.0);
+        self.scrollbar_hover = None;
         self.set_text_selection(None);
         self.editor.load_document(OfdDocument::default());
         self.font_store = Some(self.build_font_store());
@@ -581,14 +587,26 @@ impl EditorComponent {
             .drag
             .as_ref()
             .and_then(|d| drag_to_preview(self.editor.document(), d, &self.viewport));
-        self.render.composite(
+        let mut scene = self.render.composite(
             self.editor.document(),
             &self.viewport,
             fonts,
             self.editor.selection(),
             self.text_selection.as_ref(),
             drag_preview.as_ref(),
-        )
+        );
+        let layout = rofd_render::scrollbar_layout(self.editor.document(), &self.viewport);
+        // Task 7 replaces `None` with the active ScrollThumb axis.
+        let active = None;
+        rofd_render::paint_scrollbars(
+            &mut scene,
+            &layout,
+            rofd_render::ScrollbarVisual {
+                hover: self.scrollbar_hover,
+                active,
+            },
+        );
+        scene
     }
 
     pub fn render(&mut self, target: &mut dyn RenderTarget) {
@@ -713,6 +731,45 @@ impl EditorComponent {
             }
             ViewEvent::PointerMove { x, y } => {
                 let p = (*x, *y);
+                // Scrollbar thumb hover takes cursor priority over tools but
+                // does not consume the move otherwise: when not over a thumb
+                // the existing per-tool hover logic below runs normally.
+                if self.drag.is_none() {
+                    let layout =
+                        rofd_render::scrollbar_layout(self.editor.document(), &self.viewport);
+                    let over = match rofd_render::hit_scrollbar(&layout, p) {
+                        Some(rofd_render::ScrollbarHit::VerticalThumb) => {
+                            Some(rofd_render::Axis::Vertical)
+                        }
+                        Some(rofd_render::ScrollbarHit::HorizontalThumb) => {
+                            Some(rofd_render::Axis::Horizontal)
+                        }
+                        _ => None,
+                    };
+                    self.scrollbar_hover = over;
+                    if let Some(axis) = over {
+                        self.set_pointer_cursor(match axis {
+                            rofd_render::Axis::Vertical => PointerCursor::ResizeV,
+                            rofd_render::Axis::Horizontal => PointerCursor::ResizeH,
+                        });
+                        return EventOutcome {
+                            needs_repaint: true,
+                        };
+                    }
+                    // Leaving a thumb: clear a stale resize cursor for tools
+                    // whose own hover branch leaves the cursor untouched
+                    // (Create), before falling through to the branches below.
+                    if matches!(
+                        self.pointer_cursor,
+                        PointerCursor::ResizeV | PointerCursor::ResizeH
+                    ) {
+                        self.set_pointer_cursor(if matches!(self.tool, Tool::Hand) {
+                            PointerCursor::Grab
+                        } else {
+                            PointerCursor::Default
+                        });
+                    }
+                }
                 // MarkupPress -> TextSelect conversion (click-vs-drag,
                 // spec §5.2): once the pointer moves beyond the threshold
                 // with a body-text anchor, the markup press becomes a
@@ -2256,6 +2313,44 @@ mod tests {
             page_gap: 0.0,
         };
         c
+    }
+
+    #[test]
+    fn hover_over_vertical_thumb_requests_resize_cursor() {
+        let mut c = component_with_tall_page();
+        c.handle_event(&ViewEvent::PointerMove { x: 194.0, y: 50.0 });
+        assert_eq!(c.pointer_cursor(), PointerCursor::ResizeV);
+    }
+
+    #[test]
+    fn leaving_thumb_restores_tool_cursor() {
+        let mut c = component_with_tall_page();
+        c.handle_event(&ViewEvent::PointerMove { x: 194.0, y: 50.0 });
+        assert_eq!(c.pointer_cursor(), PointerCursor::ResizeV);
+        // Back over page/desk content: Text tool restores the default cursor.
+        c.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 50.0 });
+        assert_eq!(c.pointer_cursor(), PointerCursor::Default);
+    }
+
+    #[test]
+    fn build_scene_paints_scrollbar_chrome() {
+        // 180x400 page in 200x200 -> one vertical bar = track + thumb fills on
+        // top of the desk + page fills.
+        use imaging::record::{Command, Draw};
+        let mut c = component_with_tall_page();
+        let scene = c.build_scene();
+        let fills = scene
+            .commands()
+            .iter()
+            .filter(|cmd| {
+                matches!(cmd, Command::Draw(id) if matches!(scene.draw_op(*id), Draw::Fill { .. }))
+            })
+            .count();
+        // Desk bg + page bg + scrollbar track + thumb = 4 fills exactly.
+        assert_eq!(
+            fills, 4,
+            "expected desk+page+track+thumb fills, got {fills}"
+        );
     }
 
     #[test]

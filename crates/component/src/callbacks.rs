@@ -100,6 +100,10 @@ pub enum PointerCursor {
     Grabbing,
     /// Text tool hovering (文本, I-beam).
     Text,
+    /// Hovering/dragging the vertical scrollbar thumb.
+    ResizeV,
+    /// Hovering/dragging the horizontal scrollbar thumb.
+    ResizeH,
 }
 
 #[derive(Default)]

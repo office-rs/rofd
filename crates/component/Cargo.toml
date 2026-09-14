@@ -7,3 +7,9 @@ edition = "2021"
 rofd-dom = { workspace = true }
 rofd-render = { workspace = true }
 rofd-editor = { workspace = true }
+
+# Test-only: inline scene-structure assertions (AGENTS §6) use imaging's
+# Command/Draw record types, the same idiom as rofd-render's tests. Not part of
+# the library's dependency surface (AGENTS §4.1/§4.9).
+[dev-dependencies]
+imaging = { workspace = true }
