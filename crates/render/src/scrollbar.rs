@@ -161,6 +161,54 @@ pub fn scrollbar_layout(doc: &OfdDocument, vp: &Viewport) -> ScrollbarLayout {
     }
 }
 
+/// Scrollbar chrome under a viewport-space point. Thumbs are tested before
+/// their tracks; the corner wins over both tracks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollbarHit {
+    VerticalThumb,
+    HorizontalThumb,
+    VerticalTrack { page_up: bool },
+    HorizontalTrack { page_left: bool },
+    Corner,
+}
+
+/// Rect containment that rejects zero/negative-area rects (degenerate
+/// viewport sizes produce such tracks, and they must never absorb hits).
+fn contains_with_area(r: Rect, x: f64, y: f64) -> bool {
+    r.width() > 0.0 && r.height() > 0.0 && x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1
+}
+
+pub fn hit_scrollbar(layout: &ScrollbarLayout, point: (f64, f64)) -> Option<ScrollbarHit> {
+    let (x, y) = point;
+    // Corner wins (it overlaps both tracks' end regions).
+    if let Some(c) = layout.corner {
+        if contains_with_area(c, x, y) {
+            return Some(ScrollbarHit::Corner);
+        }
+    }
+    if let Some(bar) = layout.vertical {
+        if contains_with_area(bar.thumb, x, y) {
+            return Some(ScrollbarHit::VerticalThumb);
+        }
+        if contains_with_area(bar.track, x, y) {
+            return Some(ScrollbarHit::VerticalTrack {
+                page_up: y < bar.thumb.y0,
+            });
+        }
+    }
+    if let Some(bar) = layout.horizontal {
+        if contains_with_area(bar.thumb, x, y) {
+            return Some(ScrollbarHit::HorizontalThumb);
+        }
+        if contains_with_area(bar.track, x, y) {
+            return Some(ScrollbarHit::HorizontalTrack {
+                page_left: x < bar.thumb.x0,
+            });
+        }
+    }
+    None
+}
+
 /// Build one bar along `track` with the thumb placed at `fraction` (0..=1).
 /// `len_fraction` is the visible-length ratio (region/content, min-clamped).
 fn bar(axis: Axis, track: Rect, fraction: f64, len_fraction: f64) -> BarGeom {
@@ -326,5 +374,79 @@ mod tests {
         assert_eq!(scroll_y_max(100.0, 188.0), 0.0);
         assert_eq!(scroll_x_margin(400.0, 188.0), 106.0);
         assert_eq!(scroll_x_margin(100.0, 188.0), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod hit_tests {
+    use super::*;
+    use rofd_dom::{OfdDocument, Page, PageId, Rect as RofdRect};
+
+    fn layout_for(size: (f64, f64), pages: &[(f64, f64)], scroll: (f64, f64)) -> ScrollbarLayout {
+        let mut doc = OfdDocument::default();
+        for (i, &(w, h)) in pages.iter().enumerate() {
+            doc.pages.push(Page {
+                id: PageId::new(format!("P{i}")),
+                physical_box: RofdRect {
+                    x: 0.0,
+                    y: 0.0,
+                    w,
+                    h,
+                },
+                layers: vec![],
+                template: None,
+            });
+        }
+        let vp = Viewport {
+            scroll,
+            zoom: 1.0,
+            size,
+            page_gap: 0.0,
+        };
+        scrollbar_layout(&doc, &vp)
+    }
+
+    #[test]
+    fn hits_vertical_thumb_before_track() {
+        // 180x400 page in 200x200: vbar only; thumb y [2,102], x [190,198].
+        let l = layout_for((200.0, 200.0), &[(180.0, 400.0)], (0.0, 0.0));
+        assert_eq!(
+            hit_scrollbar(&l, (194.0, 50.0)),
+            Some(ScrollbarHit::VerticalThumb)
+        );
+        // Below the thumb but inside the track -> page-down zone.
+        assert_eq!(
+            hit_scrollbar(&l, (194.0, 150.0)),
+            Some(ScrollbarHit::VerticalTrack { page_up: false })
+        );
+        // Above the thumb -> page-up zone.
+        assert_eq!(
+            hit_scrollbar(&l, (194.0, 1.0)),
+            Some(ScrollbarHit::VerticalTrack { page_up: true })
+        );
+    }
+
+    #[test]
+    fn hits_horizontal_thumb_and_corner() {
+        // Two-pass case: 195x400 in 200x200 -> both bars + corner [188,200]^2.
+        let l = layout_for((200.0, 200.0), &[(195.0, 400.0)], (0.0, 0.0));
+        // hbar thumb: track y [188,200], thumb y [190,198], starts x=2.
+        assert_eq!(
+            hit_scrollbar(&l, (50.0, 194.0)),
+            Some(ScrollbarHit::HorizontalThumb)
+        );
+        assert_eq!(
+            hit_scrollbar(&l, (194.0, 194.0)),
+            Some(ScrollbarHit::Corner)
+        );
+    }
+
+    #[test]
+    fn no_hit_without_bars_or_outside() {
+        let l = layout_for((500.0, 700.0), &[(200.0, 300.0)], (0.0, 0.0));
+        assert_eq!(hit_scrollbar(&l, (499.0, 699.0)), None);
+        // Degenerate zero-size tracks never hit.
+        let l0 = layout_for((0.0, 0.0), &[(200.0, 200.0)], (0.0, 0.0));
+        assert_eq!(hit_scrollbar(&l0, (0.0, 0.0)), None);
     }
 }
