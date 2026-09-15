@@ -164,8 +164,10 @@ struct BarGeom {
   `EditorComponent::build_scene` 拿到 composite 的 Scene 后，追加一次
   `paint_scrollbars(&mut scene, &layout, visual)`；条永远画在页面、选中手柄、
   拖框预览之上。
-- `visual: ScrollbarVisual { hover: Option<Axis>, active: Option<Axis> }`，
+- `visual: ScrollbarVisual { hover: Option<ScrollbarHover>, active: Option<Axis> }`，
   Copy 结构，由 component 的悬停态与当前 `DragState::ScrollThumb` 派生。
+  `ScrollbarHover = Thumb(Axis) | Arrow { axis, negative }`（2026-09-15 增补）：
+  悬停箭头按钮只加深该按钮的字形，不改变滑块配色，也不请求 resize 光标。
 - 箭头按钮绘制（2026-09-15 增补）：按钮底色与槽同为 `#F1F1F1`（整条槽
   一次填充），按钮与翻页轨道之间各画 1px `#D9D9D9` 分隔线；按钮内画一个
   向外指的实心三角箭头字形（起端朝上/左，末端朝下/右），默认取滑块灰

@@ -10,6 +10,10 @@ An OFD (GB/T 33190) **view + annotate** editor **library**, written in Rust, dua
 
 ---
 
+## Live Demo
+
+[https://office-rs.github.io/rofd/](https://office-rs.github.io/rofd/)
+
 ## Usage
 
 Integrate on the web via the npm package `@office-rs/rofd`:

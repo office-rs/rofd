@@ -160,9 +160,10 @@ pub struct EditorComponent {
     /// the zoom-change guard: `set_pointer_cursor` only fires
     /// `on_pointer_cursor` when the value actually changes.
     pub(crate) pointer_cursor: PointerCursor,
-    /// Axis whose thumb the pointer is hovering (drives thumb hover color and
-    /// the resize cursor). Cleared when not over a thumb.
-    pub(crate) scrollbar_hover: Option<rofd_render::Axis>,
+    /// Scrollbar element the pointer is hovering (thumb drives the resize
+    /// cursor + hover color, arrow buttons drive their glyph hover color).
+    /// Cleared when not over either.
+    pub(crate) scrollbar_hover: Option<rofd_render::ScrollbarHover>,
     /// In-progress pointer drag, if any. `None` when no drag is active.
     pub(crate) drag: Option<DragState>,
     /// Current body-text selection (TextSelect tool). Pure UI state - never
@@ -486,6 +487,26 @@ impl EditorComponent {
         self.maybe_fire_page_change();
     }
 
+    /// Map a chrome hit test at `p` to hover state: thumbs and arrow buttons
+    /// are both hoverable chrome (thumb = resize cursor, arrow = glyph
+    /// darkening); anything else clears it. Shared by PointerMove, PointerUp
+    /// and the press arms so the three never disagree.
+    fn scrollbar_hover_at(&self, p: (f64, f64)) -> Option<rofd_render::ScrollbarHover> {
+        let layout = rofd_render::scrollbar_layout(self.editor.document(), &self.viewport);
+        match rofd_render::hit_scrollbar(&layout, p) {
+            Some(rofd_render::ScrollbarHit::VerticalThumb) => Some(
+                rofd_render::ScrollbarHover::Thumb(rofd_render::Axis::Vertical),
+            ),
+            Some(rofd_render::ScrollbarHit::HorizontalThumb) => Some(
+                rofd_render::ScrollbarHover::Thumb(rofd_render::Axis::Horizontal),
+            ),
+            Some(rofd_render::ScrollbarHit::Arrow { axis, negative }) => {
+                Some(rofd_render::ScrollbarHover::Arrow { axis, negative })
+            }
+            _ => None,
+        }
+    }
+
     /// Chrome-first pointer press on scrollbar chrome. Thumbs start a
     /// view-only [`DragState::ScrollThumb`] drag; tracks page by
     /// [`rofd_render::TRACK_PAGE_RATIO`] of the content region; the corner is
@@ -504,7 +525,7 @@ impl EditorComponent {
                     axis: Axis::Vertical,
                     grab: p.1 - bar.thumb.y0,
                 });
-                self.scrollbar_hover = Some(Axis::Vertical);
+                self.scrollbar_hover = Some(rofd_render::ScrollbarHover::Thumb(Axis::Vertical));
                 self.set_pointer_cursor(PointerCursor::ResizeV);
             }
             ScrollbarHit::HorizontalThumb => {
@@ -515,7 +536,7 @@ impl EditorComponent {
                     axis: Axis::Horizontal,
                     grab: p.0 - bar.thumb.x0,
                 });
-                self.scrollbar_hover = Some(Axis::Horizontal);
+                self.scrollbar_hover = Some(rofd_render::ScrollbarHover::Thumb(Axis::Horizontal));
                 self.set_pointer_cursor(PointerCursor::ResizeH);
             }
             ScrollbarHit::Arrow { axis, negative } => {
@@ -870,45 +891,38 @@ impl EditorComponent {
                         needs_repaint: true,
                     };
                 }
-                // Scrollbar thumb hover takes cursor priority over tools but
+                // Scrollbar chrome hover takes cursor priority over tools but
                 // does not consume the move otherwise: when not over a thumb
                 // the existing per-tool hover logic below runs normally.
                 // Native hosts only repaint on needs_repaint, so repaint on
-                // hover TRANSITIONS (enter / v<->h switch / leave), not on
-                // every move while the pointer stays inside one thumb.
+                // hover TRANSITIONS (enter / leave / thumb <-> arrow switch),
+                // not on every move that stays within one element.
                 let mut scrollbar_hover_cleared = false;
                 if self.drag.is_none() {
                     let prev_hover = self.scrollbar_hover;
-                    let layout =
-                        rofd_render::scrollbar_layout(self.editor.document(), &self.viewport);
-                    let over = match rofd_render::hit_scrollbar(&layout, p) {
-                        Some(rofd_render::ScrollbarHit::VerticalThumb) => {
-                            Some(rofd_render::Axis::Vertical)
-                        }
-                        Some(rofd_render::ScrollbarHit::HorizontalThumb) => {
-                            Some(rofd_render::Axis::Horizontal)
-                        }
-                        _ => None,
-                    };
+                    let over = self.scrollbar_hover_at(p);
                     self.scrollbar_hover = over;
-                    if let Some(axis) = over {
+                    if let Some(rofd_render::ScrollbarHover::Thumb(axis)) = over {
                         self.set_pointer_cursor(match axis {
                             rofd_render::Axis::Vertical => PointerCursor::ResizeV,
                             rofd_render::Axis::Horizontal => PointerCursor::ResizeH,
                         });
                         return EventOutcome {
-                            needs_repaint: prev_hover != Some(axis),
+                            needs_repaint: prev_hover != over,
                         };
                     }
-                    if prev_hover.is_some() {
-                        // The pointer just left a thumb: the thumb must drop
-                        // its hover color, so request a repaint at the arm
-                        // tail even though no drag is active.
+                    if prev_hover != over {
+                        // The hovered chrome element changed (entered or left
+                        // an arrow, or switched thumb <-> arrow): the hovered
+                        // element must gain/lose its hover color, so request a
+                        // repaint at the arm tail even though no drag is
+                        // active.
                         scrollbar_hover_cleared = true;
                     }
-                    // Leaving a thumb: clear a stale resize cursor for tools
-                    // whose own hover branch leaves the cursor untouched
-                    // (Create), before falling through to the branches below.
+                    // Not over a thumb (arrow button or plain canvas): clear
+                    // a stale resize cursor for tools whose own hover branch
+                    // leaves the cursor untouched (Create), before falling
+                    // through to the branches below.
                     if matches!(
                         self.pointer_cursor,
                         PointerCursor::ResizeV | PointerCursor::ResizeH
@@ -1247,29 +1261,18 @@ impl EditorComponent {
                         DragState::ScrollThumb { .. } => {
                             // View-only drag: nothing to commit. Recompute the
                             // hover/cursor from the release point (the thumb
-                            // may still be under the pointer).
-                            let layout = rofd_render::scrollbar_layout(
-                                self.editor.document(),
-                                &self.viewport,
-                            );
-                            let over = match rofd_render::hit_scrollbar(&layout, (*x, *y)) {
-                                Some(rofd_render::ScrollbarHit::VerticalThumb) => {
-                                    Some(rofd_render::Axis::Vertical)
-                                }
-                                Some(rofd_render::ScrollbarHit::HorizontalThumb) => {
-                                    Some(rofd_render::Axis::Horizontal)
-                                }
-                                _ => None,
-                            };
+                            // or an arrow button may still be under the
+                            // pointer; only a thumb keeps the resize cursor).
+                            let over = self.scrollbar_hover_at((*x, *y));
                             self.scrollbar_hover = over;
                             match over {
-                                Some(rofd_render::Axis::Vertical) => {
-                                    self.set_pointer_cursor(PointerCursor::ResizeV)
-                                }
-                                Some(rofd_render::Axis::Horizontal) => {
-                                    self.set_pointer_cursor(PointerCursor::ResizeH)
-                                }
-                                None => self.set_tool_pointer_cursor(),
+                                Some(rofd_render::ScrollbarHover::Thumb(
+                                    rofd_render::Axis::Vertical,
+                                )) => self.set_pointer_cursor(PointerCursor::ResizeV),
+                                Some(rofd_render::ScrollbarHover::Thumb(
+                                    rofd_render::Axis::Horizontal,
+                                )) => self.set_pointer_cursor(PointerCursor::ResizeH),
+                                _ => self.set_tool_pointer_cursor(),
                             }
                         }
                         // Text-select drag: the selection was updated live on
@@ -2583,13 +2586,61 @@ mod tests {
         c.handle_event(&ViewEvent::PointerMove { x: 194.0, y: 50.0 });
         assert_eq!(
             c.scrollbar_hover,
-            Some(rofd_render::Axis::Vertical),
+            Some(rofd_render::ScrollbarHover::Thumb(
+                rofd_render::Axis::Vertical
+            )),
             "precondition: thumb is hovered"
         );
         c.set_tool(Tool::Hand);
         assert!(
             c.scrollbar_hover.is_none(),
             "switching tools clears scrollbar hover state"
+        );
+    }
+
+    #[test]
+    fn arrow_hover_keeps_default_cursor_and_repaints_on_transition() {
+        // Hovering an arrow button darkens its glyph (repaint on entry and
+        // leave, none while moving inside the same button) but keeps the
+        // normal pointer - only thumbs get the resize cursor.
+        let mut c = component_with_tall_page();
+        let o = c.handle_event(&ViewEvent::PointerMove { x: 194.0, y: 6.0 });
+        assert!(o.needs_repaint, "entering the up arrow repaints its glyph");
+        assert_eq!(
+            c.scrollbar_hover,
+            Some(rofd_render::ScrollbarHover::Arrow {
+                axis: rofd_render::Axis::Vertical,
+                negative: true
+            })
+        );
+        assert_eq!(c.pointer_cursor(), PointerCursor::Default);
+        let o = c.handle_event(&ViewEvent::PointerMove { x: 194.0, y: 7.0 });
+        assert!(
+            !o.needs_repaint,
+            "moving within the same arrow must not request a repaint"
+        );
+        let o = c.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 50.0 });
+        assert!(o.needs_repaint, "leaving the arrow must repaint its glyph");
+        assert_eq!(c.scrollbar_hover, None);
+        assert_eq!(c.pointer_cursor(), PointerCursor::Default);
+    }
+
+    #[test]
+    fn moving_thumb_to_arrow_clears_resize_cursor() {
+        // Straight from a hovered thumb onto the arrow button: the resize
+        // cursor must not survive the transition.
+        let mut c = component_with_tall_page();
+        c.handle_event(&ViewEvent::PointerMove { x: 194.0, y: 50.0 });
+        assert_eq!(c.pointer_cursor(), PointerCursor::ResizeV);
+        let o = c.handle_event(&ViewEvent::PointerMove { x: 194.0, y: 6.0 });
+        assert!(o.needs_repaint, "thumb -> arrow is a hover transition");
+        assert_eq!(c.pointer_cursor(), PointerCursor::Default);
+        assert_eq!(
+            c.scrollbar_hover,
+            Some(rofd_render::ScrollbarHover::Arrow {
+                axis: rofd_render::Axis::Vertical,
+                negative: true
+            })
         );
     }
 

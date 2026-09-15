@@ -12,7 +12,7 @@ TypeScript SDK for embedding the [rofd](https://github.com/office-rs/rofd) OFD (
 - **Surgical save** — re-serializes annotations and preserves untouched body entries byte-for-byte.
 - **WebGPU only** — no Canvas2D fallback. Chrome / Edge 113+ required.
 - **Zero framework** — drop into any HTML page; the SDK owns the canvas, event binding, and render loop.
-- **Persistent scrollbars** — classic vertical/horizontal scrollbars appear only when content overflows; drag the thumb, click the track to page, or use the wheel. Scrolling is bounded at the first page top and last page bottom.
+- **Persistent scrollbars** — classic vertical/horizontal scrollbars appear only when content overflows; drag the thumb, click the track to page, click the arrow buttons at the bar ends to step, or use the wheel. Scrolling is bounded at the first page top and last page bottom.
 
 ## Install
 
