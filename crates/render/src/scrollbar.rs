@@ -350,11 +350,20 @@ fn bar(
     }
 }
 
-/// Per-axis visual state driving the thumb color. `active` (drag in progress)
-/// wins over `hover`.
+/// Which scrollbar element the pointer hovers, driving hover colors.
+/// `Thumb` also requests the resize cursor; `Arrow` keeps the default
+/// pointer (spec §3.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollbarHover {
+    Thumb(Axis),
+    Arrow { axis: Axis, negative: bool },
+}
+
+/// Per-element visual state driving the thumb/glyph colors. `active` (drag
+/// in progress) wins over `hover`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ScrollbarVisual {
-    pub hover: Option<Axis>,
+    pub hover: Option<ScrollbarHover>,
     pub active: Option<Axis>,
 }
 
@@ -406,7 +415,9 @@ pub fn paint_scrollbars(scene: &mut Scene, layout: &ScrollbarLayout, visual: Scr
             painter.fill_rect(bar.thumb, thumb_color(Axis::Vertical, visual));
             for (button, negative) in [(bar.arrow_start, true), (bar.arrow_end, false)] {
                 if let Some(glyph) = arrow_glyph(Axis::Vertical, button, negative) {
-                    painter.fill(&glyph, THUMB_COLOR).draw();
+                    painter
+                        .fill(&glyph, arrow_color(Axis::Vertical, negative, visual))
+                        .draw();
                 }
             }
         }
@@ -443,7 +454,9 @@ pub fn paint_scrollbars(scene: &mut Scene, layout: &ScrollbarLayout, visual: Scr
             painter.fill_rect(bar.thumb, thumb_color(Axis::Horizontal, visual));
             for (button, negative) in [(bar.arrow_start, true), (bar.arrow_end, false)] {
                 if let Some(glyph) = arrow_glyph(Axis::Horizontal, button, negative) {
-                    painter.fill(&glyph, THUMB_COLOR).draw();
+                    painter
+                        .fill(&glyph, arrow_color(Axis::Horizontal, negative, visual))
+                        .draw();
                 }
             }
         }
@@ -499,7 +512,16 @@ fn arrow_glyph(axis: Axis, button: Rect, negative: bool) -> Option<BezPath> {
 fn thumb_color(axis: Axis, visual: ScrollbarVisual) -> Color {
     if visual.active == Some(axis) {
         THUMB_ACTIVE_COLOR
-    } else if visual.hover == Some(axis) {
+    } else if visual.hover == Some(ScrollbarHover::Thumb(axis)) {
+        THUMB_HOVER_COLOR
+    } else {
+        THUMB_COLOR
+    }
+}
+
+/// Arrow glyphs darken on hover exactly like the thumb does (spec §3.4).
+fn arrow_color(axis: Axis, negative: bool, visual: ScrollbarVisual) -> Color {
+    if visual.hover == Some(ScrollbarHover::Arrow { axis, negative }) {
         THUMB_HOVER_COLOR
     } else {
         THUMB_COLOR
@@ -801,6 +823,26 @@ mod paint_tests {
             .count()
     }
 
+    /// Solid brush colors of the Fill draws, in paint order.
+    fn fill_colors(scene: &Scene) -> Vec<Color> {
+        use imaging::peniko::Brush;
+        scene
+            .commands()
+            .iter()
+            .filter_map(|cmd| match cmd {
+                Command::Draw(id) => Some(scene.draw_op(*id)),
+                _ => None,
+            })
+            .filter_map(|draw| match draw {
+                Draw::Fill {
+                    brush: Brush::Solid(c),
+                    ..
+                } => Some(*c),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn layout_for(size: (f64, f64), pages: &[(f64, f64)]) -> ScrollbarLayout {
         let mut doc = OfdDocument::default();
         for (i, &(w, h)) in pages.iter().enumerate() {
@@ -907,5 +949,49 @@ mod paint_tests {
         );
         assert!(matches!(draws[6], Draw::Fill { .. }), "arrow glyph");
         assert!(matches!(draws[7], Draw::Fill { .. }), "arrow glyph");
+    }
+
+    #[test]
+    fn hovered_arrow_darkens_only_its_glyph() {
+        // Tall fixture paint order: strip, thumb, up glyph, down glyph.
+        // Hovering the up arrow recolors only that glyph.
+        let mut scene = Scene::new();
+        let l = layout_for((200.0, 200.0), &[(180.0, 400.0)]);
+        paint_scrollbars(
+            &mut scene,
+            &l,
+            ScrollbarVisual {
+                hover: Some(ScrollbarHover::Arrow {
+                    axis: Axis::Vertical,
+                    negative: true,
+                }),
+                active: None,
+            },
+        );
+        let colors = fill_colors(&scene);
+        assert_eq!(colors.len(), 4);
+        assert_eq!(colors[0], TRACK_COLOR, "strip fill");
+        assert_eq!(colors[1], THUMB_COLOR, "thumb stays unhovered");
+        assert_eq!(colors[2], THUMB_HOVER_COLOR, "hovered up glyph darkens");
+        assert_eq!(colors[3], THUMB_COLOR, "other glyph unchanged");
+    }
+
+    #[test]
+    fn hovered_thumb_still_darkens_via_hover_enum() {
+        // The thumb hover color keyed on the new ScrollbarHover::Thumb variant
+        // (and an arrow hover on the same bar must NOT darken the thumb).
+        let mut scene = Scene::new();
+        let l = layout_for((200.0, 200.0), &[(180.0, 400.0)]);
+        paint_scrollbars(
+            &mut scene,
+            &l,
+            ScrollbarVisual {
+                hover: Some(ScrollbarHover::Thumb(Axis::Vertical)),
+                active: None,
+            },
+        );
+        let colors = fill_colors(&scene);
+        assert_eq!(colors[1], THUMB_HOVER_COLOR, "hovered thumb darkens");
+        assert_eq!(colors[2], THUMB_COLOR, "glyphs stay unhovered");
     }
 }
