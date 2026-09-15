@@ -256,8 +256,6 @@ fn app_logic(app: &mut AppState) -> std::iter::Once<xilem::WindowView<AppState>>
         PointerCursor::Grab => CursorIcon::Grab,
         PointerCursor::Grabbing => CursorIcon::Grabbing,
         PointerCursor::Text => CursorIcon::Text,
-        PointerCursor::ResizeV => CursorIcon::RowResize,
-        PointerCursor::ResizeH => CursorIcon::ColResize,
     };
     std::iter::once(
         xilem::window(app.window_id, "rofd - OFD Editor", root)

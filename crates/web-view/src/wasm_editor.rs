@@ -91,8 +91,6 @@ pub fn pointer_cursor_str(c: PointerCursor) -> &'static str {
         PointerCursor::Grab => "grab",
         PointerCursor::Grabbing => "grabbing",
         PointerCursor::Text => "text",
-        PointerCursor::ResizeV => "ns-resize",
-        PointerCursor::ResizeH => "ew-resize",
     }
 }
 
@@ -936,7 +934,5 @@ mod tests {
         assert_eq!(pointer_cursor_str(PointerCursor::Grab), "grab");
         assert_eq!(pointer_cursor_str(PointerCursor::Grabbing), "grabbing");
         assert_eq!(pointer_cursor_str(PointerCursor::Text), "text");
-        assert_eq!(pointer_cursor_str(PointerCursor::ResizeV), "ns-resize");
-        assert_eq!(pointer_cursor_str(PointerCursor::ResizeH), "ew-resize");
     }
 }
