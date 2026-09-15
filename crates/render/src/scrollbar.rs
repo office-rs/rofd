@@ -48,7 +48,8 @@ pub struct ScrollbarLayout {
     pub corner: Option<Rect>,
 }
 
-/// Total content extent in device pixels: `(widest_page, page_gap + inner_h)`.
+/// Total content extent in device pixels:
+/// `(widest_page, page_gap + inner_h + page_gap)`.
 /// Mirrors the stacking math in `composite::page_origin` / `clamp_scroll`.
 pub fn content_metrics(doc: &OfdDocument, vp: &Viewport) -> (f64, f64) {
     let content_w = doc
@@ -58,7 +59,10 @@ pub fn content_metrics(doc: &OfdDocument, vp: &Viewport) -> (f64, f64) {
         .fold(0.0_f64, f64::max);
     let pages_h: f64 = doc.pages.iter().map(|p| p.physical_box.h * vp.zoom).sum();
     let inner_h = pages_h + vp.page_gap * doc.pages.len().saturating_sub(1) as f64;
-    (content_w, vp.page_gap + inner_h)
+    // One gap above the first page, one between consecutive pages AND one
+    // below the last page (top/bottom symmetric, spec §3.1): fully scrolled
+    // down, the last page's bottom edge keeps a `page_gap` margin visible.
+    (content_w, vp.page_gap + inner_h + vp.page_gap)
 }
 
 /// Maximum legal `scroll.1` for the given content/region heights.
@@ -347,6 +351,19 @@ mod tests {
         assert!(l.horizontal.is_none());
         assert!(l.corner.is_none());
         assert_eq!(l.content_size, (500.0, 700.0));
+    }
+
+    #[test]
+    fn content_metrics_reserve_symmetric_top_and_bottom_gaps() {
+        // Two 100x200 pages, zoom 1, gap 20: the content height counts one
+        // gap above the first page, one between pages AND one below the last
+        // page (top/bottom symmetric): 20 + 200 + 20 + 200 + 20 = 460.
+        let (w, h) = content_metrics(
+            &doc_of(&[(100.0, 200.0), (100.0, 200.0)]),
+            &vp((500.0, 700.0), 1.0, 20.0),
+        );
+        assert_eq!(w, 100.0);
+        assert_eq!(h, 460.0);
     }
 
     #[test]
