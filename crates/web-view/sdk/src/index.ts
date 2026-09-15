@@ -249,7 +249,7 @@ export class Editor {
     if (config?.onTextSelectionChange) wasmEditor.setOnTextSelectionChange(deferCb(config.onTextSelectionChange));
 
     // The wasm side reports CSS cursor names directly
-    // ("default"/"grab"/"grabbing"/"text"/"ns-resize"/"ew-resize"), so no
+    // ("default"/"grab"/"grabbing"/"text"), so no
     // mapping is needed on the TS side.
     wasmEditor.setOnPointerCursor((shape: string) => {
       canvas.style.cursor = shape;

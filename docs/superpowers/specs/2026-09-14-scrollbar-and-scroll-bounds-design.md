@@ -34,7 +34,8 @@
    - 拖拽滑块绝对映射滚动；点击轨道翻一屏；条端箭头按钮单击步滚
      （2026-09-15 增补）；悬停/按下有视觉反馈；
    - 任何工具（手型/文本/批注创建）下滚动条交互优先，事件不下沉到页面；
-   - 滑块上方显示双向箭头光标（箭头按钮上为普通指针）。
+   - 悬停滚动条（滑块与箭头按钮）一律显示普通箭头光标
+     （2026-09-15 修订：撤销原"滑块显示双向箭头光标"设计）。
 3. 功能全部落在核心层（render + component），web/tauri/native 三端由同一个
    `imaging::record::Scene` 自动获得；适配器只加两个光标字符串/图标的映射，
    **SDK 公共 API 面零新增**（AGENTS §4.9：默认开箱即用、宿主零配置）。
@@ -226,28 +227,23 @@ fn hit_scrollbar(layout, point) -> Option<ScrollbarHit>
   - 横向：`fraction` 同理映射到 `[-x_margin, x_margin]`。
   - view-only：不改文档、不入 undo 历史；每步 `maybe_fire_page_change()`，
     状态栏页码/`onPageChange` 自动正确。
-- 非拖拽：先做 chrome 命中，悬停在滑块上时请求滚动条光标；否则回落现有
-  工具光标逻辑（Grab/Text/Default）。
+- 非拖拽：先做 chrome 命中，悬停在滚动条上时显示普通箭头光标（消费该
+  move，工具悬停逻辑不覆盖）；移出滚动条后回落现有工具光标逻辑
+  （Grab/Text/Default）。
 - PointerUp：结束 `ScrollThumb`，清除 active 态，光标按当前悬停重算。
 - 滚轮在滚动条上方照常滚文档（wheel 不做命中判定、不被吞）。
 
 ### 3.6 光标
 
-`PointerCursor`（`crates/component/src/callbacks.rs`）新增两变体：
+**2026-09-15 修订（撤销原设计）**：原设计给 `PointerCursor` 加
+`ResizeV`/`ResizeH` 两变体（滑块悬停/拖拽时 ↕/↔ 光标）。经用户反馈，
+悬停滚动条一律使用**普通箭头光标**，不需要上下左右光标：
 
-```text
-ResizeV,  // ↕ 纵向滑块上
-ResizeH,  // ↔ 横向滑块上
-```
-
-优先级：拖拽中或悬停滑块 > 工具光标。适配器映射（仅有的两处适配器改动）：
-
-- **web**：`crates/web-view/src/wasm_editor.rs` 的 `pointer_cursor_str` 加
-  `ResizeV => "ns-resize"`、`ResizeH => "ew-resize"`（字符串直通
-  `canvas.style.cursor`，SDK TS 侧零改动），同步其单测。
-- **native**：宿主样例 `crates/native-app/src/main.rs` 的光标 match 加
-  `ResizeV => CursorIcon::RowResize`、`ResizeH => CursorIcon::ColResize`。
-  winit bridge 不感知滚动条，零改动。
+- `PointerCursor` 不新增变体（曾加过的 `ResizeV`/`ResizeH` 已移除），
+  适配器（web `pointer_cursor_str` / native 光标 match）零改动，SDK
+  公共 API 面零新增。
+- 悬停/拖拽滑块、悬停箭头按钮 → `Default`；离开滚动条 → 恢复工具光标
+  （手型 Grab / 其他 Default）。悬停配色反馈（滑块/字形变深）不受影响。
 
 ### 3.7 绘制脏缓存
 
@@ -284,12 +280,12 @@ ResizeH,  // ↔ 横向滑块上
 - 轨道点击：一次翻 `0.9 * 内容区`，到顶/底 clamp。
 - chrome 优先：在滑块/槽位置下放一个批注，PointerDown 不选中、不拖动批注，
   不起 Pan、不起文本选区。
-- 光标：悬停滑块 → ResizeV/ResizeH；移出 → 回落工具光标；拖拽中保持；
-  松手后重算。
+- 光标：悬停滑块/箭头 → 普通箭头光标（手型工具下也是箭头）；移出 → 恢复
+  工具光标；悬停转换（进入/离开/滑块↔箭头）请求重绘。
 - 拖滑块跨页边界触发 `on_page_change`。
 - 既有 `hand_pan_drag_updates_scroll_with_clamp` 等 pan 测试随内容区语义更新。
 
-**rofd-web-view**：`pointer_cursor_str` 两个新字符串的单测。
+**rofd-web-view**：`pointer_cursor_str` 现有映射的单测（无滚动条专用光标）。
 
 **手动验收（两端，使用 `test/ru-yuan-ji-lu.ofd`）**：滚轮在第一页顶部/末页底部
 封死；滑块拖动与文档 1:1；轨道翻屏；放大到双条出现、角块正确；窗口/容器缩放后
@@ -302,10 +298,10 @@ ResizeH,  // ↔ 横向滑块上
 | `crates/render/src/scrollbar.rs` | **新增**：常量、布局/几何、`hit_scrollbar`、`paint_scrollbars` |
 | `crates/render/src/viewport.rs` | `clamp_scroll` 内部改基于内容区（签名不变） |
 | `crates/render/src/lib.rs` | 导出新模块/类型 |
-| `crates/component/src/editor_component.rs` | 全入口 clamp 收口、`DragState::ScrollThumb`、chrome 路由与悬停态、`build_scene` 末尾追加绘制、load/new 重置 |
-| `crates/component/src/callbacks.rs` | `PointerCursor` 加 `ResizeV`/`ResizeH` |
-| `crates/web-view/src/wasm_editor.rs` | `pointer_cursor_str` 两个新映射 + 单测 |
-| `crates/native-app/src/main.rs` | 光标 match 两个新分支 |
-| `crates/web-view/sdk/README.md` | 交互/光标说明补两行（无 API 变更） |
+| `crates/component/src/editor_component.rs` | 全入口 clamp 收口、`DragState::ScrollThumb`、chrome 路由与悬停态（箭头按钮 + 普通箭头光标）、`build_scene` 末尾追加绘制、load/new 重置 |
+| `crates/component/src/callbacks.rs` | 无改动（2026-09-15 修订：不加光标变体） |
+| `crates/web-view/src/wasm_editor.rs` | 无改动（同上） |
+| `crates/native-app/src/main.rs` | 无改动（同上） |
+| `crates/web-view/sdk/README.md` | 交互说明补箭头按钮（无 API 变更） |
 
 native-view（含 winit bridge）、SDK TS、web-app、tauri-app：无功能改动。
