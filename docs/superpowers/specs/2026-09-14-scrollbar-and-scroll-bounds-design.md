@@ -31,9 +31,10 @@
 1. 所有滚动/缩放/尺寸/换文档路径统一经 `clamp_scroll` 收口，视口永远停在合法范围；
    滚轮在边界处的多余 delta 被截掉（不累积、不回弹）。
 2. 经典**常驻**滚动条（垂直 + 水平，内容超出才出现），占用视口边缘槽位：
-   - 拖拽滑块绝对映射滚动；点击轨道翻一屏；悬停/按下有视觉反馈；
+   - 拖拽滑块绝对映射滚动；点击轨道翻一屏；条端箭头按钮单击步滚
+     （2026-09-15 增补）；悬停/按下有视觉反馈；
    - 任何工具（手型/文本/批注创建）下滚动条交互优先，事件不下沉到页面；
-   - 滑块上方显示双向箭头光标。
+   - 滑块上方显示双向箭头光标（箭头按钮上为普通指针）。
 3. 功能全部落在核心层（render + component），web/tauri/native 三端由同一个
    `imaging::record::Scene` 自动获得；适配器只加两个光标字符串/图标的映射，
    **SDK 公共 API 面零新增**（AGENTS §4.9：默认开箱即用、宿主零配置）。
@@ -41,7 +42,8 @@
 ### 2.2 非目标（v1 不做，YAGNI）
 
 - 悬浮自动隐藏 / 淡出动画（需要时钟驱动；库不取系统时间，AGENTS §4.4）。
-- 轨道按住连发（v1 点一下翻一屏）。
+- 按住连发（轨道与箭头都是点一下动一下：轨道翻一屏、箭头步滚一步；
+  2026-09-15 与用户确认，箭头连发不做）。
 - SDK 的 `scrollTo` / 编程式滚动 API、滚动位置回调。
 - 触屏惯性滚动、Home/End/空格键滚动、工具栏"首页/尾页"开放。
 - 改变滚轮 delta 换算（LineDelta/PixelDelta 的适配器换算不动，只加 clamp）。
@@ -58,6 +60,8 @@
 | 常量 | 值 | 含义 |
 |---|---|---|
 | `SCROLLBAR_THICKNESS` | 12.0 | 滚动条槽位厚度 |
+| `ARROW_LEN` | 12.0 | 条两端箭头按钮的长度（正方形按钮，2026-09-15 增补） |
+| `ARROW_STEP_RATIO` | 0.1 | 箭头单击步长 = 内容区 ×10%（2026-09-15 增补） |
 | `THUMB_INSET` | 2.0 | 滑块在槽内两侧留白 |
 | `THUMB_MIN_LEN` | 24.0 | 滑块最短长度 |
 | `TRACK_PAGE_RATIO` | 0.9 | 点轨道翻一屏 = 内容区 ×90%（10% 重叠） |
@@ -87,7 +91,9 @@ struct ScrollbarLayout {
     horizontal: Option<BarGeom>,
 }
 struct BarGeom {
-    track: Rect,        // 视口坐标内的槽矩形
+    track: Rect,        // 箭头按钮之间的翻页轨道（视口坐标）
+    arrow_start: Rect,  // 起端箭头按钮（上/左）
+    arrow_end: Rect,    // 末端箭头按钮（下/右）
     thumb: Rect,        // 当前滑块矩形（已按 scroll 定位）
     axis: Axis,         // Vertical | Horizontal
 }
@@ -99,13 +105,19 @@ struct BarGeom {
 - 横槽：`(0, H - T, content_w_region, T)`；
 - 两轴同时出现时右下角 `(W-T, H-T, T, T)` 为角块（槽底色，不响应）。
 
+每根条槽再按 `ARROW_LEN` 三分（2026-09-15 增补）：起端箭头按钮占槽的
+前 12px、末端箭头按钮占后 12px，中间才是翻页轨道 `track`。条太短时
+（`strip_len ≤ 2 * ARROW_LEN`）两箭头向中间收缩重合、轨道退化为零面积；
+命中与绘制都以同一组矩形为准。
+
 滑块几何：
 
 - 厚度 = `T - 2*THUMB_INSET`，槽两侧各留 `THUMB_INSET`。
 - 长度比例 = `(内容区长 / 内容总长).clamp(THUMB_MIN_LEN/轨道长, 1.0)`。
-- 沿条方向（条长 `L`、滑块长 `m`）两端对称留 `THUMB_INSET`，
+- 沿条方向（轨道长 `L`、滑块长 `m`）两端对称留 `THUMB_INSET`，
   行程 `travel = L - m - 2*THUMB_INSET`，
-  滑块起端（槽内局部坐标）= `THUMB_INSET + fraction * travel`。
+  滑块起端 = **轨道原点** + `THUMB_INSET + fraction * travel`
+  （轨道原点 = 箭头按钮之后的轨道起点，不再是槽起点）。
 - 纵向 `fraction = scroll.1 / y_max`，
   其中 `y_max = max(0.0, content_h - content_size.1)`；
 - 横向：`x_margin = (content_w - content_size.0) / 2`（页窄时为 0、无横条），
@@ -154,6 +166,10 @@ struct BarGeom {
   拖框预览之上。
 - `visual: ScrollbarVisual { hover: Option<Axis>, active: Option<Axis> }`，
   Copy 结构，由 component 的悬停态与当前 `DragState::ScrollThumb` 派生。
+- 箭头按钮绘制（2026-09-15 增补）：按钮底色与槽同为 `#F1F1F1`（整条槽
+  一次填充），按钮与翻页轨道之间各画 1px `#D9D9D9` 分隔线；按钮内画一个
+  向外指的实心三角箭头字形（起端朝上/左，末端朝下/右），默认取滑块灰
+  `#C1C1C1`，内缩约 3px；轨道退化为零面积时不画分隔线与字形。
 - 配色（经典 Windows 风，扁平、无圆角——Painter 只有 `fill_rect`）：
 
 | 元素 | 颜色 |
@@ -171,6 +187,7 @@ struct BarGeom {
 ```text
 enum ScrollbarHit {
     VerticalThumb, HorizontalThumb,
+    Arrow { axis: Axis, negative: bool },  // 条端箭头按钮；negative = 上/左
     VerticalTrack { page_up: bool },     // 点击在滑块上方/下方
     HorizontalTrack { page_left: bool }, // 点击在滑块左方/右方
     Corner,
@@ -178,12 +195,20 @@ enum ScrollbarHit {
 fn hit_scrollbar(layout, point) -> Option<ScrollbarHit>
 ```
 
+命中优先级：角块 → 滑块 → **箭头按钮** → 翻页轨道（箭头位于原轨道跨度
+的两端，必须在轨道判定之前检查）。
+
 **PointerDown 路由最前面先做 chrome 命中**（先于 `hit_test`、先于工具分派）：
 
 - 命中滑块：进入新的
   `DragState::ScrollThumb { axis, grab_offset }`
   （`grab_offset` = 按下时指针相对滑块起端的距离，沿条方向），
   事件消费（`needs_repaint=true`），不清选区、不起 Pan、不命中批注。
+- 命中箭头按钮（2026-09-15 增补）：单击一次步滚一步，
+  步长 = `ARROW_STEP_RATIO * 内容区`（纵向 ±内容区高 ×10%、横向 ±宽 ×10%），
+  经 `apply_scroll_delta` 收口（自带 clamp + 页码回调）。**按住不放连发经
+  讨论不做**（连发需要宿主时钟驱动，违背库不取系统时间的边界；一次点击
+  恰好一步，无按下态、无重复）。
 - 命中轨道：立即滚动一屏
   （纵向 ±`TRACK_PAGE_RATIO * 内容区高`，横向 ±`...宽`），经 `apply_scroll_delta`
   收口（自带 clamp + 页码回调）。v1 不连发。
@@ -193,8 +218,8 @@ fn hit_scrollbar(layout, point) -> Option<ScrollbarHit>
 **PointerMove**：
 
 - 拖拽中（`ScrollThumb`）：绝对映射——抓住的滑块点始终贴在指针下。
-  - 纵向：滑块起端 = `pointer_y_track_local - grab_offset`；
-    `fraction = (起端 - THUMB_INSET) / travel`（clamp 0..=1）；
+  - 纵向：滑块起端 = `pointer_y - grab_offset`；
+    `fraction = (起端 - 轨道原点 - THUMB_INSET) / travel`（clamp 0..=1）；
     `scroll.1 = fraction * y_max`，再经 clamp_scroll 收口。
   - 横向：`fraction` 同理映射到 `[-x_margin, x_margin]`。
   - view-only：不改文档、不入 undo 历史；每步 `maybe_fire_page_change()`，

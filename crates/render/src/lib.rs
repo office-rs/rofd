@@ -35,8 +35,8 @@ pub use image::decode_image;
 pub use path::path_to_bezpath;
 pub use scrollbar::{
     content_metrics, hit_scrollbar, paint_scrollbars, scroll_x_margin, scroll_y_max,
-    scrollbar_layout, Axis, BarGeom, ScrollbarHit, ScrollbarLayout, ScrollbarVisual,
-    SCROLLBAR_THICKNESS, THUMB_INSET, THUMB_MIN_LEN, TRACK_PAGE_RATIO,
+    scrollbar_layout, Axis, BarGeom, ScrollbarHit, ScrollbarLayout, ScrollbarVisual, ARROW_LEN,
+    ARROW_STEP_RATIO, SCROLLBAR_THICKNESS, THUMB_INSET, THUMB_MIN_LEN, TRACK_PAGE_RATIO,
 };
 pub use text::{shape_text, FontStore, ShapedGlyph};
 pub use viewport::{clamp_scroll, Viewport, PX_PER_MM};

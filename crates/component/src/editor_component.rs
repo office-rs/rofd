@@ -518,6 +518,21 @@ impl EditorComponent {
                 self.scrollbar_hover = Some(Axis::Horizontal);
                 self.set_pointer_cursor(PointerCursor::ResizeH);
             }
+            ScrollbarHit::Arrow { axis, negative } => {
+                // One click = one step of 10% of the content region along the
+                // axis (spec §3.5). Press-and-hold repeat is a documented
+                // non-goal: a click scrolls exactly one step, then stops.
+                let step = rofd_render::ARROW_STEP_RATIO
+                    * match axis {
+                        Axis::Vertical => layout.content_size.1,
+                        Axis::Horizontal => layout.content_size.0,
+                    };
+                let step = if negative { -step } else { step };
+                match axis {
+                    Axis::Vertical => self.apply_scroll_delta(0.0, step),
+                    Axis::Horizontal => self.apply_scroll_delta(step, 0.0),
+                }
+            }
             ScrollbarHit::VerticalTrack { page_up } => {
                 let d = rofd_render::TRACK_PAGE_RATIO * layout.content_size.1;
                 self.apply_scroll_delta(0.0, if page_up { -d } else { d });
@@ -553,8 +568,11 @@ impl EditorComponent {
                     return;
                 }
                 // Inverse of the paint formula: thumb start = pointer - grab,
-                // fraction = (start - THUMB_INSET) / travel.
-                let fraction = ((p.1 - grab - rofd_render::THUMB_INSET) / travel).clamp(0.0, 1.0);
+                // fraction = (start - track origin - THUMB_INSET) / travel.
+                // The track origin is the start of the paging track BETWEEN
+                // the arrow buttons, not the strip's origin.
+                let fraction = ((p.1 - grab - bar.track.y0 - rofd_render::THUMB_INSET) / travel)
+                    .clamp(0.0, 1.0);
                 let y_max = rofd_render::scroll_y_max(content_h, region_h);
                 self.viewport.scroll.1 = fraction * y_max;
             }
@@ -566,7 +584,8 @@ impl EditorComponent {
                 if travel <= 0.0 {
                     return;
                 }
-                let fraction = ((p.0 - grab - rofd_render::THUMB_INSET) / travel).clamp(0.0, 1.0);
+                let fraction = ((p.0 - grab - bar.track.x0 - rofd_render::THUMB_INSET) / travel)
+                    .clamp(0.0, 1.0);
                 let x_margin = rofd_render::scroll_x_margin(content_w, region_w);
                 self.viewport.scroll.0 = fraction * 2.0 * x_margin - x_margin;
             }
@@ -2451,7 +2470,10 @@ mod tests {
 
     /// Single page 180x400, zoom 1, page_gap 0, viewport 200x200. Vertical
     /// overflow only (180 < 200-12=188, so no horizontal bar): region
-    /// 188x200, y_max = 200, x pinned to 0.
+    /// 188x200, y_max = 200, x pinned to 0. The v-strip x[188,200] carries
+    /// 12px arrow buttons at both ends (y[0,12] steps up, y[188,200] steps
+    /// down); the paging track between them is y[12,188] (len 176), and the
+    /// resting thumb is x[190,198] y[14,102] with travel 84.
     fn component_with_tall_page() -> EditorComponent {
         let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
         c.set_clock("t".into(), 1);
@@ -2479,9 +2501,11 @@ mod tests {
 
     /// Single page 400x100, zoom 1, page_gap 0, viewport 200x200. Horizontal
     /// overflow only (100 < 200-12=188, so no vertical bar): content region
-    /// 200x188, x_margin = 100, h-track (0,188)-(200,200), thumb length 100,
-    /// travel 96. The resting thumb is centered (fraction 0.5 at scroll 0):
-    /// x [50,150], y [190,198].
+    /// 200x188, x_margin = 100. The h-strip y[188,200] carries 12px arrow
+    /// buttons at both ends (x[0,12] steps left, x[188,200] steps right); the
+    /// paging track between them is x[12,188] (len 176), thumb length 88,
+    /// travel 84. The resting thumb is centered (fraction 0.5 at scroll 0):
+    /// x [56,144], y [190,198].
     fn component_with_wide_page() -> EditorComponent {
         let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
         c.set_clock("t".into(), 1);
@@ -2571,8 +2595,8 @@ mod tests {
 
     #[test]
     fn build_scene_paints_scrollbar_chrome() {
-        // 180x400 page in 200x200 -> one vertical bar = track + thumb fills on
-        // top of the desk + page fills.
+        // 180x400 page in 200x200 -> one vertical bar = strip + thumb + two
+        // arrow-glyph fills on top of the desk + page fills.
         use imaging::record::{Command, Draw};
         let mut c = component_with_tall_page();
         let scene = c.build_scene();
@@ -2583,10 +2607,10 @@ mod tests {
                 matches!(cmd, Command::Draw(id) if matches!(scene.draw_op(*id), Draw::Fill { .. }))
             })
             .count();
-        // Desk bg + page bg + scrollbar track + thumb = 4 fills exactly.
+        // Desk bg + page bg + strip + thumb + 2 arrow glyphs = 6 fills exactly.
         assert_eq!(
-            fills, 4,
-            "expected desk+page+track+thumb fills, got {fills}"
+            fills, 6,
+            "expected desk+page+strip+thumb+2 glyphs, got {fills}"
         );
     }
 
@@ -4403,11 +4427,11 @@ mod tests {
 
     #[test]
     fn vertical_thumb_drag_maps_absolutely_and_creates_no_undo() {
-        // Tall page: thumb y [2,102], travel 96, y_max 200. Press 8px below
+        // Tall page: thumb y [14,102], travel 84, y_max 200. Press 8px below
         // the thumb's top edge; drag so the thumb sits halfway (start =
-        // 2 + 48 = 50) -> pointer y = 50 + grab 8 = 58 -> scroll 100.
+        // 14 + 42 = 56) -> pointer y = 56 + grab 8 = 64 -> scroll 100.
         let mut c = component_with_tall_page();
-        c.handle_event(&thumb_pd(194.0, 10.0));
+        c.handle_event(&thumb_pd(194.0, 22.0));
         assert!(matches!(
             c.drag,
             Some(DragState::ScrollThumb {
@@ -4415,7 +4439,7 @@ mod tests {
                 ..
             })
         ));
-        c.handle_event(&ViewEvent::PointerMove { x: 194.0, y: 58.0 });
+        c.handle_event(&ViewEvent::PointerMove { x: 194.0, y: 64.0 });
         assert!(
             (c.viewport.scroll.1 - 100.0).abs() < 0.01,
             "half-drag -> half y_max"
@@ -4423,7 +4447,7 @@ mod tests {
         c.handle_event(&ViewEvent::PointerUp {
             button: MouseButton::Left,
             x: 194.0,
-            y: 58.0,
+            y: 64.0,
         });
         assert!(c.drag.is_none());
         assert!(
@@ -4436,7 +4460,7 @@ mod tests {
     #[test]
     fn thumb_drag_clamps_past_bottom() {
         let mut c = component_with_tall_page();
-        c.handle_event(&thumb_pd(194.0, 10.0));
+        c.handle_event(&thumb_pd(194.0, 22.0));
         c.handle_event(&ViewEvent::PointerMove {
             x: 194.0,
             y: 9999.0,
@@ -4458,11 +4482,61 @@ mod tests {
     }
 
     #[test]
+    fn vertical_arrow_click_steps_by_tenth_of_region() {
+        // Up arrow at the strip top (y in [0,12)): one click = -10% of the
+        // 200px region = -20, clamped at the top. Down arrow (y in
+        // [188,200]) steps +20. No drag state, no undo.
+        let mut c = component_with_tall_page();
+        c.handle_event(&thumb_pd(194.0, 6.0));
+        assert!(c.drag.is_none(), "arrow click is instantaneous, no drag");
+        assert_eq!(
+            c.viewport.scroll.1, 0.0,
+            "stepping up from the top clamps at 0"
+        );
+        c.handle_event(&thumb_pd(194.0, 194.0));
+        assert!(
+            (c.viewport.scroll.1 - 20.0).abs() < 0.01,
+            "one down-arrow click = 10% of the region"
+        );
+        c.handle_event(&thumb_pd(194.0, 6.0));
+        assert!(
+            (c.viewport.scroll.1 - 0.0).abs() < 0.01,
+            "one up-arrow click steps back to the top"
+        );
+        assert!(
+            !c.can_undo(),
+            "arrow stepping is a view change, not a doc change"
+        );
+    }
+
+    #[test]
+    fn horizontal_arrow_click_steps_by_tenth_of_region() {
+        // Left arrow (x in [0,12)) steps -10% of the 200px region; right
+        // arrow (x in [188,200]) steps +10%.
+        let mut c = component_with_wide_page();
+        c.handle_event(&thumb_pd(6.0, 194.0));
+        assert!(c.drag.is_none(), "arrow click is instantaneous, no drag");
+        assert!(
+            (c.viewport.scroll.0 - (-20.0)).abs() < 0.01,
+            "one left-arrow click = -10% of the region"
+        );
+        c.handle_event(&thumb_pd(194.0, 194.0));
+        assert!(
+            (c.viewport.scroll.0 - 0.0).abs() < 0.01,
+            "one right-arrow click steps back to center"
+        );
+        assert!(
+            !c.can_undo(),
+            "arrow stepping is a view change, not a doc change"
+        );
+    }
+
+    #[test]
     fn scrollbar_press_swallows_event_before_annotation() {
         // Page is 180 wide; a note with page-local rect x [80,180] lands at
         // viewport x [90,190] (page is centered with origin x=10). Point
         // x=190 is BOTH the inclusive right edge of the note AND the
-        // inclusive left edge of the resting v-thumb [190,198]x[2,102] - a
+        // inclusive left edge of the resting v-thumb [190,198]x[14,102] - a
         // point chrome and the annotation both claim. Chrome must win: the
         // press must not select or drag the note.
         let mut c = component_with_tall_page();
@@ -4502,12 +4576,13 @@ mod tests {
     #[test]
     fn thumb_drag_fires_page_change_across_boundary() {
         // Two 200x200 pages in 200x200: both bars, region 188, y_max 212.
-        // Drag the thumb fully down -> viewport center lands on page 1.
+        // Press inside the resting v-thumb (y[14,91]) and drag it fully down
+        // -> viewport center lands on page 1.
         let mut c = component_with_two_pages();
         let fired = Arc::new(Mutex::new(None));
         let f = fired.clone();
         c.on_page_change(move |idx| *f.lock().unwrap() = Some(idx));
-        c.handle_event(&thumb_pd(194.0, 10.0));
+        c.handle_event(&thumb_pd(194.0, 50.0));
         c.handle_event(&ViewEvent::PointerMove {
             x: 194.0,
             y: 9999.0,
@@ -4517,8 +4592,8 @@ mod tests {
 
     #[test]
     fn horizontal_thumb_drag_maps_absolutely_and_creates_no_undo() {
-        // Wide page: resting h-thumb x [50,150], y [190,198], travel 96,
-        // x_margin 100. Press 8px right of the thumb start.
+        // Wide page: resting h-thumb x [56,144], y [190,198], travel 84,
+        // x_margin 100. Press 2px right of the thumb start.
         let mut c = component_with_wide_page();
         c.handle_event(&thumb_pd(58.0, 194.0));
         assert!(matches!(
@@ -4528,8 +4603,8 @@ mod tests {
                 ..
             })
         ));
-        c.handle_event(&ViewEvent::PointerMove { x: 34.0, y: 194.0 });
-        // fraction = (34 - grab 8 - inset 2) / 96 = 0.25
+        c.handle_event(&ViewEvent::PointerMove { x: 37.0, y: 194.0 });
+        // fraction = (37 - grab 2 - track origin 12 - inset 2) / 84 = 0.25
         // -> scroll.0 = 0.25 * (2 * 100) - 100 = -50.
         assert!(
             (c.viewport.scroll.0 - (-50.0)).abs() < 0.01,
@@ -4543,7 +4618,7 @@ mod tests {
             (c.viewport.scroll.0 - 100.0).abs() < 0.01,
             "dragging past the track clamps to +x_margin"
         );
-        // After the full drag the thumb spans x [98,198]; release at
+        // After the full drag the thumb spans x [98,186]; release at
         // (150,194) is still over it, so the resize-H cursor persists.
         c.handle_event(&ViewEvent::PointerUp {
             button: MouseButton::Left,
@@ -4562,7 +4637,7 @@ mod tests {
     #[test]
     fn horizontal_track_click_pages_then_clamps() {
         // region_w 200 -> page delta 0.9 * 200 = 180, clamped to x_margin 100.
-        // Click in the track beyond the resting thumb end (x=150) pages right.
+        // Click in the track beyond the resting thumb end (x=144) pages right.
         let mut c = component_with_wide_page();
         c.handle_event(&thumb_pd(180.0, 194.0));
         assert!(c.drag.is_none(), "track click is instantaneous, no drag");
@@ -4570,7 +4645,7 @@ mod tests {
             (c.viewport.scroll.0 - 100.0).abs() < 0.01,
             "page-right clamps to +x_margin"
         );
-        // A fresh component: click before the resting thumb start (x=50)
+        // A fresh component: click before the resting thumb start (x=56)
         // pages left and clamps at -x_margin.
         let mut c = component_with_wide_page();
         c.handle_event(&thumb_pd(20.0, 194.0));
