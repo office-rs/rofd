@@ -5,7 +5,7 @@
 //! top-of-scene paint pass. The component owns the drag state machine; this
 //! module never reads a clock or touches platform types (AGENTS §4.4/§4.9).
 
-use imaging::kurbo::{Line, Rect, Stroke};
+use imaging::kurbo::{BezPath, Line, Rect, Stroke};
 use imaging::peniko::Color;
 use imaging::record::Scene;
 use imaging::Painter;
@@ -21,6 +21,13 @@ pub const THUMB_INSET: f64 = 2.0;
 pub const THUMB_MIN_LEN: f64 = 24.0;
 /// Clicking a track pages by this fraction of the visible content region.
 pub const TRACK_PAGE_RATIO: f64 = 0.9;
+/// Length of the square arrow button at each end of a bar strip, in device
+/// pixels.
+pub const ARROW_LEN: f64 = 12.0;
+/// Clicking an arrow button scrolls by this fraction of the visible content
+/// region (spec §3.5: one click = one step; press-and-hold repeat is a
+/// documented non-goal).
+pub const ARROW_STEP_RATIO: f64 = 0.1;
 
 /// Which scrollbar axis a piece of chrome belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,8 +40,14 @@ pub enum Axis {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BarGeom {
     pub axis: Axis,
+    /// Paging trough BETWEEN the two arrow buttons; the thumb also travels
+    /// inside it.
     pub track: Rect,
     pub thumb: Rect,
+    /// Square step-scroll buttons at the strip ends. `arrow_start` points
+    /// toward the scroll origin (top for vertical, left for horizontal).
+    pub arrow_start: Rect,
+    pub arrow_end: Rect,
 }
 
 /// Result of the two-pass overflow analysis: the content region (viewport
@@ -92,6 +105,31 @@ fn region_dim(full: f64, bar_present: bool) -> f64 {
     }
 }
 
+/// Split a full-length bar strip into the paging track (between the arrows)
+/// and the two square [`ARROW_LEN`] arrow buttons at its ends. `arrow_start`
+/// points toward the scroll origin (up / left). Short strips collapse the
+/// arrows instead of overlapping them; the track may end up zero-area.
+fn split_strip(axis: Axis, strip: Rect) -> (Rect, Rect, Rect) {
+    let (a0, a1) = match axis {
+        Axis::Vertical => (strip.y0, strip.y1),
+        Axis::Horizontal => (strip.x0, strip.x1),
+    };
+    let start_btn_end = (a0 + ARROW_LEN).min(a1);
+    let end_btn_start = (a1 - ARROW_LEN).max(start_btn_end);
+    match axis {
+        Axis::Vertical => (
+            Rect::new(strip.x0, start_btn_end, strip.x1, end_btn_start),
+            Rect::new(strip.x0, a0, strip.x1, start_btn_end),
+            Rect::new(strip.x0, end_btn_start, strip.x1, a1),
+        ),
+        Axis::Horizontal => (
+            Rect::new(start_btn_end, strip.y0, end_btn_start, strip.y1),
+            Rect::new(a0, strip.y0, start_btn_end, strip.y1),
+            Rect::new(end_btn_start, strip.y0, a1, strip.y1),
+        ),
+    }
+}
+
 /// Compute which axes overflow (two-pass: a bar appearing on one axis shrinks
 /// the other axis' region, which may itself start overflowing) and the
 /// resulting track/thumb rectangles.
@@ -117,8 +155,10 @@ pub fn scrollbar_layout(doc: &OfdDocument, vp: &Viewport) -> ScrollbarLayout {
     let region_h = region_dim(vp.size.1, need_h);
 
     let vertical = need_v.then(|| {
-        // Vertical track: full content-region height against the right edge.
-        let track = Rect::new(vp.size.0 - SCROLLBAR_THICKNESS, 0.0, vp.size.0, region_h);
+        // Vertical strip: full content-region height against the right edge,
+        // split into the two arrow buttons and the paging track between them.
+        let strip = Rect::new(vp.size.0 - SCROLLBAR_THICKNESS, 0.0, vp.size.0, region_h);
+        let (track, arrow_start, arrow_end) = split_strip(Axis::Vertical, strip);
         let y_max = scroll_y_max(content_h, region_h);
         let fraction = if y_max > 0.0 {
             (vp.scroll.1 / y_max).clamp(0.0, 1.0)
@@ -130,11 +170,20 @@ pub fn scrollbar_layout(doc: &OfdDocument, vp: &Viewport) -> ScrollbarLayout {
         } else {
             1.0
         };
-        bar(Axis::Vertical, track, fraction, len_fraction)
+        bar(
+            Axis::Vertical,
+            track,
+            arrow_start,
+            arrow_end,
+            fraction,
+            len_fraction,
+        )
     });
     let horizontal = need_h.then(|| {
-        // Horizontal track: full content-region width against the bottom edge.
-        let track = Rect::new(0.0, vp.size.1 - SCROLLBAR_THICKNESS, region_w, vp.size.1);
+        // Horizontal strip: full content-region width against the bottom
+        // edge, split into the two arrow buttons and the paging track.
+        let strip = Rect::new(0.0, vp.size.1 - SCROLLBAR_THICKNESS, region_w, vp.size.1);
+        let (track, arrow_start, arrow_end) = split_strip(Axis::Horizontal, strip);
         let x_margin = scroll_x_margin(content_w, region_w);
         let fraction = if x_margin > 0.0 {
             ((vp.scroll.0 + x_margin) / (2.0 * x_margin)).clamp(0.0, 1.0)
@@ -146,7 +195,14 @@ pub fn scrollbar_layout(doc: &OfdDocument, vp: &Viewport) -> ScrollbarLayout {
         } else {
             1.0
         };
-        bar(Axis::Horizontal, track, fraction, len_fraction)
+        bar(
+            Axis::Horizontal,
+            track,
+            arrow_start,
+            arrow_end,
+            fraction,
+            len_fraction,
+        )
     });
     // Suppress the corner for non-positive viewport dims: the raw rect would
     // sit at negative coordinates with POSITIVE area (e.g. (-12,-12,0,0)) and
@@ -174,8 +230,19 @@ pub fn scrollbar_layout(doc: &OfdDocument, vp: &Viewport) -> ScrollbarLayout {
 pub enum ScrollbarHit {
     VerticalThumb,
     HorizontalThumb,
-    VerticalTrack { page_up: bool },
-    HorizontalTrack { page_left: bool },
+    /// Square step button at a strip end. `negative` points toward the scroll
+    /// origin (up for vertical, left for horizontal); one click = one
+    /// [`ARROW_STEP_RATIO`] step of the content region.
+    Arrow {
+        axis: Axis,
+        negative: bool,
+    },
+    VerticalTrack {
+        page_up: bool,
+    },
+    HorizontalTrack {
+        page_left: bool,
+    },
     Corner,
 }
 
@@ -199,6 +266,20 @@ pub fn hit_scrollbar(layout: &ScrollbarLayout, point: (f64, f64)) -> Option<Scro
         if contains_with_area(bar.thumb, x, y) {
             return Some(ScrollbarHit::VerticalThumb);
         }
+        // Arrows flank the track inside the same strip, so they must be
+        // tested before the track (a track hit would page instead of step).
+        if contains_with_area(bar.arrow_start, x, y) {
+            return Some(ScrollbarHit::Arrow {
+                axis: Axis::Vertical,
+                negative: true,
+            });
+        }
+        if contains_with_area(bar.arrow_end, x, y) {
+            return Some(ScrollbarHit::Arrow {
+                axis: Axis::Vertical,
+                negative: false,
+            });
+        }
         if contains_with_area(bar.track, x, y) {
             return Some(ScrollbarHit::VerticalTrack {
                 page_up: y < bar.thumb.y0,
@@ -208,6 +289,18 @@ pub fn hit_scrollbar(layout: &ScrollbarLayout, point: (f64, f64)) -> Option<Scro
     if let Some(bar) = layout.horizontal {
         if contains_with_area(bar.thumb, x, y) {
             return Some(ScrollbarHit::HorizontalThumb);
+        }
+        if contains_with_area(bar.arrow_start, x, y) {
+            return Some(ScrollbarHit::Arrow {
+                axis: Axis::Horizontal,
+                negative: true,
+            });
+        }
+        if contains_with_area(bar.arrow_end, x, y) {
+            return Some(ScrollbarHit::Arrow {
+                axis: Axis::Horizontal,
+                negative: false,
+            });
         }
         if contains_with_area(bar.track, x, y) {
             return Some(ScrollbarHit::HorizontalTrack {
@@ -220,10 +313,17 @@ pub fn hit_scrollbar(layout: &ScrollbarLayout, point: (f64, f64)) -> Option<Scro
 
 /// Build one bar along `track` with the thumb placed at `fraction` (0..=1).
 /// `len_fraction` is the visible-length ratio (region/content, min-clamped).
-fn bar(axis: Axis, track: Rect, fraction: f64, len_fraction: f64) -> BarGeom {
-    let (track_len, cross0, cross1) = match axis {
-        Axis::Vertical => (track.height(), track.x0, track.x1),
-        Axis::Horizontal => (track.width(), track.y0, track.y1),
+fn bar(
+    axis: Axis,
+    track: Rect,
+    arrow_start: Rect,
+    arrow_end: Rect,
+    fraction: f64,
+    len_fraction: f64,
+) -> BarGeom {
+    let (track_len, cross0, cross1, origin) = match axis {
+        Axis::Vertical => (track.height(), track.x0, track.x1, track.y0),
+        Axis::Horizontal => (track.width(), track.y0, track.y1, track.x0),
     };
     let thumb_len = if track_len > 0.0 {
         (len_fraction * track_len).max(THUMB_MIN_LEN).min(track_len)
@@ -234,12 +334,20 @@ fn bar(axis: Axis, track: Rect, fraction: f64, len_fraction: f64) -> BarGeom {
     let thumb_cross0 = cross0 + THUMB_INSET;
     let thumb_cross1 = cross1 - THUMB_INSET;
     let travel = (track_len - thumb_len - 2.0 * THUMB_INSET).max(0.0);
-    let start = THUMB_INSET + fraction * travel;
+    // `start` is absolute in viewport space: the track no longer begins at 0
+    // now that the arrow buttons flank it.
+    let start = origin + THUMB_INSET + fraction * travel;
     let thumb = match axis {
         Axis::Vertical => Rect::new(thumb_cross0, start, thumb_cross1, start + thumb_len),
         Axis::Horizontal => Rect::new(start, thumb_cross0, start + thumb_len, thumb_cross1),
     };
-    BarGeom { axis, track, thumb }
+    BarGeom {
+        axis,
+        track,
+        thumb,
+        arrow_start,
+        arrow_end,
+    }
 }
 
 /// Per-axis visual state driving the thumb color. `active` (drag in progress)
@@ -263,33 +371,81 @@ pub fn paint_scrollbars(scene: &mut Scene, layout: &ScrollbarLayout, visual: Scr
     let mut painter = Painter::new(scene);
 
     if let Some(bar) = layout.vertical {
-        // Nested guard (not an early return): a degenerate v-track must not
+        // Full strip = arrow buttons + paging track, filled as one trough.
+        let strip = Rect::new(
+            bar.track.x0,
+            bar.arrow_start.y0,
+            bar.track.x1,
+            bar.arrow_end.y1,
+        );
+        // Nested guard (not an early return): a degenerate strip must not
         // skip the horizontal bar below it.
-        if bar.track.height() > 0.0 {
-            painter.fill_rect(bar.track, TRACK_COLOR);
+        if strip.height() > 0.0 {
+            painter.fill_rect(strip, TRACK_COLOR);
             // 1px separator on the content-facing (left) edge.
             painter
                 .stroke(
-                    Line::new((bar.track.x0, bar.track.y0), (bar.track.x0, bar.track.y1)),
+                    Line::new((strip.x0, strip.y0), (strip.x0, strip.y1)),
                     &Stroke::new(1.0_f64),
                     TRACK_BORDER_COLOR,
                 )
                 .draw();
+            // Separators between the arrows and the paging track (a strip too
+            // short to hold a track has none).
+            if bar.arrow_start.y1 < bar.arrow_end.y0 {
+                for y in [bar.arrow_start.y1, bar.arrow_end.y0] {
+                    painter
+                        .stroke(
+                            Line::new((strip.x0, y), (strip.x1, y)),
+                            &Stroke::new(1.0_f64),
+                            TRACK_BORDER_COLOR,
+                        )
+                        .draw();
+                }
+            }
             painter.fill_rect(bar.thumb, thumb_color(Axis::Vertical, visual));
+            for (button, negative) in [(bar.arrow_start, true), (bar.arrow_end, false)] {
+                if let Some(glyph) = arrow_glyph(Axis::Vertical, button, negative) {
+                    painter.fill(&glyph, THUMB_COLOR).draw();
+                }
+            }
         }
     }
     if let Some(bar) = layout.horizontal {
-        if bar.track.width() > 0.0 {
-            painter.fill_rect(bar.track, TRACK_COLOR);
+        // Full strip = arrow buttons + paging track, filled as one trough.
+        let strip = Rect::new(
+            bar.arrow_start.x0,
+            bar.track.y0,
+            bar.arrow_end.x1,
+            bar.track.y1,
+        );
+        if strip.width() > 0.0 {
+            painter.fill_rect(strip, TRACK_COLOR);
             // 1px separator on the content-facing (top) edge.
             painter
                 .stroke(
-                    Line::new((bar.track.x0, bar.track.y0), (bar.track.x1, bar.track.y0)),
+                    Line::new((strip.x0, strip.y0), (strip.x1, strip.y0)),
                     &Stroke::new(1.0_f64),
                     TRACK_BORDER_COLOR,
                 )
                 .draw();
+            if bar.arrow_start.x1 < bar.arrow_end.x0 {
+                for x in [bar.arrow_start.x1, bar.arrow_end.x0] {
+                    painter
+                        .stroke(
+                            Line::new((x, strip.y0), (x, strip.y1)),
+                            &Stroke::new(1.0_f64),
+                            TRACK_BORDER_COLOR,
+                        )
+                        .draw();
+                }
+            }
             painter.fill_rect(bar.thumb, thumb_color(Axis::Horizontal, visual));
+            for (button, negative) in [(bar.arrow_start, true), (bar.arrow_end, false)] {
+                if let Some(glyph) = arrow_glyph(Axis::Horizontal, button, negative) {
+                    painter.fill(&glyph, THUMB_COLOR).draw();
+                }
+            }
         }
     }
     // `corner` is already None for non-positive viewport dims (Task 1), so a
@@ -299,6 +455,45 @@ pub fn paint_scrollbars(scene: &mut Scene, layout: &ScrollbarLayout, visual: Scr
             painter.fill_rect(corner, TRACK_COLOR);
         }
     }
+}
+
+/// Filled triangle glyph for one arrow button, pointing outward (`negative` =
+/// up for vertical / left for horizontal). Returns `None` for zero-area
+/// buttons (degenerate strips never paint a glyph).
+fn arrow_glyph(axis: Axis, button: Rect, negative: bool) -> Option<BezPath> {
+    if button.width() <= 0.0 || button.height() <= 0.0 {
+        return None;
+    }
+    // Glyph inset inside the 12x12 button: tip and base corners sit `g` from
+    // the edges, keeping the triangle clear of the 1px separators.
+    let g = 3.0;
+    let (x0, y0, x1, y1) = (button.x0, button.y0, button.x1, button.y1);
+    let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+    let mut path = BezPath::new();
+    match (axis, negative) {
+        (Axis::Vertical, true) => {
+            path.move_to((cx, y0 + g));
+            path.line_to((x1 - g, y1 - g));
+            path.line_to((x0 + g, y1 - g));
+        }
+        (Axis::Vertical, false) => {
+            path.move_to((cx, y1 - g));
+            path.line_to((x1 - g, y0 + g));
+            path.line_to((x0 + g, y0 + g));
+        }
+        (Axis::Horizontal, true) => {
+            path.move_to((x0 + g, cy));
+            path.line_to((x1 - g, y1 - g));
+            path.line_to((x1 - g, y0 + g));
+        }
+        (Axis::Horizontal, false) => {
+            path.move_to((x1 - g, cy));
+            path.line_to((x0 + g, y1 - g));
+            path.line_to((x0 + g, y0 + g));
+        }
+    }
+    path.close_path();
+    Some(path)
 }
 
 fn thumb_color(axis: Axis, visual: ScrollbarVisual) -> Color {
@@ -377,10 +572,14 @@ mod tests {
         // Vertical bar consumes 12px of width; no horizontal bar, full height.
         assert_eq!(l.content_size, (188.0, 200.0));
         let v = l.vertical.unwrap();
-        assert_eq!(v.track, Rect::new(188.0, 0.0, 200.0, 200.0));
-        // thumb_len = 200/400 * 200 = 100; travel = 200 - 100 - 4 = 96;
-        // scroll fraction 0 -> thumb y in [2, 102], x insets [190, 198].
-        assert_eq!(v.thumb, Rect::new(190.0, 2.0, 198.0, 102.0));
+        // The full-height strip splits into square arrow buttons at both ends
+        // and a paging track between them.
+        assert_eq!(v.arrow_start, Rect::new(188.0, 0.0, 200.0, 12.0));
+        assert_eq!(v.arrow_end, Rect::new(188.0, 188.0, 200.0, 200.0));
+        assert_eq!(v.track, Rect::new(188.0, 12.0, 200.0, 188.0));
+        // thumb_len = 176 * (200/400) = 88; travel = 176 - 88 - 4 = 84;
+        // scroll fraction 0 -> thumb y [14, 102], x insets [190, 198].
+        assert_eq!(v.thumb, Rect::new(190.0, 14.0, 198.0, 102.0));
     }
 
     #[test]
@@ -394,14 +593,14 @@ mod tests {
         assert_eq!(l.content_size, (188.0, 188.0));
         // Corner square at the bottom right.
         assert_eq!(l.corner, Some(Rect::new(188.0, 188.0, 200.0, 200.0)));
-        // Tracks end where the corner begins.
+        // Tracks end where the corner begins; the arrows flank each track.
         assert_eq!(
             l.vertical.unwrap().track,
-            Rect::new(188.0, 0.0, 200.0, 188.0)
+            Rect::new(188.0, 12.0, 200.0, 176.0)
         );
         assert_eq!(
             l.horizontal.unwrap().track,
-            Rect::new(0.0, 188.0, 188.0, 200.0)
+            Rect::new(12.0, 188.0, 176.0, 200.0)
         );
     }
 
@@ -412,8 +611,9 @@ mod tests {
         v.scroll.1 = 100.0;
         let l = scrollbar_layout(&doc_of(&[(180.0, 400.0)]), &v);
         let bar = l.vertical.unwrap();
-        // fraction .5 -> thumb y in [2 + 48, 102 + 48] = [50, 150].
-        assert_eq!(bar.thumb, Rect::new(190.0, 50.0, 198.0, 150.0));
+        // Track starts at y=12 (below the top arrow); fraction .5 ->
+        // thumb y = 12 + 2 + .5*84 = 56 -> [56, 144].
+        assert_eq!(bar.thumb, Rect::new(190.0, 56.0, 198.0, 144.0));
     }
 
     #[test]
@@ -433,9 +633,10 @@ mod tests {
         v.scroll.0 = 100.0;
         let l = scrollbar_layout(&doc_of(&[(400.0, 100.0)]), &v);
         let bar = l.horizontal.unwrap();
-        // region 200x188; track y [188,200]; thumb y insets [190,198];
-        // thumb_len 100, travel 96 -> fraction 1 -> x [98, 198].
-        assert_eq!(bar.thumb, Rect::new(98.0, 190.0, 198.0, 198.0));
+        // region 200x188; h-strip arrows x [0,12] & [176,188], track x [12,188]
+        // (len 176); thumb y insets [190,198]; thumb_len = 176 * (200/400) = 88,
+        // travel 84 -> fraction 1 -> x [98, 186].
+        assert_eq!(bar.thumb, Rect::new(98.0, 190.0, 186.0, 198.0));
     }
 
     #[test]
@@ -499,7 +700,7 @@ mod hit_tests {
 
     #[test]
     fn hits_vertical_thumb_before_track() {
-        // 180x400 page in 200x200: vbar only; thumb y [2,102], x [190,198].
+        // 180x400 page in 200x200: vbar only; thumb y [14,102], x [190,198].
         let l = layout_for((200.0, 200.0), &[(180.0, 400.0)], (0.0, 0.0));
         assert_eq!(
             hit_scrollbar(&l, (194.0, 50.0)),
@@ -510,10 +711,49 @@ mod hit_tests {
             hit_scrollbar(&l, (194.0, 150.0)),
             Some(ScrollbarHit::VerticalTrack { page_up: false })
         );
-        // Above the thumb -> page-up zone.
+        // Inside the TOP ARROW button (strip end, above the track): an arrow
+        // step, not a track page.
         assert_eq!(
             hit_scrollbar(&l, (194.0, 1.0)),
+            Some(ScrollbarHit::Arrow {
+                axis: Axis::Vertical,
+                negative: true
+            })
+        );
+        // Just below the top arrow, above the thumb -> page-up zone.
+        assert_eq!(
+            hit_scrollbar(&l, (194.0, 13.0)),
             Some(ScrollbarHit::VerticalTrack { page_up: true })
+        );
+    }
+
+    #[test]
+    fn hits_arrow_buttons_in_strip_ends() {
+        // Wide page 400x100 in 200x200: hbar only; arrows flank the track.
+        let l = layout_for((200.0, 200.0), &[(400.0, 100.0)], (0.0, 0.0));
+        assert_eq!(
+            hit_scrollbar(&l, (6.0, 194.0)),
+            Some(ScrollbarHit::Arrow {
+                axis: Axis::Horizontal,
+                negative: true
+            })
+        );
+        assert_eq!(
+            hit_scrollbar(&l, (194.0, 194.0)),
+            Some(ScrollbarHit::Arrow {
+                axis: Axis::Horizontal,
+                negative: false
+            })
+        );
+        // Vertical bottom arrow on the tall fixture (above the corner-free
+        // single-bar layout, the strip ends at y=200).
+        let v = layout_for((200.0, 200.0), &[(180.0, 400.0)], (0.0, 0.0));
+        assert_eq!(
+            hit_scrollbar(&v, (194.0, 190.0)),
+            Some(ScrollbarHit::Arrow {
+                axis: Axis::Vertical,
+                negative: false
+            })
         );
     }
 
@@ -598,17 +838,18 @@ mod paint_tests {
         let mut scene = Scene::new();
         let l = layout_for((200.0, 200.0), &[(195.0, 400.0)]);
         paint_scrollbars(&mut scene, &l, ScrollbarVisual::default());
-        // 2 tracks + 2 thumbs + 1 corner = 5 fills.
-        assert_eq!(count_fills(&scene), 5);
+        // Per bar: strip fill + thumb fill + 2 arrow glyphs = 4; both bars
+        // plus the corner = 4 + 4 + 1 = 9 fills.
+        assert_eq!(count_fills(&scene), 9);
     }
 
     #[test]
     fn paints_single_bar_without_corner() {
-        // 180-wide page: vertical bar only (no corner, no horizontal track).
+        // 180-wide page: vertical bar only (no corner, no horizontal strip).
         let mut scene = Scene::new();
         let l = layout_for((200.0, 200.0), &[(180.0, 400.0)]);
         paint_scrollbars(&mut scene, &l, ScrollbarVisual::default());
-        assert_eq!(count_fills(&scene), 2);
+        assert_eq!(count_fills(&scene), 4);
     }
 
     #[test]
@@ -630,13 +871,18 @@ mod paint_tests {
         // track fill uses.
         Painter::new(&mut scene).fill_rect(Rect::new(0.0, 0.0, 10.0, 10.0), TRACK_COLOR);
         assert_eq!(count_fills(&scene), 1);
-        // Vertical-bar-only fixture: track fill + separator stroke + thumb fill.
+        // Vertical-bar-only fixture: strip fill + outer separator stroke + 2
+        // arrow-separator strokes + thumb fill + 2 arrow glyph fills.
         let l = layout_for((200.0, 200.0), &[(180.0, 400.0)]);
         paint_scrollbars(&mut scene, &l, ScrollbarVisual::default());
-        assert_eq!(count_fills(&scene), 3, "chrome adds two fills, clears none");
-        // Full draw order: pre-existing fill stays first, the separator stroke
-        // is emitted between the two chrome fills, and the thumb fill is the
-        // FINAL draw so it paints on top of the page content.
+        assert_eq!(
+            count_fills(&scene),
+            5,
+            "chrome adds four fills, clears none"
+        );
+        // Full draw order: the pre-existing fill stays first; the chrome block
+        // is appended after it (strip fill, three strokes, thumb fill, then
+        // the two arrow glyph fills) so the chrome paints on top of the page.
         let draws: Vec<&Draw> = scene
             .commands()
             .iter()
@@ -647,15 +893,19 @@ mod paint_tests {
             .collect();
         assert_eq!(
             draws.len(),
-            4,
-            "pre fill + track fill + separator stroke + thumb fill"
+            8,
+            "pre fill + strip + 3 strokes + thumb + 2 glyphs"
         );
         assert!(matches!(draws[0], Draw::Fill { .. }), "content kept first");
-        assert!(matches!(draws[1], Draw::Fill { .. }), "track appended");
+        assert!(matches!(draws[1], Draw::Fill { .. }), "strip appended");
+        assert!(matches!(draws[2], Draw::Stroke { .. }), "outer edge stroke");
+        assert!(matches!(draws[3], Draw::Stroke { .. }), "arrow separator");
+        assert!(matches!(draws[4], Draw::Stroke { .. }), "arrow separator");
         assert!(
-            matches!(draws[2], Draw::Stroke { .. }),
-            "separator appended"
+            matches!(draws[5], Draw::Fill { .. }),
+            "thumb on top of track"
         );
-        assert!(matches!(draws[3], Draw::Fill { .. }), "thumb painted last");
+        assert!(matches!(draws[6], Draw::Fill { .. }), "arrow glyph");
+        assert!(matches!(draws[7], Draw::Fill { .. }), "arrow glyph");
     }
 }
