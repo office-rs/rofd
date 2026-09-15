@@ -44,8 +44,6 @@
 - 轨道按住连发（v1 点一下翻一屏）。
 - SDK 的 `scrollTo` / 编程式滚动 API、滚动位置回调。
 - 触屏惯性滚动、Home/End/空格键滚动、工具栏"首页/尾页"开放。
-- 改变既有上下留白的轻微不对称语义（顶部一个 `page_gap` 留白、末页底边贴边，
-  与已上线的 Pan 行为一致）。
 - 改变滚轮 delta 换算（LineDelta/PixelDelta 的适配器换算不动，只加 clamp）。
 - a11y 语义（场景内绘制的滑块不暴露给平台无障碍树）。
 
@@ -68,8 +66,10 @@
 
 - `content_w = max(page.physical_box.w) * zoom`（最宽页）。
 - `inner_h = sum(page.physical_box.h) * zoom + page_gap * (n-1)`；
-  纵向内容总长 `content_h = page_gap + inner_h`（含首页顶部的一个 gap 留白，
-  与 `clamp_scroll` 现有 `y_max` 公式一致）。
+  纵向内容总长 `content_h = page_gap + inner_h + page_gap`
+  （首顶与末底各留一个 gap，上下对称；滚到底时末页底边与内容区底部
+  保持一个 `page_gap` 的可见余量。2026-09-15 修订：原版末页底边贴边，
+  经用户反馈改为对称）。
 
 **两段式溢出判定**（处理"出竖条 → 横条也被挤出来"的经典边界）：迭代到稳定，
 至多两轮：

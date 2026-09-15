@@ -41,8 +41,9 @@ pub struct Viewport {
 /// region (the viewport minus any visible scrollbar strips) the stack stays
 /// centered and `scroll.0` pins to 0. Y allows scrolling from the initial
 /// top position (`scroll.1 == 0`) down to the last page's bottom edge
-/// reaching the content region's bottom; when the whole stack is shorter
-/// than the content region, `scroll.1` pins to 0.
+/// sitting one `page_gap` above the content region's bottom (symmetric with
+/// the top gap); when the whole stack is shorter than the content region,
+/// `scroll.1` pins to 0.
 ///
 /// Geometry mirrors [`crate::composite::page_origin`]: `page_x = max(0,
 /// (size.0 - page_w) / 2) + scroll.0`, `page_y = page_gap - scroll.1 + ...`.
@@ -104,11 +105,12 @@ mod clamp_tests {
         // 两页 400x300mm，zoom=2 -> 每页 800x600px，视口 500x700，gap=20。
         // 两轴都出滚动条后内容区为 488x688。
         // X: x_margin = (800-488)/2 = 156 -> x ∈ [-156, 156]。
-        // Y: content_h = 20 + (600+20+600) = 1240；y_max = 1240-688 = 552。
+        // Y: content_h = 20 + (600+20+600) + 20 = 1260（末底再留一个 gap）；
+        // y_max = 1260-688 = 572。
         let doc = doc_of(&[(400.0, 300.0), (400.0, 300.0)]);
         assert_eq!(
             clamp_scroll(&doc, &vp((500.0, 700.0), 2.0, (500.0, 1000.0))),
-            (156.0, 552.0)
+            (156.0, 572.0)
         );
         assert_eq!(
             clamp_scroll(&doc, &vp((500.0, 700.0), 2.0, (-500.0, -5.0))),
@@ -122,6 +124,19 @@ mod clamp_tests {
         assert_eq!(
             clamp_scroll(&doc, &vp((500.0, 700.0), 2.0, (50.0, 200.0))),
             (50.0, 200.0)
+        );
+    }
+
+    #[test]
+    fn full_bottom_scroll_keeps_trailing_page_gap() {
+        // 单页 100x600，zoom=1，gap=20，视口 500x300（只出竖条，内容区高 300）：
+        // content_h = 20 + 600 + 20 = 640，y_max = 640 - 300 = 340。
+        // 滚到底时末页底边位于 20 + 600 - 340 = 280，距内容区底部（300）
+        // 正好一个 page_gap —— 与顶部留白对称。
+        let doc = doc_of(&[(100.0, 600.0)]);
+        assert_eq!(
+            clamp_scroll(&doc, &vp((500.0, 300.0), 1.0, (0.0, 10_000.0))),
+            (0.0, 340.0)
         );
     }
 
