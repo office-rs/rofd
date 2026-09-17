@@ -159,21 +159,54 @@ pub fn polyline_path(points: &[Point]) -> PathData {
     PathData { commands: cmds }
 }
 
+/// Squiggly wave amplitude (page-local mm): the Q control point alternates
+/// +/- this value around the baseline. Must equal
+/// `render::annotation_scene::SQUIGGLY_AMPLITUDE` so the serialized wave
+/// shape matches the rendered wave.
+const SQUIGGLY_AMPLITUDE: f64 = 1.0;
+
+/// X-span (page-local mm) of one Q-curve half-wave. Fixed so wave density is
+/// independent of quad width (text length). Must equal
+/// `render::annotation_scene::SQUIGGLY_HALF_WAVE` for the same reason.
+const SQUIGGLY_HALF_WAVE: f64 = 2.0;
+
 /// Squiggly (wavy) path between two quad_points, using Q quadratic curves that
-/// alternate above and below the baseline. The amplitude is a fixed 1.0
-/// page-local unit, matching `render::annotation_scene::SQUIGGLY_AMPLITUDE` so
-/// the serialized wave shape matches the rendered wave. 20 steps span the
-/// p0->p1 x-range. Used by the Squiggly Markup appearance (GB/T 33190 §15.2.3.4).
+/// alternate above and below the baseline. Half-waves have a FIXED 2.0mm
+/// x-span: the number of arcs grows with the quad width while their density
+/// stays constant (a 4-char and a whole-line squiggly share the same
+/// wavelength). A span that is not a multiple of the half-wave ends with one
+/// partial arc landing exactly on `p1.x`. Used by the Squiggly Markup
+/// appearance (GB/T 33190 §15.2.3.4).
 pub fn squiggly_path(p0: Point, p1: Point) -> PathData {
     let mut cmds = vec![PathCommand::M(p0.x, p0.y)];
-    let steps = 20;
-    let dx = (p1.x - p0.x) / steps as f64;
-    let amp = 1.0;
-    for i in 0..steps {
-        let x0 = p0.x + dx * i as f64;
-        let x1 = p0.x + dx * (i as f64 + 1.0);
-        let y_mid = if i % 2 == 0 { p0.y - amp } else { p0.y + amp };
-        cmds.push(PathCommand::Q(x0, y_mid, x1, p0.y));
+    let span = p1.x - p0.x;
+    if span.abs() < 1e-6 {
+        return PathData { commands: cmds };
+    }
+    let dir = span.signum();
+    let full = (span.abs() / SQUIGGLY_HALF_WAVE).floor();
+    let mut x = p0.x;
+    let mut up = true;
+    for _ in 0..full as usize {
+        let x_next = x + dir * SQUIGGLY_HALF_WAVE;
+        let y_mid = if up {
+            p0.y - SQUIGGLY_AMPLITUDE
+        } else {
+            p0.y + SQUIGGLY_AMPLITUDE
+        };
+        cmds.push(PathCommand::Q((x + x_next) / 2.0, y_mid, x_next, p0.y));
+        x = x_next;
+        up = !up;
+    }
+    // Remainder (< one half-wave): a final partial arc ending exactly at
+    // p1.x so the wave stays flush with the text end.
+    if (p1.x - x).abs() > 1e-6 {
+        let y_mid = if up {
+            p0.y - SQUIGGLY_AMPLITUDE
+        } else {
+            p0.y + SQUIGGLY_AMPLITUDE
+        };
+        cmds.push(PathCommand::Q((x + p1.x) / 2.0, y_mid, p1.x, p0.y));
     }
     PathData { commands: cmds }
 }
@@ -432,6 +465,84 @@ mod tests {
                 );
             }
             _ => panic!("expected Q as second command"),
+        }
+    }
+
+    #[test]
+    fn squiggly_wave_density_is_fixed_not_length_scaled() {
+        // 每个 Q 段 (半波) 的 x 跨度恒为 2.0 页面局部 mm: 波浪密度不随
+        // quad 宽度 (文字长度) 变化. 40mm 与 400mm 的每段跨度相同.
+        for (width, expect_segments) in [(40.0f64, 20usize), (400.0, 200)] {
+            let p = squiggly_path(Point { x: 0.0, y: 4.0 }, Point { x: width, y: 8.0 });
+            assert_eq!(p.commands.len(), expect_segments + 1, "width={width}");
+            for (i, c) in p.commands[1..].iter().enumerate() {
+                match c {
+                    PathCommand::Q(_, _, x_end, _) => {
+                        let expected_end = (i as f64 + 1.0) * 2.0;
+                        assert!(
+                            (*x_end - expected_end).abs() < 1e-9,
+                            "width={width} segment {i} must span 2.0 (end {expected_end}), got {x_end}"
+                        );
+                    }
+                    _ => panic!("expected Q, got {c:?}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn squiggly_control_x_at_segment_midpoint_matching_render() {
+        // render 版控制点在段中点; io 序列化的波形必须同形, 否则保存文件
+        // 在其他阅读器里的波峰位置与 rofd 屏显不一致.
+        let p = squiggly_path(Point { x: 0.0, y: 4.0 }, Point { x: 40.0, y: 8.0 });
+        match &p.commands[1] {
+            PathCommand::Q(cx, _, x_end, _) => {
+                assert!(
+                    (*cx - 1.0).abs() < 1e-9,
+                    "control at midpoint 1.0, got {cx}"
+                );
+                assert!((*x_end - 2.0).abs() < 1e-9);
+            }
+            _ => panic!("expected Q as second command"),
+        }
+    }
+
+    #[test]
+    fn squiggly_partial_final_wave_ends_exactly_at_x1() {
+        // 宽度非半波整数倍时: 完整半波保持 2.0 跨度不变, 末尾补一段部分波,
+        // 终点精确落在 p1.x (与文字末尾对齐, 不留缺口).
+        let p = squiggly_path(Point { x: 0.0, y: 4.0 }, Point { x: 41.0, y: 8.0 });
+        assert_eq!(p.commands.len(), 22); // M + 20 full + 1 partial
+        match &p.commands[21] {
+            PathCommand::Q(cx, _, x_end, _) => {
+                assert!(
+                    (*cx - 40.5).abs() < 1e-9,
+                    "control at partial midpoint 40.5, got {cx}"
+                );
+                assert!(
+                    (*x_end - 41.0).abs() < 1e-9,
+                    "ends exactly at x1, got {x_end}"
+                );
+            }
+            _ => panic!("expected Q as last command"),
+        }
+    }
+
+    #[test]
+    fn squiggly_span_shorter_than_half_wave_draws_single_partial_arc() {
+        // 不足一个半波时也画一段弧 (而非空路径), 终点仍落在 p1.x.
+        let p = squiggly_path(Point { x: 3.0, y: 4.0 }, Point { x: 4.2, y: 8.0 });
+        assert_eq!(p.commands.len(), 2); // M + one partial Q
+        match (&p.commands[0], &p.commands[1]) {
+            (PathCommand::M(mx, _), PathCommand::Q(cx, _, x_end, _)) => {
+                assert!((*mx - 3.0).abs() < 1e-9);
+                assert!(
+                    (*cx - 3.6).abs() < 1e-9,
+                    "control at midpoint 3.6, got {cx}"
+                );
+                assert!((*x_end - 4.2).abs() < 1e-9);
+            }
+            _ => panic!("expected M + Q"),
         }
     }
 
