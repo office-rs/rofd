@@ -51,6 +51,12 @@ const MARKUP_ALPHA: f32 = 96.0 / 255.0;
 /// 1.0 matches the visual weight of a typical squiggly underline.
 const SQUIGGLY_AMPLITUDE: f64 = 1.0;
 
+/// X-span (page-local mm) of one Squiggly Q-curve half-wave. Fixed so wave
+/// density is independent of quad width (text length): the number of arcs
+/// grows with the selection while the wavelength stays constant. Must equal
+/// io's `annotation_geom::SQUIGGLY_HALF_WAVE` so the serialized wave matches.
+const SQUIGGLY_HALF_WAVE: f64 = 2.0;
+
 /// Stroke width (page-local mm) for Underline/Strikeout/Squiggly markup lines.
 /// sample.ofd uses 0.2-0.25mm; the old 1.0mm drew ~4px bars at 100% zoom that
 /// looked like blocking rectangles. 0.3mm ~ 1.1px at 96 DPI.
@@ -233,25 +239,46 @@ fn draw_markup(
     }
 }
 
-/// Build a wavy Q-curve BezPath from `p0` to `p1`: `steps` segments, each a
-/// quadratic Bezier whose control point alternates above/below the baseline
-/// (`p0.y`) by `SQUIGGLY_AMPLITUDE`. Produces the classic squiggly-underline
-/// shape. Panics never (steps clamped to >= 1).
+/// Build a wavy Q-curve BezPath from `p0` to `p1`. Half-waves have a FIXED
+/// `SQUIGGLY_HALF_WAVE` (2.0mm) x-span: the number of arcs grows with the
+/// quad width while their density stays constant, so a 4-char and a
+/// whole-line squiggly share the same wavelength. Each arc is a quadratic
+/// Bezier whose control point alternates above/below the baseline (`p0.y`)
+/// by `SQUIGGLY_AMPLITUDE`, producing the classic squiggly-underline shape.
+/// A span that is not a multiple of the half-wave ends with one partial arc
+/// landing exactly on `p1.x`. Degenerate spans (< 1e-6) yield an M-only path.
 fn squiggly_path(p0: rofd_dom::Point, p1: rofd_dom::Point) -> BezPath {
-    let steps = 20;
-    let dx = (p1.x - p0.x) / steps as f64;
     let mut path = BezPath::new();
     path.move_to((p0.x, p0.y));
-    for i in 0..steps {
-        let xm = p0.x + dx * (i as f64 + 0.5);
-        let x1 = p0.x + dx * (i as f64 + 1.0);
+    let span = p1.x - p0.x;
+    if span.abs() < 1e-6 {
+        return path;
+    }
+    let dir = span.signum();
+    let full = (span.abs() / SQUIGGLY_HALF_WAVE).floor();
+    let mut x = p0.x;
+    let mut up = true;
+    for _ in 0..full as usize {
+        let x_next = x + dir * SQUIGGLY_HALF_WAVE;
         // Alternate the control point above/below the baseline.
-        let ym = if i % 2 == 0 {
+        let ym = if up {
             p0.y - SQUIGGLY_AMPLITUDE
         } else {
             p0.y + SQUIGGLY_AMPLITUDE
         };
-        path.quad_to((xm, ym), (x1, p0.y));
+        path.quad_to(((x + x_next) / 2.0, ym), (x_next, p0.y));
+        x = x_next;
+        up = !up;
+    }
+    // Remainder (< one half-wave): a final partial arc ending exactly at
+    // p1.x so the wave stays flush with the text end.
+    if (p1.x - x).abs() > 1e-6 {
+        let ym = if up {
+            p0.y - SQUIGGLY_AMPLITUDE
+        } else {
+            p0.y + SQUIGGLY_AMPLITUDE
+        };
+        path.quad_to(((x + p1.x) / 2.0, ym), (p1.x, p0.y));
     }
     path
 }
@@ -995,12 +1022,14 @@ mod tests {
 
     #[test]
     fn squiggly_path_produces_segments() {
-        // The wavy path should have 20 quad_to segments (the move_to is not
-        // counted as a segment by kurbo's segments() iterator).
+        // Fixed half-wave span of 2.0: a 100-wide quad yields 50 quad_to
+        // segments (the move_to is not counted as a segment by kurbo's
+        // segments() iterator). Segment count scales with width so wave
+        // density stays constant.
         let p0 = Point { x: 0.0, y: 10.0 };
         let p1 = Point { x: 100.0, y: 10.0 };
         let path = squiggly_path(p0, p1);
-        assert_eq!(path.segments().count(), 20);
+        assert_eq!(path.segments().count(), 50);
     }
 
     #[test]
@@ -1451,5 +1480,57 @@ mod tests {
             }
             _ => panic!("expected Quad as first segment"),
         }
+    }
+
+    #[test]
+    fn squiggly_path_fixed_wavelength_not_length_scaled() {
+        // 每个 Q 段 (半波) 的 x 跨度恒为 2.0 页面局部 mm: 波浪密度不随
+        // quad 宽度 (文字长度) 变化. 短选区与整行选区波长相同.
+        use imaging::kurbo::PathSeg;
+        for width in [40.0f64, 400.0] {
+            let path = squiggly_path(Point { x: 0.0, y: 14.0 }, Point { x: width, y: 14.0 });
+            let quads: Vec<_> = path
+                .segments()
+                .filter_map(|s| match s {
+                    PathSeg::Quad(q) => Some(q),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(quads.len(), (width / 2.0) as usize, "width={width}");
+            for (i, q) in quads.iter().enumerate() {
+                let expected_end = (i as f64 + 1.0) * 2.0;
+                assert!(
+                    (q.p2.x - expected_end).abs() < 1e-9,
+                    "width={width} seg {i} must end {expected_end}, got {}",
+                    q.p2.x
+                );
+                let mid = expected_end - 1.0;
+                assert!(
+                    (q.p1.x - mid).abs() < 1e-9,
+                    "width={width} seg {i} control at {mid}, got {}",
+                    q.p1.x
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn squiggly_path_partial_tail_ends_exactly_at_x1() {
+        // 宽度非半波整数倍时: 20 个完整半波 + 1 段部分波, 终点精确落在
+        // p1.x, 与文字末尾对齐.
+        use imaging::kurbo::PathSeg;
+        let path = squiggly_path(Point { x: 0.0, y: 14.0 }, Point { x: 41.0, y: 14.0 });
+        let quads: Vec<_> = path
+            .segments()
+            .filter_map(|s| match s {
+                PathSeg::Quad(q) => Some(q),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(quads.len(), 21); // 20 full + 1 partial
+        let last = quads[20];
+        assert!((last.p0.x - 40.0).abs() < 1e-9);
+        assert!((last.p1.x - 40.5).abs() < 1e-9);
+        assert!((last.p2.x - 41.0).abs() < 1e-9);
     }
 }
