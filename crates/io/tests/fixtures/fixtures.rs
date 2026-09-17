@@ -102,6 +102,66 @@ const PAGE_WITH_UNKNOWN_ELEMENT_XML: &str = r#"<?xml version="1.0" encoding="UTF
   </ofd:Content>
 </ofd:Page>"#;
 
+/// Page XML whose `<ofd:Area>` carries the full standard box family:
+/// PhysicalBox plus ApplicationBox / ContentBox / BloodBox (BloodBox
+/// self-closing to also cover the Empty-element path). v1 renders from
+/// PhysicalBox only; the other standard boxes must be consumed silently.
+#[allow(dead_code)]
+pub const PAGE_WITH_AREA_BOXES_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Area>
+    <ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox>
+    <ofd:ApplicationBox>0 0 210 297</ofd:ApplicationBox>
+    <ofd:ContentBox>10 10 190 277</ofd:ContentBox>
+    <ofd:BloodBox/>
+  </ofd:Area>
+  <ofd:Content>
+    <ofd:Layer Type="Body">
+      <ofd:TextObject ID="t1" Boundary="10 10 100 20" Font="F1" Size="12">
+        <ofd:TextCode X="0" Y="14" DeltaX="0">Hello</ofd:TextCode>
+      </ofd:TextObject>
+    </ofd:Layer>
+  </ofd:Content>
+</ofd:Page>"#;
+
+/// Page XML with a non-standard `<ofd:CropBox>` equal to the PhysicalBox
+/// (PDF→OFD converter artifact, value-identical). Equal value means no
+/// fidelity gap: must stay silent.
+#[allow(dead_code)]
+pub const PAGE_WITH_EQUAL_CROPBOX_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Area>
+    <ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox>
+    <ofd:CropBox>0 0 210 297</ofd:CropBox>
+  </ofd:Area>
+  <ofd:Content>
+    <ofd:Layer Type="Body">
+      <ofd:TextObject ID="t1" Boundary="10 10 100 20" Font="F1" Size="12">
+        <ofd:TextCode X="0" Y="14" DeltaX="0">Hello</ofd:TextCode>
+      </ofd:TextObject>
+    </ofd:Layer>
+  </ofd:Content>
+</ofd:Page>"#;
+
+/// Page XML with a non-standard `<ofd:CropBox>` smaller than the PhysicalBox:
+/// the producer intended visible cropping, which GB/T 33190 readers do not
+/// apply. A real fidelity gap -> exactly one precise warning.
+#[allow(dead_code)]
+pub const PAGE_WITH_DIFFERING_CROPBOX_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Area>
+    <ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox>
+    <ofd:CropBox>10 10 190 277</ofd:CropBox>
+  </ofd:Area>
+  <ofd:Content>
+    <ofd:Layer Type="Body">
+      <ofd:TextObject ID="t1" Boundary="10 10 100 20" Font="F1" Size="12">
+        <ofd:TextCode X="0" Y="14" DeltaX="0">Hello</ofd:TextCode>
+      </ofd:TextObject>
+    </ofd:Layer>
+  </ofd:Content>
+</ofd:Page>"#;
+
 /// Page XML containing a `<ofd:Template>` element (GB/T 33190 §7.5). v1 does
 /// not expand templates; parse_page captures the template ref and parse_ofd
 /// emits a MissingFeature warning.
@@ -276,6 +336,26 @@ pub fn build_ofd_with_template() -> Vec<u8> {
         ("OFD.xml", OFD_XML),
         ("Doc_0/Document.xml", DOCUMENT_XML),
         ("Doc_0/Pages/Page_0/Content.xml", PAGE_WITH_TEMPLATE_XML),
+        ("Doc_0/Res/Font.xml", FONT_XML),
+    ] {
+        zip.start_file(name, opts).unwrap();
+        zip.write_all(body.as_bytes()).unwrap();
+    }
+    zip.finish().unwrap().into_inner()
+}
+
+/// Build an OFD with the standard shell (OFD.xml / Document.xml / Font.xml)
+/// but a caller-supplied page Content.xml. Shared by the Area box-family tests.
+#[allow(dead_code)]
+pub fn build_ofd_with_page(page_xml: &str) -> Vec<u8> {
+    let cursor = std::io::Cursor::new(Vec::new());
+    let mut zip = ZipWriter::new(cursor);
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for (name, body) in [
+        ("OFD.xml", OFD_XML),
+        ("Doc_0/Document.xml", DOCUMENT_XML),
+        ("Doc_0/Pages/Page_0/Content.xml", page_xml),
         ("Doc_0/Res/Font.xml", FONT_XML),
     ] {
         zip.start_file(name, opts).unwrap();

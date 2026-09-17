@@ -37,6 +37,13 @@ pub fn parse_page(
     // Page-level PhysicalBox (inside <Area>) overrides the doc default; its
     // geometry is element text content ("x y w h"), not attributes.
     let mut in_physical_box = false;
+    // Remaining <Area> box family: the standard ApplicationBox/ContentBox/
+    // BloodBox are consumed silently (v1 renders from PhysicalBox only);
+    // non-standard <CropBox> (PDF-flavored producer extension) is captured
+    // and compared against the effective PhysicalBox after the loop.
+    let mut in_crop_box = false;
+    let mut in_ignored_box = false;
+    let mut crop_box: Option<Rect> = None;
     // <Glyphs> inside <CGTransform>: text is the glyph-ID list for the next
     // TextCode. OFD subset fonts have no cmap, so these IDs are the only way to
     // address glyphs (shape would return .notdef and the text would vanish).
@@ -48,6 +55,13 @@ pub fn parse_page(
                 let local = e.name().local_name();
                 if local.as_ref() == b"PhysicalBox" {
                     in_physical_box = true;
+                } else if local.as_ref() == b"CropBox" {
+                    in_crop_box = true;
+                } else if matches!(
+                    local.as_ref(),
+                    b"ApplicationBox" | b"ContentBox" | b"BloodBox"
+                ) {
+                    in_ignored_box = true;
                 } else if local.as_ref() == b"Template" {
                     // GB/T 33190 §7.5: <ofd:Template> references a template
                     // page. v1 does not expand templates; capture a marker so
@@ -106,6 +120,11 @@ pub fn parse_page(
                 if in_physical_box {
                     page.physical_box = parse_rect_ws(&s);
                     in_physical_box = false;
+                } else if in_crop_box {
+                    crop_box = Some(parse_rect_ws(&s));
+                    in_crop_box = false;
+                } else if in_ignored_box {
+                    in_ignored_box = false;
                 } else if in_glyphs {
                     // <Glyphs> text = whitespace-separated glyph IDs for the
                     // next TextCode (OFD subset-font glyph mapping, §8.3.3).
@@ -161,6 +180,8 @@ pub fn parse_page(
                     }
                 }
                 b"PhysicalBox" => in_physical_box = false,
+                b"CropBox" => in_crop_box = false,
+                b"ApplicationBox" | b"ContentBox" | b"BloodBox" => in_ignored_box = false,
                 _ => {}
             },
             Ok(Event::Eof) => break,
@@ -173,6 +194,16 @@ pub fn parse_page(
             }
             _ => {}
         }
+    }
+    // A non-standard <CropBox> matching the effective PhysicalBox is a no-op
+    // (common in PDF->OFD conversions); a differing value means the producer
+    // intended visible cropping that we - like all GB/T 33190 readers - do
+    // not apply. Warn once, precisely (AGENTS.md §4.6).
+    if crop_box.is_some_and(|c| c != page.physical_box) {
+        warnings.push(OfdWarning::SkippedObject {
+            page: page_id.clone(),
+            reason: "non-standard <CropBox> differs from PhysicalBox; cropping not applied".into(),
+        });
     }
     Ok(page)
 }
@@ -286,7 +317,10 @@ fn handle_element_start(
         }
         // Structural/container elements that are expected but have no direct
         // object representation - silently pass through (not unknown objects).
-        b"Area" | b"Content" | b"Page" => {}
+        // The box names cover their self-closing forms (<CropBox/> etc.);
+        // non-empty ones are intercepted in parse_page before reaching here.
+        b"Area" | b"Content" | b"Page" | b"CropBox" | b"ApplicationBox" | b"ContentBox"
+        | b"BloodBox" => {}
         _ => {
             // Unknown element -> skip + warning (not fatal, AGENTS.md §4.6).
             let name = String::from_utf8_lossy(e.name().local_name().as_ref()).into_owned();
