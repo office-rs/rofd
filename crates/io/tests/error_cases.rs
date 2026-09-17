@@ -5,6 +5,8 @@
 //! - Bad XML -> `OfdError::Xml`
 //! - Template page element -> `OfdWarning::MissingFeature` (v1 doesn't expand)
 //! - Unknown page element -> `OfdWarning::SkippedObject` (skipped, not fatal)
+//! - Area box family: standard boxes silent; non-standard `<CropBox>` silent
+//!   when value-identical to PhysicalBox, one precise warning when it differs
 //! - Missing font file -> `OfdWarning::FontSubstituted`
 //! - Missing image file -> `OfdWarning::ResourceNotFound`
 
@@ -58,6 +60,60 @@ fn unknown_page_element_emits_skipped_object_warning() {
             .any(|w| matches!(w, OfdWarning::SkippedObject { .. })),
         "unknown element -> SkippedObject warning, got {:?}",
         report.warnings
+    );
+}
+
+#[test]
+fn standard_area_boxes_do_not_warn() {
+    let bytes = fixtures::build_ofd_with_page(fixtures::PAGE_WITH_AREA_BOXES_XML);
+    let report = parse_ofd(&bytes).expect("parse succeeds");
+    assert!(
+        !report
+            .warnings
+            .iter()
+            .any(|w| matches!(w, OfdWarning::SkippedObject { .. })),
+        "standard Area boxes (ApplicationBox/ContentBox/BloodBox) must not warn, got {:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn crop_box_matching_physical_box_is_silent() {
+    let bytes = fixtures::build_ofd_with_page(fixtures::PAGE_WITH_EQUAL_CROPBOX_XML);
+    let report = parse_ofd(&bytes).expect("parse succeeds");
+    assert!(
+        !report
+            .warnings
+            .iter()
+            .any(|w| matches!(w, OfdWarning::SkippedObject { .. })),
+        "value-identical CropBox is a no-op and must not warn, got {:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn differing_crop_box_warns_once_with_precise_reason() {
+    let bytes = fixtures::build_ofd_with_page(fixtures::PAGE_WITH_DIFFERING_CROPBOX_XML);
+    let report = parse_ofd(&bytes).expect("parse succeeds");
+    let skipped: Vec<_> = report
+        .warnings
+        .iter()
+        .filter(|w| matches!(w, OfdWarning::SkippedObject { .. }))
+        .collect();
+    assert_eq!(
+        skipped.len(),
+        1,
+        "differing CropBox -> exactly one SkippedObject, got {:?}",
+        report.warnings
+    );
+    assert!(
+        matches!(
+            skipped[0],
+            OfdWarning::SkippedObject { reason, .. }
+                if *reason == "non-standard <CropBox> differs from PhysicalBox; cropping not applied"
+        ),
+        "reason must explain the fidelity gap, got {:?}",
+        skipped[0]
     );
 }
 
