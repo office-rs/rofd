@@ -463,8 +463,10 @@ struct TextParams<'a> {
 }
 
 /// Shape `content` with the annotation's font and draw the glyphs into `rect`
-/// (non-rotated, opaque). The glyph baseline is placed at `rect.y + size` (so
-/// text sits just inside the top of the rect), and the pen x starts at `rect.x`.
+/// (non-rotated, opaque). The glyphs keep the shaper's layout-relative
+/// positions: the first line's baseline sits at the font's ascent below
+/// `rect.y` (so the line's ink top is at the rect origin) and the pen x
+/// starts at `rect.x`.
 ///
 /// Skips silently if the font can't be resolved or shaping yields no glyphs.
 fn draw_text_in_rect(
@@ -516,10 +518,14 @@ fn draw_watermark_text(
     draw_glyph_run(painter, &font, &glyphs, affine, translucent, text.size);
 }
 
-/// Shape `content` and offset each glyph's y by `size` (baseline drop), so text
-/// sits just inside the top of its bounding rect. Annotation text uses the
-/// shaper's natural x/y directly (unlike body text which uses document deltas).
-/// Returns the font that shaped the glyphs (caller draws with it).
+/// Shape `content` and return the glyphs with the shaper's natural positions.
+/// parley's `positioned_glyphs()` y is layout-relative (the first line's
+/// baseline already sits at the font's ascent from the layout top, and later
+/// lines add the line height), so the glyphs are used as-is: the first line's
+/// ink top lands at the rect origin and subsequent lines stack below it.
+/// Annotation text uses the shaper's natural x/y directly (unlike body text
+/// which uses document deltas). Returns the font that shaped the glyphs
+/// (caller draws with it).
 fn shape_positioned(
     content: &str,
     font_id: &FontId,
@@ -527,13 +533,12 @@ fn shape_positioned(
     fonts: &FontStore,
 ) -> (Option<FontData>, Vec<Glyph>) {
     let (font, glyphs) = fonts.shape(font_id, content, size);
-    let baseline_offset = size as f32;
     let positioned: Vec<Glyph> = glyphs
         .iter()
         .map(|g| Glyph {
             id: g.glyph_id,
             x: g.x,
-            y: g.y + baseline_offset,
+            y: g.y,
         })
         .collect();
     (font, positioned)
@@ -569,6 +574,7 @@ fn rofd_rect_to_kurbo(r: &Rect) -> KurboRect {
 mod tests {
     use super::*;
     use imaging::kurbo::Rect as KurboRect;
+    use imaging::record::{Command, Draw};
     use rofd_dom::{
         AnnotationId, AnnotationKind, AnnotationPayload, Color, FontId, ImageId, NoteIcon,
         PathCommand, PathData, Point, Rect, ShapeKind,
@@ -1034,6 +1040,95 @@ mod tests {
             AnnotationKind::TextBox,
         );
         let _ = build(&[ann]);
+    }
+
+    /// Collect every glyph baseline (viewport y = run transform ty + glyph y)
+    /// from the scene's glyph runs.
+    fn glyph_baselines(scene: &Scene) -> Vec<f64> {
+        let mut out = Vec::new();
+        for cmd in scene.commands() {
+            if let Command::Draw(id) = cmd {
+                if let Draw::GlyphRun(gr) = scene.draw_op(*id) {
+                    for g in &gr.glyphs {
+                        out.push(gr.transform.as_coeffs()[5] + g.y as f64);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn textbox_glyph_baseline_stays_inside_rect() {
+        // Regression: the selection frame is the payload rect, so the drawn
+        // text must sit INSIDE it. `shape_positioned` used to add `+size` on
+        // top of parley's layout-relative baseline y (first-line baseline is
+        // already at the font's ascent), pushing the baseline ~2.2 em below
+        // the rect top - below the frame's bottom edge for a typical ~1.4 em
+        // tall box (text drawn under the frame). With a 1.5 em tall rect the
+        // baseline (ascent, <= ~1.2 em for ordinary fonts) must fit inside.
+        let rect = Rect {
+            x: 10.0,
+            y: 20.0,
+            w: 100.0,
+            h: 18.0, // 1.5 x size(12)
+        };
+        let ann = ann(
+            AnnotationPayload::TextBox {
+                rect,
+                content: "hello".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+            },
+            AnnotationKind::TextBox,
+        );
+        let scene = build(&[ann]);
+        let baselines = glyph_baselines(&scene);
+        assert!(!baselines.is_empty(), "text was drawn");
+        for b in &baselines {
+            assert!(
+                *b >= rect.y && *b <= rect.y + rect.h,
+                "baseline {b} outside rect y span [{}, {}]",
+                rect.y,
+                rect.y + rect.h
+            );
+        }
+    }
+
+    #[test]
+    fn textbox_multiline_baselines_stay_inside_rect() {
+        // Two lines: line 1 baseline = ascent, line 2 = ascent + line height
+        // (~2.6 em combined for CJK-metric fonts) - must stay inside a 3 em
+        // tall rect. The old `+size` double drop put line 2 at ~3.6 em,
+        // below the frame.
+        let rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 36.0, // 3 x size(12)
+        };
+        let ann = ann(
+            AnnotationPayload::TextBox {
+                rect,
+                content: "two\nlines".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+            },
+            AnnotationKind::TextBox,
+        );
+        let scene = build(&[ann]);
+        let baselines = glyph_baselines(&scene);
+        assert!(baselines.len() >= 2, "two lines were drawn");
+        for b in &baselines {
+            assert!(
+                *b >= rect.y && *b <= rect.y + rect.h,
+                "baseline {b} outside rect y span [{}, {}]",
+                rect.y,
+                rect.y + rect.h
+            );
+        }
     }
 
     #[test]
