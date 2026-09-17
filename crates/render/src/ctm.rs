@@ -30,7 +30,8 @@ pub fn compose_transform(page_origin: (f64, f64), zoom: f64, ctm: Option<&Ctm>) 
 /// is (0, ...) collapse onto the page's top-left corner.
 ///
 /// `boundary` is the object's `Boundary` (x, y = page-mm origin). `ctm = None`
-/// -> identity. Used by body text/path/image; annotation overlays use
+/// -> identity. Used by body text/path; images need a caller-resolved CTM
+/// (see [`compose_object_affine`]); annotation overlays use
 /// [`compose_transform`] (no per-object Boundary/CTM - their payload already
 /// stores page-local coordinates).
 pub fn compose_object_transform(
@@ -39,11 +40,24 @@ pub fn compose_object_transform(
     boundary: rofd_dom::Rect,
     ctm: Option<&Ctm>,
 ) -> Affine {
+    let c = ctm.map(ctm_to_affine).unwrap_or(Affine::IDENTITY);
+    compose_object_affine(page_origin, zoom, boundary, c)
+}
+
+/// [`compose_object_transform`] with a caller-resolved CTM affine. Images use
+/// this because their effective CTM is not just `ImageObject.ctm`: the OFD
+/// image local space is the unit square, so a missing CTM defaults to
+/// "scale the unit square up to the Boundary w/h".
+pub fn compose_object_affine(
+    page_origin: (f64, f64),
+    zoom: f64,
+    boundary: rofd_dom::Rect,
+    ctm: Affine,
+) -> Affine {
     let t = Affine::translate((page_origin.0, page_origin.1));
     let s = Affine::scale(zoom);
     let b = Affine::translate((boundary.x, boundary.y));
-    let c = ctm.map(ctm_to_affine).unwrap_or(Affine::IDENTITY);
-    t * s * b * c
+    t * s * b * ctm
 }
 
 #[cfg(test)]

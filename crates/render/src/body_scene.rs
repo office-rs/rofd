@@ -10,8 +10,8 @@
 //!   [`path_to_bezpath`], then `Painter::fill` / `Painter::stroke` with the
 //!   object's CTM + page transform.
 //! - **Image**: decode bytes via [`decode_image`], then `Painter::draw_image`
-//!   placed at the boundary origin and scaled to the boundary w/h, composed
-//!   with the object's CTM + page transform.
+//!   with the unit-square image space mapped through the object's CTM (a
+//!   missing CTM defaults to filling the Boundary) + page transform.
 //! - **Composite**: skipped in v1 (the caller emits an [`OfdWarning`]).
 //!
 //! All coordinates are page-local; the page-origin + zoom + CTM transform is
@@ -193,28 +193,27 @@ fn draw_image_obj(
         Some(img) => img,
         None => return,
     };
-    // Place the image at its boundary origin and scale it to the boundary
-    // w/h. `draw_image` fills a rect (0, 0, img.width, img.height) in the
-    // image's natural pixel dimensions, so the place transform maps that rect
-    // onto the boundary (x, y, w, h): translate to the boundary origin, then
-    // scale by (w / img_w, h / img_h). Compose with the page + CTM transform.
-    let scale_x = if img.width > 0 {
-        i.boundary.w / img.width as f64
+    // OFD image local space is the UNIT SQUARE (GB/T 33190 §8.2): the CTM maps
+    // `(px / img_w, py / img_h)` into boundary-relative mm. Real producers
+    // encode the whole placement in the CTM - e.g. WPS writes
+    // `CTM = diag(boundary.w, boundary.h)` with the Boundary naming the exact
+    // rect (sample-content.ofd), while scan strips carry the on-page
+    // translation in the CTM with a loose full-page Boundary
+    // (ru-yuan-ji-lu.ofd). A missing CTM defaults to "fill the Boundary".
+    // `draw_image` fills a rect `(0, 0, img.width, img.height)` in the image's
+    // natural pixel dimensions, so `unit` first maps that rect onto the unit
+    // square.
+    let unit = if img.width > 0 && img.height > 0 {
+        Affine::scale_non_uniform(1.0 / img.width as f64, 1.0 / img.height as f64)
     } else {
-        1.0
+        Affine::IDENTITY
     };
-    let scale_y = if img.height > 0 {
-        i.boundary.h / img.height as f64
-    } else {
-        1.0
-    };
-    // Place the image scaled to the boundary w/h; the boundary origin translation
-    // is folded into `compose_object_transform` (consistent with text/path), so
-    // `place` only carries the pixel->mm scale. `draw_image` fills a rect
-    // (0, 0, img.width, img.height) in the image's natural pixel dimensions, so
-    // place maps that rect onto (boundary.w, boundary.h).
-    let place = Affine::scale_non_uniform(scale_x, scale_y);
-    let affine = compose_object_transform(page_origin, zoom, i.boundary, i.ctm.as_ref()) * place;
+    let ctm = i
+        .ctm
+        .as_ref()
+        .map(crate::ctm::ctm_to_affine)
+        .unwrap_or_else(|| Affine::scale_non_uniform(i.boundary.w, i.boundary.h));
+    let affine = crate::ctm::compose_object_affine(page_origin, zoom, i.boundary, ctm) * unit;
     painter.draw_image(&img, affine);
 }
 
@@ -222,6 +221,7 @@ fn draw_image_obj(
 mod tests {
     use super::*;
     use imaging::kurbo::Rect as KurboRect;
+    use imaging::record::{Command, Draw};
     use rofd_dom::Rect;
     use rofd_dom::{
         Ctm, FontId, ImageId, ObjectId, PathCommand, PathData, PathObject, TextCode, TextObject,
@@ -240,6 +240,148 @@ mod tests {
         painter.fill_rect(KurboRect::new(0.0, 0.0, 800.0, 600.0), peniko::Color::BLACK);
         draw_body(&mut painter, page, res, fonts, (0.0, 0.0), 1.0);
         scene
+    }
+
+    /// Build a `w x h` PNG and insert it into `res` under `id`.
+    fn png_resource(res: &mut Resources, id: &str, w: u32, h: u32) {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let img = image::RgbaImage::from_raw(w, h, vec![255; (w * h * 4) as usize]).unwrap();
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .unwrap();
+        res.images
+            .insert(ImageId::new(id), Arc::new(buf.into_inner()));
+    }
+
+    /// Page carrying a single body ImageObject.
+    fn image_page(boundary: Rect, ctm: Option<Ctm>) -> Page {
+        Page {
+            id: rofd_dom::PageId::new("P0"),
+            physical_box: Rect::default(),
+            layers: vec![rofd_dom::Layer {
+                layer_type: rofd_dom::LayerType::Body,
+                objects: vec![PageObject::Image(ImageObject {
+                    id: ObjectId::new("i1"),
+                    boundary,
+                    ctm,
+                    image: ImageId::new("I1"),
+                })],
+            }],
+            template: None,
+        }
+    }
+
+    /// The on-page rect an image draw occupies: the image fill's shape (a
+    /// `(0,0,w,h)` pixel rect) transformed by the draw transform.
+    fn image_rect_on_page(scene: &Scene) -> Option<kurbo::Rect> {
+        use imaging::kurbo::Shape as _;
+        for cmd in scene.commands() {
+            if let Command::Draw(id) = cmd {
+                if let Draw::Fill {
+                    transform,
+                    brush: peniko::Brush::Image(_),
+                    shape,
+                    ..
+                } = scene.draw_op(*id)
+                {
+                    let bb = shape.to_path(1e-3).bounding_box();
+                    let p0 = *transform * kurbo::Point::new(bb.x0, bb.y0);
+                    let p1 = *transform * kurbo::Point::new(bb.x1, bb.y1);
+                    return Some(kurbo::Rect::from_points(p0, p1));
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn image_ctm_maps_unit_square_into_boundary() {
+        // WPS pattern (test/sample-content.ofd ImageObject ID=70): CTM carries
+        // the full pixel->boundary scale (diag = boundary w/h, no translation)
+        // and the Boundary names the exact placement rect. OFD image local
+        // space is the unit square, so the drawn image must land exactly on
+        // the Boundary rect - not pixel-size x CTM-scale (the double-scale bug
+        // rendered it ~437mm wide, off the page).
+        let boundary = Rect {
+            x: 31.75,
+            y: 142.0707,
+            w: 20.9127,
+            h: 10.5833,
+        };
+        let ctm = Some(Ctm {
+            a: 20.9127,
+            b: 0.0,
+            c: 0.0,
+            d: 10.5833,
+            e: 0.0,
+            f: 0.0,
+        });
+        let page = image_page(boundary, ctm);
+        let mut res = Resources::default();
+        png_resource(&mut res, "I1", 79, 40);
+        let fonts = test_font_store();
+        let scene = build(&page, &res, &fonts);
+
+        let r = image_rect_on_page(&scene).expect("image was drawn");
+        assert!((r.x0 - 31.75).abs() < 1e-6, "x0 = {}", r.x0);
+        assert!((r.y0 - 142.0707).abs() < 1e-6, "y0 = {}", r.y0);
+        assert!((r.x1 - 52.6627).abs() < 1e-3, "x1 = {}", r.x1);
+        assert!((r.y1 - 152.654).abs() < 1e-3, "y1 = {}", r.y1);
+    }
+
+    #[test]
+    fn image_ctm_with_translation_maps_unit_square() {
+        // Scan-strip pattern (test/ru-yuan-ji-lu.ofd ImageObject ID=148): the
+        // Boundary is a loose full-page box while the CTM carries BOTH the
+        // unit-square scale and the on-page translation. The image must land
+        // in the CTM-defined strip, inside the page.
+        let boundary = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 209.906,
+            h: 297.044,
+        };
+        let ctm = Some(Ctm {
+            a: 39.476,
+            b: 0.0,
+            c: 0.0,
+            d: 10.372,
+            e: 56.622,
+            f: 147.463,
+        });
+        let page = image_page(boundary, ctm);
+        let mut res = Resources::default();
+        png_resource(&mut res, "I1", 796, 209);
+        let fonts = test_font_store();
+        let scene = build(&page, &res, &fonts);
+
+        let r = image_rect_on_page(&scene).expect("image was drawn");
+        assert!((r.x0 - 56.622).abs() < 1e-6, "x0 = {}", r.x0);
+        assert!((r.y0 - 147.463).abs() < 1e-6, "y0 = {}", r.y0);
+        assert!((r.x1 - 96.098).abs() < 1e-3, "x1 = {}", r.x1);
+        assert!((r.y1 - 157.835).abs() < 1e-3, "y1 = {}", r.y1);
+    }
+
+    #[test]
+    fn image_without_ctm_fills_boundary() {
+        // No CTM: the image stretches to fill the Boundary rect exactly.
+        let boundary = Rect {
+            x: 10.0,
+            y: 20.0,
+            w: 100.0,
+            h: 50.0,
+        };
+        let page = image_page(boundary, None);
+        let mut res = Resources::default();
+        png_resource(&mut res, "I1", 2, 2);
+        let fonts = test_font_store();
+        let scene = build(&page, &res, &fonts);
+
+        let r = image_rect_on_page(&scene).expect("image was drawn");
+        assert!((r.x0 - 10.0).abs() < 1e-9, "x0 = {}", r.x0);
+        assert!((r.y0 - 20.0).abs() < 1e-9, "y0 = {}", r.y0);
+        assert!((r.x1 - 110.0).abs() < 1e-9, "x1 = {}", r.x1);
+        assert!((r.y1 - 70.0).abs() < 1e-9, "y1 = {}", r.y1);
     }
 
     #[test]
