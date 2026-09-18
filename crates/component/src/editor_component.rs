@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use rofd_dom::{
-    AnnotationKind, AnnotationPayload, AnnotationSelection, Color, OfdDocument, OfdWarning, PageId,
-    PathCommand, PathData, Point, Rect, ShapeKind,
+    AnnotationId, AnnotationKind, AnnotationPayload, AnnotationSelection, Color, OfdDocument,
+    OfdWarning, PageId, PathCommand, PathData, Point, Rect, ShapeKind,
 };
 use rofd_editor::{Editor, TextCursor};
 use rofd_render::{DragPreview, FontStore, HandlePos, RenderEngine, Scene, Viewport, PX_PER_MM};
@@ -140,6 +140,15 @@ pub(crate) enum DragState {
     },
 }
 
+/// Annotation under the pointer for the hover tooltip (spec
+/// 2026-09-18-annotation-hover-tooltip §3.1). `pos` is the latest pointer
+/// position (viewport logical px) and doubles as the tooltip anchor.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct HoverState {
+    ann: AnnotationId,
+    pos: (f64, f64),
+}
+
 pub struct EditorComponent {
     pub(crate) editor: Editor,
     pub(crate) render: RenderEngine,
@@ -166,6 +175,12 @@ pub struct EditorComponent {
     pub(crate) scrollbar_hover: Option<rofd_render::ScrollbarHover>,
     /// In-progress pointer drag, if any. `None` when no drag is active.
     pub(crate) drag: Option<DragState>,
+    /// Annotation under the pointer for the hover tooltip (spec
+    /// 2026-09-18-annotation-hover-tooltip §3.1). Maintained in the no-drag
+    /// PointerMove arm; cleared on press / chrome hover / tool switch /
+    /// document swap. `build_scene` self-heals via `find` when the
+    /// annotation vanished (delete/undo).
+    pub(crate) hover: Option<HoverState>,
     /// Current body-text selection (TextSelect tool). Pure UI state - never
     /// enters dom/editor history (spec §5.1). Cleared on tool switch, page
     /// change, and document change.
@@ -208,6 +223,7 @@ impl EditorComponent {
             pointer_cursor: PointerCursor::Default,
             scrollbar_hover: None,
             drag: None,
+            hover: None,
             text_selection: None,
             current_page: None,
             highlight_color: DEFAULT_HIGHLIGHT_COLOR,
@@ -255,6 +271,7 @@ impl EditorComponent {
         // user's chosen display ratio survives document switches).
         self.viewport.scroll = (0.0, 0.0);
         self.scrollbar_hover = None;
+        self.hover = None;
         // Body-text selection belongs to the old document's pages.
         self.set_text_selection(None);
         self.editor.load_document(doc);
@@ -272,6 +289,7 @@ impl EditorComponent {
         // user's chosen display ratio survives document switches).
         self.viewport.scroll = (0.0, 0.0);
         self.scrollbar_hover = None;
+        self.hover = None;
         self.set_text_selection(None);
         self.editor.load_document(OfdDocument::default());
         self.font_store = Some(self.build_font_store());
@@ -418,6 +436,7 @@ impl EditorComponent {
         self.tool = tool;
         self.drag = None;
         self.scrollbar_hover = None;
+        self.hover = None;
         self.set_text_selection(None);
         self.set_tool_pointer_cursor();
     }
@@ -772,6 +791,10 @@ impl EditorComponent {
                 ..
             } => {
                 let p = (*x, *y);
+                // A press starts an interaction: the hover tooltip hides
+                // (spec §3.1). Drag moves never rebuild it; the next
+                // non-drag move re-establishes hover.
+                self.hover = None;
                 // Chrome wins over every tool and every annotation: presses on
                 // scrollbar thumbs/tracks/corner never reach the page.
                 let layout = rofd_render::scrollbar_layout(self.editor.document(), &self.viewport);
@@ -864,6 +887,9 @@ impl EditorComponent {
                 // Right-click: hit-test to determine the context target and
                 // fire on_context_menu. Does NOT change selection -- the host
                 // shows a context menu (annotation actions vs page actions).
+                // Press hides the tooltip (spec §3.1); repaint only if one
+                // was on screen.
+                let had_tooltip = self.hover.take().is_some();
                 let target = rofd_render::hit_test(
                     self.editor.document(),
                     &self.viewport,
@@ -879,7 +905,7 @@ impl EditorComponent {
                 };
                 self.fire_context_menu((*x, *y), ct);
                 EventOutcome {
-                    needs_repaint: false,
+                    needs_repaint: had_tooltip,
                 }
             }
             ViewEvent::PointerMove { x, y } => {
@@ -918,8 +944,11 @@ impl EditorComponent {
                     }
                     if over.is_some() {
                         self.set_pointer_cursor(PointerCursor::Default);
+                        // Leaving the page content for chrome also ends the
+                        // annotation hover (spec §3.1): the tooltip hides.
+                        let tooltip_cleared = self.hover.take().is_some();
                         return EventOutcome {
-                            needs_repaint: scrollbar_hover_cleared,
+                            needs_repaint: scrollbar_hover_cleared || tooltip_cleared,
                         };
                     }
                     if prev_hover.is_some() {
@@ -950,6 +979,10 @@ impl EditorComponent {
                         self.drag = Some(DragState::TextSelect { anchor });
                     }
                 }
+                // Tooltip repaint bookkeeping (spec §3.1): repaint when a
+                // tooltip could be on screen - shown (follows the cursor),
+                // just hidden, or switching annotations.
+                let hover_before = self.hover.clone();
                 match &mut self.drag {
                     Some(DragState::Create { current, path, .. }) => {
                         *current = p;
@@ -1074,6 +1107,13 @@ impl EditorComponent {
                         // exhaustiveness.
                     }
                     None => {
+                        // Tooltip hover (spec 2026-09-18 §3.1): the annotation
+                        // under the pointer (same hit_test the cursor logic
+                        // below uses), updated on every non-drag move so the
+                        // tooltip follows the cursor.
+                        self.hover = self
+                            .annotation_id_at(p)
+                            .map(|ann| HoverState { ann, pos: p });
                         // 悬停光标（spec §3.2）：手型 = 空白 Grab、批注上
                         // 箭头（可点选）；文本 = 批注上箭头（批注
                         // 优先，点击会选中批注）> 正文文字 I 型 > 空白箭头。
@@ -1108,8 +1148,11 @@ impl EditorComponent {
                         }
                     }
                 }
+                let tooltip_repaint = hover_before.is_some() || self.hover.is_some();
                 EventOutcome {
-                    needs_repaint: self.drag.is_some() || scrollbar_hover_cleared,
+                    needs_repaint: self.drag.is_some()
+                        || scrollbar_hover_cleared
+                        || tooltip_repaint,
                 }
             }
             ViewEvent::PointerUp {
@@ -1391,17 +1434,24 @@ impl EditorComponent {
     /// the hover-cursor analogue of [`Self::pointer_down_annotation`]'s
     /// hit test (annotation-first priority, spec §5.2).
     fn annotation_at(&self, p: (f64, f64)) -> bool {
-        matches!(
-            rofd_render::hit_test(
-                self.editor.document(),
-                &self.viewport,
-                self.editor.selection(),
-                p,
-            ),
-            rofd_render::HitTarget::Annotation(_)
-                | rofd_render::HitTarget::AnnotationText(..)
-                | rofd_render::HitTarget::Handle(..)
-        )
+        self.annotation_id_at(p).is_some()
+    }
+
+    /// The annotation (body or handle) under the viewport point, if any -
+    /// [`Self::annotation_at`] carrying the id so the hover tooltip (spec
+    /// 2026-09-18 §3.1) knows which annotation it belongs to.
+    fn annotation_id_at(&self, p: (f64, f64)) -> Option<AnnotationId> {
+        match rofd_render::hit_test(
+            self.editor.document(),
+            &self.viewport,
+            self.editor.selection(),
+            p,
+        ) {
+            rofd_render::HitTarget::Annotation(id)
+            | rofd_render::HitTarget::AnnotationText(id, _)
+            | rofd_render::HitTarget::Handle(id, _) => Some(id),
+            rofd_render::HitTarget::Page(_) | rofd_render::HitTarget::Empty => None,
+        }
     }
 
     /// Whether the annotation is a text-markup (highlight/underline/
@@ -2416,9 +2466,9 @@ mod tests {
 
     use crate::event::{Key, Modifiers, MouseButton, ScrollDirection, ViewEvent};
     use rofd_dom::{
-        AnnotationKind, AnnotationPayload, AnnotationSelection, Color, FontId, Layer, LayerType,
-        NoteIcon, ObjectId, OfdDocument, Page, PageId, PageObject, PathCommand, PathData, Point,
-        Rect, ShapeKind, TextCode, TextObject,
+        AnnotationId, AnnotationKind, AnnotationPayload, AnnotationSelection, Color, FontId, Layer,
+        LayerType, NoteIcon, ObjectId, OfdDocument, Page, PageId, PageObject, PathCommand,
+        PathData, Point, Rect, ShapeKind, TextCode, TextObject,
     };
     use std::sync::Mutex;
 
@@ -6055,5 +6105,103 @@ mod tests {
         assert!(c.text_selection().is_none());
         assert_eq!(*fired.lock().unwrap(), before + 1);
         assert!(!c.has_text_selection());
+    }
+
+    // ---- hover tooltip state machine (spec 2026-09-18 §3.1) ----
+
+    fn note_id(c: &EditorComponent) -> AnnotationId {
+        c.document().annotations.for_page(&PageId::new("P0"))[0]
+            .id
+            .clone()
+    }
+
+    #[test]
+    fn pointer_move_over_annotation_sets_hover_and_repaints() {
+        let mut c = component_with_note();
+        let out = c.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 50.0 });
+        let hover = c.hover.as_ref().expect("hover set over the note");
+        assert_eq!(hover.ann, note_id(&c));
+        assert_eq!(hover.pos, (50.0, 50.0));
+        assert!(out.needs_repaint, "tooltip shown -> repaint");
+
+        // Follow: same annotation, updated anchor.
+        let out = c.handle_event(&ViewEvent::PointerMove { x: 52.0, y: 51.0 });
+        assert_eq!(c.hover.as_ref().unwrap().pos, (52.0, 51.0));
+        assert!(out.needs_repaint, "tooltip follows the cursor");
+    }
+
+    #[test]
+    fn pointer_move_off_annotation_clears_hover() {
+        let mut c = component_with_note();
+        let _ = c.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 50.0 });
+        assert!(c.hover.is_some());
+        // (150,150) is inside the 200x200 page but outside the 100x100 note.
+        let out = c.handle_event(&ViewEvent::PointerMove { x: 150.0, y: 150.0 });
+        assert!(c.hover.is_none());
+        assert!(out.needs_repaint, "just-hidden tooltip -> repaint");
+        // Staying off the annotation: no repaint needed anymore.
+        let out = c.handle_event(&ViewEvent::PointerMove { x: 151.0, y: 150.0 });
+        assert!(!out.needs_repaint);
+    }
+
+    #[test]
+    fn pointer_down_clears_hover() {
+        let mut c = component_with_note();
+        let _ = c.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 50.0 });
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 50.0,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        });
+        assert!(c.hover.is_none(), "a press hides the tooltip");
+    }
+
+    #[test]
+    fn press_move_does_not_rebuild_hover() {
+        let mut c = component_with_note();
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 50.0,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        });
+        let _ = c.handle_event(&ViewEvent::PointerMove { x: 54.0, y: 54.0 });
+        assert!(
+            c.hover.is_none(),
+            "no hover while a press/drag is in progress"
+        );
+    }
+
+    #[test]
+    fn scrollbar_chrome_move_clears_hover() {
+        // tall_page's v-bar thumb sits at x[190,198] (see component_with_tall_page).
+        // The chrome arm returns early - it must also clear an existing
+        // annotation hover.
+        let mut c = component_with_tall_page();
+        c.hover = Some(HoverState {
+            ann: AnnotationId::from_int(1),
+            pos: (100.0, 100.0),
+        });
+        let _ = c.handle_event(&ViewEvent::PointerMove { x: 194.0, y: 50.0 });
+        assert!(
+            c.hover.is_none(),
+            "moving onto scrollbar chrome clears hover"
+        );
+    }
+
+    #[test]
+    fn set_tool_and_load_document_clear_hover() {
+        let mut c = component_with_note();
+        let _ = c.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 50.0 });
+        assert!(c.hover.is_some());
+        c.set_tool(Tool::Hand);
+        assert!(c.hover.is_none());
+        let _ = c.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 50.0 });
+        assert!(c.hover.is_some());
+        c.load_document(OfdDocument::default());
+        assert!(c.hover.is_none());
     }
 }
