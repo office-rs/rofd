@@ -9,7 +9,9 @@ use parley::style::{FontFamily, FontFamilyName, GenericFamily};
 use peniko::FontData;
 use rofd_dom::{FontId, Resources};
 
-use super::shape::{register_font_with_ids, shape_with_family, ShapedGlyph};
+use super::shape::{
+    register_font_with_ids, shape_with_family, shape_with_family_metrics, ShapedGlyph,
+};
 
 /// Holds document fonts (from `Resources.font_data`) + a default fallback font,
 /// resolved to `peniko::FontData` for Vello `draw_glyphs`.
@@ -201,6 +203,26 @@ impl FontStore {
             .or_default()
             .insert(text.to_string(), cached.clone());
         cached
+    }
+
+    /// Shape a UI-text line with the default font family - the UI chrome (hover
+    /// tooltip) uses no document font. No glyph cache: UI lines are short and
+    /// transient, unlike body text (shaping 2 short lines per frame is trivial).
+    /// Returns the shaping font, glyphs, and the line width (px).
+    pub fn shape_default(
+        &self,
+        text: &str,
+        size: f64,
+    ) -> (Option<FontData>, Vec<ShapedGlyph>, f64) {
+        let family = match self.default_family.as_deref() {
+            Some(name) => FontFamily::List(Cow::Owned(vec![
+                FontFamilyName::Named(Cow::Owned(name.to_string())),
+                FontFamilyName::Generic(GenericFamily::SansSerif),
+            ])),
+            None => FontFamily::from(GenericFamily::SansSerif),
+        };
+        let mut fcx = self.font_cx.borrow_mut();
+        shape_with_family_metrics(&mut fcx, text, size, family)
     }
 }
 
@@ -439,5 +461,23 @@ mod tests {
             sansserif_ids.contains(&family_id),
             "SansSerif generic must contain the document font's family id"
         );
+    }
+
+    #[test]
+    fn shape_default_uses_default_font_and_reports_width() {
+        let font_bytes = include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        let store = FontStore::from_resources(&Resources::default(), Arc::new(font_bytes.to_vec()));
+        let (font, glyphs, width) = store.shape_default("Hello", 12.0);
+        assert!(font.is_some(), "default font resolved");
+        assert_eq!(glyphs.len(), 5, "ligatures off: 1 glyph per char");
+        assert!(width > 0.0);
+    }
+
+    #[test]
+    fn shape_default_without_default_font_does_not_panic() {
+        // Empty bytes -> no default font; on hosts with system fonts parley may
+        // still resolve SansSerif. The contract here is only: never panic.
+        let store = FontStore::from_resources(&Resources::default(), Arc::new(Vec::new()));
+        let _ = store.shape_default("x", 12.0);
     }
 }
