@@ -350,6 +350,10 @@ mod wasm_impl {
             Ok(())
         }
 
+        // The arg count mirrors the DOM MouseEvent surface the JS bridge
+        // forwards (button + position + 4 modifier keys + detail); grouping
+        // them would just shift the unpacking into JS.
+        #[allow(clippy::too_many_arguments)]
         #[wasm_bindgen(js_name = handleMouseDown)]
         pub fn handle_mouse_down(
             &mut self,
@@ -379,6 +383,7 @@ mod wasm_impl {
             Ok(())
         }
 
+        #[allow(clippy::too_many_arguments)]
         #[wasm_bindgen(js_name = handleMouseUp)]
         pub fn handle_mouse_up(
             &mut self,
