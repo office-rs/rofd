@@ -116,6 +116,18 @@ pub(crate) fn shape_with_family(
     size: f64,
     family: FontFamily<'_>,
 ) -> (Option<FontData>, Vec<ShapedGlyph>) {
+    let (font, glyphs, _) = shape_with_family_metrics(fcx, text, size, family);
+    (font, glyphs)
+}
+
+/// Like [`shape_with_family`] but also returns the shaped line width (max
+/// across lines, at `size`). The tooltip card is sized from it.
+pub(crate) fn shape_with_family_metrics(
+    fcx: &mut FontContext,
+    text: &str,
+    size: f64,
+    family: FontFamily<'_>,
+) -> (Option<FontData>, Vec<ShapedGlyph>, f64) {
     let mut lcx: LayoutContext = LayoutContext::new();
     let mut builder = lcx.ranged_builder(fcx, text, 1.0, false);
     builder.push_default(StyleProperty::FontSize(size as f32));
@@ -128,6 +140,13 @@ pub(crate) fn shape_with_family(
 
     let mut layout = builder.build(text);
     layout.break_all_lines(None);
+
+    // Pinned parley 0.8 exposes the line width as `LineMetrics::advance`
+    // (full advance including trailing whitespace; our UI lines have none).
+    let width = layout
+        .lines()
+        .map(|l| l.metrics().advance as f64)
+        .fold(0.0_f64, f64::max);
 
     let mut font = None;
     let mut out = Vec::new();
@@ -147,7 +166,7 @@ pub(crate) fn shape_with_family(
             }
         }
     }
-    (font, out)
+    (font, out, width)
 }
 
 #[cfg(test)]
