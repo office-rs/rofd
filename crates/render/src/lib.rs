@@ -44,3 +44,7 @@ pub use viewport::{clamp_scroll, Viewport, PX_PER_MM};
 
 /// The backend-agnostic scene type this crate produces.
 pub use imaging::record::Scene;
+
+/// GB/T 33190 表35: 缺省线宽 0.353mm - used when neither the object nor its
+/// `DrawParam` carries `LineWidth` (stroked in local units, CTM-scaled).
+pub const DEFAULT_LINE_WIDTH_MM: f64 = 0.353;

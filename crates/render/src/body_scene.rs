@@ -139,9 +139,15 @@ fn draw_text(
 /// Render a path object: fill and/or stroke the BezPath with the page-origin +
 /// zoom + CTM transform.
 ///
+/// GB/T 33190 表35 draw-parameter defaults, resolved here (not baked into the
+/// model): `Stroke` defaults to `true` with a default stroke color of black.
+/// Producers like WPS emit table borders with no `StrokeColor` at all and rely
+/// on these defaults (the old "no stroke color => draw nothing" dropped them).
+/// `Fill` defaults to `false` and fill color defaults to transparent (none),
+/// so filling requires `Fill="true"` plus a resolvable FillColor.
 /// Colors/width resolve inline first, then fall back to the object's
-/// `DrawParam` (GB/T 33190). If both `fill` and `stroke` end up `None`, nothing
-/// is drawn. Fill is applied first, then stroke (standard painter's order).
+/// `DrawParam`; LineWidth falls back to the spec default 0.353mm. Fill is
+/// applied first, then stroke (standard painter's order).
 fn draw_path(
     painter: &mut Painter<Scene>,
     p: &PathObject,
@@ -153,12 +159,25 @@ fn draw_path(
     let affine = compose_object_transform(page_origin, zoom, p.boundary, p.ctm.as_ref());
     // Resolve colors/width: inline first, then DrawParam fallback (GB/T 33190).
     let dp = p.draw_param.as_ref().and_then(|id| res.draw_params.get(id));
-    let fill = p.fill.or_else(|| dp.and_then(|d| d.fill));
-    let stroke = p.stroke.or_else(|| dp.and_then(|d| d.stroke));
+    // 表35: Stroke 缺省 true(黑色描边); Fill 缺省 false(不填充)。
+    let fill = if p.fill_enabled.unwrap_or(false) {
+        p.fill.or_else(|| dp.and_then(|d| d.fill))
+    } else {
+        None
+    };
+    let stroke = if p.stroke_enabled.unwrap_or(true) {
+        p.stroke
+            .or_else(|| dp.and_then(|d| d.stroke))
+            .or(Some(rofd_dom::Color::Rgb(0, 0, 0)))
+    } else {
+        None
+    };
     let line_width = if p.line_width > 0.0 {
         p.line_width
     } else {
-        dp.and_then(|d| d.line_width).unwrap_or(0.0)
+        dp.and_then(|d| d.line_width)
+            // 表35 缺省线宽 0.353mm(局部单位,随 CTM 缩放)。
+            .unwrap_or(crate::DEFAULT_LINE_WIDTH_MM)
     };
     if let Some(c) = fill {
         painter.fill(&bez, to_peniko(c)).transform(affine).draw();
@@ -269,6 +288,68 @@ mod tests {
             }],
             template: None,
         }
+    }
+
+    /// Page carrying a single body PathObject.
+    fn path_page(path: PathObject) -> Page {
+        Page {
+            id: rofd_dom::PageId::new("P0"),
+            physical_box: Rect::default(),
+            layers: vec![rofd_dom::Layer {
+                layer_type: rofd_dom::LayerType::Body,
+                objects: vec![PageObject::Path(path)],
+            }],
+            template: None,
+        }
+    }
+
+    /// All solid-color stroke draws in the scene: (on-page rect, brush color,
+    /// stroke width). The on-page rect is the stroked shape's bbox transformed
+    /// by the draw transform.
+    fn scene_strokes(scene: &Scene) -> Vec<(kurbo::Rect, peniko::Color, f64)> {
+        use imaging::kurbo::Shape as _;
+        let mut out = vec![];
+        for cmd in scene.commands() {
+            if let Command::Draw(id) = cmd {
+                if let Draw::Stroke {
+                    transform,
+                    stroke,
+                    brush: peniko::Brush::Solid(c),
+                    shape,
+                    ..
+                } = scene.draw_op(*id)
+                {
+                    let bb = shape.to_path(1e-3).bounding_box();
+                    let p0 = *transform * kurbo::Point::new(bb.x0, bb.y0);
+                    let p1 = *transform * kurbo::Point::new(bb.x1, bb.y1);
+                    out.push((kurbo::Rect::from_points(p0, p1), *c, stroke.width));
+                }
+            }
+        }
+        out
+    }
+
+    /// All solid-color fill draws in the scene: (on-page rect, brush color).
+    fn scene_fills(scene: &Scene) -> Vec<(kurbo::Rect, peniko::Color)> {
+        use imaging::kurbo::Shape as _;
+        let mut out = vec![];
+        for cmd in scene.commands() {
+            if let Command::Draw(id) = cmd {
+                if let Draw::Fill {
+                    transform,
+                    brush: peniko::Brush::Solid(c),
+                    shape,
+                    ..
+                } = scene.draw_op(*id)
+                {
+                    let bb = shape.to_path(1e-3).bounding_box();
+                    let p0 = *transform * kurbo::Point::new(bb.x0, bb.y0);
+                    let p1 = *transform * kurbo::Point::new(bb.x1, bb.y1);
+                    out.push((kurbo::Rect::from_points(p0, p1), *c));
+                }
+            }
+        }
+        out
     }
 
     /// The on-page rect an image draw occupies: the image fill's shape (a
@@ -415,6 +496,8 @@ mod tests {
                 ],
             },
             draw_param: None,
+            stroke_enabled: None,
+            fill_enabled: None,
         };
         let page = Page {
             id: rofd_dom::PageId::new("P0"),
@@ -536,6 +619,10 @@ mod tests {
                 commands: vec![PathCommand::M(0.0, 0.0), PathCommand::L(10.0, 0.0)],
             },
             draw_param: None,
+            // 该测试原意是"只填充、不描边":Fill="true" 显式开,Stroke="false"
+            // 显式关(表35 缺省恰好相反)。
+            stroke_enabled: Some(false),
+            fill_enabled: Some(true),
         };
         let page = Page {
             id: rofd_dom::PageId::new("P0"),
@@ -651,6 +738,8 @@ mod tests {
                 commands: vec![PathCommand::M(0.0, 0.0), PathCommand::L(100.0, 0.0)],
             },
             draw_param: Some(rofd_dom::DrawParamId::new("5")),
+            stroke_enabled: None,
+            fill_enabled: None,
         };
         let page = Page {
             id: rofd_dom::PageId::new("P0"),
@@ -673,5 +762,166 @@ mod tests {
         let fonts = test_font_store();
         // Non-panic is the gate; the DrawParam stroke was resolved + stroked.
         let _ = build(&page, &res, &fonts);
+    }
+
+    #[test]
+    fn wps_table_line_without_colors_strokes_default_black() {
+        // WPS pattern (test/sample-content.ofd table PathObject ID=51): no
+        // StrokeColor/FillColor child, no DrawParam, no Stroke/Fill attributes.
+        // GB/T 33190 表35 defaults: Stroke 缺省 true, StrokeColor 缺省黑色 -
+        // the line must stroke black at the Boundary + CTM location instead of
+        // being skipped (the old `no stroke color => draw nothing` dropped all
+        // table lines, whose producers rely on the spec defaults).
+        let path = PathObject {
+            id: ObjectId::new("51"),
+            boundary: Rect {
+                x: 29.6775,
+                y: 96.9495,
+                w: 150.6668,
+                h: 0.1693,
+            },
+            ctm: Some(Ctm {
+                a: 0.3528,
+                b: 0.0,
+                c: 0.0,
+                d: -0.3528,
+                e: 0.0,
+                f: 297.0223,
+            }),
+            fill: None,
+            stroke: None,
+            line_width: 0.48,
+            data: PathData {
+                commands: vec![PathCommand::M(0.24, 841.66), PathCommand::L(426.82, 841.66)],
+            },
+            draw_param: None,
+            // WPS 表格线:Stroke/Fill 属性均缺失,靠表35 缺省值。
+            stroke_enabled: None,
+            fill_enabled: None,
+        };
+        let scene = build(&path_page(path), &Resources::default(), &test_font_store());
+
+        let strokes = scene_strokes(&scene);
+        assert_eq!(
+            strokes.len(),
+            1,
+            "line strokes exactly once, got {strokes:?}"
+        );
+        let (r, c, w) = &strokes[0];
+        // page point = boundary.origin + ctm × local:
+        // (29.6775 + 0.3528*0.24, 96.9495 + 297.0223 - 0.3528*841.66)
+        //   -> (29.7622, 97.0342) -> (180.2596, 97.0342)
+        assert!((r.x0 - 29.7622).abs() < 1e-3, "x0 = {}", r.x0);
+        assert!((r.x1 - 180.2596).abs() < 1e-2, "x1 = {}", r.x1);
+        assert!(
+            (r.y0 - 97.0342).abs() < 1e-3,
+            "y0 = {} (flipped-CTM table top)",
+            r.y0
+        );
+        let rgba = c.to_rgba8();
+        assert_eq!(
+            (rgba.r, rgba.g, rgba.b),
+            (0, 0, 0),
+            "default stroke color is black"
+        );
+        assert!(*w > 0.0, "LineWidth 0.48 preserved, got {}", w);
+    }
+
+    #[test]
+    fn stroke_false_suppresses_stroking_and_fills() {
+        // WPS highlight-quad pattern (sample.ofd annotation PathObject ID=79):
+        // Stroke="false" Fill="true" + FillColor - fill only, no black outline.
+        // Stroke="false" must win even though 表35 would otherwise default the
+        // stroke on.
+        let path = PathObject {
+            id: ObjectId::new("79"),
+            boundary: Rect {
+                x: 31.9928,
+                y: 26.4436,
+                w: 14.355,
+                h: 3.4025,
+            },
+            ctm: Some(Ctm {
+                a: 1.0,
+                b: 0.0,
+                c: 0.0,
+                d: 1.0,
+                e: -31.9928,
+                f: -26.4436,
+            }),
+            fill: Some(rofd_dom::Color::Rgb(255, 221, 0)),
+            stroke: None,
+            line_width: 0.3528,
+            data: PathData {
+                commands: vec![
+                    PathCommand::M(31.9928, 26.4436),
+                    PathCommand::L(46.3478, 26.4436),
+                    PathCommand::L(46.3478, 29.8462),
+                    PathCommand::L(31.9928, 29.8462),
+                    PathCommand::Z,
+                ],
+            },
+            draw_param: None,
+            stroke_enabled: Some(false),
+            fill_enabled: Some(true),
+        };
+        let scene = build(&path_page(path), &Resources::default(), &test_font_store());
+
+        assert!(
+            scene_strokes(&scene).is_empty(),
+            "Stroke=false must not stroke, got {:?}",
+            scene_strokes(&scene)
+        );
+        let fills: Vec<_> = scene_fills(&scene)
+            .into_iter()
+            .filter(|(_, c)| {
+                let rgba = c.to_rgba8();
+                (rgba.r, rgba.g, rgba.b) == (255, 221, 0)
+            })
+            .collect();
+        assert_eq!(fills.len(), 1, "yellow quad filled once");
+        let (r, _) = &fills[0];
+        assert!((r.x0 - 31.9928).abs() < 1e-6, "x0 = {}", r.x0);
+        assert!((r.y0 - 26.4436).abs() < 1e-6, "y0 = {}", r.y0);
+    }
+
+    #[test]
+    fn fill_without_explicit_fill_true_is_skipped() {
+        // 表35: Fill 缺省 false。FillColor 子元素存在但 Fill 属性缺失 ->
+        // 不填充(与 ofdrw getFill() 缺省 false 一致)。
+        let path = PathObject {
+            id: ObjectId::new("p1"),
+            boundary: Rect {
+                x: 10.0,
+                y: 10.0,
+                w: 50.0,
+                h: 50.0,
+            },
+            ctm: None,
+            fill: Some(rofd_dom::Color::Rgb(0, 0, 255)),
+            stroke: None,
+            line_width: 1.0,
+            data: PathData {
+                commands: vec![
+                    PathCommand::M(0.0, 0.0),
+                    PathCommand::L(50.0, 0.0),
+                    PathCommand::L(50.0, 50.0),
+                    PathCommand::Z,
+                ],
+            },
+            draw_param: None,
+            stroke_enabled: Some(false),
+            fill_enabled: None,
+        };
+        let scene = build(&path_page(path), &Resources::default(), &test_font_store());
+
+        let blue_fills = scene_fills(&scene)
+            .into_iter()
+            .filter(|(_, c)| {
+                let rgba = c.to_rgba8();
+                (rgba.r, rgba.g, rgba.b) == (0, 0, 255)
+            })
+            .count();
+        assert_eq!(blue_fills, 0, "no Fill attr -> no fill, only FillColor");
     }
 }

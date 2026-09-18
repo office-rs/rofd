@@ -10,7 +10,7 @@ use crate::abbreviated::parse_abbreviated;
 use crate::error::{OfdError, OfdWarning};
 use crate::parse::attr;
 use crate::parse::document::DocHeader;
-use crate::parse::{parse_color_value, parse_rect_ws};
+use crate::parse::{parse_bool_value, parse_color_value, parse_rect_ws};
 
 pub fn parse_page(
     page_id: PageId,
@@ -300,6 +300,10 @@ fn handle_element_start(
                         .unwrap_or(0.0),
                     data: PathData::default(),
                     draw_param: attr(e, "DrawParam").map(DrawParamId::new),
+                    // GB/T 33190 表35: Stroke 缺省 true / Fill 缺省 false,在
+                    // render 层解析;这里只记录文件里实际写了什么。
+                    stroke_enabled: attr(e, "Stroke").and_then(|s| parse_bool_value(&s)),
+                    fill_enabled: attr(e, "Fill").and_then(|s| parse_bool_value(&s)),
                 }));
             }
         }
@@ -398,6 +402,58 @@ fn parse_ctm(s: String) -> Option<Ctm> {
 mod tests {
     use super::*;
     use rofd_dom::{DocMeta, LayerType, PageObject, Rect};
+
+    #[test]
+    fn pathobject_stroke_fill_flags_parsed() {
+        // GB/T 33190 表35: PathObject 的 Stroke/Fill 布尔属性。显式写的进
+        // 模型(Some),缺失的保持 None(render 层按表35 缺省值 true/false 解析)。
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016" ID="P0">
+  <ofd:Content>
+    <ofd:Layer Type="Body">
+      <ofd:PathObject ID="p1" Stroke="false" Fill="true" LineWidth="0.5">
+        <ofd:AbbreviatedData>M 0 0 L 10 0 L 10 10 C</ofd:AbbreviatedData>
+      </ofd:PathObject>
+      <ofd:PathObject ID="p2" LineWidth="0.48">
+        <ofd:AbbreviatedData>M 0.24 841.66 L 426.82 841.66</ofd:AbbreviatedData>
+      </ofd:PathObject>
+    </ofd:Layer>
+  </ofd:Content>
+</ofd:Page>"#;
+        let page = parse_page(
+            PageId::new("P0"),
+            xml,
+            &DocHeader {
+                page_area: Some(Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 210.0,
+                    h: 297.0,
+                }),
+                pages: vec![],
+                meta: DocMeta::default(),
+                max_unit_id: 0,
+                annotations_loc: None,
+            },
+            &mut Vec::new(),
+        )
+        .expect("page parses");
+        let paths: Vec<&rofd_dom::PathObject> = page
+            .layers
+            .iter()
+            .flat_map(|l| l.objects.iter())
+            .filter_map(|o| match o {
+                PageObject::Path(p) => Some(p),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0].stroke_enabled, Some(false), "Stroke=\"false\"");
+        assert_eq!(paths[0].fill_enabled, Some(true), "Fill=\"true\"");
+        // WPS 表格线(sample-content.ofd):两个属性都不写 -> None,None。
+        assert_eq!(paths[1].stroke_enabled, None, "absent Stroke -> None");
+        assert_eq!(paths[1].fill_enabled, None, "absent Fill -> None");
+    }
 
     #[test]
     fn textcode_without_deltax_captures_body() {

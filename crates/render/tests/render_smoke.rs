@@ -261,3 +261,86 @@ fn sample_ofd_body_text_renders_by_glyph_ids() {
         expected_ids
     );
 }
+
+/// Parses the real `test/sample-content.ofd` (if present locally) and verifies
+/// the WPS table lines render: the file's 10 border PathObjects (5 horizontal +
+/// 5 vertical) carry NO StrokeColor/FillColor/DrawParam and rely on the
+/// GB/T 33190 表35 defaults (Stroke 缺省 true, StrokeColor 缺省黑色). The old
+/// renderer skipped them entirely. Ignored: run with `--ignored
+/// sample_content_table`.
+#[test]
+#[ignore = "requires the real OFD at ../../test/sample-content.ofd"]
+fn sample_content_table_lines_stroke_by_default() {
+    let bytes = std::fs::read("../../test/sample-content.ofd").expect("sample present");
+    let report = rofd_io::parse_ofd(&bytes).expect("sample parses");
+    let page0 = &report.document.pages[0];
+
+    // Sanity: the model carries the WPS table borders with no colors resolved.
+    let borders: Vec<&rofd_dom::PathObject> = page0
+        .layers
+        .iter()
+        .flat_map(|l| l.objects.iter())
+        .filter_map(|o| match o {
+            PageObject::Path(p) => Some(p),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(borders.len(), 10, "10 table-border PathObjects");
+    assert!(
+        borders
+            .iter()
+            .all(|p| p.stroke.is_none() && p.fill.is_none()),
+        "borders carry no inline colors (WPS relies on spec defaults)"
+    );
+
+    let fonts = FontStore::from_resources(&report.document.resources, Arc::new(vec![]));
+    let mut scene = Scene::new();
+    let mut painter = Painter::new(&mut scene);
+    draw_body(
+        &mut painter,
+        page0,
+        &report.document.resources,
+        &fonts,
+        (0.0, 0.0),
+        PX_PER_MM,
+    );
+
+    // All 10 borders must stroke black, landing in the table region
+    // x [29.6, 180.4]mm, y [96.8, 119.8]mm (Boundary values, zoom-scaled).
+    use imaging::kurbo::Shape as _;
+    let mut strokes = 0;
+    for cmd in scene.commands() {
+        if let Command::Draw(id) = cmd {
+            if let Draw::Stroke {
+                transform,
+                brush,
+                shape,
+                ..
+            } = scene.draw_op(*id)
+            {
+                let bb = shape.to_path(1e-3).bounding_box();
+                let p0 = *transform * imaging::kurbo::Point::new(bb.x0, bb.y0);
+                let p1 = *transform * imaging::kurbo::Point::new(bb.x1, bb.y1);
+                let r = KurboRect::from_points(p0, p1);
+                assert!(
+                    r.x0 > 29.0 * PX_PER_MM && r.x1 < 181.0 * PX_PER_MM,
+                    "stroke inside table x-range, got {r:?}"
+                );
+                assert!(
+                    r.y0 > 96.0 * PX_PER_MM && r.y1 < 120.5 * PX_PER_MM,
+                    "stroke inside table y-range, got {r:?}"
+                );
+                if let peniko::Brush::Solid(c) = brush {
+                    let rgba = c.to_rgba8();
+                    assert_eq!(
+                        (rgba.r, rgba.g, rgba.b),
+                        (0, 0, 0),
+                        "default stroke color is black"
+                    );
+                }
+                strokes += 1;
+            }
+        }
+    }
+    assert_eq!(strokes, 10, "all 10 table borders stroked, got {strokes}");
+}
