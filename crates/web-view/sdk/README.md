@@ -61,6 +61,7 @@ WebGPU requires Chrome / Edge 113+ (or any browser shipping WebGPU). On unsuppor
 | `loadOfd(bytes: Uint8Array)` | Load an `.ofd` package from raw bytes. |
 | `saveOfd(): Uint8Array` | Serialize the current document back to OFD package bytes. |
 | `setClock(author: string, ts: number)` | Inject author + timestamp (ms) for subsequent edits. **Call before any annotation edit.** |
+| `setTooltipEnabled(enabled: boolean)` | Toggle the hover tooltip (annotation author + creation time, local timezone). On by default. |
 | `setTool(kind: string)` | Switch the active tool. One of: `select` (text), `hand`, `freehand`, `rect`, `ellipse`, `arrow`, `line`, `polygon`. Unknown values — including the legacy markup strings `highlight` / `underline` / `strikeout` / `squiggly` — fall back to the text tool. |
 | `applyMarkup(kind: MarkupKind): string \| null` | Convert the current body-text selection into a markup annotation (`highlight` / `underline` / `strikeout` / `squiggly`; color via `setMarkupColor`). Returns the new annotation id, or `null` when there is no selection. The selection is kept so further markups can stack on the same range. |
 | `hasTextSelection(): boolean` | Whether a body-text selection currently exists (drives markup-button enabled state). |
