@@ -18,6 +18,7 @@ pub mod image;
 pub mod path;
 pub mod scrollbar;
 pub mod text;
+pub mod tooltip;
 pub mod viewport;
 
 pub use annotation_scene::draw_annotations;
@@ -40,6 +41,7 @@ pub use scrollbar::{
     TRACK_PAGE_RATIO,
 };
 pub use text::{shape_text, FontStore, ShapedGlyph};
+pub use tooltip::{paint_tooltip, tooltip_anchor};
 pub use viewport::{clamp_scroll, Viewport, PX_PER_MM};
 
 /// The backend-agnostic scene type this crate produces.
