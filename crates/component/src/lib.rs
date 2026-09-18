@@ -7,7 +7,7 @@ pub mod event;
 pub mod render_target;
 pub mod tooltip_text;
 
-pub use callbacks::{Callbacks, ContextTarget, PointerCursor};
+pub use callbacks::{Callbacks, ContextTarget, PointerCursor, TooltipFormatter};
 pub use config::EditorConfig;
 pub use editor_component::{CreateKind, EditorComponent, Tool};
 pub use event::{EventOutcome, Key, Modifiers, MouseButton, ScrollDirection, ViewEvent};

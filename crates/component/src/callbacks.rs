@@ -1,4 +1,4 @@
-use rofd_dom::{AnnotationId, OfdDocument, OfdWarning};
+use rofd_dom::{Annotation, AnnotationId, OfdDocument, OfdWarning};
 use rofd_editor::{AnnotationSelection, TextCursor};
 
 // The callback types. on_change passes &OfdDocument; on_selection_change
@@ -40,6 +40,8 @@ pub type OnPointerCursor = dyn Fn(PointerCursor) + Send;
 pub type OnTextSelectionChange = dyn Fn(Option<&rofd_render::BodyTextSelection>) + Send;
 #[cfg(not(target_arch = "wasm32"))]
 pub type OnWarning = dyn Fn(&[OfdWarning]) + Send;
+#[cfg(not(target_arch = "wasm32"))]
+pub type TooltipFormatter = dyn Fn(&Annotation) -> Vec<String> + Send;
 pub type OnCopy = dyn Fn(String);
 
 #[cfg(target_arch = "wasm32")]
@@ -66,6 +68,8 @@ pub type OnPointerCursor = dyn Fn(PointerCursor);
 pub type OnTextSelectionChange = dyn Fn(Option<&rofd_render::BodyTextSelection>);
 #[cfg(target_arch = "wasm32")]
 pub type OnWarning = dyn Fn(&[OfdWarning]);
+#[cfg(target_arch = "wasm32")]
+pub type TooltipFormatter = dyn Fn(&Annotation) -> Vec<String>;
 // `OnCopy` has no wasm variant - it is defined once above (non-Send on all targets).
 
 /// What a right-click landed on, passed to `on_context_menu`. The host uses
@@ -117,6 +121,10 @@ pub struct Callbacks {
     pub on_text_selection_change: Option<Box<OnTextSelectionChange>>,
     pub on_warning: Option<Box<OnWarning>>,
     pub on_copy: Option<Box<OnCopy>>,
+    /// Hover-tooltip text provider (spec 2026-09-18 §3.2). None = tooltip
+    /// hidden. Not an event callback - a host-injected provider, installed by
+    /// the adapters' default assembly (UTC native / local-tz web).
+    pub tooltip_formatter: Option<Box<TooltipFormatter>>,
 }
 
 #[cfg(test)]
