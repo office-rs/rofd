@@ -31,6 +31,16 @@ impl EditorApp {
                 }
             }
         });
+        // Default tooltip assembly (AGENTS §4.9): hovering an annotation shows
+        // author + creation time with zero host code. Native default timezone
+        // is UTC (chrono has no clock feature by design); hosts override via
+        // set_tooltip_formatter or switch off via set_tooltip_enabled(false).
+        component.set_tooltip_formatter(|ann: &rofd_dom::Annotation| {
+            vec![
+                ann.creator.clone(),
+                rofd_component::format_tooltip_datetime(ann.created, 0),
+            ]
+        });
         Self {
             component,
             current_file: None,
@@ -46,6 +56,23 @@ impl EditorApp {
 
     pub fn default_clipboard_enabled(&self) -> bool {
         self.clipboard_enabled.get()
+    }
+
+    /// Toggle the default hover tooltip (on by default). `false` removes the
+    /// text provider (tooltip hidden, e.g. the host renders its own UI);
+    /// `true` reinstalls the UTC default.
+    pub fn set_tooltip_enabled(&mut self, enabled: bool) {
+        if enabled {
+            self.component
+                .set_tooltip_formatter(|ann: &rofd_dom::Annotation| {
+                    vec![
+                        ann.creator.clone(),
+                        rofd_component::format_tooltip_datetime(ann.created, 0),
+                    ]
+                });
+        } else {
+            self.component.clear_tooltip_formatter();
+        }
     }
 
     pub fn load_ofd(&mut self, bytes: &[u8]) -> Result<(), String> {
@@ -306,5 +333,73 @@ mod tests {
         // clear_modified 复位
         app.component.clear_modified();
         assert!(!app.is_modified(), "clear_modified resets");
+    }
+
+    #[test]
+    fn default_tooltip_assembly_and_toggle() {
+        use rofd_component::ViewEvent;
+        use rofd_dom::{
+            AnnotationKind, AnnotationPayload, Color, Layer, NoteIcon, Page, PageId, Rect,
+        };
+
+        let mut app = EditorApp::new(EditorConfig::new(std::sync::Arc::new(Vec::new())));
+        app.set_clock("t".into(), 0);
+
+        let mut doc = OfdDocument::default();
+        doc.pages.push(Page {
+            id: PageId::new("P0"),
+            physical_box: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 200.0,
+            },
+            layers: vec![Layer::default()],
+            template: None,
+        });
+        app.component.load_document(doc);
+        app.component.create_annotation(
+            AnnotationKind::Note,
+            PageId::new("P0"),
+            AnnotationPayload::Note {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 100.0,
+                    h: 100.0,
+                },
+                color: Color::Rgb(0, 0, 0),
+                content: "hi".into(),
+                icon: NoteIcon::Note,
+            },
+        );
+        // 视口 200x200 + zoom 归一到 1.0：页面铺满原点 (0,0)，(50,50) 落在便签内。
+        app.set_size(200.0, 200.0);
+        app.handle_event(&rofd_component::ViewEvent::Zoom {
+            factor: 1.0 / rofd_render::PX_PER_MM,
+        });
+        app.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 50.0 });
+
+        assert_eq!(
+            app.component.tooltip_lines(),
+            Some(vec![
+                "t".to_string(),
+                rofd_component::format_tooltip_datetime(0, 0),
+            ]),
+            "default assembly: author + UTC time"
+        );
+
+        app.set_tooltip_enabled(false);
+        assert_eq!(
+            app.component.tooltip_lines(),
+            None,
+            "toggle off clears the formatter"
+        );
+
+        app.set_tooltip_enabled(true);
+        assert!(
+            app.component.tooltip_lines().is_some(),
+            "toggle on reinstalls the default formatter"
+        );
     }
 }
