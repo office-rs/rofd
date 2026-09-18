@@ -428,6 +428,54 @@ impl EditorComponent {
         self.editor.set_clock(author, ts);
     }
 
+    /// Install the hover-tooltip text provider (spec §3.2): receives the
+    /// hovered annotation, returns the card lines (e.g. author + creation
+    /// time). Empty/blank-only output hides the tooltip; call
+    /// [`Self::clear_tooltip_formatter`] to remove it. Adapters install a
+    /// default (native UTC / web local timezone); hosts may override.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_tooltip_formatter(
+        &mut self,
+        f: impl Fn(&rofd_dom::Annotation) -> Vec<String> + 'static + Send,
+    ) {
+        self.callbacks.tooltip_formatter = Some(Box::new(f));
+    }
+    #[cfg(target_arch = "wasm32")]
+    pub fn set_tooltip_formatter(
+        &mut self,
+        f: impl Fn(&rofd_dom::Annotation) -> Vec<String> + 'static,
+    ) {
+        self.callbacks.tooltip_formatter = Some(Box::new(f));
+    }
+
+    /// Remove the tooltip text provider (hides the tooltip).
+    pub fn clear_tooltip_formatter(&mut self) {
+        self.callbacks.tooltip_formatter = None;
+    }
+
+    /// The tooltip lines to show right now, or None when suppressed: no
+    /// hover, drag in progress, no formatter, hovered annotation gone, or
+    /// its text being edited. Public so a host can render custom tooltip UI
+    /// from the same state (poll instead of callback, spec §2.2).
+    pub fn tooltip_lines(&self) -> Option<Vec<String>> {
+        let hover = self.hover.as_ref()?;
+        if self.drag.is_some() {
+            return None;
+        }
+        let formatter = self.callbacks.tooltip_formatter.as_ref()?;
+        let ann = self.editor.document().annotations.find(&hover.ann)?;
+        if let Some(cursor) = self.editor.text_cursor() {
+            if cursor.annotation == hover.ann {
+                return None;
+            }
+        }
+        let lines: Vec<String> = formatter(ann)
+            .into_iter()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        (!lines.is_empty()).then_some(lines)
+    }
+
     /// Set the active editing tool. Switching tools cancels any in-progress
     /// drag (clears `drag`), the body-text selection (spec §5.1) and a
     /// scrollbar hover (a pointer parked on a thumb must not leave the
@@ -772,6 +820,12 @@ impl EditorComponent {
                 active,
             },
         );
+        // Hover tooltip paints last - above pages, handles and scrollbars
+        // (spec 2026-09-18 §3.3). Skips itself when suppressed/no font.
+        if let Some(lines) = self.tooltip_lines() {
+            let anchor = self.hover.as_ref().map(|h| h.pos).unwrap_or_default();
+            rofd_render::paint_tooltip(&mut scene, &lines, anchor, self.viewport.size, fonts);
+        }
         scene
     }
 
@@ -2472,8 +2526,8 @@ mod tests {
     };
     use std::sync::Mutex;
 
-    fn component_with_note() -> EditorComponent {
-        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+    fn component_with_note_font(default_font: Arc<Vec<u8>>) -> EditorComponent {
+        let mut c = EditorComponent::new(EditorConfig::new(default_font));
         c.set_clock("t".into(), 1);
         // Insert a page P0 so hit_test / current_page_id can resolve. physical_box
         // starts at (0,0); with size=(0,0) + page_gap=0 + zoom=1, the page origin
@@ -2514,6 +2568,10 @@ mod tests {
             page_gap: 0.0,
         };
         c
+    }
+
+    fn component_with_note() -> EditorComponent {
+        component_with_note_font(Arc::new(vec![]))
     }
 
     /// Single page 180x400, zoom 1, page_gap 0, viewport 200x200. Vertical
@@ -6203,5 +6261,122 @@ mod tests {
         assert!(c.hover.is_some());
         c.load_document(OfdDocument::default());
         assert!(c.hover.is_none());
+    }
+
+    // ---- tooltip formatter + lines (spec 2026-09-18 §3.2) ----
+
+    #[test]
+    fn tooltip_lines_requires_formatter_and_hover() {
+        let mut c = component_with_note();
+        let _ = c.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 50.0 });
+        assert!(c.hover.is_some());
+        assert!(c.tooltip_lines().is_none(), "no formatter -> no tooltip");
+        c.set_tooltip_formatter(|ann| vec![ann.creator.clone(), ann.created.to_string()]);
+        assert_eq!(
+            c.tooltip_lines(),
+            Some(vec!["t".to_string(), "1".to_string()]),
+            "creator + created from set_clock(\"t\", 1)"
+        );
+    }
+
+    #[test]
+    fn tooltip_lines_empty_result_is_none() {
+        let mut c = component_with_note();
+        let _ = c.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 50.0 });
+        c.set_tooltip_formatter(|_| vec![]);
+        assert!(c.tooltip_lines().is_none());
+        c.set_tooltip_formatter(|_| vec![String::new(), "  ".to_string()]);
+        assert!(c.tooltip_lines().is_none(), "blank-only lines are dropped");
+    }
+
+    #[test]
+    fn tooltip_lines_suppressed_while_editing_hovered_annotation() {
+        let mut c = component_with_note();
+        c.set_tooltip_formatter(|ann| vec![ann.creator.clone()]);
+        let _ = c.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 50.0 });
+        assert!(c.tooltip_lines().is_some());
+        // Text cursor inside the hovered annotation: editing, tooltip must not
+        // cover the typed text (spec §3.1 抑制).
+        c.editor.set_cursor(note_id(&c), 0);
+        assert!(c.tooltip_lines().is_none());
+        c.editor.clear_cursor();
+        assert!(c.tooltip_lines().is_some());
+    }
+
+    #[test]
+    fn tooltip_lines_self_heals_after_delete() {
+        let mut c = component_with_note();
+        c.set_tooltip_formatter(|ann| vec![ann.creator.clone()]);
+        let _ = c.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 50.0 });
+        let id = note_id(&c);
+        c.delete_annotation(&id);
+        assert!(
+            c.tooltip_lines().is_none(),
+            "vanished annotation self-heals"
+        );
+    }
+
+    #[test]
+    fn clear_tooltip_formatter_hides() {
+        let mut c = component_with_note();
+        let _ = c.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 50.0 });
+        c.set_tooltip_formatter(|ann| vec![ann.creator.clone()]);
+        assert!(c.tooltip_lines().is_some());
+        c.clear_tooltip_formatter();
+        assert!(c.tooltip_lines().is_none());
+    }
+
+    // ---- build_scene paints the tooltip on top (spec §3.3) ----
+
+    #[test]
+    fn build_scene_appends_tooltip_draws_last() {
+        use imaging::record::{Command, Draw};
+
+        let font =
+            Arc::new(include_bytes!("../../render/tests/fixtures/fonts/TestFont.ttf").to_vec());
+        let mut c = component_with_note_font(font);
+        c.viewport.size = (200.0, 200.0);
+        // formatter 第二行不依赖 Task 1（时间格式化已单测过），用 created.to_string()。
+        c.set_tooltip_formatter(|ann| vec![ann.creator.clone(), ann.created.to_string()]);
+        let _ = c.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 50.0 });
+
+        let scene_off = c.build_scene();
+        let draws_off: Vec<&Draw> = scene_off
+            .commands()
+            .iter()
+            .filter_map(|cmd| match cmd {
+                Command::Draw(id) => Some(scene_off.draw_op(*id)),
+                _ => None,
+            })
+            .collect();
+
+        // 关掉 formatter 再对比基线（同一组件、同一 hover 位置）。
+        c.clear_tooltip_formatter();
+        let scene_base = c.build_scene();
+        let draws_base: Vec<&Draw> = scene_base
+            .commands()
+            .iter()
+            .filter_map(|cmd| match cmd {
+                Command::Draw(id) => Some(scene_base.draw_op(*id)),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            draws_off.len(),
+            draws_base.len() + 4,
+            "card fill + border + 2 glyph runs"
+        );
+        let n = draws_off.len();
+        assert!(
+            matches!(draws_off[n - 4], Draw::Fill { .. }),
+            "card bg last-but-3"
+        );
+        assert!(
+            matches!(draws_off[n - 3], Draw::Stroke { .. }),
+            "card border last-but-2"
+        );
+        assert!(matches!(draws_off[n - 2], Draw::GlyphRun(_)), "author line");
+        assert!(matches!(draws_off[n - 1], Draw::GlyphRun(_)), "time line");
     }
 }
