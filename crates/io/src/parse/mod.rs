@@ -54,6 +54,17 @@ pub(crate) fn parse_color_value(s: &str) -> Option<Color> {
     }
 }
 
+/// Parse an xsd:boolean-style attribute value (`"true"`/`"false"`/`"1"`/`"0"`)
+/// such as PathObject's `Stroke`/`Fill` (GB/T 33190 表35). Returns `None` on
+/// anything else so an absent/garbage attribute stays "not specified".
+pub(crate) fn parse_bool_value(s: &str) -> Option<bool> {
+    match s.trim() {
+        "true" | "1" => Some(true),
+        "false" | "0" => Some(false),
+        _ => None,
+    }
+}
+
 pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
     let raw = read_all_entries(bytes)?;
     let mut warnings = Vec::new();

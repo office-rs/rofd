@@ -72,6 +72,13 @@ pub struct PathObject {
     pub data: PathData,
     /// `DrawParam` attribute: fallback fill/stroke/line_width source.
     pub draw_param: Option<DrawParamId>,
+    /// `Stroke` attribute (GB/T 33190 表35): whether the path is stroked.
+    /// `None` = attribute absent - the spec default is `true` (resolved at
+    /// render time, not baked in here, so the model stays faithful to the file).
+    pub stroke_enabled: Option<bool>,
+    /// `Fill` attribute (GB/T 33190 表35): whether the path is filled.
+    /// `None` = attribute absent - the spec default is `false`.
+    pub fill_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -122,6 +129,8 @@ mod tests {
             line_width: 1.0,
             data: PathData::default(),
             draw_param: None,
+            stroke_enabled: None,
+            fill_enabled: None,
         });
         assert!(matches!(p, PageObject::Path(_)));
     }
