@@ -32,14 +32,12 @@ impl EditorApp {
             }
         });
         // Default tooltip assembly (AGENTS §4.9): hovering an annotation shows
-        // author + creation time with zero host code. Native default timezone
-        // is UTC (chrono has no clock feature by design); hosts override via
-        // set_tooltip_formatter or switch off via set_tooltip_enabled(false).
+        // a titled author + creation-time card with zero host code. Native
+        // default timezone is UTC (chrono has no clock feature by design);
+        // hosts override via set_tooltip_formatter or switch off via
+        // set_tooltip_enabled(false).
         component.set_tooltip_formatter(|ann: &rofd_dom::Annotation| {
-            vec![
-                ann.creator.clone(),
-                rofd_component::format_tooltip_datetime(ann.created, 0),
-            ]
+            rofd_component::default_tooltip_lines(ann, 0)
         });
         Self {
             component,
@@ -65,10 +63,7 @@ impl EditorApp {
         if enabled {
             self.component
                 .set_tooltip_formatter(|ann: &rofd_dom::Annotation| {
-                    vec![
-                        ann.creator.clone(),
-                        rofd_component::format_tooltip_datetime(ann.created, 0),
-                    ]
+                    rofd_component::default_tooltip_lines(ann, 0)
                 });
         } else {
             self.component.clear_tooltip_formatter();
@@ -383,10 +378,13 @@ mod tests {
         assert_eq!(
             app.component.tooltip_lines(),
             Some(vec![
-                "t".to_string(),
-                rofd_component::format_tooltip_datetime(0, 0),
+                "作者：t".to_string(),
+                format!(
+                    "创建时间：{}",
+                    rofd_component::format_tooltip_datetime(0, 0)
+                ),
             ]),
-            "default assembly: author + UTC time"
+            "default assembly: titled author + UTC time"
         );
 
         app.set_tooltip_enabled(false);

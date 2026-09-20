@@ -15,6 +15,20 @@ pub fn format_tooltip_datetime(epoch_ms: i64, tz_offset_minutes: i32) -> String 
     format!("{y:04}-{m:02}-{d:02} {hh:02}:{mm:02}")
 }
 
+/// The adapters' default tooltip lines, titled: "作者：{creator}" then
+/// "创建时间：{time}". Shared so native (UTC) and web (local timezone) show
+/// identical copy - the adapter only injects the timezone offset. Hosts
+/// overriding `set_tooltip_formatter` choose their own copy.
+pub fn default_tooltip_lines(ann: &rofd_dom::Annotation, tz_offset_minutes: i32) -> Vec<String> {
+    vec![
+        format!("作者：{}", ann.creator),
+        format!(
+            "创建时间：{}",
+            format_tooltip_datetime(ann.created, tz_offset_minutes)
+        ),
+    ]
+}
+
 /// Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
@@ -81,5 +95,40 @@ mod tests {
     #[test]
     fn negative_epoch_millis() {
         assert_eq!(format_tooltip_datetime(-1, 0), "1969-12-31 23:59");
+    }
+
+    fn ann(creator: &str, created: i64) -> rofd_dom::Annotation {
+        rofd_dom::Annotation {
+            id: rofd_dom::AnnotationId::from_int(1),
+            kind: rofd_dom::AnnotationKind::Note,
+            page: rofd_dom::PageId::new("P0"),
+            creator: creator.into(),
+            created,
+            modified: created,
+            reply_to: None,
+            payload: rofd_dom::AnnotationPayload::Note {
+                rect: rofd_dom::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 10.0,
+                    h: 10.0,
+                },
+                color: rofd_dom::Color::Rgb(0, 0, 0),
+                content: String::new(),
+                icon: rofd_dom::NoteIcon::Note,
+            },
+        }
+    }
+
+    #[test]
+    fn default_tooltip_lines_are_titled() {
+        let lines = default_tooltip_lines(&ann("flw", 1_783_641_600_000), 480);
+        assert_eq!(lines, vec!["作者：flw", "创建时间：2026-07-10 08:00"]);
+    }
+
+    #[test]
+    fn default_tooltip_lines_utc_offset_zero() {
+        let lines = default_tooltip_lines(&ann("t", 0), 0);
+        assert_eq!(lines, vec!["作者：t", "创建时间：1970-01-01 00:00"]);
     }
 }

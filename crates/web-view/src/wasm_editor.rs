@@ -536,9 +536,9 @@ mod wasm_impl {
             self.component.set_clock(author, ts);
         }
 
-        /// Toggle the default hover tooltip (author + creation time, local
-        /// timezone). On by default; `false` hides it (e.g. the host renders
-        /// its own tooltip UI).
+        /// Toggle the default hover tooltip (titled author + creation time,
+        /// local timezone). On by default; `false` hides it (e.g. the host
+        /// renders its own tooltip UI).
         #[wasm_bindgen(js_name = setTooltipEnabled)]
         pub fn set_tooltip_enabled(&mut self, enabled: bool) {
             if enabled {
@@ -546,10 +546,7 @@ mod wasm_impl {
                     -js_sys::Date::new(&wasm_bindgen::JsValue::NULL).get_timezone_offset() as i32;
                 self.component
                     .set_tooltip_formatter(move |ann: &rofd_dom::Annotation| {
-                        vec![
-                            ann.creator.clone(),
-                            rofd_component::format_tooltip_datetime(ann.created, tz_offset),
-                        ]
+                        rofd_component::default_tooltip_lines(ann, tz_offset)
                     });
             } else {
                 self.component.clear_tooltip_formatter();
@@ -639,16 +636,14 @@ mod wasm_impl {
         ) -> Result<Self, JsValue> {
             let config = EditorConfig::new(std::sync::Arc::new(vec![]));
             let mut component = EditorComponent::new(config);
-            // Default tooltip assembly (AGENTS §4.9): author + creation time
-            // in the user's local timezone. Date#getTimezoneOffset returns
-            // UTC - local minutes, so negate for "+minutes east of UTC".
+            // Default tooltip assembly (AGENTS §4.9): a titled author +
+            // creation-time card in the user's local timezone.
+            // Date#getTimezoneOffset returns UTC - local minutes, so negate
+            // for "+minutes east of UTC".
             let tz_offset =
                 -js_sys::Date::new(&wasm_bindgen::JsValue::NULL).get_timezone_offset() as i32;
             component.set_tooltip_formatter(move |ann: &rofd_dom::Annotation| {
-                vec![
-                    ann.creator.clone(),
-                    rofd_component::format_tooltip_datetime(ann.created, tz_offset),
-                ]
+                rofd_component::default_tooltip_lines(ann, tz_offset)
             });
             // Seed the viewport to the canvas size so the first frame isn't
             // zero-sized (the SDK also calls handleResize after layout).
