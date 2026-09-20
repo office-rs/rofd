@@ -98,8 +98,9 @@ struct HoverState {
   // 正/负偏移、闰年、月末正确性由单测锚定
 
   default_tooltip_lines(ann: &Annotation, tz_offset_minutes: i32) -> Vec<String>
-  // → ["作者：{creator}", "创建时间：{format_tooltip_datetime(...)}"]
-  // 带标题前缀的默认两行（2026-09-20 增补）；文案单点维护，适配器只注入时区
+  // → ["作者：{creator}", "时间：{format_tooltip_datetime(...)}"]
+  // 带标题前缀的默认两行（2026-09-20 增补；时间行标题当日由"创建时间"精简为"时间"）；
+  // 文案单点维护，适配器只注入时区
   ```
 
 - **适配器默认装配**（Ctrl+C→剪贴板默认装配同款）：
@@ -141,8 +142,12 @@ struct HoverState {
   下越界同理翻上。允许同时翻转（光标在右下角时）。
 - 圆角矩形用 path fill（批注 Shape 已有 path 机械；滚动条 spec 的"只有
   fill_rect"是当时扁平风格的选择，不构成 API 限制）。
-- 文字用已注册 UI 字体走 parley shaping；**未注册任何字体 → 静默跳过整个
-  tooltip**（纯 UI 降级，不 fatal、不 `OfdWarning`，AGENTS §4.6 精神）。
+- 文字用已注册 UI 字体走 parley shaping；**混排行按字体分组绘制**——回退会把
+  一行拆成多个 run（如 CJK 标题 + 拉丁数字各用不同字体），字形 id 只在其整形
+  字体下有效，须每组建一个 glyph run、共用同一行 transform（2026-09-20 修复
+  "时间显示乱码"）；
+- **未注册任何字体 → 静默跳过整个 tooltip**（纯 UI 降级，不 fatal、不
+  `OfdWarning`，AGENTS §4.6 精神）。
 - 每帧重画、无缓存（hover 是瞬态，与滚动条 chrome 同策略，不触碰
   body_scene/批注页缓存）。
 

@@ -379,10 +379,7 @@ mod tests {
             app.component.tooltip_lines(),
             Some(vec![
                 "作者：t".to_string(),
-                format!(
-                    "创建时间：{}",
-                    rofd_component::format_tooltip_datetime(0, 0)
-                ),
+                format!("时间：{}", rofd_component::format_tooltip_datetime(0, 0)),
             ]),
             "default assembly: titled author + UTC time"
         );

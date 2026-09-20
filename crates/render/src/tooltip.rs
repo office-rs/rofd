@@ -22,6 +22,10 @@ const BG: Color = Color::from_rgba8(0xFF, 0xFF, 0xFF, 0xF0); // ~94% opaque
 const BORDER: Color = Color::from_rgba8(0xC9, 0xCD, 0xD4, 0xFF);
 const TEXT: Color = Color::from_rgba8(0x33, 0x38, 0x40, 0xFF);
 
+/// One shaped tooltip line: per-font glyph groups (font fallback splits
+/// mixed-script lines) plus the line width (px).
+type ShapedLine = (Vec<(FontData, Vec<Glyph>)>, f64);
+
 /// Card top-left for a `card_w x card_h` tooltip near `cursor`: cursor's
 /// bottom-right, flipping to left/top when the card would overflow the
 /// right/bottom viewport edge, then clamped into the viewport. Pure.
@@ -59,31 +63,40 @@ pub fn paint_tooltip(
     }
     // Shape every line once; drop blank lines (spec §4: all-blank -> no card)
     // and lines that yield no glyphs (no resolvable font). Nothing drawable ->
-    // nothing to show.
-    let shaped: Vec<(FontData, Vec<Glyph>, f64)> = lines
+    // nothing to show. A line can shape into SEVERAL font groups (fallback
+    // splits e.g. a CJK label from Latin digits); every group keeps the shared
+    // layout-relative positions, so all groups of a line draw at the same
+    // transform - a glyph id is only valid with the font that shaped it.
+    let shaped: Vec<ShapedLine> = lines
         .iter()
         .filter(|line| !line.trim().is_empty())
         .filter_map(|line| {
-            let (font, glyphs, width) = fonts.shape_default(line, FONT_SIZE);
-            let font = font?;
-            if glyphs.is_empty() {
-                return None;
-            }
-            let positioned = glyphs
-                .iter()
-                .map(|g| Glyph {
-                    id: g.glyph_id,
-                    x: g.x,
-                    y: g.y,
+            let (groups, width) = fonts.shape_default(line, FONT_SIZE);
+            let positioned: Vec<(FontData, Vec<Glyph>)> = groups
+                .into_iter()
+                .filter(|(_, glyphs)| !glyphs.is_empty())
+                .map(|(font, glyphs)| {
+                    let run: Vec<Glyph> = glyphs
+                        .iter()
+                        .map(|g| Glyph {
+                            id: g.glyph_id,
+                            x: g.x,
+                            y: g.y,
+                        })
+                        .collect();
+                    (font, run)
                 })
                 .collect();
-            Some((font, positioned, width))
+            if positioned.is_empty() {
+                return None;
+            }
+            Some((positioned, width))
         })
         .collect();
     if shaped.is_empty() {
         return;
     }
-    let card_w = shaped.iter().map(|(_, _, w)| *w).fold(0.0_f64, f64::max) + 2.0 * PADDING;
+    let card_w = shaped.iter().map(|(_, w)| *w).fold(0.0_f64, f64::max) + 2.0 * PADDING;
     let card_h =
         shaped.len() as f64 * LINE_HEIGHT + (shaped.len() as f64 - 1.0) * LINE_GAP + 2.0 * PADDING;
     let (x, y) = tooltip_anchor(card_w, card_h, cursor, viewport);
@@ -92,16 +105,18 @@ pub fn paint_tooltip(
     let card = RoundedRect::new(x, y, x + card_w, y + card_h, RADIUS);
     painter.fill(card, BG).draw();
     painter.stroke(card, &Stroke::new(1.0), BORDER).draw();
-    for (i, (font, glyphs, _)) in shaped.iter().enumerate() {
+    for (i, (groups, _)) in shaped.iter().enumerate() {
         let line_y = y + PADDING + i as f64 * (LINE_HEIGHT + LINE_GAP);
-        // Parley glyph y is layout-relative (first baseline at the ascent
-        // from the layout top) - same convention as annotation text: the
-        // line's ink top lands on `line_y`.
-        painter
-            .glyphs(font, TEXT)
-            .font_size(FONT_SIZE as f32)
-            .transform(Affine::translate((x + PADDING, line_y)))
-            .draw(&Style::Fill(Fill::NonZero), glyphs);
+        for (font, glyphs) in groups {
+            // Parley glyph y is layout-relative (first baseline at the ascent
+            // from the layout top) - same convention as annotation text: the
+            // line's ink top lands on `line_y`.
+            painter
+                .glyphs(font, TEXT)
+                .font_size(FONT_SIZE as f32)
+                .transform(Affine::translate((x + PADDING, line_y)))
+                .draw(&Style::Fill(Fill::NonZero), glyphs);
+        }
     }
 }
 
@@ -172,6 +187,32 @@ mod tests {
         assert!(matches!(d[1], Draw::Stroke { .. }), "card border");
         assert!(matches!(d[2], Draw::GlyphRun(_)), "line 1 glyphs");
         assert!(matches!(d[3], Draw::GlyphRun(_)), "line 2 glyphs");
+    }
+
+    #[test]
+    fn mixed_script_line_draws_one_run_per_font_group() {
+        // Whatever font groups the shaper produces (system fallback splits a
+        // CJK+Latin line when the default font is Latin-only), paint_tooltip
+        // draws exactly one glyph run per group - a glyph id is only valid
+        // with the font that shaped it.
+        let mut scene = Scene::new();
+        let fonts = test_font_store();
+        let lines = vec!["时间：2026-07-10 08:00".to_string()];
+        let (groups, _) = fonts.shape_default(&lines[0], FONT_SIZE);
+        assert!(
+            !groups.is_empty(),
+            "line shapes (system fallback covers CJK)"
+        );
+        paint_tooltip(&mut scene, &lines, (50.0, 50.0), (800.0, 600.0), &fonts);
+        let run_count = draws(&scene)
+            .iter()
+            .filter(|d| matches!(d, Draw::GlyphRun(_)))
+            .count();
+        assert_eq!(
+            run_count,
+            groups.len(),
+            "one glyph run per font group (glyph ids are font-specific)"
+        );
     }
 
     #[test]
