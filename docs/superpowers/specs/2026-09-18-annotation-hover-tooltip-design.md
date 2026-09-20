@@ -96,11 +96,14 @@ struct HoverState {
   format_tooltip_datetime(epoch_ms: i64, tz_offset_minutes: i32) -> String
   // → "YYYY-MM-DD HH:MM"，纯数学（civil-from-days），零新依赖（不引 chrono），
   // 正/负偏移、闰年、月末正确性由单测锚定
+
+  default_tooltip_lines(ann: &Annotation, tz_offset_minutes: i32) -> Vec<String>
+  // → ["作者：{creator}", "创建时间：{format_tooltip_datetime(...)}"]
+  // 带标题前缀的默认两行（2026-09-20 增补）；文案单点维护，适配器只注入时区
   ```
 
 - **适配器默认装配**（Ctrl+C→剪贴板默认装配同款）：
-  - native-view `EditorApp::new`：装 `|ann| vec![ann.creator.clone(),
-    format_tooltip_datetime(ann.created, 0)]`（UTC）；
+  - native-view `EditorApp::new`：装 `|ann| default_tooltip_lines(ann, 0)`（UTC）；
   - web-view `WasmEditor` 构造：同上，但偏移取
     `js_sys::Date::new(&JsValue::NULL).get_timezone_offset()` **取负**
     （JS 返回的是 UTC−local 分钟数，如 UTC+8 返回 −480）→ 本地时间。
