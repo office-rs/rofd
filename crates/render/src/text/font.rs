@@ -10,7 +10,7 @@ use peniko::FontData;
 use rofd_dom::{FontId, Resources};
 
 use super::shape::{
-    register_font_with_ids, shape_with_family, shape_with_family_metrics, ShapedGlyph,
+    register_font_with_ids, shape_grouped_with_family, shape_with_family, ShapedGlyph,
 };
 
 /// Holds document fonts (from `Resources.font_data`) + a default fallback font,
@@ -208,12 +208,10 @@ impl FontStore {
     /// Shape a UI-text line with the default font family - the UI chrome (hover
     /// tooltip) uses no document font. No glyph cache: UI lines are short and
     /// transient, unlike body text (shaping 2 short lines per frame is trivial).
-    /// Returns the shaping font, glyphs, and the line width (px).
-    pub fn shape_default(
-        &self,
-        text: &str,
-        size: f64,
-    ) -> (Option<FontData>, Vec<ShapedGlyph>, f64) {
+    /// Returns the glyphs grouped by the font that shaped each run (fallback can
+    /// split a line; a glyph id is only valid with its own font) plus the line
+    /// width (px).
+    pub fn shape_default(&self, text: &str, size: f64) -> (Vec<(FontData, Vec<ShapedGlyph>)>, f64) {
         let family = match self.default_family.as_deref() {
             Some(name) => FontFamily::List(Cow::Owned(vec![
                 FontFamilyName::Named(Cow::Owned(name.to_string())),
@@ -222,7 +220,7 @@ impl FontStore {
             None => FontFamily::from(GenericFamily::SansSerif),
         };
         let mut fcx = self.font_cx.borrow_mut();
-        shape_with_family_metrics(&mut fcx, text, size, family)
+        shape_grouped_with_family(&mut fcx, text, size, family)
     }
 }
 
@@ -467,9 +465,33 @@ mod tests {
     fn shape_default_uses_default_font_and_reports_width() {
         let font_bytes = include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
         let store = FontStore::from_resources(&Resources::default(), Arc::new(font_bytes.to_vec()));
-        let (font, glyphs, width) = store.shape_default("Hello", 12.0);
-        assert!(font.is_some(), "default font resolved");
-        assert_eq!(glyphs.len(), 5, "ligatures off: 1 glyph per char");
+        let (groups, width) = store.shape_default("Hello", 12.0);
+        assert_eq!(groups.len(), 1, "single font -> single group");
+        assert_eq!(groups[0].1.len(), 5, "ligatures off: 1 glyph per char");
+        assert!(width > 0.0);
+    }
+
+    #[test]
+    fn shape_default_groups_mixed_script_fallback() {
+        // Latin-only default (TestFont) + a CJK char: fontique falls back to a
+        // system CJK font, splitting the line into >= 2 font groups. A glyph id
+        // is only valid with the font that shaped it - drawing a whole line
+        // with the first run's font garbles the rest (the tooltip bug this
+        // pins down). Requires system fonts (same trust as
+        // font_store_shape_system_fallback_covers_cjk).
+        let font_bytes = include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        let store = FontStore::from_resources(&Resources::default(), Arc::new(font_bytes.to_vec()));
+        let (groups, width) = store.shape_default("a中b", 12.0);
+        assert!(
+            groups.len() >= 2,
+            "mixed script splits into fallback groups"
+        );
+        assert!(!groups.iter().any(|(_, g)| g.is_empty()), "no empty groups");
+        assert_eq!(
+            groups.iter().map(|(_, g)| g.len()).sum::<usize>(),
+            3,
+            "1 glyph per char across groups"
+        );
         assert!(width > 0.0);
     }
 

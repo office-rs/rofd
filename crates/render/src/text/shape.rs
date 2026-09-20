@@ -116,18 +116,38 @@ pub(crate) fn shape_with_family(
     size: f64,
     family: FontFamily<'_>,
 ) -> (Option<FontData>, Vec<ShapedGlyph>) {
-    let (font, glyphs, _) = shape_with_family_metrics(fcx, text, size, family);
-    (font, glyphs)
+    let (groups, _) = shape_grouped_with_family(fcx, text, size, family);
+    let mut iter = groups.into_iter();
+    match iter.next() {
+        Some((font, glyphs)) => {
+            // Legacy single-font view: first run's font + all glyphs flat.
+            // Correct only when the whole line shaped in one font.
+            let flat = iter.fold(glyphs, |mut acc, (_, mut more)| {
+                acc.append(&mut more);
+                acc
+            });
+            (Some(font), flat)
+        }
+        None => (None, Vec::new()),
+    }
 }
 
-/// Like [`shape_with_family`] but also returns the shaped line width (max
-/// across lines, at `size`). The tooltip card is sized from it.
-pub(crate) fn shape_with_family_metrics(
+/// Shape `text` at `size` using `family`, grouping the glyphs by the font
+/// that shaped them, plus the shaped line width (max across lines, at
+/// `size`).
+///
+/// Font fallback can split one line into several runs - e.g. a CJK label +
+/// Latin digits when the default font is Latin-only - and a glyph id is only
+/// valid with ITS font: drawing a whole line with the first run's font
+/// renders the other runs' glyphs as garbage. Each group keeps the shared
+/// layout-relative positions, so every group draws at the same line
+/// transform. Consecutive runs of the same font are merged.
+pub(crate) fn shape_grouped_with_family(
     fcx: &mut FontContext,
     text: &str,
     size: f64,
     family: FontFamily<'_>,
-) -> (Option<FontData>, Vec<ShapedGlyph>, f64) {
+) -> (Vec<(FontData, Vec<ShapedGlyph>)>, f64) {
     let mut lcx: LayoutContext = LayoutContext::new();
     let mut builder = lcx.ranged_builder(fcx, text, 1.0, false);
     builder.push_default(StyleProperty::FontSize(size as f32));
@@ -148,25 +168,27 @@ pub(crate) fn shape_with_family_metrics(
         .map(|l| l.metrics().advance as f64)
         .fold(0.0_f64, f64::max);
 
-    let mut font = None;
-    let mut out = Vec::new();
+    let mut groups: Vec<(FontData, Vec<ShapedGlyph>)> = Vec::new();
     for line in layout.lines() {
         for item in line.items() {
             if let PositionedLayoutItem::GlyphRun(run) = item {
-                if font.is_none() {
-                    font = Some(run.run().font().clone());
-                }
-                for g in run.positioned_glyphs() {
-                    out.push(ShapedGlyph {
+                let font = run.run().font().clone();
+                let shaped: Vec<ShapedGlyph> = run
+                    .positioned_glyphs()
+                    .map(|g| ShapedGlyph {
                         glyph_id: g.id,
                         x: g.x,
                         y: g.y,
-                    });
+                    })
+                    .collect();
+                match groups.last_mut() {
+                    Some((prev_font, glyphs)) if *prev_font == font => glyphs.extend(shaped),
+                    _ => groups.push((font, shaped)),
                 }
             }
         }
     }
-    (font, out, width)
+    (groups, width)
 }
 
 #[cfg(test)]

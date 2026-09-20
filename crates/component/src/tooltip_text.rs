@@ -16,14 +16,14 @@ pub fn format_tooltip_datetime(epoch_ms: i64, tz_offset_minutes: i32) -> String 
 }
 
 /// The adapters' default tooltip lines, titled: "作者：{creator}" then
-/// "创建时间：{time}". Shared so native (UTC) and web (local timezone) show
+/// "时间：{time}". Shared so native (UTC) and web (local timezone) show
 /// identical copy - the adapter only injects the timezone offset. Hosts
 /// overriding `set_tooltip_formatter` choose their own copy.
 pub fn default_tooltip_lines(ann: &rofd_dom::Annotation, tz_offset_minutes: i32) -> Vec<String> {
     vec![
         format!("作者：{}", ann.creator),
         format!(
-            "创建时间：{}",
+            "时间：{}",
             format_tooltip_datetime(ann.created, tz_offset_minutes)
         ),
     ]
@@ -123,12 +123,12 @@ mod tests {
     #[test]
     fn default_tooltip_lines_are_titled() {
         let lines = default_tooltip_lines(&ann("flw", 1_783_641_600_000), 480);
-        assert_eq!(lines, vec!["作者：flw", "创建时间：2026-07-10 08:00"]);
+        assert_eq!(lines, vec!["作者：flw", "时间：2026-07-10 08:00"]);
     }
 
     #[test]
     fn default_tooltip_lines_utc_offset_zero() {
         let lines = default_tooltip_lines(&ann("t", 0), 0);
-        assert_eq!(lines, vec!["作者：t", "创建时间：1970-01-01 00:00"]);
+        assert_eq!(lines, vec!["作者：t", "时间：1970-01-01 00:00"]);
     }
 }
