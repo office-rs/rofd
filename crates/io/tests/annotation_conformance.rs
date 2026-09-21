@@ -381,6 +381,88 @@ fn squiggly_wave_stays_inside_boundary_and_is_dense() {
 }
 
 #[test]
+fn stroked_shapes_inset_by_half_line_width() {
+    // Strict readers CLIP a PathObject to its Boundary: a rect/ellipse path
+    // touching the box edges loses the stroke's outer half on all four sides
+    // (the ellipse visibly loses its top/bottom/left/right extremes).
+    // Reference authoring tools inset the stroked path by LineWidth/2 so the
+    // whole stroke sits inside the boundary (sample.ofd ID=106: rx = w/2 -
+    // 0.1764 at LineWidth 0.3528; ID=103 rect: first point 0.1764 0.1764).
+    use rofd_dom::ShapeKind;
+    for (kind, w, h) in [
+        (ShapeKind::Ellipse, 23.8517f64, 6.4919f64),
+        (ShapeKind::Rect, 30.6262, 7.762),
+    ] {
+        let anns = vec![ann(
+            107,
+            AnnotationKind::Shape(kind),
+            AnnotationPayload::Shape {
+                kind,
+                rect: Rect {
+                    x: 5.0,
+                    y: 5.0,
+                    w,
+                    h,
+                },
+                stroke: Color::Rgb(255, 0, 0),
+                fill: None,
+                width: 0.3528,
+                points: vec![],
+            },
+        )];
+        let mut next_id = 200u64;
+        let xml = serialize_page_annot(&PageId::new("1"), &anns, &mut next_id);
+        let data = xml
+            .split("<ofd:AbbreviatedData>")
+            .nth(1)
+            .unwrap()
+            .split("</ofd:AbbreviatedData>")
+            .next()
+            .unwrap();
+        let inset = 0.3528 / 2.0;
+        for tok in data.split_whitespace().skip(1) {
+            if let Ok(v) = tok.parse::<f64>() {
+                assert!(
+                    v >= -1e-9 && v <= w.max(h) + 1e-9,
+                    "{kind:?} value {v} escapes the Boundary box: {data}"
+                );
+            }
+        }
+        let nums: Vec<f64> = data
+            .split_whitespace()
+            .filter_map(|t| t.parse::<f64>().ok())
+            .collect();
+        match kind {
+            ShapeKind::Ellipse => {
+                // M (cx+rx, cy); arcs carry rx/ry = half extents minus inset.
+                assert!((nums[0] - (w - inset)).abs() < 1e-9, "M x: {data}");
+                assert!((nums[1] - h / 2.0).abs() < 1e-9, "M y: {data}");
+                assert!((nums[2] - (w / 2.0 - inset)).abs() < 1e-9, "rx: {data}");
+                assert!((nums[3] - (h / 2.0 - inset)).abs() < 1e-9, "ry: {data}");
+            }
+            ShapeKind::Rect => {
+                // Every coordinate sits `inset` inside the box on all sides,
+                // and the path still spans the full width/height (minus the
+                // two insets).
+                for v in &nums {
+                    assert!(
+                        *v >= inset - 1e-9,
+                        "rect path must start {inset} inside the Boundary: {data}"
+                    );
+                }
+                for edge in [w - inset, h - inset] {
+                    assert!(
+                        nums.iter().any(|v| (v - edge).abs() < 1e-9),
+                        "rect path must reach {edge} inside the Boundary: {data}"
+                    );
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
 fn textbox_textcode_carries_per_char_advances() {
     // Without DeltaX strict readers draw every glyph at X=0 - all characters
     // stack on one spot. Reference files carry one advance per char gap

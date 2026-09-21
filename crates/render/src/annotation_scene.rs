@@ -124,8 +124,13 @@ pub fn draw_annotations(
                 border,
             } => {
                 // Bordered text box (文本框): stroke the frame around the text.
+                // Inset by LineWidth/2 to mirror the serialized border path
+                // (reference convention: frame starts 0.1764 inside a
+                // Boundary at LineWidth 0.3528).
                 if let Some(border_color) = border {
-                    let bez = rofd_rect_to_kurbo(rect).to_path(SHAPE_TOLERANCE);
+                    let bez = rofd_rect_to_kurbo(rect)
+                        .inflate(-0.1764, -0.1764)
+                        .to_path(SHAPE_TOLERANCE);
                     painter
                         .stroke(&bez, &Stroke::new(0.3528), to_peniko(*border_color))
                         .transform(base)
@@ -363,12 +368,27 @@ fn draw_shape(
             }
         }
         ShapeKind::Rect => {
-            let bez = rofd_rect_to_kurbo(rect).to_path(SHAPE_TOLERANCE);
+            // Inset by half the stroke width, mirroring the serialized form:
+            // strict readers clip a PathObject to its Boundary, so io insets
+            // the stroked rect by LineWidth/2 (reference convention). Keeping
+            // render identical means what rofd shows is what other readers
+            // show after a save.
+            let inset = width / 2.0;
+            let bez = rofd_rect_to_kurbo(rect)
+                .inflate(-inset, -inset)
+                .to_path(SHAPE_TOLERANCE);
             fill_then_stroke(painter, &bez, fill, stroke, width, base);
         }
         ShapeKind::Ellipse => {
+            // Same inset as the serialized form: center unchanged, both radii
+            // shrink by LineWidth/2 so the stroke's outer half stays inside
+            // the appearance Boundary.
             let center = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
-            let radii = (rect.w / 2.0, rect.h / 2.0);
+            let inset = width / 2.0;
+            let radii = (
+                (rect.w / 2.0 - inset).max(0.0),
+                (rect.h / 2.0 - inset).max(0.0),
+            );
             let bez = Ellipse::new(center, radii, 0.0).to_path(SHAPE_TOLERANCE);
             fill_then_stroke(painter, &bez, fill, stroke, width, base);
         }
