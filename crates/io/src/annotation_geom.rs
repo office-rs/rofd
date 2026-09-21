@@ -8,6 +8,26 @@
 
 use rofd_dom::{PathCommand, PathData, Point, Rect};
 
+/// Translate every command of a PathData by (dx, dy). Shared by serialize
+/// (page-local -> object-local) and parse (object-local -> page-local).
+pub fn translate_path(p: &PathData, dx: f64, dy: f64) -> PathData {
+    let commands = p
+        .commands
+        .iter()
+        .map(|c| match *c {
+            PathCommand::M(x, y) => PathCommand::M(x + dx, y + dy),
+            PathCommand::L(x, y) => PathCommand::L(x + dx, y + dy),
+            PathCommand::C(a, b, x, y, e, f) => {
+                PathCommand::C(a + dx, b + dy, x + dx, y + dy, e + dx, f + dy)
+            }
+            PathCommand::Q(a, b, x, y) => PathCommand::Q(a + dx, b + dy, x + dx, y + dy),
+            PathCommand::Z => PathCommand::Z,
+            PathCommand::A(a, b, c, d, x, y) => PathCommand::A(a, b, c, d, x + dx, y + dy),
+        })
+        .collect();
+    PathData { commands }
+}
+
 /// Rectangle stroke path (M-L-L-L-Z), from (0,0) to (w,h).
 pub fn rect_path(r: &Rect) -> PathData {
     PathData {

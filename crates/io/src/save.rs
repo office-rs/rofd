@@ -2,19 +2,24 @@ use rofd_dom::{OfdDocument, PageId};
 
 use crate::error::OfdError;
 use crate::package::{EntryKind, PackageHandle};
-use crate::serialize::annotation::serialize_page_annot;
+use crate::serialize::annotation::{object_id_seed, serialize_page_annot};
 use crate::serialize::annotation_entry::serialize_annotations_entry;
 use crate::zip_util::write_zip;
 
 /// Surgical save (invariant §4.3): the dirty set is -
 /// - annotation entry file (`Annots/Annotations.xml`) and per-page files
 ///   (`Annots/Page_N/Annotation.xml`): re-serialized from `AnnotationModel`;
-/// - `Document.xml`: `<MaxUnitID>` byte-patched to `doc.max_unit_id`, plus
-///   the `<Annotations>` loc inserted when the model has annotations but the
-///   original document lacked it (strict readers like WPS discover
-///   annotations only through this reference);
+/// - `Document.xml`: `<MaxUnitID>` byte-patched to the final object ID
+///   counter, plus the `<Annotations>` loc inserted when the model has
+///   annotations but the original document lacked it (strict GB/T 33190
+///   readers discover annotations only through this reference);
 /// - everything else (body `Content.xml`, resources, signatures, `OFD.xml`):
 ///   copied byte-identical from the retained `PackageHandle`.
+///
+/// Appearance object IDs are minted from one document-wide counter seeded at
+/// `object_id_seed` (ST_ID: unique unsigned integers across the whole file);
+/// `Document.xml` is patched only after all annotation files are serialized,
+/// so the new `<MaxUnitID>` covers every minted ID.
 ///
 /// If the model has annotations on a page whose package had no annotation
 /// file (rofd added the first annotation to a previously bare page),
@@ -29,8 +34,13 @@ pub fn save_ofd(doc: &OfdDocument, pkg: &PackageHandle) -> Result<Vec<u8>, OfdEr
         .map(|(i, p)| (p.id.clone(), i))
         .collect();
 
+    let mut next_id = object_id_seed(doc);
+
     let mut out: Vec<(String, Vec<u8>)> =
         Vec::with_capacity(pkg.entries.len() + pages_with_ann.len() + 1);
+    // Slot of the deferred Document.xml output entry - patched after the loop
+    // so <MaxUnitID> can cover IDs minted by ensure_annotation_entries too.
+    let mut doc_xml_slot: Option<usize> = None;
 
     for entry in &pkg.entries {
         match entry.kind {
@@ -42,8 +52,11 @@ pub fn save_ofd(doc: &OfdDocument, pkg: &PackageHandle) -> Result<Vec<u8>, OfdEr
                 } else if let Some(idx) = page_index_from_name(&entry.name) {
                     // Per-page annotation file `Annots/Page_N/Annotation.xml`.
                     if let Some(page) = doc.pages.get(idx) {
+                        // Re-serialized from the model - also when the page no
+                        // longer has annotations (empty <PageAnnot>: they were
+                        // all deleted), never resurrecting original bytes.
                         let anns = doc.annotations.for_page(&page.id);
-                        let xml = serialize_page_annot(&page.id, anns);
+                        let xml = serialize_page_annot(&page.id, anns, &mut next_id);
                         out.push((entry.name.clone(), xml.into_bytes()));
                     } else {
                         // Page index out of range - preserve original bytes.
@@ -55,24 +68,9 @@ pub fn save_ofd(doc: &OfdDocument, pkg: &PackageHandle) -> Result<Vec<u8>, OfdEr
                 }
             }
             EntryKind::Body if entry.name.ends_with("Document.xml") => {
-                // Document.xml: byte-patch <MaxUnitID>, and - when the model
-                // has annotations - ensure the <Annotations> loc so strict
-                // GB/T 33190 readers (WPS) can discover the annotation files.
-                let patched = match std::str::from_utf8(&entry.bytes) {
-                    Ok(xml) => {
-                        let mut xml = patch_max_unit_id(xml, doc.max_unit_id);
-                        if !pages_with_ann.is_empty() {
-                            xml = ensure_annotations_ref(&xml, "Annots/Annotations.xml");
-                        }
-                        xml.into_bytes()
-                    }
-                    Err(_) => {
-                        // Non-UTF-8 Document.xml cannot be byte-patched; copy as-is
-                        // (degraded, but never crash - the body is still preserved).
-                        (*entry.bytes).clone()
-                    }
-                };
-                out.push((entry.name.clone(), patched));
+                // Deferred to after the loop - see `doc_xml_slot`.
+                doc_xml_slot = Some(out.len());
+                out.push((entry.name.clone(), Vec::new()));
             }
             _ => {
                 // Body Content.xml / resources / signatures / Other - byte-identical.
@@ -83,7 +81,34 @@ pub fn save_ofd(doc: &OfdDocument, pkg: &PackageHandle) -> Result<Vec<u8>, OfdEr
 
     // Add entry + per-page files for pages that have annotations but no
     // corresponding package entry (rofd added the first annotation to a bare page).
-    ensure_annotation_entries(&mut out, doc, &pages_with_ann, pkg);
+    ensure_annotation_entries(&mut out, doc, &pages_with_ann, pkg, &mut next_id);
+
+    // Document.xml: byte-patch <MaxUnitID> to the final counter, and - when
+    // the model has annotations - ensure the <Annotations> loc so strict
+    // GB/T 33190 readers can discover the annotation files.
+    if let Some(slot) = doc_xml_slot {
+        if let Some(entry) = pkg
+            .entries
+            .iter()
+            .find(|e| e.name.ends_with("Document.xml"))
+        {
+            let patched = match std::str::from_utf8(&entry.bytes) {
+                Ok(xml) => {
+                    let mut xml = patch_max_unit_id(xml, next_id);
+                    if !pages_with_ann.is_empty() {
+                        xml = ensure_annotations_ref(&xml, "Annots/Annotations.xml");
+                    }
+                    xml.into_bytes()
+                }
+                Err(_) => {
+                    // Non-UTF-8 Document.xml cannot be byte-patched; copy as-is
+                    // (degraded, but never crash - the body is still preserved).
+                    (*entry.bytes).clone()
+                }
+            };
+            out[slot].1 = patched;
+        }
+    }
 
     write_zip(&out)
 }
@@ -128,7 +153,7 @@ fn patch_max_unit_id(xml: &str, new_val: u64) -> String {
 
 /// Insert the `<Annotations>` loc into Document.xml when it is missing.
 ///
-/// Strict GB/T 33190 readers (e.g. WPS) locate annotations exclusively via
+/// Strict GB/T 33190 readers locate annotations exclusively via
 /// `Document.xml` `<Annotations>` loc -> entry file -> per-page `FileLoc`;
 /// they do not scan the package. When rofd adds the first annotation to a
 /// previously-bare document, `ensure_annotation_entries` adds the files and
@@ -136,7 +161,7 @@ fn patch_max_unit_id(xml: &str, new_val: u64) -> String {
 /// schema-ordered position (CT_Document: ...Pages, Outlines?, Bookmarks?,
 /// Annotations?, Attachments?, CustomDatas?) - before `Attachments` /
 /// `CustomDatas` when present, else right before the root closing tag
-/// (the position WPS-authored files use). No-op when an `Annotations`
+/// (the position reference authoring tools use). No-op when an `Annotations`
 /// element is already present (ofd-prefixed or default-namespace form) or
 /// when no valid insertion point is found (degraded - never corrupt the
 /// document).
@@ -196,6 +221,7 @@ fn ensure_annotation_entries(
     doc: &OfdDocument,
     pages_with_ann: &[(PageId, usize)],
     pkg: &PackageHandle,
+    next_id: &mut u64,
 ) {
     if pages_with_ann.is_empty() {
         return;
@@ -218,7 +244,7 @@ fn ensure_annotation_entries(
         let name = format!("{doc_root}/Annots/Page_{idx}/Annotation.xml");
         if !out.iter().any(|(n, _)| n == &name) {
             let anns = doc.annotations.for_page(pid);
-            let xml = serialize_page_annot(pid, anns);
+            let xml = serialize_page_annot(pid, anns, next_id);
             out.push((name, xml.into_bytes()));
         }
     }

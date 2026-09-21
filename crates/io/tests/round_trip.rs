@@ -68,9 +68,12 @@ fn write_ofd_emits_standard_annotation_entry_and_document() {
         "Document.xml has Annotations loc: {}",
         doc_xml
     );
+    // MaxUnitID covers the annotation IDs plus the appearance object IDs
+    // minted during serialization (the highlight mints one PathObject above
+    // the model's max_unit_id=101).
     assert!(
-        doc_xml.contains("<ofd:MaxUnitID>101</ofd:MaxUnitID>"),
-        "Document.xml has MaxUnitID=101: {}",
+        doc_xml.contains("<ofd:MaxUnitID>102</ofd:MaxUnitID>"),
+        "Document.xml has MaxUnitID=102: {}",
         doc_xml
     );
 }
