@@ -118,7 +118,16 @@ pub fn draw_annotations(
                 font,
                 size,
                 color,
+                border,
             } => {
+                // Bordered text box (文本框): stroke the frame around the text.
+                if let Some(border_color) = border {
+                    let bez = rofd_rect_to_kurbo(rect).to_path(SHAPE_TOLERANCE);
+                    painter
+                        .stroke(&bez, &Stroke::new(0.3528), to_peniko(*border_color))
+                        .transform(base)
+                        .draw();
+                }
                 let text = TextParams {
                     content,
                     font,
@@ -1065,6 +1074,7 @@ mod tests {
                 font: FontId::new("F1"),
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
+                border: None,
             },
             AnnotationKind::TextBox,
         );
@@ -1109,6 +1119,7 @@ mod tests {
                 font: FontId::new("F1"),
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
+                border: None,
             },
             AnnotationKind::TextBox,
         );
@@ -1144,6 +1155,7 @@ mod tests {
                 font: FontId::new("F1"),
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
+                border: None,
             },
             AnnotationKind::TextBox,
         );
@@ -1308,6 +1320,7 @@ mod tests {
                     font: FontId::new("F1"),
                     size: 12.0,
                     color: Color::Rgb(0, 0, 0),
+                    border: None,
                 },
                 AnnotationKind::TextBox,
             ),

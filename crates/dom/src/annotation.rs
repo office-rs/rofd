@@ -51,6 +51,12 @@ pub enum AnnotationPayload {
         font: FontId,
         size: f64,
         color: Color,
+        /// Bordered text box (文本框): stroke color of the frame around the
+        /// text. `None` for borderless typewriter-style text. Round-trips the
+        /// border PathObject that reference authoring tools emit ahead of the
+        /// TextObjects.
+        #[serde(default)]
+        border: Option<Color>,
     },
     Stamp {
         rect: Rect,
@@ -273,6 +279,7 @@ mod tests {
                 font: FontId::new("F1"),
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
+                border: None,
             },
             AnnotationKind::TextBox,
         );

@@ -464,12 +464,20 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
                 // No TextObject found: fall back to Remark.
                 content = p.remark.clone();
             }
+            // A bordered text box (文本框) carries a stroke-only border
+            // PathObject ahead of the text; keep its color or the frame
+            // silently disappears on the next save.
+            let border = p.objects.iter().find_map(|o| match o {
+                AppearanceObject::Path { stroke, .. } => *stroke,
+                _ => None,
+            });
             AnnotationPayload::TextBox {
                 rect: boundary,
                 content,
                 font: FontId::new(font),
                 size,
                 color: color.unwrap_or_default(),
+                border,
             }
         }
         AnnotationKind::Stamp => {

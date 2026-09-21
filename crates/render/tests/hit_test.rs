@@ -588,6 +588,7 @@ fn hit_test_textbox_annotation_bbox() {
             font: FontId::new("F1"),
             size: 12.0,
             color: Color::Rgb(0, 0, 0),
+            border: None,
         },
         AnnotationKind::TextBox,
     );
