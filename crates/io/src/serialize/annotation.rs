@@ -308,26 +308,44 @@ fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload, next_id: &
                 font,
                 size,
                 color,
+                border,
             },
         ) => {
+            // A bordered text box re-emits its frame ahead of the text (the
+            // reference layout: border PathObject, then TextObjects).
+            let mut inner = String::new();
+            if let Some(border_color) = border {
+                inner.push_str(&path_object_xml(
+                    &local_rect(rect),
+                    Some(*border_color),
+                    None,
+                    0.3528,
+                    &rect_path(rect),
+                    next_id,
+                ));
+            }
+            inner.push_str(&text_object_xml(
+                rect, &font.0, *size, *color, content, next_id,
+            ));
             format!(
                 "<ofd:Appearance Boundary=\"{} {} {} {}\">{}</ofd:Appearance>",
-                rect.x,
-                rect.y,
-                rect.w,
-                rect.h,
-                text_object_xml(rect, &font.0, *size, *color, content, next_id)
+                rect.x, rect.y, rect.w, rect.h, inner
             )
         }
         (AnnotationKind::Stamp, AnnotationPayload::Stamp { rect, image }) => {
             let id = mint_object_id(next_id);
+            // CTM scales the image to the boundary: without it the image
+            // renders as a ~1mm speck. Darken matches the reference stamps
+            // (white-ish stamp backgrounds blend into the page).
             format!(
-                "<ofd:Appearance Boundary=\"{} {} {} {}\"><ofd:ImageObject ID=\"{}\" Boundary=\"0 0 {} {}\" ResourceID=\"{}\"/></ofd:Appearance>",
+                "<ofd:Appearance Boundary=\"{} {} {} {}\"><ofd:ImageObject BlendMode=\"Darken\" ID=\"{}\" CTM=\"{} 0 0 {} 0 0\" Boundary=\"0 0 {} {}\" ResourceID=\"{}\"/></ofd:Appearance>",
                 rect.x,
                 rect.y,
                 rect.w,
                 rect.h,
                 id,
+                rect.w,
+                rect.h,
                 rect.w,
                 rect.h,
                 xml_escape(&image.0)
@@ -398,6 +416,10 @@ fn path_object_xml(
     );
     if fill.is_some() && stroke.is_none() {
         s.push_str(" Stroke=\"false\" Fill=\"true\"");
+    } else if fill.is_some() {
+        // Fill defaults to false (GB/T 33190 表35); a fill+stroke shape (arrow
+        // head, filled polygon) must opt in explicitly.
+        s.push_str(" Fill=\"true\"");
     }
     s.push('>');
     if let Some(f) = fill {
@@ -414,7 +436,9 @@ fn path_object_xml(
     s
 }
 
-/// Build a `<TextObject>` element (TextBox).
+/// Build a `<TextObject>` element (TextBox). Multi-line content becomes one
+/// TextObject per line, stacked top to bottom (the reference layout for
+/// wrapped FreeText boxes).
 fn text_object_xml(
     r: &Rect,
     font: &str,
@@ -423,17 +447,51 @@ fn text_object_xml(
     content: &str,
     next_id: &mut u64,
 ) -> String {
-    let id = mint_object_id(next_id);
+    let line_h = size * 1.2;
+    let mut s = String::new();
+    for (i, line) in content.split('\n').enumerate() {
+        let id = mint_object_id(next_id);
+        s.push_str(&format!(
+            "<ofd:TextObject ID=\"{}\" Boundary=\"0 {} {} {}\" Font=\"{}\" Size=\"{}\"><ofd:FillColor Value=\"{}\"/>{}</ofd:TextObject>",
+            id,
+            i as f64 * line_h,
+            r.w,
+            line_h,
+            xml_escape(font),
+            size,
+            color_str(color),
+            text_code_xml(line, size)
+        ));
+    }
+    s
+}
+
+/// Build a `<TextCode>` element carrying per-char `DeltaX` advances.
+/// Without them strict readers place every glyph at X=0 - the whole line
+/// collapses onto one spot. CJK/fullwidth chars advance one em (`size`),
+/// ASCII halfwidth half an em: the metrics-free approximation of the
+/// reference files' advances.
+fn text_code_xml(line: &str, size: f64) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut deltas = String::new();
+    for &c in chars.iter().take(chars.len().saturating_sub(1)) {
+        let advance = if (0x20..=0x7E).contains(&(c as u32)) {
+            size * 0.5
+        } else {
+            size
+        };
+        deltas.push_str(&format!("{} ", advance));
+    }
+    let delta_attr = if chars.len() >= 2 {
+        format!(" DeltaX=\"{}\"", deltas.trim_end())
+    } else {
+        String::new()
+    };
     format!(
-        "<ofd:TextObject ID=\"{}\" Boundary=\"0 0 {} {}\" Font=\"{}\" Size=\"{}\"><ofd:FillColor Value=\"{}\"/><ofd:TextCode X=\"0\" Y=\"{}\">{}</ofd:TextCode></ofd:TextObject>",
-        id,
-        r.w,
-        r.h,
-        xml_escape(font),
+        "<ofd:TextCode X=\"0\" Y=\"{}\"{}>{}</ofd:TextCode>",
         size,
-        color_str(color),
-        size,
-        xml_escape(content)
+        delta_attr,
+        xml_escape(line)
     )
 }
 
@@ -453,7 +511,7 @@ fn text_object_xml_with_alpha(
 ) -> String {
     let id = mint_object_id(next_id);
     format!(
-        "<ofd:TextObject ID=\"{}\" Boundary=\"0 0 {} {}\" Font=\"{}\" Size=\"{}\" CTM=\"{}\" Alpha=\"{}\"><ofd:FillColor Value=\"{}\"/><ofd:TextCode X=\"0\" Y=\"{}\">{}</ofd:TextCode></ofd:TextObject>",
+        "<ofd:TextObject ID=\"{}\" Boundary=\"0 0 {} {}\" Font=\"{}\" Size=\"{}\" CTM=\"{}\" Alpha=\"{}\"><ofd:FillColor Value=\"{}\"/>{}</ofd:TextObject>",
         id,
         r.w,
         r.h,
@@ -462,8 +520,7 @@ fn text_object_xml_with_alpha(
         ctm,
         alpha,
         color_str(color),
-        size,
-        xml_escape(content)
+        text_code_xml(content, size)
     )
 }
 
@@ -550,7 +607,21 @@ fn markup_squiggly_appearance(
     let mut s = String::new();
     for (p0, p1) in quad_point_pairs(quad_points) {
         let r = quad_rect(&p0, &p1);
-        let path = squiggly_path(to_object_local(&p0, &r), to_object_local(&p1, &r));
+        let lp0 = to_object_local(&p0, &r);
+        let lp1 = to_object_local(&p1, &r);
+        // Baseline at the quad BOTTOM (like the underline) - a baseline at
+        // p0.y renders the wave over the top of the glyphs.
+        let baseline = lp0.y.max(lp1.y);
+        let path = squiggly_path(
+            rofd_dom::Point {
+                x: lp0.x,
+                y: baseline,
+            },
+            rofd_dom::Point {
+                x: lp1.x,
+                y: baseline,
+            },
+        );
         s.push_str(&format!(
             "<ofd:Appearance Boundary=\"{} {} {} {}\">",
             r.x, r.y, r.w, r.h
@@ -683,9 +754,15 @@ fn rotation_ctm(angle_deg: f64, r: &Rect) -> String {
 /// Serialize PathData to OFD AbbreviatedData string (inverse of `parse_abbreviated`).
 fn path_to_abbrev(p: &PathData) -> String {
     let mut s = String::new();
+    // Subpath start for explicit closure: reference authoring tools do not
+    // honor a "Z" close operator (a Z-terminated polygon renders open, a
+    // Z-terminated rectangle loses its closing edge), so closure is written
+    // as a plain L segment back to the subpath start.
+    let mut start: Option<(f64, f64)> = None;
     for c in &p.commands {
         match c {
             rofd_dom::PathCommand::M(x, y) => {
+                start = Some((*x, *y));
                 s.push_str(&format!("M {} {} ", x, y));
             }
             rofd_dom::PathCommand::L(x, y) => {
@@ -698,7 +775,9 @@ fn path_to_abbrev(p: &PathData) -> String {
                 s.push_str(&format!("Q {} {} {} {} ", a, b, c, d));
             }
             rofd_dom::PathCommand::Z => {
-                s.push_str("Z ");
+                if let Some((x, y)) = start {
+                    s.push_str(&format!("L {} {} ", x, y));
+                }
             }
             rofd_dom::PathCommand::A(a, b, c, d, e, f) => {
                 // GB/T 33190 A arc has 7 params (rx ry rot large-arc-flag
@@ -741,6 +820,9 @@ mod tests {
 
     #[test]
     fn path_to_abbrev_round_trips_through_parse() {
+        // Closure (Z) is serialized as an explicit L back to the subpath
+        // start (reference readers do not honor a Z operator), so it parses
+        // back as that closing L segment.
         let pd = PathData {
             commands: vec![
                 PathCommand::M(0.0, 0.0),
@@ -751,8 +833,14 @@ mod tests {
             ],
         };
         let abbrev = path_to_abbrev(&pd);
+        assert!(!abbrev.contains('Z'), "no Z on the wire: {abbrev}");
         let parsed = crate::abbreviated::parse_abbreviated(&abbrev);
-        assert_eq!(pd, parsed);
+        assert_eq!(
+            parsed.commands.last(),
+            Some(&PathCommand::L(0.0, 0.0)),
+            "closes back at the subpath start"
+        );
+        assert_eq!(parsed.commands.len(), pd.commands.len());
     }
 
     #[test]
@@ -772,7 +860,14 @@ mod tests {
         };
         let abbrev = path_to_abbrev(&pd);
         let parsed = crate::abbreviated::parse_abbreviated(&abbrev);
-        assert_eq!(pd, parsed);
+        // Z becomes the explicit closing L back to the M start (5, 0); the
+        // four arcs round-trip unchanged.
+        assert_eq!(
+            parsed.commands.last(),
+            Some(&PathCommand::L(5.0, 0.0)),
+            "closes back at the subpath start"
+        );
+        assert_eq!(parsed.commands.len(), pd.commands.len());
     }
 
     #[test]
@@ -819,9 +914,11 @@ mod tests {
         let path = crate::annotation_geom::ellipse_path(&r);
         let abbrev = path_to_abbrev(&path);
         let toks: Vec<&str> = abbrev.split_whitespace().collect();
-        // M + 2 values, then 4 * (A + 7 values), then Z.
-        // = 1 + 2 + 4 * 8 + 1 = 36
-        assert_eq!(toks.len(), 36);
+        // M + 2 values, then 4 * (A + 7 values), then the explicit closing
+        // L back to the subpath start (L + 2 values; closure is a plain
+        // segment, not a Z operator).
+        // = 1 + 2 + 4 * 8 + 3 = 38
+        assert_eq!(toks.len(), 38);
         // Each "A" is followed by exactly 7 numeric tokens.
         let mut i = 0;
         let mut arc_count = 0;

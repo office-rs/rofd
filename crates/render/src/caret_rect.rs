@@ -237,6 +237,7 @@ mod tests {
                 font: FontId::new("F1"),
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
+                border: None,
             },
             AnnotationKind::TextBox,
         );
@@ -278,6 +279,7 @@ mod tests {
                 font: FontId::new("F1"),
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
+                border: None,
             },
             AnnotationKind::TextBox,
         );
@@ -382,6 +384,7 @@ mod tests {
                     font: FontId::new("F1"),
                     size: 12.0,
                     color: Color::Rgb(0, 0, 0),
+                    border: None,
                 },
             });
         let fonts = FontStore::from_resources(&doc.resources, Arc::new(font_bytes.to_vec()));

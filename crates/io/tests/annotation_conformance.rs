@@ -70,6 +70,7 @@ fn one_of_each_kind() -> Vec<Annotation> {
                 font: rofd_dom::FontId::new("118"),
                 size: 5.6,
                 color: Color::Rgb(0, 0, 0),
+                border: None,
             },
         ),
         ann(
@@ -177,9 +178,8 @@ fn path_object_geometry_is_appearance_relative() {
         "appearance stays page-absolute: {xml}"
     );
     assert!(xml.contains("Boundary=\"0 0 40 10\" LineWidth=\"0.5\" Stroke=\"false\" Fill=\"true\""));
-    assert!(
-        xml.contains("<ofd:AbbreviatedData>M 0 0 L 40 0 L 40 10 L 0 10 Z </ofd:AbbreviatedData>")
-    );
+    assert!(xml
+        .contains("<ofd:AbbreviatedData>M 0 0 L 40 0 L 40 10 L 0 10 L 0 0 </ofd:AbbreviatedData>"));
     // Underline: bottom edge of the (0,0)-(38,4.4) quad, object-local.
     assert!(xml.contains("<ofd:AbbreviatedData>M 0 4.4 L 38 4.4 </ofd:AbbreviatedData>"));
     // No PathObject carries a non-zero-origin boundary.
@@ -284,4 +284,155 @@ fn parse_created_falls_back_to_last_mod_date() {
     let anns = rofd_io::parse::annotation::parse_page_annot(xml, &PageId::new("1")).unwrap();
     assert_eq!(anns[0].created, anns[0].modified);
     assert_ne!(anns[0].created, 0);
+}
+
+#[test]
+fn paths_close_with_explicit_segment_not_a_close_operator() {
+    // Reference authoring tools close paths with a parameterless trailing
+    // "C" (their dialect) and do NOT honor "Z": a Z-closed polygon renders as
+    // an open polyline and a Z-closed rectangle loses its closing edge.
+    // Serialize closure as an explicit L back to the subpath start instead -
+    // plain M/L geometry closes in every reader.
+    use rofd_dom::ShapeKind;
+    let anns = vec![ann(
+        106,
+        AnnotationKind::Shape(ShapeKind::Polygon),
+        AnnotationPayload::Shape {
+            kind: ShapeKind::Polygon,
+            rect: Rect {
+                x: 5.0,
+                y: 5.0,
+                w: 20.0,
+                h: 10.0,
+            },
+            stroke: Color::Rgb(255, 0, 0),
+            fill: None,
+            width: 0.3528,
+            points: vec![
+                Point { x: 5.0, y: 5.0 },
+                Point { x: 25.0, y: 5.0 },
+                Point { x: 25.0, y: 15.0 },
+                Point { x: 5.0, y: 15.0 },
+            ],
+        },
+    )];
+    let mut next_id = 200u64;
+    let xml = serialize_page_annot(&PageId::new("1"), &anns, &mut next_id);
+    assert!(!xml.contains(" Z "), "no close operator on the wire: {xml}");
+    assert!(
+        xml.contains(
+            "<ofd:AbbreviatedData>M 0 0 L 20 0 L 20 10 L 0 10 L 0 0 </ofd:AbbreviatedData>"
+        ),
+        "closing edge is an explicit segment back to the start: {xml}"
+    );
+}
+
+#[test]
+fn squiggly_baseline_sits_at_quad_bottom() {
+    // The wave must straddle the BOTTOM of the text quad, like the
+    // underline. A baseline at the quad top (p0.y) renders the squiggle over
+    // the top of the glyphs - the io-side twin of the render bug fixed in
+    // annotation_scene.rs ("drew on the text top").
+    let anns = vec![ann(
+        102,
+        AnnotationKind::Squiggly,
+        AnnotationPayload::Markup {
+            quad_points: vec![Point { x: 0.0, y: 0.0 }, Point { x: 38.0, y: 4.4 }],
+            color: Color::Rgb(0, 164, 247),
+        },
+    )];
+    let mut next_id = 200u64;
+    let xml = serialize_page_annot(&PageId::new("1"), &anns, &mut next_id);
+    assert!(
+        xml.contains("<ofd:AbbreviatedData>M 0 4.4 Q"),
+        "wave baseline at the quad bottom edge: {xml}"
+    );
+}
+
+#[test]
+fn textbox_textcode_carries_per_char_advances() {
+    // Without DeltaX strict readers draw every glyph at X=0 - all characters
+    // stack on one spot. Reference files carry one advance per char gap
+    // (n-1 values: CJK fullwidth = size, ASCII halfwidth = size/2), and
+    // multi-line content becomes one TextObject per line.
+    let anns = vec![ann(
+        104,
+        AnnotationKind::TextBox,
+        AnnotationPayload::TextBox {
+            rect: Rect {
+                x: 1.0,
+                y: 40.0,
+                w: 60.0,
+                h: 12.0,
+            },
+            content: "文字ab\n第二行".into(),
+            font: rofd_dom::FontId::new("118"),
+            size: 5.6,
+            color: Color::Rgb(0, 0, 0),
+            border: None,
+        },
+    )];
+    let mut next_id = 200u64;
+    let xml = serialize_page_annot(&PageId::new("1"), &anns, &mut next_id);
+    // Line 1 "文字ab": advances of 文/字/a = full/full/half.
+    assert!(
+        xml.contains("DeltaX=\"5.6 5.6 2.8\""),
+        "per-char advances on the wire: {xml}"
+    );
+    // Two lines -> two TextObjects.
+    assert_eq!(xml.matches("<ofd:TextObject").count(), 2, "{xml}");
+    assert_eq!(xml.matches("<ofd:TextCode").count(), 2, "{xml}");
+}
+
+#[test]
+fn stamp_imageobject_scales_to_boundary_via_ctm() {
+    // Reference stamps carry CTM="w 0 0 h 0 0"; without a scale CTM the image
+    // renders as a ~1mm speck (effectively invisible).
+    let stamp = one_of_each_kind().remove(4);
+    let mut next_id = 200u64;
+    let xml = serialize_page_annot(&PageId::new("1"), &[stamp], &mut next_id);
+    assert!(
+        xml.contains("CTM=\"55 0 0 20 0 0\""),
+        "image scaled to its boundary via CTM: {xml}"
+    );
+}
+
+#[test]
+fn textbox_border_round_trips() {
+    // A bordered FreeText (文本框) carries a stroke-only border PathObject
+    // ahead of the TextObjects; dropping it on parse makes the frame silently
+    // disappear after a save.
+    let xml = r#"<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Annot Type="FreeText" ID="125" Creator="flw" Subtype="FreeText" LastModDate="2026-07-14">
+    <ofd:Remark>box</ofd:Remark>
+    <ofd:Appearance Boundary="91.1611 237.2239 27.0513 15.196">
+      <ofd:PathObject ID="137" Boundary="0 0 27.0513 15.196" LineWidth="0.3528" Fill="true">
+        <ofd:StrokeColor Value="255 0 0"/>
+        <ofd:AbbreviatedData>M 0.1764 0.1764 L 26.8749 0.1764 L 26.8749 15.0197 L 0.1764 15.0197 C </ofd:AbbreviatedData>
+      </ofd:PathObject>
+      <ofd:TextObject ID="135" Boundary="1.3528 1.3528 22.8778 5.7517" Font="118" Size="5.6444">
+        <ofd:FillColor Value="13 13 13"/>
+        <ofd:TextCode X="0" Y="4.8486" DeltaX="5.7444 5.7444 5.7444">文本框内</ofd:TextCode>
+      </ofd:TextObject>
+    </ofd:Appearance>
+  </ofd:Annot>
+</ofd:PageAnnot>"#;
+    let anns = rofd_io::parse::annotation::parse_page_annot(xml, &PageId::new("1")).unwrap();
+    match &anns[0].payload {
+        AnnotationPayload::TextBox { border, .. } => {
+            assert_eq!(*border, Some(Color::Rgb(255, 0, 0)));
+        }
+        other => panic!("expected TextBox, got {other:?}"),
+    }
+    let mut next_id = 200u64;
+    let out = serialize_page_annot(&PageId::new("1"), &anns, &mut next_id);
+    assert_eq!(
+        out.matches("<ofd:PathObject").count(),
+        1,
+        "border PathObject re-emitted: {out}"
+    );
+    assert!(
+        out.contains("<ofd:StrokeColor Value=\"255 0 0\"/>"),
+        "border keeps its stroke color: {out}"
+    );
 }

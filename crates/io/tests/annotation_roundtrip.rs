@@ -163,6 +163,7 @@ fn textbox_roundtrips() {
             font: FontId::new("F1"),
             size: 12.0,
             color: Color::Rgb(0, 0, 0),
+            border: None,
         },
         None,
     );
@@ -232,6 +233,7 @@ fn freetext_textbox_roundtrips() {
             font: FontId::new("F1"),
             size: 5.0,
             color: Color::Rgb(13, 13, 13),
+            border: None,
         },
         None,
     );
