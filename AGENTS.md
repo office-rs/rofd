@@ -120,7 +120,7 @@ crates/web-app ─► web-view ─────────────┘       
 
 ### 4.3 手术刀保存：未触碰条目字节级保留
 
-`save_ofd(doc, pkg)`：**批注条目从 `AnnotationModel` 重新序列化；其余条目原样拷字节**（`PackageHandle` 以 `Arc` 保留原始字节）。这就是 subset 模型仍能保真的原因。核心测试：`parse_ofd → save_ofd → 未触碰条目字节逐字节相等`（见 `crates/io/tests/round_trip.rs`、`save_surgical.rs`）。改 io 的保存逻辑后，此测试必须仍绿。
+`save_ofd(doc, pkg)`：**批注条目从 `AnnotationModel` 重新序列化；`Document.xml` 字节级打补丁（`<MaxUnitID>` + 缺失时插入 `<Annotations>` loc，WPS 等严格阅读器只经此引用发现批注）；其余条目原样拷字节**（`PackageHandle` 以 `Arc` 保留原始字节）。这就是 subset 模型仍能保真的原因。核心测试：`parse_ofd → save_ofd → 未触碰条目字节逐字节相等`（见 `crates/io/tests/round_trip.rs`、`save_surgical.rs`）。改 io 的保存逻辑后，此测试必须仍绿。
 
 ### 4.4 库不取系统时间
 
@@ -142,7 +142,7 @@ crates/web-app ─► web-view ─────────────┘       
 
 ### 4.8 ID 约定
 
-`ObjectId`/`PageId` = OFD ID 字符串 newtype；`AnnotationId` = uuid v4。
+`ObjectId`/`PageId` = OFD ID 字符串 newtype；`AnnotationId` 同为整数串 newtype，编辑器从 `max_unit_id + 1` 分配（GB/T 33190 ST_ID，保证 WPS 等严格阅读器可解析），见 `dom/src/ids.rs`。
 
 ### 4.9 平台边界：功能内聚核心层，适配器只做绑定
 

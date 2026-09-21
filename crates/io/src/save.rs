@@ -9,7 +9,10 @@ use crate::zip_util::write_zip;
 /// Surgical save (invariant §4.3): the dirty set is -
 /// - annotation entry file (`Annots/Annotations.xml`) and per-page files
 ///   (`Annots/Page_N/Annotation.xml`): re-serialized from `AnnotationModel`;
-/// - `Document.xml`: `<MaxUnitID>` byte-patched to `doc.max_unit_id`;
+/// - `Document.xml`: `<MaxUnitID>` byte-patched to `doc.max_unit_id`, plus
+///   the `<Annotations>` loc inserted when the model has annotations but the
+///   original document lacked it (strict readers like WPS discover
+///   annotations only through this reference);
 /// - everything else (body `Content.xml`, resources, signatures, `OFD.xml`):
 ///   copied byte-identical from the retained `PackageHandle`.
 ///
@@ -52,9 +55,17 @@ pub fn save_ofd(doc: &OfdDocument, pkg: &PackageHandle) -> Result<Vec<u8>, OfdEr
                 }
             }
             EntryKind::Body if entry.name.ends_with("Document.xml") => {
-                // Document.xml: byte-patch <MaxUnitID> only.
+                // Document.xml: byte-patch <MaxUnitID>, and - when the model
+                // has annotations - ensure the <Annotations> loc so strict
+                // GB/T 33190 readers (WPS) can discover the annotation files.
                 let patched = match std::str::from_utf8(&entry.bytes) {
-                    Ok(xml) => patch_max_unit_id(xml, doc.max_unit_id).into_bytes(),
+                    Ok(xml) => {
+                        let mut xml = patch_max_unit_id(xml, doc.max_unit_id);
+                        if !pages_with_ann.is_empty() {
+                            xml = ensure_annotations_ref(&xml, "Annots/Annotations.xml");
+                        }
+                        xml.into_bytes()
+                    }
                     Err(_) => {
                         // Non-UTF-8 Document.xml cannot be byte-patched; copy as-is
                         // (degraded, but never crash - the body is still preserved).
@@ -113,6 +124,66 @@ fn patch_max_unit_id(xml: &str, new_val: u64) -> String {
     out.push_str(&new_val.to_string());
     out.push_str(&xml[text_end..]);
     out
+}
+
+/// Insert the `<Annotations>` loc into Document.xml when it is missing.
+///
+/// Strict GB/T 33190 readers (e.g. WPS) locate annotations exclusively via
+/// `Document.xml` `<Annotations>` loc -> entry file -> per-page `FileLoc`;
+/// they do not scan the package. When rofd adds the first annotation to a
+/// previously-bare document, `ensure_annotation_entries` adds the files and
+/// this patch adds the reference. The element is inserted at its
+/// schema-ordered position (CT_Document: ...Pages, Outlines?, Bookmarks?,
+/// Annotations?, Attachments?, CustomDatas?) - before `Attachments` /
+/// `CustomDatas` when present, else right before the root closing tag
+/// (the position WPS-authored files use). No-op when an `Annotations`
+/// element is already present (ofd-prefixed or default-namespace form) or
+/// when no valid insertion point is found (degraded - never corrupt the
+/// document).
+fn ensure_annotations_ref(xml: &str, loc: &str) -> String {
+    if xml.contains("<ofd:Annotations") || xml.contains("<Annotations") {
+        return xml.to_string();
+    }
+    let Some(at) = annotations_insert_pos(xml) else {
+        return xml.to_string();
+    };
+    // Mirror the namespace prefix of the tag being inserted next to.
+    let Some(gt_rel) = xml[at..].find('>') else {
+        return xml.to_string();
+    };
+    let raw = &xml[at + 1..at + gt_rel];
+    let raw = raw.strip_prefix('/').unwrap_or(raw);
+    let prefix = raw
+        .split_once(':')
+        .map_or(String::new(), |(p, _)| format!("{p}:"));
+    let mut out = String::with_capacity(xml.len() + loc.len() + prefix.len() * 2 + 26);
+    out.push_str(&xml[..at]);
+    out.push_str(&format!("<{prefix}Annotations>{loc}</{prefix}Annotations>"));
+    out.push_str(&xml[at..]);
+    out
+}
+
+/// Byte offset where the `<Annotations>` element should be inserted:
+/// before the first `Attachments` / `CustomDatas` element when present
+/// (schema order), else before the root `</...Document>` closing tag (the
+/// last `</` in the file). `None` when neither is found.
+fn annotations_insert_pos(xml: &str) -> Option<usize> {
+    let mut pos = None;
+    for local in ["Attachments", "CustomDatas"] {
+        for prefix in ["<ofd:", "<"] {
+            if let Some(p) = xml.find(&format!("{prefix}{local}")) {
+                pos = Some(pos.map_or(p, |cur: usize| cur.min(p)));
+            }
+        }
+    }
+    if pos.is_some() {
+        return pos;
+    }
+    let close = xml.rfind("</")?;
+    let gt_rel = xml[close..].find('>')?;
+    let tag = &xml[close + 2..close + gt_rel];
+    let local = tag.rsplit(':').next().unwrap_or(tag);
+    (local == "Document").then_some(close)
 }
 
 /// If the model has annotations but the package has no corresponding annotation
@@ -206,5 +277,57 @@ mod tests {
         let xml = "<MaxUnitID>1</MaxUnitID>";
         let patched = patch_max_unit_id(xml, 100);
         assert_eq!(patched, "<MaxUnitID>100</MaxUnitID>");
+    }
+
+    #[test]
+    fn ensure_annotations_ref_inserts_before_root_close() {
+        let xml = "<ofd:Document><ofd:Pages/></ofd:Document>";
+        let patched = ensure_annotations_ref(xml, "Annots/Annotations.xml");
+        assert_eq!(
+            patched,
+            "<ofd:Document><ofd:Pages/><ofd:Annotations>Annots/Annotations.xml</ofd:Annotations></ofd:Document>"
+        );
+    }
+
+    #[test]
+    fn ensure_annotations_ref_inserts_before_attachments_per_schema_order() {
+        // CT_Document order: ...Annotations?, Attachments?, CustomDatas? - the
+        // insertion must not land after Attachments/CustomDatas.
+        let xml = "<ofd:Document><ofd:Pages/><ofd:Attachments FileLoc=\"Attach/Attachments.xml\"/></ofd:Document>";
+        let patched = ensure_annotations_ref(xml, "Annots/Annotations.xml");
+        assert!(patched
+            .contains("<ofd:Annotations>Annots/Annotations.xml</ofd:Annotations><ofd:Attachments"));
+    }
+
+    #[test]
+    fn ensure_annotations_ref_inserts_before_customdatas_unprefixed() {
+        let xml = "<Document><Pages/><CustomDatas/></Document>";
+        let patched = ensure_annotations_ref(xml, "Annots/Annotations.xml");
+        assert!(patched.contains("<Annotations>Annots/Annotations.xml</Annotations><CustomDatas"));
+    }
+
+    #[test]
+    fn ensure_annotations_ref_noop_when_present() {
+        // Both the ofd-prefixed and default-namespace forms count as present.
+        for xml in [
+            "<ofd:Document><ofd:Annotations>Annots/Annotations.xml</ofd:Annotations></ofd:Document>",
+            "<Document><Annotations>x</Annotations></Document>",
+        ] {
+            assert_eq!(ensure_annotations_ref(xml, "Annots/Annotations.xml"), xml);
+        }
+    }
+
+    #[test]
+    fn ensure_annotations_ref_mirrors_root_prefix() {
+        let xml = "<Document><Pages/></Document>";
+        let patched = ensure_annotations_ref(xml, "Annots/Annotations.xml");
+        assert!(patched.contains("<Annotations>Annots/Annotations.xml</Annotations>"));
+    }
+
+    #[test]
+    fn ensure_annotations_ref_noop_without_document_close_tag() {
+        // No root closing tag found - return unchanged, never corrupt.
+        let xml = "<ofd:Pages/>";
+        assert_eq!(ensure_annotations_ref(xml, "Annots/Annotations.xml"), xml);
     }
 }
