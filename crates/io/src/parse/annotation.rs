@@ -12,7 +12,7 @@ use quick_xml::Reader;
 
 use rofd_dom::{
     Annotation, AnnotationId, AnnotationKind, AnnotationPayload, Color, FontId, ImageId, NoteIcon,
-    PageId, PathData, Point, Rect, ShapeKind,
+    PageId, PathCommand, PathData, Point, Rect, ShapeKind,
 };
 
 use crate::abbreviated::parse_abbreviated;
@@ -95,18 +95,21 @@ impl PendingAnnot {
     fn finish(self) -> Annotation {
         let kind = map_type_subtype(&self.type_str, self.subtype.as_deref());
         let payload = build_payload(kind.clone(), &self);
+        let modified = parse_last_mod_date(&self.last_mod).unwrap_or(0);
+        // CreationDate is optional in the wild - many authoring tools emit
+        // only LastModDate. Fall back to it instead of the epoch (which would
+        // serialize back as "1970-01-01 00:00:00").
         let created = self
             .params
             .iter()
             .find(|(k, _)| k == "CreationDate")
             .and_then(|(_, v)| parse_last_mod_date(v))
-            .unwrap_or(0);
+            .unwrap_or(modified);
         let reply_to = self
             .params
             .iter()
             .find(|(k, _)| k == "InReplyTo")
             .map(|(_, v)| AnnotationId::new(v.clone()));
-        let modified = parse_last_mod_date(&self.last_mod).unwrap_or(0);
         Annotation {
             id: AnnotationId::new(self.id),
             kind,
@@ -315,12 +318,21 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
         | AnnotationKind::Underline
         | AnnotationKind::Strikeout
         | AnnotationKind::Squiggly => {
+            // Markup color: stroke color first (underline/strikeout/squiggly
+            // are stroked lines); a fill-only highlight carries only
+            // FillColor, so fall back to that before the default yellow.
             let color = p
                 .objects
                 .iter()
                 .find_map(|o| match o {
                     AppearanceObject::Path { stroke, .. } => *stroke,
                     _ => None,
+                })
+                .or_else(|| {
+                    p.objects.iter().find_map(|o| match o {
+                        AppearanceObject::Path { fill, .. } => *fill,
+                        _ => None,
+                    })
                 })
                 .unwrap_or(Color::Rgb(255, 255, 0));
             // Markup quad_points = Appearance.Boundary diagonal (page coords).
@@ -357,8 +369,18 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
                     _ => None,
                 })
                 .unwrap_or((None, 1.0, PathData::default()));
+            // AbbreviatedData is object-local (relative to the PathObject
+            // boundary inside the appearance): shift it back by the
+            // appearance origin. Foreign files that write page-absolute data
+            // (compensated by a CTM) carry a bbox away from the origin - take
+            // those as-is.
+            let path = if path_data_starts_at_origin(&data) {
+                crate::annotation_geom::translate_path(&data, boundary.x, boundary.y)
+            } else {
+                data
+            };
             AnnotationPayload::Freehand {
-                path: data,
+                path,
                 color: color.unwrap_or(Color::Rgb(0, 0, 0)),
                 width,
             }
@@ -553,6 +575,23 @@ fn parse_vertices(params: &[(String, String)]) -> Vec<Point> {
                 .then(|| n.chunks(2).map(|c| Point { x: c[0], y: c[1] }).collect())
         })
         .unwrap_or_default()
+}
+
+/// True when the path data's coordinate bbox starts at ~(0,0) - the signature
+/// of object-local AbbreviatedData (rofd shifts page-local strokes so their
+/// bbox origin is exactly (0,0)). Foreign page-absolute data has its bbox at
+/// the stroke's page position instead.
+fn path_data_starts_at_origin(data: &PathData) -> bool {
+    let (mut minx, mut miny) = (f64::INFINITY, f64::INFINITY);
+    for c in &data.commands {
+        let (x, y) = match c {
+            PathCommand::M(x, y) | PathCommand::L(x, y) => (*x, *y),
+            _ => continue,
+        };
+        minx = minx.min(x);
+        miny = miny.min(y);
+    }
+    minx.is_finite() && minx.abs() < 1e-6 && (miny.is_finite() && miny.abs() < 1e-6)
 }
 
 #[cfg(test)]

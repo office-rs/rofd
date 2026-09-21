@@ -26,8 +26,14 @@ fn ann(
 }
 
 fn roundtrip(a: &Annotation) -> Annotation {
-    let xml =
-        rofd_io::serialize::annotation::serialize_page_annot(&a.page, std::slice::from_ref(a));
+    // Seed above the annotation's own ID so minted appearance object IDs
+    // never collide with it (mirrors save_ofd's object_id_seed).
+    let mut next_id = 1000u64;
+    let xml = rofd_io::serialize::annotation::serialize_page_annot(
+        &a.page,
+        std::slice::from_ref(a),
+        &mut next_id,
+    );
     let parsed = rofd_io::parse::annotation::parse_page_annot(&xml, &a.page).unwrap();
     parsed.into_iter().next().expect("one annot")
 }
@@ -375,8 +381,12 @@ fn multiple_annots_roundtrip_together() {
         },
         None,
     );
-    let xml =
-        rofd_io::serialize::annotation::serialize_page_annot(&a1.page, &[a1.clone(), a2.clone()]);
+    let mut next_id = 1000u64;
+    let xml = rofd_io::serialize::annotation::serialize_page_annot(
+        &a1.page,
+        &[a1.clone(), a2.clone()],
+        &mut next_id,
+    );
     let parsed = rofd_io::parse::annotation::parse_page_annot(&xml, &a1.page).unwrap();
     assert_eq!(parsed.len(), 2);
     assert_eq!(parsed[0], a1);

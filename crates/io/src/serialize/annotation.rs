@@ -8,35 +8,60 @@
 //! `tests/annotation_roundtrip.rs`).
 
 use rofd_dom::{
-    Annotation, AnnotationKind, AnnotationPayload, Color, PageId, PathData, Rect, ShapeKind,
+    Annotation, AnnotationKind, AnnotationPayload, Color, OfdDocument, PageId, PathData, Rect,
+    ShapeKind,
 };
 
 use crate::annotation_geom::{
     arrow_path, arrow_path_points, ellipse_path, line_path, line_path_points, markup_line_path,
-    polygon_path, polyline_path, rect_path, squiggly_path,
+    polygon_path, polyline_path, rect_path, squiggly_path, translate_path,
 };
 use crate::dateutil::format_last_mod_date;
 
 /// Serialize one page's annotations to GB/T 33190 §15.2 `<PageAnnot>` XML.
 ///
 /// This is the inverse of `parse::annotation::parse_page_annot`.
-pub fn serialize_page_annot(_page: &PageId, anns: &[Annotation]) -> String {
+///
+/// `next_id` is the document-wide ST_ID allocator: it carries the highest
+/// object ID reserved so far, so callers seed it from `OfdDocument.max_unit_id`
+/// (see `object_id_seed`). Every appearance object reserves a fresh integer
+/// from it - GB/T 33190 表 2 types object IDs as unsigned integers, and strict
+/// readers drop an annotation file outright on a non-integer or duplicated
+/// object ID. The caller patches `<MaxUnitID>` to the final counter value.
+pub fn serialize_page_annot(_page: &PageId, anns: &[Annotation], next_id: &mut u64) -> String {
     let mut s = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     s.push_str("<ofd:PageAnnot xmlns:ofd=\"http://www.ofdspec.org/2016\">");
     for a in anns {
-        s.push_str(&serialize_one(a));
+        s.push_str(&serialize_one(a, next_id));
     }
     s.push_str("</ofd:PageAnnot>");
     s
 }
 
-/// Legacy alias (save.rs / write_ofd call this); equivalent to `serialize_page_annot`.
-pub fn serialize_page_annotations(page: &PageId, anns: &[Annotation]) -> String {
-    serialize_page_annot(page, anns)
+/// Seed for the document-wide object ID allocator: the highest ID that any
+/// object in the document may already use. Well-formed files guarantee
+/// `MaxUnitID` covers every body object, but a foreign writer may leave it
+/// stale, so also cover the annotation IDs rofd knows about - appearance
+/// object IDs must be unique document-wide no matter what the input looked
+/// like.
+pub fn object_id_seed(doc: &OfdDocument) -> u64 {
+    let mut seed = doc.max_unit_id;
+    for ann in doc.annotations.by_page.values().flatten() {
+        if let Ok(n) = ann.id.0.parse::<u64>() {
+            seed = seed.max(n);
+        }
+    }
+    seed
+}
+
+/// Reserve the next document-wide object ID from the allocator.
+fn mint_object_id(next_id: &mut u64) -> u64 {
+    *next_id += 1;
+    *next_id
 }
 
 /// Serialize a single `<Annot>` element.
-fn serialize_one(a: &Annotation) -> String {
+fn serialize_one(a: &Annotation, next_id: &mut u64) -> String {
     let (ty, sub) = kind_to_type_subtype(&a.kind);
     let mut s = format!(
         "<ofd:Annot ID=\"{}\" Type=\"{}\" Creator=\"{}\" LastModDate=\"{}\" ReadOnly=\"false\"",
@@ -73,17 +98,13 @@ fn serialize_one(a: &Annotation) -> String {
             angle
         ));
     }
-    // Polygon/PolyLine/Line/Arrow: Vertices Parameter (GB/T 33190 §15.2.3.5)
-    // carries the control points as "x y x y ..." so parse can reconstruct
-    // `points`. Line/Arrow store their two endpoints here so the drawn
-    // direction (and arrowhead position) survives save/reload - the bbox
-    // `rect` alone loses which diagonal was drawn.
-    if let AnnotationPayload::Shape {
-        points,
-        kind: ShapeKind::Polygon | ShapeKind::PolyLine | ShapeKind::Line | ShapeKind::Arrow,
-        ..
-    } = &a.payload
-    {
+    // Vertices Parameter (GB/T 33190 §15.2.3.5): carries control points as
+    // "x y x y ..." so parse can reconstruct `points`. Line/Arrow store their
+    // two endpoints here so the drawn direction (and arrowhead position)
+    // survives save/reload - the bbox `rect` alone loses which diagonal was
+    // drawn. Foreign-authored Rect/Ellipse annots may also carry Vertices;
+    // emit whenever the model has points so they survive the round-trip.
+    if let AnnotationPayload::Shape { points, .. } = &a.payload {
         if !points.is_empty() {
             let mut verts = String::new();
             for p in points {
@@ -103,7 +124,7 @@ fn serialize_one(a: &Annotation) -> String {
         }
     }
     // Appearance per payload kind.
-    s.push_str(&appearance_xml(&a.kind, &a.payload));
+    s.push_str(&appearance_xml(&a.kind, &a.payload, next_id));
     s.push_str("</ofd:Annot>");
     s
 }
@@ -131,31 +152,34 @@ fn kind_to_type_subtype(k: &AnnotationKind) -> (&'static str, Option<&'static st
 }
 
 /// Build the `<Appearance>` XML for the given kind + payload.
-fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload) -> String {
+fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload, next_id: &mut u64) -> String {
     match (kind, payload) {
         (AnnotationKind::Highlight, AnnotationPayload::Markup { quad_points, color }) => {
-            markup_highlight_appearance(quad_points, color)
+            markup_highlight_appearance(quad_points, color, next_id)
         }
         (AnnotationKind::Underline, AnnotationPayload::Markup { quad_points, color }) => {
-            markup_line_appearance(quad_points, color, true)
+            markup_line_appearance(quad_points, color, true, next_id)
         }
         (AnnotationKind::Strikeout, AnnotationPayload::Markup { quad_points, color }) => {
-            markup_line_appearance(quad_points, color, false)
+            markup_line_appearance(quad_points, color, false, next_id)
         }
         (AnnotationKind::Squiggly, AnnotationPayload::Markup { quad_points, color }) => {
             // Same boundary structure as Underline/Strikeout (so parse reconstructs
             // the same quad_points), but the path is a wavy squiggly_path.
-            markup_squiggly_appearance(quad_points, color)
+            markup_squiggly_appearance(quad_points, color, next_id)
         }
         (AnnotationKind::Freehand, AnnotationPayload::Freehand { path, color, width }) => {
             let r = path_bounds(path);
+            // PathObject is appearance-relative: data shifts from page-local
+            // into object-local coordinates.
+            let local = translate_path(path, -r.x, -r.y);
             format!(
                 "<ofd:Appearance Boundary=\"{} {} {} {}\">{}</ofd:Appearance>",
                 r.x,
                 r.y,
                 r.w,
                 r.h,
-                path_object_xml(&r, *color, None, *width, path)
+                path_object_xml(&local_rect(&r), Some(*color), None, *width, &local, next_id)
             )
         }
         (
@@ -169,14 +193,23 @@ fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload) -> String 
                 ..
             },
         ) => {
-            let path = polygon_path(points);
+            let local: Vec<rofd_dom::Point> =
+                points.iter().map(|p| to_object_local(p, rect)).collect();
+            let path = polygon_path(&local);
             format!(
                 "<ofd:Appearance Boundary=\"{} {} {} {}\">{}</ofd:Appearance>",
                 rect.x,
                 rect.y,
                 rect.w,
                 rect.h,
-                path_object_xml(rect, *stroke, *fill, *width, &path)
+                path_object_xml(
+                    &local_rect(rect),
+                    Some(*stroke),
+                    *fill,
+                    *width,
+                    &path,
+                    next_id
+                )
             )
         }
         (
@@ -190,14 +223,23 @@ fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload) -> String 
                 ..
             },
         ) => {
-            let path = polyline_path(points);
+            let local: Vec<rofd_dom::Point> =
+                points.iter().map(|p| to_object_local(p, rect)).collect();
+            let path = polyline_path(&local);
             format!(
                 "<ofd:Appearance Boundary=\"{} {} {} {}\">{}</ofd:Appearance>",
                 rect.x,
                 rect.y,
                 rect.w,
                 rect.h,
-                path_object_xml(rect, *stroke, *fill, *width, &path)
+                path_object_xml(
+                    &local_rect(rect),
+                    Some(*stroke),
+                    *fill,
+                    *width,
+                    &path,
+                    next_id
+                )
             )
         }
         (
@@ -211,6 +253,9 @@ fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload) -> String 
                 ..
             },
         ) => {
+            // rect_path/ellipse_path only read w/h (already object-local);
+            // line/arrow convert their endpoints relative to the absolute rect
+            // origin, which equals the appearance origin.
             let path = match sk {
                 ShapeKind::Rect => rect_path(rect),
                 ShapeKind::Ellipse => ellipse_path(rect),
@@ -228,7 +273,14 @@ fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload) -> String 
                 rect.y,
                 rect.w,
                 rect.h,
-                path_object_xml(rect, *stroke, *fill, *width, &path)
+                path_object_xml(
+                    &local_rect(rect),
+                    Some(*stroke),
+                    *fill,
+                    *width,
+                    &path,
+                    next_id
+                )
             )
         }
         (AnnotationKind::Note, AnnotationPayload::Note { rect, color, .. }) => {
@@ -238,7 +290,14 @@ fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload) -> String 
                 rect.y,
                 rect.w,
                 rect.h,
-                path_object_xml(rect, *color, None, 1.0, &rect_path(rect))
+                path_object_xml(
+                    &local_rect(rect),
+                    Some(*color),
+                    None,
+                    1.0,
+                    &rect_path(rect),
+                    next_id
+                )
             )
         }
         (
@@ -257,16 +316,18 @@ fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload) -> String 
                 rect.y,
                 rect.w,
                 rect.h,
-                text_object_xml(rect, &font.0, *size, *color, content)
+                text_object_xml(rect, &font.0, *size, *color, content, next_id)
             )
         }
         (AnnotationKind::Stamp, AnnotationPayload::Stamp { rect, image }) => {
+            let id = mint_object_id(next_id);
             format!(
-                "<ofd:Appearance Boundary=\"{} {} {} {}\"><ofd:ImageObject ID=\"s1\" Boundary=\"0 0 {} {}\" ResourceID=\"{}\"/></ofd:Appearance>",
+                "<ofd:Appearance Boundary=\"{} {} {} {}\"><ofd:ImageObject ID=\"{}\" Boundary=\"0 0 {} {}\" ResourceID=\"{}\"/></ofd:Appearance>",
                 rect.x,
                 rect.y,
                 rect.w,
                 rect.h,
+                id,
                 rect.w,
                 rect.h,
                 xml_escape(&image.0)
@@ -292,7 +353,9 @@ fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload) -> String 
                 rect.y,
                 rect.w,
                 rect.h,
-                text_object_xml_with_alpha(rect, &font.0, *size, *color, content, alpha, &ctm)
+                text_object_xml_with_alpha(
+                    rect, &font.0, *size, *color, content, alpha, &ctm, next_id
+                )
             )
         }
         _ => "<ofd:Appearance Boundary=\"0 0 0 0\"/>".into(),
@@ -303,26 +366,46 @@ fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload) -> String 
 // Appearance object helpers
 // ---------------------------------------------------------------------------
 
-/// Build a `<PathObject>` element. The boundary is the absolute (page-local)
-/// rect so that the parser can extract quad_points from it for Markup kinds.
+/// Build a `<PathObject>` element.
+///
+/// Coordinate convention (matches reference authoring tools): the enclosing
+/// `<Appearance Boundary>` stays page-absolute, but the PathObject's own
+/// `Boundary` is APPEARANCE-RELATIVE (`0 0 w h`) and the AbbreviatedData is
+/// relative to that object boundary (GB/T 33190 §8.2) - strict readers place
+/// objects at `appearance.origin + object.boundary.origin + data`, so an
+/// absolute object boundary (or page-local path data) lands the geometry at a
+/// multiple of its true position. `r` is therefore the object-local rect and
+/// `path` must already be in object-local coordinates.
+///
+/// Object IDs are minted from `next_id` (seeded at `doc.max_unit_id`) - GB/T
+/// 33190 表 2 types object IDs as unsigned integers, and strict readers reject
+/// the whole file on a non-integer or duplicated ID. A fill-only object
+/// (highlight) carries `Stroke="false" Fill="true"` plus `<FillColor>`; a
+/// stroke-only or stroke+fill object relies on the default `Stroke` and
+/// writes the color elements it actually has.
 fn path_object_xml(
     r: &Rect,
-    stroke: Color,
+    stroke: Option<Color>,
     fill: Option<Color>,
     width: f64,
     path: &PathData,
+    next_id: &mut u64,
 ) -> String {
+    let id = mint_object_id(next_id);
     let mut s = format!(
-        "<ofd:PathObject ID=\"a0\" Boundary=\"{} {} {} {}\" LineWidth=\"{}\">",
-        r.x, r.y, r.w, r.h, width
+        "<ofd:PathObject ID=\"{}\" Boundary=\"{} {} {} {}\" LineWidth=\"{}\"",
+        id, r.x, r.y, r.w, r.h, width
     );
+    if fill.is_some() && stroke.is_none() {
+        s.push_str(" Stroke=\"false\" Fill=\"true\"");
+    }
+    s.push('>');
     if let Some(f) = fill {
         s.push_str(&format!("<ofd:FillColor Value=\"{}\"/>", color_str(f)));
     }
-    s.push_str(&format!(
-        "<ofd:StrokeColor Value=\"{}\"/>",
-        color_str(stroke)
-    ));
+    if let Some(c) = stroke {
+        s.push_str(&format!("<ofd:StrokeColor Value=\"{}\"/>", color_str(c)));
+    }
     s.push_str(&format!(
         "<ofd:AbbreviatedData>{}</ofd:AbbreviatedData>",
         path_to_abbrev(path)
@@ -332,9 +415,18 @@ fn path_object_xml(
 }
 
 /// Build a `<TextObject>` element (TextBox).
-fn text_object_xml(r: &Rect, font: &str, size: f64, color: Color, content: &str) -> String {
+fn text_object_xml(
+    r: &Rect,
+    font: &str,
+    size: f64,
+    color: Color,
+    content: &str,
+    next_id: &mut u64,
+) -> String {
+    let id = mint_object_id(next_id);
     format!(
-        "<ofd:TextObject ID=\"t0\" Boundary=\"0 0 {} {}\" Font=\"{}\" Size=\"{}\"><ofd:FillColor Value=\"{}\"/><ofd:TextCode X=\"0\" Y=\"{}\">{}</ofd:TextCode></ofd:TextObject>",
+        "<ofd:TextObject ID=\"{}\" Boundary=\"0 0 {} {}\" Font=\"{}\" Size=\"{}\"><ofd:FillColor Value=\"{}\"/><ofd:TextCode X=\"0\" Y=\"{}\">{}</ofd:TextCode></ofd:TextObject>",
+        id,
         r.w,
         r.h,
         xml_escape(font),
@@ -346,6 +438,9 @@ fn text_object_xml(r: &Rect, font: &str, size: f64, color: Color, content: &str)
 }
 
 /// Build a `<TextObject>` element with Alpha + CTM (Watermark).
+// Watermark styling is inherently wide (font/size/color/alpha/ctm + geometry
+// + the ID allocator); folding it into a struct buys nothing at one call site.
+#[allow(clippy::too_many_arguments)]
 fn text_object_xml_with_alpha(
     r: &Rect,
     font: &str,
@@ -354,9 +449,12 @@ fn text_object_xml_with_alpha(
     content: &str,
     alpha: u8,
     ctm: &str,
+    next_id: &mut u64,
 ) -> String {
+    let id = mint_object_id(next_id);
     format!(
-        "<ofd:TextObject ID=\"w0\" Boundary=\"0 0 {} {}\" Font=\"{}\" Size=\"{}\" CTM=\"{}\" Alpha=\"{}\"><ofd:FillColor Value=\"{}\"/><ofd:TextCode X=\"0\" Y=\"{}\">{}</ofd:TextCode></ofd:TextObject>",
+        "<ofd:TextObject ID=\"{}\" Boundary=\"0 0 {} {}\" Font=\"{}\" Size=\"{}\" CTM=\"{}\" Alpha=\"{}\"><ofd:FillColor Value=\"{}\"/><ofd:TextCode X=\"0\" Y=\"{}\">{}</ofd:TextCode></ofd:TextObject>",
+        id,
         r.w,
         r.h,
         xml_escape(font),
@@ -369,10 +467,17 @@ fn text_object_xml_with_alpha(
     )
 }
 
-/// Highlight appearance: one filled rectangle per quad pair, with Darken blend.
-/// The PathObject boundary uses absolute coords (p0.x p0.y dx dy) so the parser
-/// reconstructs the exact quad_points from boundary corners.
-fn markup_highlight_appearance(quad_points: &[rofd_dom::Point], color: &Color) -> String {
+/// Highlight appearance: one filled rectangle per quad pair. The enclosing
+/// `<Appearance Boundary>` uses absolute coords (p0.x p0.y dx dy) so the
+/// parser reconstructs the exact quad_points from boundary corners; the inner
+/// PathObject is appearance-relative with object-local path data. Fill-only
+/// (no stroke) - a stroked highlight renders as a hollow outline in strict
+/// readers.
+fn markup_highlight_appearance(
+    quad_points: &[rofd_dom::Point],
+    color: &Color,
+    next_id: &mut u64,
+) -> String {
     let mut s = String::new();
     for (p0, p1) in quad_point_pairs(quad_points) {
         let r = Rect {
@@ -385,7 +490,14 @@ fn markup_highlight_appearance(quad_points: &[rofd_dom::Point], color: &Color) -
             "<ofd:Appearance Boundary=\"{} {} {} {}\">",
             r.x, r.y, r.w, r.h
         ));
-        s.push_str(&path_object_xml(&r, *color, None, 0.5, &rect_path(&r)));
+        s.push_str(&path_object_xml(
+            &local_rect(&r),
+            None,
+            Some(*color),
+            0.5,
+            &rect_path(&r),
+            next_id,
+        ));
         s.push_str("</ofd:Appearance>");
     }
     s
@@ -397,21 +509,30 @@ fn markup_line_appearance(
     quad_points: &[rofd_dom::Point],
     color: &Color,
     at_bottom: bool,
+    next_id: &mut u64,
 ) -> String {
     let mut s = String::new();
     for (p0, p1) in quad_point_pairs(quad_points) {
-        let r = Rect {
-            x: p0.x.min(p1.x),
-            y: p0.y.min(p1.y),
-            w: (p1.x - p0.x).abs(),
-            h: (p1.y - p0.y).abs(),
-        };
-        let path = markup_line_path(p0, p1, at_bottom);
+        let r = quad_rect(&p0, &p1);
+        // Object-local: quad_points are page-local, the PathObject data must
+        // be relative to the (appearance-relative) object boundary.
+        let path = markup_line_path(
+            to_object_local(&p0, &r),
+            to_object_local(&p1, &r),
+            at_bottom,
+        );
         s.push_str(&format!(
             "<ofd:Appearance Boundary=\"{} {} {} {}\">",
             r.x, r.y, r.w, r.h
         ));
-        s.push_str(&path_object_xml(&r, *color, None, 0.5, &path));
+        s.push_str(&path_object_xml(
+            &local_rect(&r),
+            Some(*color),
+            None,
+            0.5,
+            &path,
+            next_id,
+        ));
         s.push_str("</ofd:Appearance>");
     }
     s
@@ -421,24 +542,51 @@ fn markup_line_appearance(
 /// matches `markup_line_appearance` (so parse reconstructs the same
 /// quad_points), but the AbbreviatedData uses `squiggly_path` (Q curves) for
 /// the wavy rendering (GB/T 33190 §15.2.3.4).
-fn markup_squiggly_appearance(quad_points: &[rofd_dom::Point], color: &Color) -> String {
+fn markup_squiggly_appearance(
+    quad_points: &[rofd_dom::Point],
+    color: &Color,
+    next_id: &mut u64,
+) -> String {
     let mut s = String::new();
     for (p0, p1) in quad_point_pairs(quad_points) {
-        let r = Rect {
-            x: p0.x.min(p1.x),
-            y: p0.y.min(p1.y),
-            w: (p1.x - p0.x).abs(),
-            h: (p1.y - p0.y).abs(),
-        };
-        let path = squiggly_path(p0, p1);
+        let r = quad_rect(&p0, &p1);
+        let path = squiggly_path(to_object_local(&p0, &r), to_object_local(&p1, &r));
         s.push_str(&format!(
             "<ofd:Appearance Boundary=\"{} {} {} {}\">",
             r.x, r.y, r.w, r.h
         ));
-        s.push_str(&path_object_xml(&r, *color, None, 0.5, &path));
+        s.push_str(&path_object_xml(
+            &local_rect(&r),
+            Some(*color),
+            None,
+            0.5,
+            &path,
+            next_id,
+        ));
         s.push_str("</ofd:Appearance>");
     }
     s
+}
+
+/// Bounding rect (page-local) of one quad pair.
+fn quad_rect(p0: &rofd_dom::Point, p1: &rofd_dom::Point) -> Rect {
+    Rect {
+        x: p0.x.min(p1.x),
+        y: p0.y.min(p1.y),
+        w: (p1.x - p0.x).abs(),
+        h: (p1.y - p0.y).abs(),
+    }
+}
+
+/// The appearance-relative form of a page-local rect: same size, origin at
+/// (0, 0) - the object Boundary convention inside an annotation Appearance.
+fn local_rect(r: &Rect) -> Rect {
+    Rect {
+        x: 0.0,
+        y: 0.0,
+        w: r.w,
+        h: r.h,
+    }
 }
 
 /// Iterate quad_points as pairs (p0, p1). Each pair defines one quad rectangle.
@@ -732,11 +880,14 @@ mod tests {
 
     #[test]
     fn serialize_page_annot_empty_yields_empty_pagennot() {
-        let xml = serialize_page_annot(&PageId::new("1"), &[]);
+        let mut next_id = 100u64;
+        let xml = serialize_page_annot(&PageId::new("1"), &[], &mut next_id);
         assert!(xml.contains("<ofd:PageAnnot"));
         assert!(xml.contains("</ofd:PageAnnot>"));
         // No <Annot> elements.
         assert!(!xml.contains("<ofd:Annot"));
+        // No object IDs minted for an empty page.
+        assert_eq!(next_id, 100);
     }
 
     #[test]

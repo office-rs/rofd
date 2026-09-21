@@ -1,7 +1,9 @@
+use std::collections::HashMap;
+
 use rofd_dom::OfdDocument;
 
 use crate::error::OfdError;
-use crate::serialize::annotation::serialize_page_annot;
+use crate::serialize::annotation::{object_id_seed, serialize_page_annot};
 use crate::serialize::annotation_entry::serialize_annotations_entry;
 use crate::zip_util::write_zip;
 
@@ -32,6 +34,18 @@ pub fn write_ofd(doc: &OfdDocument) -> Result<Vec<u8>, OfdError> {
         .collect();
     let has_annots = !pages_with_ann.is_empty();
 
+    // Per-page annotation XML is serialized up front with one document-wide
+    // ID allocator (ST_ID: object IDs are unique unsigned integers across the
+    // whole file), so <MaxUnitID> below can be written from the final counter.
+    let mut next_id = object_id_seed(doc);
+    let mut page_annot_xml: HashMap<usize, String> = HashMap::new();
+    for (i, page) in doc.pages.iter().enumerate() {
+        let anns = doc.annotations.for_page(&page.id);
+        if !anns.is_empty() {
+            page_annot_xml.insert(i, serialize_page_annot(&page.id, anns, &mut next_id));
+        }
+    }
+
     // Document.xml
     let mut doc_xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     doc_xml.push_str("<ofd:Document xmlns:ofd=\"http://www.ofdspec.org/2016\">\n");
@@ -39,7 +53,7 @@ pub fn write_ofd(doc: &OfdDocument) -> Result<Vec<u8>, OfdError> {
     if let Some(r) = pb {
         doc_xml.push_str(&format!(
             "  <ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>{} {} {} {}</ofd:PhysicalBox></ofd:PageArea><ofd:MaxUnitID>{}</ofd:MaxUnitID></ofd:CommonData>\n",
-            r.x, r.y, r.w, r.h, doc.max_unit_id
+            r.x, r.y, r.w, r.h, next_id
         ));
     }
     doc_xml.push_str("  <ofd:Pages>\n");
@@ -88,12 +102,10 @@ pub fn write_ofd(doc: &OfdDocument) -> Result<Vec<u8>, OfdError> {
             page_xml.into_bytes(),
         ));
 
-        let anns = doc.annotations.for_page(&page.id);
-        if !anns.is_empty() {
-            let xml = serialize_page_annot(&page.id, anns);
+        if let Some(xml) = page_annot_xml.get(&i) {
             entries.push((
                 format!("Doc_0/Annots/Page_{i}/Annotation.xml"),
-                xml.into_bytes(),
+                xml.clone().into_bytes(),
             ));
         }
     }

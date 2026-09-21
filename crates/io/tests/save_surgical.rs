@@ -12,8 +12,8 @@ fn surgical_save_preserves_body_byte_identical() {
 
     // Body Content.xml + OFD.xml + resources must be byte-identical
     // (surgical save invariant §4.3). Document.xml is NOT in this set -
-    // its <MaxUnitID> is byte-patched, so it is only identical when the
-    // model's max_unit_id matches the original (the no-mutation case here).
+    // its <MaxUnitID> is byte-patched to cover the IDs minted while
+    // re-serializing the annotation files.
     for name in [
         "OFD.xml",
         "Doc_0/Pages/Page_0/Content.xml",
@@ -25,21 +25,54 @@ fn surgical_save_preserves_body_byte_identical() {
             "{name} changed"
         );
     }
-    // Document.xml is byte-patched; with no mutation it stays identical.
-    assert_eq!(
-        by_name(&orig_entries, "Doc_0/Document.xml"),
-        by_name(&saved_entries, "Doc_0/Document.xml"),
-        "Document.xml unchanged when max_unit_id not mutated"
+    // Document.xml: the ONLY textual difference is the <MaxUnitID> value.
+    // Strip that element and the rest must be byte-identical.
+    let orig_doc = std::str::from_utf8(by_name(&orig_entries, "Doc_0/Document.xml")).unwrap();
+    let saved_doc = std::str::from_utf8(by_name(&saved_entries, "Doc_0/Document.xml")).unwrap();
+    assert_eq!(strip_max_unit_id(orig_doc), strip_max_unit_id(saved_doc));
+    let new_max: u64 = saved_doc
+        .split("MaxUnitID>")
+        .nth(1)
+        .unwrap()
+        .split('<')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(
+        new_max > report.document.max_unit_id,
+        "MaxUnitID must cover minted appearance object IDs: {new_max} vs {}",
+        report.document.max_unit_id
     );
 }
 
-/// WPS interop: adding the FIRST annotation to a previously-bare document must
-/// wire the full GB/T 33190 discovery chain - readers locate annotations via
-/// `Document.xml` `<Annotations>` loc -> `Annots/Annotations.xml` entry ->
-/// per-page `FileLoc`. `ensure_annotation_entries` adds the files; the
+/// Remove the `<...MaxUnitID>N</...MaxUnitID>` element so two Document.xml
+/// strings can be compared with the patched value factored out.
+fn strip_max_unit_id(xml: &str) -> String {
+    const KEY: &str = "MaxUnitID>";
+    let Some(start) = xml.find(KEY) else {
+        return xml.to_string();
+    };
+    let open_start = xml[..start].rfind('<').unwrap_or(0);
+    let text_start = start + KEY.len();
+    let Some(end_rel) = xml[text_start..].find('<') else {
+        return xml.to_string();
+    };
+    // End of the closing tag.
+    let close_end = xml[text_start + end_rel..]
+        .find('>')
+        .map(|i| text_start + end_rel + i + 1)
+        .unwrap_or(xml.len());
+    format!("{}{}", &xml[..open_start], &xml[close_end..])
+}
+
+/// Strict-reader interop: adding the FIRST annotation to a previously-bare
+/// document must wire the full GB/T 33190 discovery chain - readers locate
+/// annotations via `Document.xml` `<Annotations>` loc -> `Annots/Annotations.xml`
+/// entry -> per-page `FileLoc`. `ensure_annotation_entries` adds the files; the
 /// `<Annotations>` loc must be inserted into the byte-copied Document.xml too,
-/// or WPS (strict discovery, no directory scan) shows no annotations at all
-/// while rofd's fallback scan still finds them.
+/// or a strict reader (discovery-only, no directory scan) shows no annotations
+/// at all while rofd's fallback scan still finds them.
 #[test]
 fn surgical_save_inserts_annotations_ref_for_previously_bare_document() {
     use rofd_dom::*;
@@ -136,8 +169,9 @@ fn surgical_save_bare_document_without_annotations_stays_identical() {
     }
 }
 
-/// Real-file regression (WPS): sample-content.ofd ships without annotations;
-/// after annotating + surgical save, WPS must be able to discover them.
+/// Real-file regression: sample-content.ofd ships without annotations;
+/// after annotating + surgical save, a strict reader must be able to
+/// discover them.
 #[test]
 #[ignore = "requires the real OFD at ../../test/sample-content.ofd"]
 fn surgical_save_real_bare_file_gains_annotations_ref() {
@@ -202,7 +236,8 @@ fn surgical_save_rewrites_annotation_entry() {
 /// Task 9: surgical save expands the dirty set -
 /// (a) entry file `Annotations.xml` is re-serialized,
 /// (b) per-page `Page_N/Annotation.xml` is re-serialized,
-/// (c) `Document.xml` `<MaxUnitID>` is byte-patched,
+/// (c) `Document.xml` `<MaxUnitID>` is byte-patched past the annotation ID
+///     to also cover the appearance object IDs minted during (b),
 /// (d) body `Content.xml` entries are byte-identical (invariant §4.3).
 #[test]
 fn surgical_save_rewrites_annotation_entry_and_per_page_and_max_unit_id() {
@@ -250,7 +285,9 @@ fn surgical_save_rewrites_annotation_entry_and_per_page_and_max_unit_id() {
         let s = saved_entries.iter().find(|(n, _)| n == name).unwrap();
         assert_eq!(o.1, s.1, "body {name} byte-identical");
     }
-    // (c) Document.xml MaxUnitID updated.
+    // (c) Document.xml MaxUnitID covers every object ID in the annotation
+    // files - both annotations' own IDs and the appearance object IDs
+    // minted while re-serializing them (2 annots -> 2 minted PathObjects).
     let doc_xml = std::str::from_utf8(
         &saved_entries
             .iter()
@@ -259,10 +296,37 @@ fn surgical_save_rewrites_annotation_entry_and_per_page_and_max_unit_id() {
             .1,
     )
     .unwrap();
+    let new_max: u64 = doc_xml
+        .split("MaxUnitID>")
+        .nth(1)
+        .unwrap()
+        .split('<')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
     assert!(
-        doc_xml.contains(&format!("<ofd:MaxUnitID>{new_id}</ofd:MaxUnitID>")),
-        "MaxUnitID updated to {new_id}: {doc_xml}"
+        new_max > new_id,
+        "MaxUnitID {new_max} must cover minted object IDs past {new_id}"
     );
+    let ann_xml_probe = std::str::from_utf8(
+        &saved_entries
+            .iter()
+            .find(|(n, _)| n.ends_with("Annots/Page_0/Annotation.xml"))
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    for id in ann_xml_probe
+        .split("ID=\"")
+        .skip(1)
+        .map(|r| r.split('"').next().unwrap())
+    {
+        let n: u64 = id
+            .parse()
+            .unwrap_or_else(|_| panic!("non-integer ID {id:?}"));
+        assert!(n <= new_max, "object ID {n} exceeds MaxUnitID {new_max}");
+    }
     // (b) per-page annotation file contains the new annotation.
     let ann_xml = std::str::from_utf8(
         &saved_entries
