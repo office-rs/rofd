@@ -23,6 +23,18 @@ const DOCUMENT_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <ofd:Annotations>Annots/Annotations.xml</ofd:Annotations>
 </ofd:Document>"#;
 
+/// Document.xml WITHOUT the `<Annotations>` loc and no Annots/ entries in the
+/// package: a document that had no annotations when authored (the state after
+/// rofd adds the first annotation via surgical save).
+const DOCUMENT_XML_BARE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Document xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:PageArea>
+  <ofd:MaxUnitID>101</ofd:MaxUnitID></ofd:CommonData>
+  <ofd:Pages>
+    <ofd:Page ID="1" BaseLoc="Pages/Page_0/Content.xml"/>
+  </ofd:Pages>
+</ofd:Document>"#;
+
 const PAGE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <ofd:Page xmlns:ofd="http://www.ofdspec.org/2016">
   <ofd:Area><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:Area>
@@ -235,6 +247,27 @@ pub fn build_minimal_ofd() -> Vec<u8> {
         ("Doc_0/Pages/Page_0/Content.xml", PAGE_XML),
         ("Doc_0/Annots/Annotations.xml", ANNOTATION_ENTRY_XML),
         ("Doc_0/Annots/Page_0/Annotation.xml", ANNOTATION_XML),
+        ("Doc_0/Res/Font.xml", FONT_XML),
+    ] {
+        zip.start_file(name, opts).unwrap();
+        zip.write_all(body.as_bytes()).unwrap();
+    }
+    zip.finish().unwrap().into_inner()
+}
+
+/// Like build_minimal_ofd but WITHOUT annotations: no `<Annotations>` loc in
+/// Document.xml and no Annots/ entries. Surgical save of a first annotation
+/// added to this package must wire the discovery chain back in.
+#[allow(dead_code)]
+pub fn build_bare_ofd() -> Vec<u8> {
+    let cursor = std::io::Cursor::new(Vec::new());
+    let mut zip = ZipWriter::new(cursor);
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for (name, body) in [
+        ("OFD.xml", OFD_XML),
+        ("Doc_0/Document.xml", DOCUMENT_XML_BARE),
+        ("Doc_0/Pages/Page_0/Content.xml", PAGE_XML),
         ("Doc_0/Res/Font.xml", FONT_XML),
     ] {
         zip.start_file(name, opts).unwrap();

@@ -33,6 +33,148 @@ fn surgical_save_preserves_body_byte_identical() {
     );
 }
 
+/// WPS interop: adding the FIRST annotation to a previously-bare document must
+/// wire the full GB/T 33190 discovery chain - readers locate annotations via
+/// `Document.xml` `<Annotations>` loc -> `Annots/Annotations.xml` entry ->
+/// per-page `FileLoc`. `ensure_annotation_entries` adds the files; the
+/// `<Annotations>` loc must be inserted into the byte-copied Document.xml too,
+/// or WPS (strict discovery, no directory scan) shows no annotations at all
+/// while rofd's fallback scan still finds them.
+#[test]
+fn surgical_save_inserts_annotations_ref_for_previously_bare_document() {
+    use rofd_dom::*;
+    let original = fixtures::build_bare_ofd();
+    let report = rofd_io::parse_ofd(&original).unwrap();
+    assert!(
+        report.document.annotations.by_page.is_empty(),
+        "fixture starts bare"
+    );
+    let mut doc = report.document.clone();
+    doc.annotations
+        .by_page
+        .entry(PageId::new("1"))
+        .or_default()
+        .push(Annotation {
+            id: AnnotationId::from_int(102),
+            kind: AnnotationKind::Note,
+            page: PageId::new("1"),
+            creator: "t".into(),
+            created: 1_783_656_237_000,
+            modified: 1_783_656_237_000,
+            reply_to: None,
+            payload: AnnotationPayload::Note {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 5.0,
+                    h: 5.0,
+                },
+                color: Color::Rgb(0, 0, 0),
+                content: "first".into(),
+                icon: NoteIcon::Note,
+            },
+        });
+    let saved = rofd_io::save_ofd(&doc, &report.package).unwrap();
+    let saved_entries = rofd_io::zip_util::read_all_entries(&saved).unwrap();
+
+    // Document.xml gains the <Annotations> loc.
+    let doc_xml = std::str::from_utf8(by_name(&saved_entries, "Doc_0/Document.xml")).unwrap();
+    assert!(
+        doc_xml.contains("<ofd:Annotations>Annots/Annotations.xml</ofd:Annotations>"),
+        "Document.xml must reference the annotation entry file: {doc_xml}"
+    );
+    // Body Content.xml stays byte-identical (invariant §4.3).
+    let orig_entries = rofd_io::zip_util::read_all_entries(&original).unwrap();
+    assert_eq!(
+        by_name(&orig_entries, "Doc_0/Pages/Page_0/Content.xml"),
+        by_name(&saved_entries, "Doc_0/Pages/Page_0/Content.xml"),
+        "body Content.xml byte-identical"
+    );
+    // The saved package is discoverable through the STANDARD chain: re-parse
+    // finds the annotation and does not fall back to the /Annotation.xml scan
+    // (which would emit a MissingFeature warning).
+    let re = rofd_io::parse_ofd(&saved).unwrap();
+    let count: usize = re
+        .document
+        .annotations
+        .by_page
+        .values()
+        .map(|v| v.len())
+        .sum();
+    assert_eq!(count, 1, "annotation survives reload");
+    assert!(
+        !re.warnings.iter().any(|w| matches!(
+            w,
+            rofd_io::OfdWarning::MissingFeature { feature, .. } if feature.contains("annotation entry")
+        )),
+        "standard discovery path used, no fallback warning: {:?}",
+        re.warnings
+    );
+}
+
+/// The inverse guard: a bare document saved WITHOUT annotations must stay
+/// byte-identical - the `<Annotations>` loc is only inserted when the model
+/// actually has annotations to point at.
+#[test]
+fn surgical_save_bare_document_without_annotations_stays_identical() {
+    let original = fixtures::build_bare_ofd();
+    let report = rofd_io::parse_ofd(&original).unwrap();
+    let saved = rofd_io::save_ofd(&report.document, &report.package).unwrap();
+    let orig_entries = rofd_io::zip_util::read_all_entries(&original).unwrap();
+    let saved_entries = rofd_io::zip_util::read_all_entries(&saved).unwrap();
+    for name in [
+        "OFD.xml",
+        "Doc_0/Document.xml",
+        "Doc_0/Pages/Page_0/Content.xml",
+        "Doc_0/Res/Font.xml",
+    ] {
+        assert_eq!(
+            by_name(&orig_entries, name),
+            by_name(&saved_entries, name),
+            "{name} changed"
+        );
+    }
+}
+
+/// Real-file regression (WPS): sample-content.ofd ships without annotations;
+/// after annotating + surgical save, WPS must be able to discover them.
+#[test]
+#[ignore = "requires the real OFD at ../../test/sample-content.ofd"]
+fn surgical_save_real_bare_file_gains_annotations_ref() {
+    use rofd_dom::*;
+    let raw = std::fs::read("../../test/sample-content.ofd").expect("test sample present");
+    let report = rofd_io::parse_ofd(&raw).unwrap();
+    let mut doc = report.document.clone();
+    let pid = doc.pages[0].id.clone();
+    doc.annotations
+        .by_page
+        .entry(pid.clone())
+        .or_default()
+        .push(Annotation {
+            id: AnnotationId::from_int(doc.max_unit_id + 1),
+            kind: AnnotationKind::Highlight,
+            page: pid,
+            creator: "t".into(),
+            created: 1_783_656_237_000,
+            modified: 1_783_656_237_000,
+            reply_to: None,
+            payload: AnnotationPayload::Markup {
+                quad_points: vec![
+                    rofd_dom::Point { x: 10.0, y: 10.0 },
+                    rofd_dom::Point { x: 60.0, y: 20.0 },
+                ],
+                color: Color::Rgb(255, 221, 0),
+            },
+        });
+    let saved = rofd_io::save_ofd(&doc, &report.package).unwrap();
+    let saved_entries = rofd_io::zip_util::read_all_entries(&saved).unwrap();
+    let doc_xml = std::str::from_utf8(by_name(&saved_entries, "Doc_0/Document.xml")).unwrap();
+    assert!(
+        doc_xml.contains("<ofd:Annotations>Annots/Annotations.xml</ofd:Annotations>"),
+        "real-file Document.xml gains the ref: {doc_xml}"
+    );
+}
+
 fn by_name<'a>(entries: &'a [(String, Vec<u8>)], name: &'a str) -> &'a [u8] {
     entries
         .iter()
