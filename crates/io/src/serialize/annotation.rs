@@ -13,8 +13,9 @@ use rofd_dom::{
 };
 
 use crate::annotation_geom::{
-    arrow_path, arrow_path_points, ellipse_path, line_path, line_path_points, markup_line_path,
-    polygon_path, polyline_path, rect_path, squiggly_path, translate_path, SQUIGGLY_AMPLITUDE,
+    arrow_path, arrow_path_points, ellipse_path_inset, inset_rect_path, line_path,
+    line_path_points, markup_line_path, polygon_path, polyline_path, rect_path, squiggly_path,
+    translate_path, SQUIGGLY_AMPLITUDE,
 };
 use crate::dateutil::format_last_mod_date;
 
@@ -256,9 +257,14 @@ fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload, next_id: &
             // rect_path/ellipse_path only read w/h (already object-local);
             // line/arrow convert their endpoints relative to the absolute rect
             // origin, which equals the appearance origin.
+            //
+            // Rect/Ellipse strokes are inset by LineWidth/2: strict readers
+            // clip a PathObject to its Boundary, so a path touching the box
+            // edges loses the stroke's outer half on all four sides.
+            let inset = width / 2.0;
             let path = match sk {
-                ShapeKind::Rect => rect_path(rect),
-                ShapeKind::Ellipse => ellipse_path(rect),
+                ShapeKind::Rect => inset_rect_path(rect, inset),
+                ShapeKind::Ellipse => ellipse_path_inset(rect, inset),
                 // Direction-aware: when endpoints are stored, emit the actual
                 // p0 -> p1 geometry (object-local) so other OFD readers also
                 // see the drawn direction; fall back to the bbox diagonal.
@@ -295,7 +301,9 @@ fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload, next_id: &
                     Some(*color),
                     None,
                     1.0,
-                    &rect_path(rect),
+                    // Inset by LineWidth/2 like every stroked frame: the
+                    // stroke's outer half outside the Boundary is clipped.
+                    &inset_rect_path(rect, 0.5),
                     next_id
                 )
             )
@@ -312,7 +320,10 @@ fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload, next_id: &
             },
         ) => {
             // A bordered text box re-emits its frame ahead of the text (the
-            // reference layout: border PathObject, then TextObjects).
+            // reference layout: border PathObject, then TextObjects). The
+            // frame is inset by LineWidth/2 (reference convention: path starts
+            // at 0.1764 inside a Boundary at LineWidth 0.3528) so the stroke
+            // is not clipped to the Boundary edge.
             let mut inner = String::new();
             if let Some(border_color) = border {
                 inner.push_str(&path_object_xml(
@@ -320,7 +331,7 @@ fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload, next_id: &
                     Some(*border_color),
                     None,
                     0.3528,
-                    &rect_path(rect),
+                    &inset_rect_path(rect, 0.3528 / 2.0),
                     next_id,
                 ));
             }

@@ -41,16 +41,48 @@ pub fn rect_path(r: &Rect) -> PathData {
     }
 }
 
-/// Ellipse path (4-segment arc), centered at (w/2, h/2). Matches the real OFD
-/// sample form `M cx+rx cy A rx ry 0 0 1 ...` (GB/T 33190 §8.2 AbbreviatedData
-/// `A` arc operator), rather than a cubic-Bezier approximation.
+/// Stroked-rectangle path inset by `inset` (typically half the stroke width)
+/// from the box on all four sides. Strict readers clip a PathObject to its
+/// Boundary, so a stroke centered ON the edge loses its outer half to
+/// clipping on every side. Reference authoring tools inset the path by
+/// LineWidth/2 so the whole stroke sits inside the boundary (measured from
+/// test/sample.ofd: LineWidth 0.3528, rect path inset exactly 0.1764 on all
+/// four sides). Reads only w/h; degenerate boxes collapse onto the inset.
+pub fn inset_rect_path(r: &Rect, inset: f64) -> PathData {
+    let x1 = (r.w - inset).max(inset);
+    let y1 = (r.h - inset).max(inset);
+    PathData {
+        commands: vec![
+            PathCommand::M(inset, inset),
+            PathCommand::L(x1, inset),
+            PathCommand::L(x1, y1),
+            PathCommand::L(inset, y1),
+            PathCommand::Z,
+        ],
+    }
+}
+
+/// Ellipse path (4-segment arc) filling the whole rect. See
+/// [`ellipse_path_inset`] for the stroked form.
+pub fn ellipse_path(r: &Rect) -> PathData {
+    ellipse_path_inset(r, 0.0)
+}
+
+/// Stroked-ellipse path: center stays at the box center but both radii shrink
+/// by `inset` (typically half the stroke width). Strict readers clip a
+/// PathObject to its Boundary, so an ellipse touching the box edges loses the
+/// stroke's outer half at its top/bottom/left/right extremes. Reference
+/// authoring tools inset the radii by LineWidth/2 (measured from
+/// test/sample.ofd ID=106: Boundary 23.8517x6.4919, rx = w/2 - 0.1764,
+/// ry = h/2 - 0.1764 at LineWidth 0.3528).
 ///
 /// Note: `PathCommand::A` carries 6 params `(rx, ry, rot, sweep, x, y)` (the
 /// OFD/dom convention drops SVG's `large-arc-flag`; quarter arcs are always
 /// small-arc). See `docs/superpowers/specs/2026-07-14-c1.5-*.md` §A.
-pub fn ellipse_path(r: &Rect) -> PathData {
+pub fn ellipse_path_inset(r: &Rect, inset: f64) -> PathData {
     let (cx, cy) = (r.w / 2.0, r.h / 2.0);
-    let (rx, ry) = (r.w / 2.0, r.h / 2.0);
+    let rx = (r.w / 2.0 - inset).max(0.0);
+    let ry = (r.h / 2.0 - inset).max(0.0);
     PathData {
         commands: vec![
             PathCommand::M(cx + rx, cy),
@@ -304,6 +336,101 @@ mod tests {
             h: 5.0,
         });
         assert_eq!(p.commands.len(), 2);
+    }
+
+    #[test]
+    fn inset_rect_path_pulls_all_four_sides_inside() {
+        // Reference convention (sample.ofd ID=103): LineWidth 0.3528 rect path
+        // sits 0.1764 inside the Boundary on every side, so the stroke's
+        // outer half is not clipped. Degenerate boxes collapse onto the
+        // inset instead of inverting.
+        let p = inset_rect_path(
+            &Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 30.6262,
+                h: 7.762,
+            },
+            0.1764,
+        );
+        match &p.commands[..] {
+            [PathCommand::M(x0, y0), PathCommand::L(x1, y1), PathCommand::L(x2, y2), PathCommand::L(x3, y3), PathCommand::Z] =>
+            {
+                assert!((*x0 - 0.1764).abs() < 1e-9 && (*y0 - 0.1764).abs() < 1e-9);
+                assert!((x1 - (30.6262 - 0.1764)).abs() < 1e-9 && (*y1 - 0.1764).abs() < 1e-9);
+                assert!(
+                    (x2 - (30.6262 - 0.1764)).abs() < 1e-9 && (y2 - (7.762 - 0.1764)).abs() < 1e-9
+                );
+                assert!((*x3 - 0.1764).abs() < 1e-9 && (y3 - (7.762 - 0.1764)).abs() < 1e-9);
+            }
+            other => panic!("expected M-L-L-L-Z, got {other:?}"),
+        }
+        // Inset larger than half the box: collapses, never inverts.
+        let degenerate = inset_rect_path(
+            &Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 0.2,
+                h: 0.2,
+            },
+            0.5,
+        );
+        match &degenerate.commands[..] {
+            [PathCommand::M(x0, _), PathCommand::L(x1, _), PathCommand::L(x2, _), PathCommand::L(x3, _), PathCommand::Z] => {
+                for x in [*x0, *x1, *x2, *x3] {
+                    assert!((x - 0.5).abs() < 1e-9, "collapsed onto the inset, got {x}");
+                }
+            }
+            other => panic!("expected M-L-L-L-Z, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ellipse_path_inset_shrinks_radii_keeps_center() {
+        // Reference convention (sample.ofd ID=106): Boundary 23.8517x6.4919 at
+        // LineWidth 0.3528 -> rx = w/2 - 0.1764, ry = h/2 - 0.1764, center
+        // unchanged at (w/2, h/2). The path stays strictly inside the box.
+        let p = ellipse_path_inset(
+            &Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 23.8517,
+                h: 6.4919,
+            },
+            0.1764,
+        );
+        match &p.commands[..] {
+            [PathCommand::M(mx, my), PathCommand::A(rx0, ry0, _, _, ax0, ay0), PathCommand::A(rx1, ry1, _, _, ax1, ay1), PathCommand::A(rx2, ry2, _, _, ax2, ay2), PathCommand::A(rx3, ry3, _, _, ax3, ay3), PathCommand::Z] =>
+            {
+                let (cx, cy) = (23.8517 / 2.0, 6.4919 / 2.0);
+                let (erx, ery) = (cx - 0.1764, cy - 0.1764);
+                assert!((*mx - cx - erx).abs() < 1e-9 && (*my - cy).abs() < 1e-9);
+                for (rx, ry) in [(*rx0, *ry0), (*rx1, *ry1), (*rx2, *ry2), (*rx3, *ry3)] {
+                    assert!((rx - erx).abs() < 1e-9, "rx = w/2 - inset, got {rx}");
+                    assert!((ry - ery).abs() < 1e-9, "ry = h/2 - inset, got {ry}");
+                }
+                // Extreme points: (cx +/- rx, cy) and (cx, cy +/- ry) - all
+                // inside the box with the full stroke width to spare.
+                for (x, y) in [
+                    (cx + erx, cy),
+                    (cx, cy + ery),
+                    (cx - erx, cy),
+                    (cx, cy - ery),
+                ] {
+                    let matched = [
+                        (*mx, *my),
+                        (*ax0, *ay0),
+                        (*ax1, *ay1),
+                        (*ax2, *ay2),
+                        (*ax3, *ay3),
+                    ]
+                    .iter()
+                    .any(|(px, py)| (px - x).abs() < 1e-9 && (py - y).abs() < 1e-9);
+                    assert!(matched, "missing extreme point ({x}, {y})");
+                }
+            }
+            other => panic!("expected M-A-A-A-A-Z, got {other:?}"),
+        }
     }
 
     #[test]
