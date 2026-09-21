@@ -14,7 +14,7 @@ use rofd_dom::{
 
 use crate::annotation_geom::{
     arrow_path, arrow_path_points, ellipse_path, line_path, line_path_points, markup_line_path,
-    polygon_path, polyline_path, rect_path, squiggly_path, translate_path,
+    polygon_path, polyline_path, rect_path, squiggly_path, translate_path, SQUIGGLY_AMPLITUDE,
 };
 use crate::dateutil::format_last_mod_date;
 
@@ -609,9 +609,12 @@ fn markup_squiggly_appearance(
         let r = quad_rect(&p0, &p1);
         let lp0 = to_object_local(&p0, &r);
         let lp1 = to_object_local(&p1, &r);
-        // Baseline at the quad BOTTOM (like the underline) - a baseline at
-        // p0.y renders the wave over the top of the glyphs.
-        let baseline = lp0.y.max(lp1.y);
+        // Baseline one amplitude ABOVE the quad bottom: strict readers clip a
+        // PathObject to its Boundary, so a baseline ON the bottom edge (y=h)
+        // loses the wave's lower half to clipping. Reference authoring tools
+        // keep the whole wave inside the boundary this way. A baseline at
+        // p0.y (quad top) instead renders the wave over the top of the glyphs.
+        let baseline = (lp0.y.max(lp1.y) - SQUIGGLY_AMPLITUDE).max(0.0);
         let path = squiggly_path(
             rofd_dom::Point {
                 x: lp0.x,

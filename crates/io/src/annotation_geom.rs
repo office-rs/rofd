@@ -180,18 +180,22 @@ pub fn polyline_path(points: &[Point]) -> PathData {
 }
 
 /// Squiggly wave amplitude (page-local mm): the Q control point alternates
-/// +/- this value around the baseline. Must equal
+/// +/- this value around the baseline (visual curve peak = half of this).
+/// 0.5625mm measured from reference-authoring-tool squiggles (test/sample.ofd
+/// ID=86: controls at baseline +/- 0.5625). Must equal
 /// `render::annotation_scene::SQUIGGLY_AMPLITUDE` so the serialized wave
 /// shape matches the rendered wave.
-const SQUIGGLY_AMPLITUDE: f64 = 1.0;
+pub const SQUIGGLY_AMPLITUDE: f64 = 0.5625;
 
 /// X-span (page-local mm) of one Q-curve half-wave. Fixed so wave density is
-/// independent of quad width (text length). Must equal
-/// `render::annotation_scene::SQUIGGLY_HALF_WAVE` for the same reason.
-const SQUIGGLY_HALF_WAVE: f64 = 2.0;
+/// independent of quad width (text length). 0.5925mm measured from reference
+/// squiggles (nodes spaced 0.5925mm), ~3.4x denser than the old 2.0mm wave.
+/// Must equal `render::annotation_scene::SQUIGGLY_HALF_WAVE` for the same
+/// reason.
+pub const SQUIGGLY_HALF_WAVE: f64 = 0.5925;
 
 /// Squiggly (wavy) path between two quad_points, using Q quadratic curves that
-/// alternate above and below the baseline. Half-waves have a FIXED 2.0mm
+/// alternate above and below the baseline. Half-waves have a FIXED 0.5925mm
 /// x-span: the number of arcs grows with the quad width while their density
 /// stays constant (a 4-char and a whole-line squiggly share the same
 /// wavelength). A span that is not a multiple of the half-wave ends with one
@@ -450,8 +454,8 @@ mod tests {
     #[test]
     fn squiggly_path_starts_with_m_and_uses_q_curves() {
         let p = squiggly_path(Point { x: 0.0, y: 4.0 }, Point { x: 40.0, y: 8.0 });
-        // M + 20 Q = 21
-        assert_eq!(p.commands.len(), 21);
+        // 40mm = 67 full half-waves + 1 partial: M + 68 Q = 69
+        assert_eq!(p.commands.len(), 69);
         assert!(matches!(p.commands[0], PathCommand::M(0.0, 4.0)));
         for c in &p.commands[1..] {
             assert!(
@@ -464,9 +468,10 @@ mod tests {
     #[test]
     fn squiggly_path_uses_fixed_amplitude_matching_render() {
         // io's squiggly_path amplitude must equal render's
-        // SQUIGGLY_AMPLITUDE (1.0) so the serialized wave matches the
-        // rendered wave. The first Q's control point (y_mid) should be
-        // baseline - 1.0 (i=0 is even -> above).
+        // SQUIGGLY_AMPLITUDE (0.5625, measured from reference squiggles) so
+        // the serialized wave matches the rendered wave. The first Q's
+        // control point (y_mid) should be baseline - 0.5625 (i=0 is even ->
+        // above).
         let baseline_y = 4.0;
         let p = squiggly_path(
             Point {
@@ -478,9 +483,9 @@ mod tests {
         match &p.commands[1] {
             PathCommand::Q(_, y_mid, _, _) => {
                 assert!(
-                    (*y_mid - (baseline_y - 1.0)).abs() < 1e-10,
-                    "expected amp=1.0 (y_mid={}), got {}",
-                    baseline_y - 1.0,
+                    (*y_mid - (baseline_y - 0.5625)).abs() < 1e-10,
+                    "expected amp=0.5625 (y_mid={}), got {}",
+                    baseline_y - 0.5625,
                     y_mid
                 );
             }
@@ -490,19 +495,44 @@ mod tests {
 
     #[test]
     fn squiggly_wave_density_is_fixed_not_length_scaled() {
-        // 每个 Q 段 (半波) 的 x 跨度恒为 2.0 页面局部 mm: 波浪密度不随
-        // quad 宽度 (文字长度) 变化. 40mm 与 400mm 的每段跨度相同.
-        for (width, expect_segments) in [(40.0f64, 20usize), (400.0, 200)] {
+        // 每个 Q 段 (半波) 的 x 跨度恒为 0.5925 页面局部 mm (参考工具实测
+        // 波距): 波浪密度不随 quad 宽度 (文字长度) 变化. 40mm 与 400mm 的
+        // 每段跨度相同.
+        const HALF_WAVE: f64 = 0.5925;
+        for width in [40.0f64, 400.0] {
             let p = squiggly_path(Point { x: 0.0, y: 4.0 }, Point { x: width, y: 8.0 });
-            assert_eq!(p.commands.len(), expect_segments + 1, "width={width}");
+            let full = (width / HALF_WAVE).floor() as usize;
+            let tail = width - full as f64 * HALF_WAVE > 1e-6;
+            assert_eq!(
+                p.commands.len(),
+                full + usize::from(tail) + 1,
+                "width={width}"
+            );
             for (i, c) in p.commands[1..].iter().enumerate() {
                 match c {
-                    PathCommand::Q(_, _, x_end, _) => {
-                        let expected_end = (i as f64 + 1.0) * 2.0;
-                        assert!(
-                            (*x_end - expected_end).abs() < 1e-9,
-                            "width={width} segment {i} must span 2.0 (end {expected_end}), got {x_end}"
-                        );
+                    PathCommand::Q(cx, _, x_end, _) => {
+                        if i < full {
+                            let expected_end = (i as f64 + 1.0) * HALF_WAVE;
+                            assert!(
+                                (*x_end - expected_end).abs() < 1e-9,
+                                "width={width} segment {i} must span {HALF_WAVE} (end {expected_end}), got {x_end}"
+                            );
+                            let mid = (i as f64 + 0.5) * HALF_WAVE;
+                            assert!(
+                                (*cx - mid).abs() < 1e-9,
+                                "width={width} segment {i} control at {mid}, got {cx}"
+                            );
+                        } else {
+                            let mid = (i as f64 * HALF_WAVE + width) / 2.0;
+                            assert!(
+                                (*cx - mid).abs() < 1e-9,
+                                "width={width} tail control at {mid}, got {cx}"
+                            );
+                            assert!(
+                                (*x_end - width).abs() < 1e-9,
+                                "width={width} tail ends at {width}, got {x_end}"
+                            );
+                        }
                     }
                     _ => panic!("expected Q, got {c:?}"),
                 }
@@ -518,10 +548,10 @@ mod tests {
         match &p.commands[1] {
             PathCommand::Q(cx, _, x_end, _) => {
                 assert!(
-                    (*cx - 1.0).abs() < 1e-9,
-                    "control at midpoint 1.0, got {cx}"
+                    (*cx - 0.29625).abs() < 1e-9,
+                    "control at midpoint 0.29625, got {cx}"
                 );
-                assert!((*x_end - 2.0).abs() < 1e-9);
+                assert!((*x_end - 0.5925).abs() < 1e-9);
             }
             _ => panic!("expected Q as second command"),
         }
@@ -529,15 +559,16 @@ mod tests {
 
     #[test]
     fn squiggly_partial_final_wave_ends_exactly_at_x1() {
-        // 宽度非半波整数倍时: 完整半波保持 2.0 跨度不变, 末尾补一段部分波,
-        // 终点精确落在 p1.x (与文字末尾对齐, 不留缺口).
+        // 宽度非半波整数倍时: 完整半波保持 0.5925 跨度不变 (41mm = 69 个完整
+        // 半波 = 40.8825mm), 末尾补一段部分波, 终点精确落在 p1.x (与文字末尾
+        // 对齐, 不留缺口).
         let p = squiggly_path(Point { x: 0.0, y: 4.0 }, Point { x: 41.0, y: 8.0 });
-        assert_eq!(p.commands.len(), 22); // M + 20 full + 1 partial
-        match &p.commands[21] {
+        assert_eq!(p.commands.len(), 71); // M + 69 full + 1 partial
+        match &p.commands[70] {
             PathCommand::Q(cx, _, x_end, _) => {
                 assert!(
-                    (*cx - 40.5).abs() < 1e-9,
-                    "control at partial midpoint 40.5, got {cx}"
+                    (*cx - 40.94125).abs() < 1e-9,
+                    "control at partial midpoint 40.94125, got {cx}"
                 );
                 assert!(
                     (*x_end - 41.0).abs() < 1e-9,
@@ -551,16 +582,16 @@ mod tests {
     #[test]
     fn squiggly_span_shorter_than_half_wave_draws_single_partial_arc() {
         // 不足一个半波时也画一段弧 (而非空路径), 终点仍落在 p1.x.
-        let p = squiggly_path(Point { x: 3.0, y: 4.0 }, Point { x: 4.2, y: 8.0 });
+        let p = squiggly_path(Point { x: 3.0, y: 4.0 }, Point { x: 3.4, y: 8.0 });
         assert_eq!(p.commands.len(), 2); // M + one partial Q
         match (&p.commands[0], &p.commands[1]) {
             (PathCommand::M(mx, _), PathCommand::Q(cx, _, x_end, _)) => {
                 assert!((*mx - 3.0).abs() < 1e-9);
                 assert!(
-                    (*cx - 3.6).abs() < 1e-9,
-                    "control at midpoint 3.6, got {cx}"
+                    (*cx - 3.2).abs() < 1e-9,
+                    "control at midpoint 3.2, got {cx}"
                 );
-                assert!((*x_end - 4.2).abs() < 1e-9);
+                assert!((*x_end - 3.4).abs() < 1e-9);
             }
             _ => panic!("expected M + Q"),
         }
