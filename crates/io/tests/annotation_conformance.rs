@@ -328,11 +328,14 @@ fn paths_close_with_explicit_segment_not_a_close_operator() {
 }
 
 #[test]
-fn squiggly_baseline_sits_at_quad_bottom() {
-    // The wave must straddle the BOTTOM of the text quad, like the
-    // underline. A baseline at the quad top (p0.y) renders the squiggle over
-    // the top of the glyphs - the io-side twin of the render bug fixed in
-    // annotation_scene.rs ("drew on the text top").
+fn squiggly_wave_stays_inside_boundary_and_is_dense() {
+    // Strict readers CLIP a PathObject to its Boundary box. A baseline ON the
+    // quad bottom edge (y=h) puts the wave's lower half outside the box and
+    // the bottom of every arc gets torn off. The reference-authoring-tool
+    // convention keeps the baseline one amplitude above the bottom so the
+    // whole wave (controls at baseline +/- amplitude) stays <= h. The wave is
+    // also pinned to the reference density: 0.5925mm half-waves (~65 arcs
+    // across 38mm, versus 20 at the old 2.0mm spacing).
     let anns = vec![ann(
         102,
         AnnotationKind::Squiggly,
@@ -343,10 +346,38 @@ fn squiggly_baseline_sits_at_quad_bottom() {
     )];
     let mut next_id = 200u64;
     let xml = serialize_page_annot(&PageId::new("1"), &anns, &mut next_id);
+    let data = xml
+        .split("<ofd:AbbreviatedData>")
+        .nth(1)
+        .unwrap()
+        .split("</ofd:AbbreviatedData>")
+        .next()
+        .unwrap();
+    let toks: Vec<&str> = data.split_whitespace().collect();
+    assert_eq!(toks[0], "M");
+    let m_y: f64 = toks[2].parse().unwrap();
     assert!(
-        xml.contains("<ofd:AbbreviatedData>M 0 4.4 Q"),
-        "wave baseline at the quad bottom edge: {xml}"
+        (m_y - (4.4 - 0.5625)).abs() < 1e-9,
+        "baseline one amplitude above the quad bottom, got {m_y}: {data}"
     );
+    let mut quads = 0usize;
+    let mut i = 3usize;
+    while i < toks.len() {
+        assert_eq!(toks[i], "Q", "wave body is all Q curves: {data}");
+        let cy: f64 = toks[i + 2].parse().unwrap();
+        let ey: f64 = toks[i + 4].parse().unwrap();
+        assert!(
+            cy <= 4.4 + 1e-9 && ey <= 4.4 + 1e-9,
+            "wave y {cy}/{ey} escapes the Boundary box (clipped): {data}"
+        );
+        assert!(
+            (ey - (4.4 - 0.5625)).abs() < 1e-9,
+            "arcs return to the baseline: {data}"
+        );
+        quads += 1;
+        i += 5;
+    }
+    assert_eq!(quads, 65, "reference wave density (0.5925mm half-waves)");
 }
 
 #[test]
