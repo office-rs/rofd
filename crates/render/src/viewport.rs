@@ -16,6 +16,13 @@ use rofd_dom::OfdDocument;
 /// physical size (an A4 page ~794×1123 px). User zoom multiplies on top.
 pub const PX_PER_MM: f64 = 96.0 / 25.4;
 
+/// Minimum permitted viewport zoom: 25% of the 96-DPI baseline.
+/// Multiplicative zoom always builds on [`PX_PER_MM`], never on 1.0.
+pub const MIN_ZOOM: f64 = PX_PER_MM * 0.25;
+
+/// Maximum permitted viewport zoom: 300% of the 96-DPI baseline.
+pub const MAX_ZOOM: f64 = PX_PER_MM * 3.0;
+
 /// Paper-on-desk viewport state. All fields are in device pixels.
 ///
 /// - `scroll`: (x, y) desk offset to apply (added to page positions; positive y
@@ -158,5 +165,14 @@ mod clamp_tests {
             clamp_scroll(&doc, &vp((500.0, 700.0), 1.0, (100.0, 100.0))),
             (0.0, 0.0)
         );
+    }
+
+    #[test]
+    #[allow(clippy::assertions_on_constants)]
+    fn zoom_bounds_framed_around_baseline() {
+        assert_eq!(MIN_ZOOM, PX_PER_MM * 0.25);
+        assert_eq!(MAX_ZOOM, PX_PER_MM * 3.0);
+        assert!(MIN_ZOOM < PX_PER_MM);
+        assert!(MAX_ZOOM > PX_PER_MM);
     }
 }
