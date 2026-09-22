@@ -493,7 +493,7 @@ const BASE = import.meta.env.BASE_URL;
 
 // 组件 viewport.zoom 的基数：初始值 = PX_PER_MM（96 DPI，mm→px），并非 1.0。
 // onZoomChange 回调传出的是含该基数的原始值，显示百分比需先归一化
-// （见 component/src/editor_component.rs 的 `zoom: PX_PER_MM` 初始化）。
+// （见 component/src/ofd_component.rs 的 `zoom: PX_PER_MM` 初始化）。
 const PX_PER_MM = 96 / 25.4;
 
 // ─── 响应式状态 ─────────────────────────────────────────────────────────────

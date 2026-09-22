@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use rfd::FileDialog;
-use rofd_component::{ContextTarget, CreateKind, EditorConfig, Tool};
+use rofd_component::{ContextTarget, CreateKind, OfdConfig, Tool};
 use rofd_dom::{AnnotationId, AnnotationKind, ShapeKind};
 use rofd_io::PackageHandle;
 use rofd_xilem_view::{command_queue, ofd_with_config, OfdCommandQueue, OfdContextMenu};
@@ -29,10 +29,7 @@ use xilem_app::host;
 const BTN_PAD: Padding = Padding::from_vh(Length::ZERO, Length::const_px(6.0));
 
 /// Push a host command onto the host→widget channel.
-fn push(
-    app: &mut AppState,
-    f: impl Fn(&mut rofd_component::EditorComponent) + Send + Sync + 'static,
-) {
+fn push(app: &mut AppState, f: impl Fn(&mut rofd_component::OfdComponent) + Send + Sync + 'static) {
     app.commands.lock().unwrap().push(Arc::new(f));
 }
 
@@ -263,7 +260,7 @@ fn app_logic(app: &mut AppState) -> impl WidgetView<AppState> + use<> {
         .background_color(Color::from_rgb8(240, 240, 240));
 
     // --- editor: ofd view with the component callback surface mapped ---
-    let editor = ofd_with_config(app.commands.clone(), EditorConfig::new(Arc::new(vec![])))
+    let editor = ofd_with_config(app.commands.clone(), OfdConfig::new(Arc::new(vec![])))
         .on_change(|app: &mut AppState| app.modified = true)
         .on_text_selection_change(|app, sel| app.has_selection = sel.is_some())
         .on_save_request(do_save)

@@ -7,7 +7,7 @@
 use std::sync::{Arc, Mutex};
 
 use masonry_testing::TestHarness;
-use rofd_component::EditorConfig;
+use rofd_component::OfdConfig;
 use rofd_xilem_view::{OfdCommand, OfdWidget, OfdWidgetAction};
 use xilem::masonry::core::keyboard::{Key as MasonryKey, KeyState};
 use xilem::masonry::core::pointer::PointerButtons;
@@ -45,7 +45,7 @@ const MOUSE: PointerInfo = PointerInfo {
 fn create_harness() -> TestHarness<OfdWidget> {
     TestHarness::create_with_size(
         default_property_set(),
-        OfdWidget::new(EditorConfig::new(Arc::new(vec![]))).prepare(),
+        OfdWidget::new(OfdConfig::new(Arc::new(vec![]))).prepare(),
         PhysicalSize::new(800, 600),
     )
 }
@@ -128,7 +128,7 @@ fn run_setup(harness: &mut TestHarness<OfdWidget>) {
 /// Probe the live component via the host command channel.
 fn probe<R: Send + 'static>(
     harness: &mut TestHarness<OfdWidget>,
-    f: impl Fn(&mut rofd_component::EditorComponent) -> R + Send + Sync + 'static,
+    f: impl Fn(&mut rofd_component::OfdComponent) -> R + Send + Sync + 'static,
 ) -> R {
     let out = Arc::new(Mutex::new(None));
     let sink = out.clone();

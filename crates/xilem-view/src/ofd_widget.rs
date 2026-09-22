@@ -1,4 +1,4 @@
-//! Masonry `Widget` hosting an `EditorComponent`.
+//! Masonry `Widget` hosting an `OfdComponent`.
 //!
 //! The widget owns the component and is the single touch point between
 //! masonry's event/layout/paint passes and rofd's platform-agnostic
@@ -20,8 +20,8 @@
 use std::sync::{Arc, Mutex};
 
 use rofd_component::{
-    AnnotationId, AnnotationSelection, BodyTextSelection, ContextTarget, EditorComponent,
-    EditorConfig, MouseButton, OfdWarning, PointerCursor, TextCursor, ViewEvent,
+    AnnotationId, AnnotationSelection, BodyTextSelection, ContextTarget, MouseButton, OfdComponent,
+    OfdConfig, OfdWarning, PointerCursor, TextCursor, ViewEvent,
 };
 use xilem::masonry::accesskit::{Node, Role};
 use xilem::masonry::core::keyboard::{Key as MasonryKey, KeyState};
@@ -44,14 +44,14 @@ pub const ZOOM_OUT_STEP: f64 = 0.9;
 /// Fallback preferred length when the parent offers unbounded space.
 const DEFAULT_LENGTH: Length = Length::const_px(800.0);
 
-/// A host command: closure run against the embedded `EditorComponent`.
+/// A host command: closure run against the embedded `OfdComponent`.
 ///
 /// `Arc<dyn Fn>` (not `Box<dyn FnOnce>`): buttons re-fire, so closures
 /// must not move captured data on call — capture by move, use by reference.
 ///
 /// A-stage intermediate: transform C renames the component, and this
 /// becomes `Fn(&mut OfdComponent)`.
-pub type OfdCommand = Arc<dyn Fn(&mut EditorComponent) + Send + Sync>;
+pub type OfdCommand = Arc<dyn Fn(&mut OfdComponent) + Send + Sync>;
 /// Shared queue the host pushes commands into; the `ofd()` view drains it
 /// on every rebuild.
 pub type OfdCommandQueue = Arc<Mutex<Vec<OfdCommand>>>;
@@ -151,11 +151,11 @@ macro_rules! after_touch {
     }};
 }
 
-/// Masonry widget embedding an [`EditorComponent`]. Construct via
+/// Masonry widget embedding an [`OfdComponent`]. Construct via
 /// [`OfdWidget::new`]; integrate through the `ofd` xilem view.
 pub struct OfdWidget {
     /// The platform-agnostic component — the only core hosts edit.
-    component: EditorComponent,
+    component: OfdComponent,
     /// Callback events queued by 'static component callbacks (they cannot
     /// borrow the widget): Arc<Mutex<Vec>>, drained at each touch.
     pending: Arc<Mutex<Vec<OfdWidgetAction>>>,
@@ -176,8 +176,8 @@ impl OfdWidget {
     /// component callbacks wired into the internal pending queue.
     ///
     /// The component starts unfocused: no caret until the first click.
-    pub fn new(config: EditorConfig) -> Self {
-        let mut component = EditorComponent::new_native(config);
+    pub fn new(config: OfdConfig) -> Self {
+        let mut component = OfdComponent::new_native(config);
         let pending: Arc<Mutex<Vec<OfdWidgetAction>>> = Arc::new(Mutex::new(Vec::new()));
 
         fn queue(pending: &Arc<Mutex<Vec<OfdWidgetAction>>>, action: OfdWidgetAction) {
@@ -562,7 +562,7 @@ mod tests {
         // Constructing the widget registers 12 callbacks on the component
         // and sends an initial FocusLost. The invariant that matters is
         // the focus mirror: no caret until the widget is focused.
-        let widget = OfdWidget::new(EditorConfig::new(Arc::new(vec![])));
+        let widget = OfdWidget::new(OfdConfig::new(Arc::new(vec![])));
         assert!(!widget.component_focused);
         assert!(!widget.widget_focused);
         assert!(widget.window_focused);

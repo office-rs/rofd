@@ -3,7 +3,7 @@
 //! 按 spec §5.2：markup 贴附正文文字，不是点击目标--指针穿透
 //! 到文字选区流程。
 
-use rofd_component::{EditorComponent, EditorConfig, Tool, ViewEvent};
+use rofd_component::{OfdComponent, OfdConfig, Tool, ViewEvent};
 use std::sync::Arc;
 
 #[test]
@@ -14,7 +14,7 @@ fn drag_select_over_markup_annotation_produces_selection() {
     ))
     .expect("fixture test/sample.ofd");
     let report = rofd_io::parse_ofd(&bytes).unwrap();
-    let mut c = EditorComponent::new_native(EditorConfig::new(Arc::new(vec![])));
+    let mut c = OfdComponent::new_native(OfdConfig::new(Arc::new(vec![])));
     c.load_document(report.document);
     c.set_tool(Tool::Text);
     c.handle_event(&ViewEvent::Resize {
