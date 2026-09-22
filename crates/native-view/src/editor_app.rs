@@ -16,7 +16,7 @@ pub struct EditorApp {
 
 impl EditorApp {
     pub fn new(config: EditorConfig) -> Self {
-        let mut component = EditorComponent::new(config);
+        let mut component = EditorComponent::new_native(config);
         // Default platform-clipboard assembly (AGENTS §4.9): Ctrl+C text
         // lands on the system clipboard with zero host code. Disable via
         // set_default_clipboard(false), then subscribe on_copy yourself.
