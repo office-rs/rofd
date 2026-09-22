@@ -20,7 +20,7 @@
 use std::marker::PhantomData;
 
 use rofd_component::{
-    AnnotationId, AnnotationSelection, BodyTextSelection, ContextTarget, EditorConfig, OfdWarning,
+    AnnotationId, AnnotationSelection, BodyTextSelection, ContextTarget, OfdConfig, OfdWarning,
     TextCursor,
 };
 use xilem::core::{MessageCtx, MessageResult, Mut, View, ViewMarker};
@@ -38,7 +38,7 @@ pub type OfdContextMenu = ((f64, f64), ContextTarget);
 #[must_use = "View values do nothing unless provided to Xilem."]
 pub struct OfdView<State> {
     queue: OfdCommandQueue,
-    config: EditorConfig,
+    config: OfdConfig,
     on_change: Option<Handler<State, ()>>,
     on_selection_change: Option<Handler<State, AnnotationSelection>>,
     on_cursor_change: Option<Handler<State, Option<TextCursor>>>,
@@ -55,13 +55,13 @@ pub struct OfdView<State> {
 
 /// Embed an OFD widget with the default config (no registered fonts).
 pub fn ofd<State: 'static>(queue: OfdCommandQueue) -> OfdView<State> {
-    ofd_with_config(queue, EditorConfig::new(std::sync::Arc::new(vec![])))
+    ofd_with_config(queue, OfdConfig::new(std::sync::Arc::new(vec![])))
 }
 
-/// Embed an OFD widget with a custom [`EditorConfig`].
+/// Embed an OFD widget with a custom [`OfdConfig`].
 pub fn ofd_with_config<State: 'static>(
     queue: OfdCommandQueue,
-    config: EditorConfig,
+    config: OfdConfig,
 ) -> OfdView<State> {
     OfdView {
         queue,

@@ -1,4 +1,4 @@
-use rofd_component::{EditorComponent, EditorConfig, Key, Modifiers, RenderTarget, ViewEvent};
+use rofd_component::{Key, Modifiers, OfdComponent, OfdConfig, RenderTarget, ViewEvent};
 use rofd_dom::{AnnotationKind, AnnotationPayload, Color, NoteIcon, PageId, Rect};
 use rofd_render::Scene;
 use std::sync::{Arc, Mutex};
@@ -17,7 +17,7 @@ impl RenderTarget for MockRenderTarget {
 
 #[test]
 fn end_to_end_create_select_edit_undo_render() {
-    let mut c = EditorComponent::new_native(EditorConfig::new(Arc::new(vec![])));
+    let mut c = OfdComponent::new_native(OfdConfig::new(Arc::new(vec![])));
     c.set_clock("tester".into(), 1_700_000_000_000);
     // Create a note annotation via the component pass-through (Task 8 Step 3 adds it).
     let id = c.create_annotation(
@@ -74,7 +74,7 @@ fn end_to_end_create_select_edit_undo_render() {
 fn on_change_fires_on_undo() {
     let fired = Arc::new(Mutex::new(false));
     let f = fired.clone();
-    let mut c = EditorComponent::new_native(EditorConfig::new(Arc::new(vec![])));
+    let mut c = OfdComponent::new_native(OfdConfig::new(Arc::new(vec![])));
     c.set_clock("t".into(), 1);
     c.on_change(move |_| {
         *f.lock().unwrap() = true;

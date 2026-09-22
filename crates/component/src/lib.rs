@@ -1,17 +1,17 @@
-//! rofd-component - EditorComponent facade. The sole integration entry point.
+//! rofd-component - OfdComponent facade. The sole integration entry point.
 
 pub mod callbacks;
 pub mod config;
-pub mod editor_component;
 pub mod event;
+pub mod ofd_component;
 pub mod preedit;
 pub mod render_target;
 pub mod tooltip_text;
 
 pub use callbacks::{Callbacks, ContextTarget, PointerCursor, TooltipFormatter};
-pub use config::EditorConfig;
-pub use editor_component::{CreateKind, EditorComponent, Tool};
+pub use config::OfdConfig;
 pub use event::{EventOutcome, Key, Modifiers, MouseButton, ScrollDirection, ViewEvent};
+pub use ofd_component::{CreateKind, OfdComponent, Tool};
 pub use render_target::RenderTarget;
 pub use tooltip_text::{default_tooltip_lines, format_tooltip_datetime};
 

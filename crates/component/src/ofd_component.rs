@@ -10,13 +10,13 @@ use rofd_render::{
 };
 
 use crate::callbacks::{Callbacks, ContextTarget, PointerCursor};
-use crate::config::EditorConfig;
+use crate::config::OfdConfig;
 use crate::event::EventOutcome;
 use crate::render_target::RenderTarget;
 
 /// The annotation kinds that CAN be a drag-create tool. Markup kinds are
 /// deliberately absent: markup is a command over the body-text selection
-/// ([`EditorComponent::apply_markup`]), never a tool (spec 2026-09-10 §4.1).
+/// ([`OfdComponent::apply_markup`]), never a tool (spec 2026-09-10 §4.1).
 #[derive(Debug, Clone, PartialEq)]
 pub enum CreateKind {
     Shape(ShapeKind),
@@ -151,7 +151,7 @@ pub(crate) struct HoverState {
     pos: (f64, f64),
 }
 
-pub struct EditorComponent {
+pub struct OfdComponent {
     pub(crate) editor: Editor,
     pub(crate) render: RenderEngine,
     pub(crate) viewport: Viewport,
@@ -225,20 +225,20 @@ pub struct EditorComponent {
     pub(crate) preedit: Option<crate::preedit::PreeditState>,
 }
 
-impl EditorComponent {
+impl OfdComponent {
     /// Construct a component for a native (desktop, non-WASM) host.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn new_native(config: EditorConfig) -> Self {
+    pub fn new_native(config: OfdConfig) -> Self {
         Self::new(config)
     }
 
     /// Construct a component for a WASM host.
     #[cfg(target_arch = "wasm32")]
-    pub fn new_wasm(config: EditorConfig) -> Self {
+    pub fn new_wasm(config: OfdConfig) -> Self {
         Self::new(config)
     }
 
-    fn new(config: EditorConfig) -> Self {
+    fn new(config: OfdConfig) -> Self {
         let page_gap = config.page_gap;
         let zoom = config.zoom;
         Self {
@@ -2656,7 +2656,7 @@ fn compute_resize(handle: &HandlePos, anchor: (f64, f64), orig: Rect, point: (f6
 ///   Rect/Ellipse store empty `points` (no endpoint direction).
 ///
 /// Only drag-createable kinds exist here (spec 2026-09-10 §4.1): markup is
-/// built from a body-text selection by [`EditorComponent::apply_markup`],
+/// built from a body-text selection by [`OfdComponent::apply_markup`],
 /// and Note/TextBox/... are created programmatically, not by a tool drag.
 fn build_create_payload(
     kind: &CreateKind,
@@ -2813,21 +2813,20 @@ mod tests {
 
     #[test]
     fn new_constructs_with_defaults() {
-        let c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        let c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         assert!(!c.is_modified());
         assert!(!c.can_undo());
     }
 
     #[test]
     fn new_honors_config_zoom() {
-        let c =
-            EditorComponent::new(EditorConfig::new(Arc::new(vec![])).with_zoom(PX_PER_MM * 1.5));
+        let c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])).with_zoom(PX_PER_MM * 1.5));
         assert_eq!(c.viewport.zoom, PX_PER_MM * 1.5);
     }
 
     #[test]
     fn render_draws_to_target() {
-        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         let mut rt = MockRenderTarget {
             drawn: 0,
             w: 800.0,
@@ -2845,8 +2844,8 @@ mod tests {
     };
     use std::sync::Mutex;
 
-    fn component_with_note_font(default_font: Arc<Vec<u8>>) -> EditorComponent {
-        let mut c = EditorComponent::new(EditorConfig::new(default_font));
+    fn component_with_note_font(default_font: Arc<Vec<u8>>) -> OfdComponent {
+        let mut c = OfdComponent::new(OfdConfig::new(default_font));
         c.set_clock("t".into(), 1);
         // Insert a page P0 so hit_test / current_page_id can resolve. physical_box
         // starts at (0,0); with size=(0,0) + page_gap=0 + zoom=1, the page origin
@@ -2889,15 +2888,15 @@ mod tests {
         c
     }
 
-    fn component_with_note() -> EditorComponent {
+    fn component_with_note() -> OfdComponent {
         component_with_note_font(Arc::new(vec![]))
     }
 
     /// Single page 200x200 holding one TextBox (rect 0,0,120,40, content
     /// "hi"), cursor parked at offset 2. Viewport size 200x200; zoom is the
     /// default PX_PER_MM baseline.
-    fn component_with_textbox() -> EditorComponent {
-        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+    fn component_with_textbox() -> OfdComponent {
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         c.set_clock("t".into(), 1);
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
@@ -2934,7 +2933,7 @@ mod tests {
         c
     }
 
-    fn textbox_content(c: &EditorComponent) -> String {
+    fn textbox_content(c: &OfdComponent) -> String {
         let ann = c
             .document()
             .annotations
@@ -2970,8 +2969,8 @@ mod tests {
     /// 12px arrow buttons at both ends (y[0,12] steps up, y[188,200] steps
     /// down); the paging track between them is y[12,188] (len 176), and the
     /// resting thumb is x[190,198] y[14,102] with travel 84.
-    fn component_with_tall_page() -> EditorComponent {
-        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+    fn component_with_tall_page() -> OfdComponent {
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         c.set_clock("t".into(), 1);
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
@@ -3002,8 +3001,8 @@ mod tests {
     /// paging track between them is x[12,188] (len 176), thumb length 88,
     /// travel 84. The resting thumb is centered (fraction 0.5 at scroll 0):
     /// x [56,144], y [190,198].
-    fn component_with_wide_page() -> EditorComponent {
-        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+    fn component_with_wide_page() -> OfdComponent {
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         c.set_clock("t".into(), 1);
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
@@ -3284,7 +3283,7 @@ mod tests {
 
     #[test]
     fn zoom_updates_viewport() {
-        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         let outcome = c.handle_event(&ViewEvent::Zoom { factor: 2.0 });
         assert!(outcome.needs_repaint);
         // Default zoom is PX_PER_MM (96 DPI); Zoom multiplies on top.
@@ -3321,7 +3320,7 @@ mod tests {
 
     #[test]
     fn resize_updates_viewport() {
-        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         let outcome = c.handle_event(&ViewEvent::Resize {
             width: 1024.0,
             height: 768.0,
@@ -3347,7 +3346,7 @@ mod tests {
     fn on_warning_fires_with_load_warnings() {
         let fired = Arc::new(Mutex::new(false));
         let f = fired.clone();
-        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         c.on_warning(move |_warnings| {
             *f.lock().unwrap() = true;
         });
@@ -3363,7 +3362,7 @@ mod tests {
 
     #[test]
     fn on_warning_does_not_fire_when_no_callback_set() {
-        let c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        let c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         // No callback set -> fire_warnings is a no-op (must not panic).
         c.fire_warnings(&[OfdWarning::MissingFeature {
             feature: "test".into(),
@@ -3400,7 +3399,7 @@ mod tests {
     fn ctrl_s_fires_save_request() {
         let fired = Arc::new(Mutex::new(false));
         let f = fired.clone();
-        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         c.on_save_request(move || {
             *f.lock().unwrap() = true;
         });
@@ -3473,7 +3472,7 @@ mod tests {
 
     #[test]
     fn set_tool_changes_tool_state() {
-        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         assert!(matches!(c.tool, Tool::Text));
         c.set_tool(Tool::Create(CreateKind::Shape(ShapeKind::Rect)));
         assert!(matches!(c.tool, Tool::Create(_)));
@@ -3575,7 +3574,7 @@ mod tests {
     }
 
     /// Total annotation count across all pages (test helper).
-    fn annotation_count(c: &EditorComponent) -> usize {
+    fn annotation_count(c: &OfdComponent) -> usize {
         c.document()
             .annotations
             .by_page
@@ -3798,7 +3797,7 @@ mod tests {
     /// annotation rect should be bbox((20,20),(70,70)) = (20,20,50,50).
     #[test]
     fn create_rect_via_drag_converts_to_page_local_at_non_unit_zoom() {
-        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         c.set_clock("t".into(), 1);
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
@@ -4124,8 +4123,8 @@ mod tests {
     /// annotation covering the full page. Viewport: zoom=1, size=(0,0), gap=0,
     /// scroll=(0,0) so page origin is (0,0) and viewport coords == page-local.
     /// Used to test the resize guard for Markup annotations.
-    fn component_with_markup() -> EditorComponent {
-        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+    fn component_with_markup() -> OfdComponent {
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         c.set_clock("t".into(), 1);
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
@@ -4217,8 +4216,8 @@ mod tests {
 
     /// Build a component with one page (P0, 200x200) and a Freehand annotation.
     /// Viewport: zoom=1, size=(0,0), gap=0, scroll=(0,0) so page origin is (0,0).
-    fn component_with_freehand() -> EditorComponent {
-        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+    fn component_with_freehand() -> OfdComponent {
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         c.set_clock("t".into(), 1);
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
@@ -4385,7 +4384,7 @@ mod tests {
     fn right_click_fires_context_menu() {
         let fired = Arc::new(Mutex::new(None));
         let f = fired.clone();
-        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         c.on_context_menu(move |point, target| {
             *f.lock().unwrap() = Some((point, format!("{target:?}")));
         });
@@ -4444,8 +4443,8 @@ mod tests {
     /// Build a component with two stacked pages so scrolling can move the
     /// visible page from page 0 to page 1. Page physical_box 200x200 mm,
     /// zoom=1, page_gap=0, viewport size 200x200 (exactly one page tall).
-    fn component_with_two_pages() -> EditorComponent {
-        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+    fn component_with_two_pages() -> OfdComponent {
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         c.set_clock("t".into(), 1);
         let mut doc = OfdDocument::default();
         for id in ["P0", "P1"] {
@@ -4574,7 +4573,7 @@ mod tests {
     fn zoom_fires_zoom_change() {
         let fired = Arc::new(Mutex::new(None));
         let f = fired.clone();
-        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         c.on_zoom_change(move |z| {
             *f.lock().unwrap() = Some(z);
         });
@@ -4592,7 +4591,7 @@ mod tests {
     fn zoom_no_change_does_not_fire_zoom_change() {
         let fired = Arc::new(Mutex::new(false));
         let f = fired.clone();
-        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         c.on_zoom_change(move |_z| {
             *f.lock().unwrap() = true;
         });
@@ -4704,8 +4703,8 @@ mod tests {
     /// where viewport coords == page-local coords (zoom=1, no scroll/gap, size
     /// 0 so page origin is (0,0)). No annotation yet -- the smoke test creates
     /// one via drag. (Mirrors `component_with_note`'s viewport setup.)
-    fn component_with_page() -> EditorComponent {
-        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+    fn component_with_page() -> OfdComponent {
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         c.set_clock("tester".into(), 1_700_000_000_000);
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
@@ -4958,8 +4957,8 @@ mod tests {
 
     /// P1 hand tool: two pages 200x200, vp size (0,0), gap 0, zoom 1, scroll
     /// (0,0). Page0 occupies viewport y [0,200), page1 y [200,400).
-    fn component_two_pages() -> EditorComponent {
-        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+    fn component_two_pages() -> OfdComponent {
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         let mut doc = OfdDocument::default();
         for i in 0..2 {
             doc.pages.push(Page {
@@ -4986,7 +4985,7 @@ mod tests {
 
     /// Full pan gesture: Left PointerDown at `from`, one PointerMove to `to`,
     /// Left PointerUp.
-    fn pan(c: &mut EditorComponent, from: (f64, f64), to: (f64, f64)) {
+    fn pan(c: &mut OfdComponent, from: (f64, f64), to: (f64, f64)) {
         c.handle_event(&ViewEvent::PointerDown {
             button: MouseButton::Left,
             x: from.0,
@@ -5460,8 +5459,8 @@ mod tests {
         kind: ShapeKind,
         rect: Rect,
         points: Vec<rofd_dom::Point>,
-    ) -> EditorComponent {
-        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+    ) -> OfdComponent {
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
             id: PageId::new("P0"),
@@ -5738,8 +5737,8 @@ mod tests {
     /// -> 行带 0: y∈[20,32.5] 字符格 x=10+10i；行带 1: y∈[40,52.5] x=10,20。
     /// Component with one body TextObject (id "t1", boundary (10,20)) whose
     /// codes are `codes` - lets tests vary glyph/text length agreement.
-    fn component_with_codes(codes: Vec<TextCode>) -> EditorComponent {
-        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+    fn component_with_codes(codes: Vec<TextCode>) -> OfdComponent {
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
             id: PageId::new("P0"),
@@ -5779,7 +5778,7 @@ mod tests {
         c
     }
 
-    fn component_with_body_text() -> EditorComponent {
+    fn component_with_body_text() -> OfdComponent {
         component_with_codes(vec![
             TextCode {
                 glyph_ids: vec![1, 2, 3, 4],
@@ -5923,7 +5922,7 @@ mod tests {
 
     /// A Highlight markup annotation covering the whole text area
     /// (quad_points = [top-left, bottom-right]).
-    fn add_highlight_covering_text(c: &mut EditorComponent) {
+    fn add_highlight_covering_text(c: &mut OfdComponent) {
         c.editor.create_annotation(
             AnnotationKind::Highlight,
             PageId::new("P0"),
@@ -6194,7 +6193,7 @@ mod tests {
     // --- 2026-09-10 Task 2: apply_markup（选中转 markup，保留选区） ---
 
     /// 拖选两行（helper 与旧测试一致）：pd(31,25) -> Move(16,45) -> Up。
-    fn drag_select_two_lines(c: &mut EditorComponent) {
+    fn drag_select_two_lines(c: &mut OfdComponent) {
         c.set_tool(Tool::Text);
         c.handle_event(&pd(31.0, 25.0));
         c.handle_event(&ViewEvent::PointerMove { x: 16.0, y: 45.0 });
@@ -6590,7 +6589,7 @@ mod tests {
 
     // ---- hover tooltip state machine (spec 2026-09-18 §3.1) ----
 
-    fn note_id(c: &EditorComponent) -> AnnotationId {
+    fn note_id(c: &OfdComponent) -> AnnotationId {
         c.document().annotations.for_page(&PageId::new("P0"))[0]
             .id
             .clone()
