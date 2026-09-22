@@ -10,6 +10,8 @@ rofd-io = { workspace = true }
 rofd-dom = { workspace = true }
 winit = { workspace = true }
 arboard = "3"
+xilem = { workspace = true }
 
 [dev-dependencies]
 kurbo = { workspace = true }
+masonry_testing = { workspace = true }
