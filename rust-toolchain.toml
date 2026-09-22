@@ -1,0 +1,3 @@
+# Linebender git deps (xilem/masonry @ 271a27a6) declare rust-version 1.96.
+[toolchain]
+channel = "1.98.1"
