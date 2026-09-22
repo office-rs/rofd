@@ -166,7 +166,7 @@ pub fn scrollbar_layout(doc: &OfdDocument, vp: &Viewport) -> ScrollbarLayout {
             0.0
         };
         let len_fraction = if track.height() > 0.0 {
-            (region_h / content_h).clamp(THUMB_MIN_LEN / track.height(), 1.0)
+            (region_h / content_h).clamp((THUMB_MIN_LEN / track.height()).min(1.0), 1.0)
         } else {
             1.0
         };
@@ -191,7 +191,7 @@ pub fn scrollbar_layout(doc: &OfdDocument, vp: &Viewport) -> ScrollbarLayout {
             0.0
         };
         let len_fraction = if track.width() > 0.0 {
-            (region_w / content_w).clamp(THUMB_MIN_LEN / track.width(), 1.0)
+            (region_w / content_w).clamp((THUMB_MIN_LEN / track.width()).min(1.0), 1.0)
         } else {
             1.0
         };
@@ -558,6 +558,18 @@ mod tests {
             size,
             page_gap: gap,
         }
+    }
+
+    #[test]
+    fn tiny_viewport_thumb_clamp_does_not_panic() {
+        // 50x50 viewport, 200x200 page: both bars appear and tracks are only
+        // 14px long (< THUMB_MIN_LEN), so the old clamp with min > max
+        // panicked. The thumb fills the full track length on both axes.
+        let l = scrollbar_layout(&doc_of(&[(200.0, 200.0)]), &vp((50.0, 50.0), 1.0, 0.0));
+        let v = l.vertical.expect("vertical bar");
+        assert!((v.thumb.height() - v.track.height()).abs() < 1e-9);
+        let h = l.horizontal.expect("horizontal bar");
+        assert!((h.thumb.width() - h.track.width()).abs() < 1e-9);
     }
 
     #[test]
