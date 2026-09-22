@@ -207,7 +207,19 @@ pub struct EditorComponent {
 }
 
 impl EditorComponent {
-    pub fn new(config: EditorConfig) -> Self {
+    /// Construct a component for a native (desktop, non-WASM) host.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new_native(config: EditorConfig) -> Self {
+        Self::new(config)
+    }
+
+    /// Construct a component for a WASM host.
+    #[cfg(target_arch = "wasm32")]
+    pub fn new_wasm(config: EditorConfig) -> Self {
+        Self::new(config)
+    }
+
+    fn new(config: EditorConfig) -> Self {
         let page_gap = config.page_gap;
         let zoom = config.zoom;
         Self {

@@ -635,7 +635,10 @@ mod wasm_impl {
             render_target: WebGpuRenderTarget,
         ) -> Result<Self, JsValue> {
             let config = EditorConfig::new(std::sync::Arc::new(vec![]));
-            let mut component = EditorComponent::new(config);
+            #[cfg(target_arch = "wasm32")]
+            let mut component = EditorComponent::new_wasm(config);
+            #[cfg(not(target_arch = "wasm32"))]
+            let mut component = EditorComponent::new_native(config);
             // Default tooltip assembly (AGENTS §4.9): a titled author +
             // creation-time card in the user's local timezone.
             // Date#getTimezoneOffset returns UTC - local minutes, so negate

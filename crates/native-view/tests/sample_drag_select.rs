@@ -14,7 +14,7 @@ fn drag_select_over_markup_annotation_produces_selection() {
     ))
     .expect("fixture test/sample.ofd");
     let report = rofd_io::parse_ofd(&bytes).unwrap();
-    let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+    let mut c = EditorComponent::new_native(EditorConfig::new(Arc::new(vec![])));
     c.load_document(report.document);
     c.set_tool(Tool::Text);
     c.handle_event(&ViewEvent::Resize {
