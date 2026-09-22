@@ -3355,13 +3355,11 @@ dependencies = [
 name = "native-app"
 version = "0.1.0"
 dependencies = [
- "masonry_winit",
  "rfd 0.15.4",
  "rofd-component",
  "rofd-dom",
  "rofd-io",
  "rofd-native-view",
- "winit",
  "xilem",
 ]
 
