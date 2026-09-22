@@ -4,6 +4,7 @@ pub mod callbacks;
 pub mod config;
 pub mod editor_component;
 pub mod event;
+pub mod preedit;
 pub mod render_target;
 pub mod tooltip_text;
 
