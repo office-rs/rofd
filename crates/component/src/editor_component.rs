@@ -204,6 +204,10 @@ pub struct EditorComponent {
     pub(crate) underline_color: Color,
     pub(crate) strikeout_color: Color,
     pub(crate) squiggly_color: Color,
+    /// Cached composed scene. Rebuilt lazily by `update_scene`.
+    pub(crate) scene_cache: Scene,
+    /// Whether `scene_cache` is stale (the next `update_scene` recomposes).
+    pub(crate) scene_dirty: bool,
 }
 
 impl EditorComponent {
@@ -245,6 +249,8 @@ impl EditorComponent {
             underline_color: DEFAULT_MARKUP_COLOR,
             strikeout_color: DEFAULT_MARKUP_COLOR,
             squiggly_color: DEFAULT_MARKUP_COLOR,
+            scene_cache: Scene::default(),
+            scene_dirty: true,
         }
     }
 
@@ -270,12 +276,14 @@ impl EditorComponent {
     pub fn register_font_data(&mut self, bytes: Vec<u8>) -> bool {
         let bytes = Arc::new(bytes);
         self.registered_font_bytes.push(bytes.clone());
-        if let Some(store) = self.font_store.as_mut() {
+        let ok = if let Some(store) = self.font_store.as_mut() {
             store.register_font(bytes)
         } else {
             // Will be registered when the FontStore is built.
             true
-        }
+        };
+        self.mark_scene_dirty();
+        ok
     }
 
     pub fn load_document(&mut self, doc: OfdDocument) {
@@ -296,6 +304,7 @@ impl EditorComponent {
         // different page count/layout, so the stale index must not persist
         // (it is recomputed on the next Scroll/Resize via maybe_fire_page_change).
         self.current_page = None;
+        self.mark_scene_dirty();
     }
 
     pub fn new_document(&mut self) {
@@ -310,6 +319,7 @@ impl EditorComponent {
         self.font_store = Some(self.build_font_store());
         self.modified = false;
         self.current_page = None;
+        self.mark_scene_dirty();
     }
 
     pub fn document(&self) -> &OfdDocument {
@@ -340,6 +350,7 @@ impl EditorComponent {
             return;
         }
         self.text_selection = sel;
+        self.mark_scene_dirty();
         if let Some(cb) = &self.callbacks.on_text_selection_change {
             cb(self.text_selection.as_ref());
         }
@@ -502,6 +513,7 @@ impl EditorComponent {
         self.hover = None;
         self.set_text_selection(None);
         self.set_tool_pointer_cursor();
+        self.mark_scene_dirty();
     }
 
     /// Set the color a Highlight markup is applied with
@@ -805,7 +817,7 @@ impl EditorComponent {
     /// `imaging_vello::VelloSceneSink`. The `font_store` is lazily built on
     /// first call and reused (so a large default CJK font is not re-registered
     /// every frame).
-    pub fn build_scene(&mut self) -> Scene {
+    fn compose_scene(&mut self) -> Scene {
         if self.font_store.is_none() {
             self.font_store = Some(self.build_font_store());
         }
@@ -844,9 +856,48 @@ impl EditorComponent {
         scene
     }
 
+    /// Temporary public alias; removed once external tests migrate in A3.
+    #[doc(hidden)]
+    pub fn build_scene(&mut self) -> Scene {
+        self.compose_scene()
+    }
+
     pub fn render(&mut self, target: &mut dyn RenderTarget) {
-        let scene = self.build_scene();
-        target.draw_scene(&scene);
+        self.update_scene();
+        target.draw_scene(&self.scene_cache);
+    }
+
+    /// Mark the cached scene stale. The next `update_scene` recomposes.
+    pub(crate) fn mark_scene_dirty(&mut self) {
+        self.scene_dirty = true;
+    }
+
+    /// Recompose the cached scene when stale. Native paint and wasm
+    /// conversion call this before reading `scene()`.
+    pub fn update_scene(&mut self) {
+        if !self.scene_dirty {
+            return;
+        }
+        self.scene_cache = self.compose_scene();
+        self.scene_dirty = false;
+    }
+
+    /// The most recently composed scene. Call `update_scene` first.
+    pub fn scene(&self) -> &Scene {
+        &self.scene_cache
+    }
+
+    /// Update the viewport (content region) size. Called by the widget layout.
+    pub fn set_viewport_size(&mut self, width: f64, height: f64) {
+        if (self.viewport.size.0 - width).abs() < f64::EPSILON
+            && (self.viewport.size.1 - height).abs() < f64::EPSILON
+        {
+            return;
+        }
+        self.viewport.size = (width, height);
+        self.viewport.scroll = rofd_render::clamp_scroll(self.editor.document(), &self.viewport);
+        self.maybe_fire_page_change();
+        self.mark_scene_dirty();
     }
 
     /// Insert committed text at the current text cursor, then advance the
@@ -868,7 +919,7 @@ impl EditorComponent {
 
     pub fn handle_event(&mut self, event: &crate::event::ViewEvent) -> EventOutcome {
         use crate::event::{MouseButton, ScrollDirection, ViewEvent};
-        match event {
+        let outcome = match event {
             ViewEvent::PointerDown {
                 button: MouseButton::Left,
                 x,
@@ -1494,7 +1545,11 @@ impl EditorComponent {
             _ => EventOutcome {
                 needs_repaint: false,
             },
+        };
+        if outcome.needs_repaint {
+            self.mark_scene_dirty();
         }
+        outcome
     }
 
     /// Left-button PointerDown shared by Select and Hand: hit-test and run the
@@ -2861,7 +2916,7 @@ mod tests {
         // arrow-glyph fills on top of the desk + page fills.
         use imaging::record::{Command, Draw};
         let mut c = component_with_tall_page();
-        let scene = c.build_scene();
+        let scene = c.compose_scene();
         let fills = scene
             .commands()
             .iter()
@@ -6470,7 +6525,7 @@ mod tests {
         c.set_tooltip_formatter(|ann| vec![ann.creator.clone(), ann.created.to_string()]);
         let _ = c.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 50.0 });
 
-        let scene_off = c.build_scene();
+        let scene_off = c.compose_scene();
         let draws_off: Vec<&Draw> = scene_off
             .commands()
             .iter()
@@ -6482,7 +6537,7 @@ mod tests {
 
         // 关掉 formatter 再对比基线（同一组件、同一 hover 位置）。
         c.clear_tooltip_formatter();
-        let scene_base = c.build_scene();
+        let scene_base = c.compose_scene();
         let draws_base: Vec<&Draw> = scene_base
             .commands()
             .iter()
@@ -6508,5 +6563,38 @@ mod tests {
         );
         assert!(matches!(draws_off[n - 2], Draw::GlyphRun(_)), "author line");
         assert!(matches!(draws_off[n - 1], Draw::GlyphRun(_)), "time line");
+    }
+
+    #[test]
+    fn update_scene_reuses_cache_while_clean() {
+        let mut c = component_with_note();
+        c.update_scene();
+        let first = c.scene().commands().len();
+        c.update_scene();
+        assert_eq!(c.scene().commands().len(), first);
+        c.mark_scene_dirty();
+        c.update_scene();
+        assert_eq!(c.scene().commands().len(), first);
+    }
+
+    #[test]
+    fn event_marks_scene_dirty_on_repaint() {
+        let mut c = component_with_note();
+        c.update_scene();
+        assert!(!c.scene_dirty);
+        c.handle_event(&ViewEvent::Scroll { dx: 0.0, dy: 10.0 });
+        assert!(c.scene_dirty);
+    }
+
+    #[test]
+    fn set_viewport_size_updates_and_marks_dirty() {
+        let mut c = component_with_textbox();
+        c.update_scene();
+        assert!(!c.scene_dirty);
+        c.set_viewport_size(100.0, 50.0);
+        assert_eq!(c.viewport.size, (100.0, 50.0));
+        assert!(c.scene_dirty);
+        c.update_scene();
+        assert!(!c.scene().commands().is_empty());
     }
 }
