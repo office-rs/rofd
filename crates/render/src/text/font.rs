@@ -473,14 +473,23 @@ mod tests {
 
     #[test]
     fn shape_default_groups_mixed_script_fallback() {
-        // Latin-only default (TestFont) + a CJK char: fontique falls back to a
-        // system CJK font, splitting the line into >= 2 font groups. A glyph id
-        // is only valid with the font that shaped it - drawing a whole line
-        // with the first run's font garbles the rest (the tooltip bug this
-        // pins down). Requires system fonts (same trust as
-        // font_store_shape_system_fallback_covers_cjk).
+        // Latin-only default (TestFont) + a runtime-registered CJK font that
+        // covers the Han char: fontique falls back to it, splitting the line
+        // into >= 2 font groups. A glyph id is only valid with the font that
+        // shaped it - drawing a whole line with the first run's font garbles
+        // the rest (the tooltip bug this pins down). The CJK font is a bundled
+        // 5-glyph subset fixture (TestFontCjk.otf) registered via register_font
+        // - the same path the web SDK uses for a fetched CJK font - so the test
+        // does not depend on system fonts: hosts without any CJK font (e.g. the
+        // CI Linux runners) previously saw one group and failed this assertion.
         let font_bytes = include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
-        let store = FontStore::from_resources(&Resources::default(), Arc::new(font_bytes.to_vec()));
+        let cjk_bytes = include_bytes!("../../tests/fixtures/fonts/TestFontCjk.otf") as &[u8];
+        let mut store =
+            FontStore::from_resources(&Resources::default(), Arc::new(font_bytes.to_vec()));
+        assert!(
+            store.register_font(Arc::new(cjk_bytes.to_vec())),
+            "CJK fixture font registered"
+        );
         let (groups, width) = store.shape_default("a中b", 12.0);
         assert!(
             groups.len() >= 2,
