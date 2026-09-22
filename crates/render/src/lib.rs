@@ -42,7 +42,7 @@ pub use scrollbar::{
 };
 pub use text::{shape_text, FontStore, ShapedGlyph};
 pub use tooltip::{paint_tooltip, tooltip_anchor};
-pub use viewport::{clamp_scroll, Viewport, PX_PER_MM};
+pub use viewport::{clamp_scroll, Viewport, MAX_ZOOM, MIN_ZOOM, PX_PER_MM};
 
 /// The backend-agnostic scene type this crate produces.
 pub use imaging::record::Scene;
