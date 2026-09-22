@@ -263,10 +263,10 @@ fn sample_ofd_body_text_renders_by_glyph_ids() {
 }
 
 /// Parses the real `test/sample-content.ofd` (if present locally) and verifies
-/// the WPS table lines render: the file's 10 border PathObjects (5 horizontal +
-/// 5 vertical) carry NO StrokeColor/FillColor/DrawParam and rely on the
-/// GB/T 33190 表35 defaults (Stroke 缺省 true, StrokeColor 缺省黑色). The old
-/// renderer skipped them entirely. Ignored: run with `--ignored
+/// the producer's table lines render: the file's 10 border PathObjects
+/// (5 horizontal + 5 vertical) carry NO StrokeColor/FillColor/DrawParam and
+/// rely on the GB/T 33190 表35 defaults (Stroke 缺省 true, StrokeColor 缺省黑色).
+/// The old renderer skipped them entirely. Ignored: run with `--ignored
 /// sample_content_table`.
 #[test]
 #[ignore = "requires the real OFD at ../../test/sample-content.ofd"]
@@ -275,7 +275,7 @@ fn sample_content_table_lines_stroke_by_default() {
     let report = rofd_io::parse_ofd(&bytes).expect("sample parses");
     let page0 = &report.document.pages[0];
 
-    // Sanity: the model carries the WPS table borders with no colors resolved.
+    // Sanity: the model carries the table borders with no colors resolved.
     let borders: Vec<&rofd_dom::PathObject> = page0
         .layers
         .iter()
@@ -290,7 +290,7 @@ fn sample_content_table_lines_stroke_by_default() {
         borders
             .iter()
             .all(|p| p.stroke.is_none() && p.fill.is_none()),
-        "borders carry no inline colors (WPS relies on spec defaults)"
+        "borders carry no inline colors (the producer relies on spec defaults)"
     );
 
     let fonts = FontStore::from_resources(&report.document.resources, Arc::new(vec![]));

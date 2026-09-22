@@ -141,7 +141,7 @@ fn draw_text(
 ///
 /// GB/T 33190 表35 draw-parameter defaults, resolved here (not baked into the
 /// model): `Stroke` defaults to `true` with a default stroke color of black.
-/// Producers like WPS emit table borders with no `StrokeColor` at all and rely
+/// Some OFD producers emit table borders with no `StrokeColor` at all and rely
 /// on these defaults (the old "no stroke color => draw nothing" dropped them).
 /// `Fill` defaults to `false` and fill color defaults to transparent (none),
 /// so filling requires `Fill="true"` plus a resolvable FillColor.
@@ -214,7 +214,7 @@ fn draw_image_obj(
     };
     // OFD image local space is the UNIT SQUARE (GB/T 33190 §8.2): the CTM maps
     // `(px / img_w, py / img_h)` into boundary-relative mm. Real producers
-    // encode the whole placement in the CTM - e.g. WPS writes
+    // encode the whole placement in the CTM - e.g. a common producer writes
     // `CTM = diag(boundary.w, boundary.h)` with the Boundary naming the exact
     // rect (sample-content.ofd), while scan strips carry the on-page
     // translation in the CTM with a loose full-page Boundary
@@ -377,8 +377,9 @@ mod tests {
 
     #[test]
     fn image_ctm_maps_unit_square_into_boundary() {
-        // WPS pattern (test/sample-content.ofd ImageObject ID=70): CTM carries
-        // the full pixel->boundary scale (diag = boundary w/h, no translation)
+        // A common producer pattern (test/sample-content.ofd ImageObject ID=70):
+        // CTM carries the full pixel->boundary scale (diag = boundary w/h, no
+        // translation)
         // and the Boundary names the exact placement rect. OFD image local
         // space is the unit square, so the drawn image must land exactly on
         // the Boundary rect - not pixel-size x CTM-scale (the double-scale bug
@@ -765,8 +766,9 @@ mod tests {
     }
 
     #[test]
-    fn wps_table_line_without_colors_strokes_default_black() {
-        // WPS pattern (test/sample-content.ofd table PathObject ID=51): no
+    fn table_line_without_colors_strokes_default_black() {
+        // A common producer pattern (test/sample-content.ofd table PathObject
+        // ID=51): no
         // StrokeColor/FillColor child, no DrawParam, no Stroke/Fill attributes.
         // GB/T 33190 表35 defaults: Stroke 缺省 true, StrokeColor 缺省黑色 -
         // the line must stroke black at the Boundary + CTM location instead of
@@ -795,7 +797,7 @@ mod tests {
                 commands: vec![PathCommand::M(0.24, 841.66), PathCommand::L(426.82, 841.66)],
             },
             draw_param: None,
-            // WPS 表格线:Stroke/Fill 属性均缺失,靠表35 缺省值。
+            // 常见生成器的表格线:Stroke/Fill 属性均缺失,靠表35 缺省值。
             stroke_enabled: None,
             fill_enabled: None,
         };
@@ -829,7 +831,8 @@ mod tests {
 
     #[test]
     fn stroke_false_suppresses_stroking_and_fills() {
-        // WPS highlight-quad pattern (sample.ofd annotation PathObject ID=79):
+        // Highlight-quad producer pattern (sample.ofd annotation PathObject
+        // ID=79):
         // Stroke="false" Fill="true" + FillColor - fill only, no black outline.
         // Stroke="false" must win even though 表35 would otherwise default the
         // stroke on.
