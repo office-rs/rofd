@@ -7058,6 +7058,7 @@ mod tests {
     #[test]
     fn preedit_overlay_without_target_is_skipped() {
         let mut c = component_with_note();
+        let idle = c.compose_scene().commands().len();
         // Force a preedit that targets the Note (overlay supports TextBox
         // only): composition must not panic and draws nothing.
         c.preedit = Some(crate::preedit::PreeditState {
@@ -7073,8 +7074,8 @@ mod tests {
                 .clone(),
             offset: 0,
         });
-        let commands = c.compose_scene().commands().len();
+        assert_eq!(c.compose_scene().commands().len(), idle);
         c.update_scene();
-        assert_eq!(c.scene().commands().len(), commands);
+        assert_eq!(c.scene().commands().len(), idle);
     }
 }

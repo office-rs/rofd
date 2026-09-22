@@ -56,8 +56,11 @@ pub fn paint_preedit_overlay(
         return;
     };
     let brush = to_peniko(dom_color);
+    // Shaped glyphs are layout-relative: offset by the TextBox origin,
+    // matching draw_text_in_rect's affine (the committed-text path).
+    let affine = base * Affine::translate((rect.x, rect.y));
     let mut painter = Painter::new(scene);
     painter.with_clip(ClipRef::fill(clip), |p| {
-        draw_glyph_run(p, &font_data, &glyphs, base, brush, size);
+        draw_glyph_run(p, &font_data, &glyphs, affine, brush, size);
     });
 }
