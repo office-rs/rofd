@@ -588,7 +588,7 @@ fn draw_watermark_text(
 /// Annotation text uses the shaper's natural x/y directly (unlike body text
 /// which uses document deltas). Returns the font that shaped the glyphs
 /// (caller draws with it).
-fn shape_positioned(
+pub(crate) fn shape_positioned(
     content: &str,
     font_id: &FontId,
     size: f64,
@@ -608,7 +608,7 @@ fn shape_positioned(
 
 /// Draw a run of positioned glyphs with the given font, transform, brush, and
 /// size. No-op if `glyphs` is empty.
-fn draw_glyph_run(
+pub(crate) fn draw_glyph_run(
     painter: &mut Painter<Scene>,
     font: &FontData,
     glyphs: &[Glyph],

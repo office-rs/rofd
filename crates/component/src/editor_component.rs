@@ -888,6 +888,17 @@ impl EditorComponent {
                 }
             }
         }
+        // Preedit overlay: composition text not yet in the dom.
+        if let Some(state) = self.preedit.as_ref() {
+            rofd_render::paint_preedit_overlay(
+                &mut scene,
+                self.editor.document(),
+                &self.viewport,
+                fonts,
+                &state.text,
+                &state.annotation,
+            );
+        }
         // Hover tooltip paints last - above pages, handles and scrollbars
         // (spec 2026-09-18 §3.3). Skips itself when suppressed/no font.
         if let Some(lines) = self.tooltip_lines() {
@@ -7023,5 +7034,47 @@ mod tests {
         });
         assert!(!outcome.needs_repaint);
         assert!(c.preedit.is_none());
+    }
+
+    #[test]
+    fn preedit_overlay_adds_commands_then_removes_on_commit() {
+        let mut c = component_with_textbox();
+        let idle = c.compose_scene().commands().len();
+        c.handle_event(&ViewEvent::ImePreedit {
+            text: "你好".into(),
+            caret: None,
+        });
+        let composing = c.compose_scene().commands().len();
+        assert!(composing > idle, "overlay paints during composition");
+        c.handle_event(&ViewEvent::ImeCommit {
+            text: "你好".into(),
+        });
+        let committed = c.compose_scene().commands().len();
+        // Overlay gone (committed text now draws as a normal annotation:
+        // it may add glyph commands, but fewer than overlay+old content).
+        assert!(committed < composing);
+    }
+
+    #[test]
+    fn preedit_overlay_without_target_is_skipped() {
+        let mut c = component_with_note();
+        // Force a preedit that targets the Note (overlay supports TextBox
+        // only): composition must not panic and draws nothing.
+        c.preedit = Some(crate::preedit::PreeditState {
+            text: "x".into(),
+            caret: None,
+            annotation: c
+                .document()
+                .annotations
+                .for_page(&PageId::new("P0"))
+                .first()
+                .unwrap()
+                .id
+                .clone(),
+            offset: 0,
+        });
+        let commands = c.compose_scene().commands().len();
+        c.update_scene();
+        assert_eq!(c.scene().commands().len(), commands);
     }
 }
