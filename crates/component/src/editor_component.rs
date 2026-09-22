@@ -6,7 +6,7 @@ use rofd_dom::{
 };
 use rofd_editor::{Editor, TextCursor};
 use rofd_render::{
-    DragPreview, FontStore, HandlePos, RenderEngine, Scene, Viewport, MAX_ZOOM, MIN_ZOOM, PX_PER_MM,
+    DragPreview, FontStore, HandlePos, RenderEngine, Scene, Viewport, MAX_ZOOM, MIN_ZOOM,
 };
 
 use crate::callbacks::{Callbacks, ContextTarget, PointerCursor};
@@ -209,11 +209,12 @@ pub struct EditorComponent {
 impl EditorComponent {
     pub fn new(config: EditorConfig) -> Self {
         let page_gap = config.page_gap;
+        let zoom = config.zoom;
         Self {
             editor: Editor::new(),
             render: RenderEngine::new(config.default_font_bytes.clone()),
             viewport: Viewport {
-                zoom: PX_PER_MM,
+                zoom,
                 page_gap,
                 ..Default::default()
             },
@@ -2484,7 +2485,7 @@ fn target_annotation_id(target: &rofd_render::HitTarget) -> Option<&rofd_dom::An
 mod tests {
     use super::*;
     use crate::render_target::RenderTarget;
-    use rofd_render::Scene;
+    use rofd_render::{Scene, PX_PER_MM};
     use std::sync::Arc;
 
     struct MockRenderTarget {
@@ -2506,6 +2507,13 @@ mod tests {
         let c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
         assert!(!c.is_modified());
         assert!(!c.can_undo());
+    }
+
+    #[test]
+    fn new_honors_config_zoom() {
+        let c =
+            EditorComponent::new(EditorConfig::new(Arc::new(vec![])).with_zoom(PX_PER_MM * 1.5));
+        assert_eq!(c.viewport.zoom, PX_PER_MM * 1.5);
     }
 
     #[test]
