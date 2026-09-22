@@ -6,5 +6,6 @@
     "strict": true,
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "skipLibCheck": true
-  }
+  },
+  "include": ["src/**/*.ts", "src/**/*.vue"]
 }
