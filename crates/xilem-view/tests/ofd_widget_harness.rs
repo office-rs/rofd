@@ -386,6 +386,21 @@ fn drag_select_ctrl_c_copies_text() {
     assert_eq!(harness.clipboard_contents(), "ABCD\nEF");
 }
 
+// 8. Ctrl + pure horizontal scroll tick (dy=0) is consumed but not zoom.
+#[test]
+fn ctrl_horizontal_scroll_does_not_zoom() {
+    let mut harness = create_harness();
+    run_setup(&mut harness);
+
+    let handled = wheel(&mut harness, 0.0, Modifiers::CONTROL);
+    assert!(matches!(handled, Handled::Yes), "horizontal tick consumed");
+
+    assert!(
+        zoom_changes(&drain_actions::<OfdWidgetAction>(&mut harness)).is_empty(),
+        "pure horizontal ctrl+scroll must not zoom"
+    );
+}
+
 // 7. Window focus gates caret visibility.
 #[test]
 fn window_focus_gates_caret_visibility() {

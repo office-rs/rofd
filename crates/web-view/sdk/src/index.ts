@@ -432,7 +432,10 @@ export class Ofd {
           const rect = this.canvas.getBoundingClientRect();
           const cx = (e.clientX - rect.left) * dpr();
           const cy = (e.clientY - rect.top) * dpr();
-          this.wasm.handleZoomAt(e.deltaY > 0 ? 0.9 : 1.1, cx, cy);
+          // Pure horizontal scroll (deltaY === 0) with Ctrl is not a zoom gesture.
+          if (Math.abs(e.deltaY) >= 1e-9) {
+            this.wasm.handleZoomAt(e.deltaY > 0 ? 0.9 : 1.1, cx, cy);
+          }
         } else {
           this.wasm.handleMouseScroll(e.deltaX, e.deltaY);
         }
