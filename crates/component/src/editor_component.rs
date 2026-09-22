@@ -208,6 +208,19 @@ pub struct EditorComponent {
     pub(crate) scene_cache: Scene,
     /// Whether `scene_cache` is stale (the next `update_scene` recomposes).
     pub(crate) scene_dirty: bool,
+    /// Whether the component currently holds effective keyboard focus
+    /// (widget focus AND window focus, combined by the adapter). The caret
+    /// paints and blinks only while true. Starts false: a freshly opened
+    /// document shows no caret until the user clicks (mirrors rword).
+    pub(crate) focused: bool,
+    /// Current caret visibility phase, toggled by blink.
+    pub(crate) cursor_visible: bool,
+    /// Monotonic deadline of the next blink toggle (native only; Instant is
+    /// an animation timer, allowed by AGENTS §4.4).
+    #[cfg(not(target_arch = "wasm32"))]
+    blink_deadline: Option<std::time::Instant>,
+    #[cfg(target_arch = "wasm32")]
+    blink_elapsed_ms: u32,
 }
 
 impl EditorComponent {
@@ -251,6 +264,12 @@ impl EditorComponent {
             squiggly_color: DEFAULT_MARKUP_COLOR,
             scene_cache: Scene::default(),
             scene_dirty: true,
+            focused: false,
+            cursor_visible: true,
+            #[cfg(not(target_arch = "wasm32"))]
+            blink_deadline: None,
+            #[cfg(target_arch = "wasm32")]
+            blink_elapsed_ms: 0,
         }
     }
 
@@ -850,6 +869,20 @@ impl EditorComponent {
                 active,
             },
         );
+        // Text caret: effective focus only, blink-gated.
+        if self.focused && self.cursor_visible {
+            if let Some(cursor) = self.editor.text_cursor().cloned() {
+                if let Some(rect) = rofd_render::caret_rect(
+                    self.editor.document(),
+                    &self.viewport,
+                    fonts,
+                    &cursor.annotation,
+                    cursor.offset,
+                ) {
+                    rofd_render::paint_caret(&mut scene, &rect);
+                }
+            }
+        }
         // Hover tooltip paints last - above pages, handles and scrollbars
         // (spec 2026-09-18 §3.3). Skips itself when suppressed/no font.
         if let Some(lines) = self.tooltip_lines() {
@@ -875,9 +908,66 @@ impl EditorComponent {
         self.scene_dirty = true;
     }
 
+    /// One caret-blink phase.
+    #[cfg(not(target_arch = "wasm32"))]
+    const BLINK_PHASE: std::time::Duration = std::time::Duration::from_millis(500);
+
+    /// Restart the blink cycle: caret visible, deadline pushed out. Called
+    /// on focus gain and (later) every caret-moving edit/click.
+    pub(crate) fn reset_blink(&mut self) {
+        self.cursor_visible = true;
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.blink_elapsed_ms = 0;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.blink_deadline = Some(std::time::Instant::now() + Self::BLINK_PHASE);
+        }
+        self.mark_scene_dirty();
+    }
+
+    /// Advance the blink phase from the native anim frame. Returns true
+    /// when the caret visibility flipped (repaint needed).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn tick_blink(&mut self) -> bool {
+        let Some(deadline) = self.blink_deadline else {
+            return false;
+        };
+        if std::time::Instant::now() < deadline {
+            return false;
+        }
+        self.cursor_visible = !self.cursor_visible;
+        self.blink_deadline = Some(std::time::Instant::now() + Self::BLINK_PHASE);
+        self.mark_scene_dirty();
+        true
+    }
+
+    /// Whether the component currently holds effective focus.
+    pub fn is_focused(&self) -> bool {
+        self.focused
+    }
+
     /// Recompose the cached scene when stale. Native paint and wasm
     /// conversion call this before reading `scene()`.
     pub fn update_scene(&mut self) {
+        // Blink timing (wasm only): the host's requestAnimationFrame loop
+        // calls update_scene at ~60 Hz, so advance by 16ms per call; a
+        // completed phase flips caret visibility and marks the scene dirty.
+        // Native leaves blink to tick_blink() driven by anim frames.
+        #[cfg(target_arch = "wasm32")]
+        {
+            const BLINK_INTERVAL_MS: u32 = 500;
+            const FRAME_MS: u32 = 16;
+            if self.focused {
+                self.blink_elapsed_ms += FRAME_MS;
+                if self.blink_elapsed_ms >= BLINK_INTERVAL_MS {
+                    self.blink_elapsed_ms = 0;
+                    self.cursor_visible = !self.cursor_visible;
+                    self.scene_dirty = true;
+                }
+            }
+        }
         if !self.scene_dirty {
             return;
         }
@@ -901,6 +991,23 @@ impl EditorComponent {
         self.viewport.scroll = rofd_render::clamp_scroll(self.editor.document(), &self.viewport);
         self.maybe_fire_page_change();
         self.mark_scene_dirty();
+    }
+
+    /// Viewport-space caret rectangle (px) for the current text cursor.
+    /// Lazily builds the font store. `None` when no cursor is set or the
+    /// geometry cannot resolve.
+    pub fn caret_rect(&mut self) -> Option<rofd_dom::Rect> {
+        if self.font_store.is_none() {
+            self.font_store = Some(self.build_font_store());
+        }
+        let cursor = self.editor.text_cursor()?;
+        rofd_render::caret_rect(
+            self.editor.document(),
+            &self.viewport,
+            self.font_store.as_ref().expect("font_store initialized"),
+            &cursor.annotation,
+            cursor.offset,
+        )
     }
 
     /// Insert committed text at the current text cursor, then advance the
@@ -1497,6 +1604,28 @@ impl EditorComponent {
                 self.viewport.scroll =
                     rofd_render::clamp_scroll(self.editor.document(), &self.viewport);
                 self.maybe_fire_page_change();
+                EventOutcome {
+                    needs_repaint: true,
+                }
+            }
+            ViewEvent::FocusGained => {
+                self.focused = true;
+                self.reset_blink();
+                EventOutcome {
+                    needs_repaint: true,
+                }
+            }
+            ViewEvent::FocusLost => {
+                self.focused = false;
+                self.cursor_visible = false;
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.blink_deadline = None;
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    self.blink_elapsed_ms = 0;
+                }
                 EventOutcome {
                     needs_repaint: true,
                 }
@@ -6620,5 +6749,63 @@ mod tests {
             .clone();
         c.delete_annotation(&id);
         assert!(c.scene_dirty);
+    }
+
+    #[test]
+    fn focus_arms_gate_caret_lifecycle() {
+        let mut c = component_with_textbox();
+        assert!(!c.is_focused());
+        c.handle_event(&ViewEvent::FocusGained);
+        assert!(c.is_focused() && c.cursor_visible);
+        c.handle_event(&ViewEvent::FocusLost);
+        assert!(!c.is_focused() && !c.cursor_visible);
+    }
+
+    #[test]
+    fn caret_rect_none_without_cursor() {
+        let mut c = component_with_textbox();
+        c.editor.clear_cursor();
+        assert!(c.caret_rect().is_none());
+    }
+
+    #[test]
+    fn caret_rect_tracks_scroll_and_zoom() {
+        let mut c = component_with_textbox();
+        let r0 = c.caret_rect().expect("caret");
+        c.handle_event(&ViewEvent::Scroll { dx: 0.0, dy: 20.0 });
+        let r1 = c.caret_rect().expect("caret after scroll");
+        assert!((r1.y - (r0.y - 20.0)).abs() < 1e-6);
+        c.handle_event(&ViewEvent::ZoomAt {
+            factor: 2.0,
+            center: (0.0, 0.0),
+        });
+        let r2 = c.caret_rect().expect("caret after zoom");
+        assert!((r2.w - r1.w * 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn caret_paints_only_while_focused() {
+        let mut c = component_with_textbox();
+        let idle = c.compose_scene().commands().len();
+        c.handle_event(&ViewEvent::FocusGained);
+        let focused = c.compose_scene().commands().len();
+        assert!(focused > idle, "caret adds paint commands on focus");
+        c.handle_event(&ViewEvent::FocusLost);
+        let blurred = c.compose_scene().commands().len();
+        assert_eq!(blurred, idle);
+    }
+
+    #[test]
+    fn reset_blink_shows_caret() {
+        let mut c = component_with_textbox();
+        c.cursor_visible = false;
+        c.reset_blink();
+        assert!(c.cursor_visible);
+    }
+
+    #[test]
+    fn tick_blink_without_deadline_is_quiet() {
+        let mut c = component_with_textbox();
+        assert!(!c.tick_blink());
     }
 }
