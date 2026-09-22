@@ -42,7 +42,7 @@ cargo run -p xilem-app                           # 空编辑器
 cargo run -p xilem-app -- test/ru-yuan-ji-lu.ofd  # 打开根目录 test/ 下的 .ofd
 ```
 
-命令行路径参数经宿主 `host::document_io::load_ofd` 加载。xilem-app 按相对 CWD 的候选路径查找默认 CJK 字体（`crates/web-app/public/NotoSansSC-Regular.otf`）。若未下载，文字不渲染但程序不崩——先跑下面 web-app 的 `npm run fetch:font` 即可获得该字体文件。
+命令行路径参数经宿主 `host::document_io::load_ofd` 加载。native 宿主以空字体配置启动（`OfdConfig::new(Arc::new(vec![]))`，见 `crates/xilem-app/src/main.rs`），字形交给系统字体回退；仓库自带的 CJK 字体位于 `crates/web-app/public/fonts/`（git 跟踪，无需下载）。
 
 ### 构建 / 运行 web 宿主
 
@@ -50,7 +50,6 @@ cargo run -p xilem-app -- test/ru-yuan-ji-lu.ofd  # 打开根目录 test/ 下的
 rustup target add wasm32-unknown-unknown          # 一次性
 cd crates/web-app
 npm install
-npm run fetch:font        # 下载 NotoSansSC 到 public/（文字渲染必需）
 npm run build:sdk         # wasm-pack build crates/web-view -> sdk/dist
 npm run dev               # vite 开发服务器
 npm run build             # vite 生产构建
@@ -95,7 +94,7 @@ crates/web-app ─► web-view ─────────────┘       
 | `rofd-editor`    | `crates/editor`      | 批注选区、命令模式、Step/Transaction/History | dom |
 | `rofd-component` | `crates/component`   | **唯一集成入口** `OfdComponent`：ViewEvent、Callbacks、脏缓存 | dom + render + editor（**不依赖 io**） |
 | `rofd-xilem-view`| `crates/xilem-view`  | masonry/xilem 薄适配器：`OfdWidget` + `ofd()`/`ofd_with_config()` | component |
-| `rofd-web-view`  | `crates/web-view`    | WASM 薄适配器：`WasmOfd` + `WebGpuRenderTarget` + TS SDK | component + io + dom + vello + imaging + imaging_vello + wgpu + web-sys |
+| `rofd-web-view`  | `crates/web-view`    | WASM 薄适配器：`WasmOfd` + `WebGpuRenderTarget` + TS SDK | component + io + editor + dom + vello + imaging + imaging_vello + wgpu + web-sys |
 | `xilem-app`      | `crates/xilem-app`   | xilem 宿主应用（文件对话框 + 工具栏 UI 策略） | xilem-view + component + io + dom + xilem + rfd |
 | web-app          | `crates/web-app`     | Vite + TS 宿主应用（非 cargo 成员） | `@office-rs/rofd`（= `crates/web-view/sdk`） |
 | `tauri-app`      | `crates/tauri-app`   | Tauri 桌面宿主应用 | tauri 壳不依赖 rofd crate；前端复用 web-app |
