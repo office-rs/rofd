@@ -91,6 +91,9 @@ struct AppState {
     /// a failed save (disk full / permission / locked path) cannot be
     /// mistaken for a clean document.
     save_outcome: Arc<Mutex<Option<Result<(), String>>>>,
+    /// Save-As target waiting for its queued save result. Promoted to
+    /// `file` only when the save reports success.
+    pending_save_as_path: Option<PathBuf>,
     /// Warnings collected from the last load/operation.
     warnings: Vec<rofd_dom::OfdWarning>,
     /// Open context-menu overlay, if any.
@@ -105,6 +108,7 @@ impl AppState {
             package: None,
             modified: false,
             save_outcome: Arc::new(Mutex::new(None)),
+            pending_save_as_path: None,
             has_selection: false,
             warnings: Vec::new(),
             context_menu: None,
@@ -129,9 +133,15 @@ fn consume_save_outcome(app: &mut AppState) {
         return;
     };
     match outcome {
-        Ok(()) => app.modified = false,
+        Ok(()) => {
+            app.modified = false;
+            if let Some(path) = app.pending_save_as_path.take() {
+                app.file = Some(path);
+            }
+        }
         Err(e) => {
             app.modified = true;
+            app.pending_save_as_path = None;
             eprintln!("[ERROR] save failed: {e}");
         }
     }
@@ -205,9 +215,10 @@ fn do_save_as(app: &mut AppState) {
         return;
     };
     save_to(app, path.clone());
-    app.file = Some(path);
+    app.pending_save_as_path = Some(path);
     // Spec §4.4: Save As does not mint a PackageHandle; saves stay
-    // full-write until the file is opened again.
+    // full-write until the file is opened again. The path is promoted to
+    // `file` only after the queued save reports success.
 }
 
 /// Load the command-line path argument if present.
@@ -378,6 +389,31 @@ mod tests {
         let mut app = AppState::new();
         app.modified = true;
         consume_save_outcome(&mut app);
+        assert!(app.modified);
+    }
+
+    #[test]
+    fn save_as_success_promotes_pending_path() {
+        let mut app = AppState::new();
+        app.modified = true;
+        app.pending_save_as_path = Some(PathBuf::from("new-copy.ofd"));
+        *app.save_outcome.lock().unwrap() = Some(Ok(()));
+        consume_save_outcome(&mut app);
+        assert_eq!(app.file, Some(PathBuf::from("new-copy.ofd")));
+        assert!(app.pending_save_as_path.is_none());
+        assert!(!app.modified);
+    }
+
+    #[test]
+    fn save_as_failure_keeps_original_file() {
+        let mut app = AppState::new();
+        app.file = Some(PathBuf::from("original.ofd"));
+        app.modified = true;
+        app.pending_save_as_path = Some(PathBuf::from("new-copy.ofd"));
+        *app.save_outcome.lock().unwrap() = Some(Err("access denied".to_string()));
+        consume_save_outcome(&mut app);
+        assert_eq!(app.file, Some(PathBuf::from("original.ofd")));
+        assert!(app.pending_save_as_path.is_none());
         assert!(app.modified);
     }
 }
