@@ -16,6 +16,7 @@ pub mod handles;
 pub mod hit_test;
 pub mod image;
 pub mod path;
+pub mod preedit_overlay;
 pub mod scrollbar;
 pub mod text;
 pub mod tooltip;
@@ -34,6 +35,7 @@ pub use handles::{annotation_handle_positions, annotation_handles, handle_center
 pub use hit_test::{annotation_local_rect, hit_test, HandlePos, HitTarget};
 pub use image::decode_image;
 pub use path::path_to_bezpath;
+pub use preedit_overlay::paint_preedit_overlay;
 pub use scrollbar::{
     content_metrics, hit_scrollbar, paint_scrollbars, scroll_x_margin, scroll_y_max,
     scrollbar_layout, Axis, BarGeom, ScrollbarHit, ScrollbarHover, ScrollbarLayout,
