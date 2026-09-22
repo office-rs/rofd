@@ -22,7 +22,6 @@ parley = "0.8"
 peniko = "0.6.1"
 kurbo = "0.13.1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-winit = "0.30"
 wgpu = "28"
 pollster = "1"
 # Xilem + imaging: pinned to the same git revs reditor uses. xilem main (bf81712d44e3)
@@ -31,7 +30,6 @@ pollster = "1"
 # the vello bridge; rofd-render produces imaging::record::Scene, web-view converts it
 # to vello::Scene via VelloSceneSink.
 xilem = { git = "https://github.com/linebender/xilem", rev = "271a27a6d4a930f7878d404f9014e3c50a3a9b88" }
-masonry_winit = { git = "https://github.com/linebender/xilem", rev = "271a27a6d4a930f7878d404f9014e3c50a3a9b88" }
 masonry_testing = { git = "https://github.com/linebender/xilem", rev = "271a27a6d4a930f7878d404f9014e3c50a3a9b88" }
 imaging = "0.0.1"
 imaging_vello = "0.0.1"

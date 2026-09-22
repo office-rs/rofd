@@ -5,13 +5,12 @@ edition = "2021"
 
 [dependencies]
 rofd-component = { workspace = true }
-rofd-render = { workspace = true }
-rofd-io = { workspace = true }
-rofd-dom = { workspace = true }
-winit = { workspace = true }
-arboard = "3"
 xilem = { workspace = true }
 
 [dev-dependencies]
-kurbo = { workspace = true }
+# Constructing ScrollDelta PixelDelta in masonry_events tests (dpi boundary).
+dpi = "0.1"
+# Headless TestHarness driving OfdWidget (same git pin as xilem).
 masonry_testing = { workspace = true }
+# Harness fixtures construct dom models.
+rofd-dom = { workspace = true }

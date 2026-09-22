@@ -908,12 +908,6 @@ impl EditorComponent {
         scene
     }
 
-    /// Temporary public alias; removed once external tests migrate in A3.
-    #[doc(hidden)]
-    pub fn build_scene(&mut self) -> Scene {
-        self.compose_scene()
-    }
-
     pub fn render(&mut self, target: &mut dyn RenderTarget) {
         self.update_scene();
         target.draw_scene(&self.scene_cache);
@@ -2220,8 +2214,8 @@ impl EditorComponent {
         }
     }
 
-    /// Fire `on_warning` with the given warnings. Called by the adapter layer
-    /// (EditorApp/WasmEditor) after `parse_ofd` returns a `LoadReport` with
+    /// Fire `on_warning` with the given warnings. Called by the host / adapter
+    /// layer after `parse_ofd` returns a `LoadReport` with
     /// warnings - the component itself is io-free and never parses, so it never
     /// generates warnings; it only relays them from the adapter (AGENTS.md §4.6:
     /// degraded-input path surfaces to the host via callback).
@@ -2401,8 +2395,8 @@ impl EditorComponent {
     /// Fired on Ctrl+C while body text is selected (TextSelect tool). The
     /// component never touches the clipboard (AGENTS §4.9) - adapters wire
     /// the default platform clipboard behind this callback. Not Send-gated:
-    /// the native adapter's default clipboard closure captures Rc state
-    /// (single-threaded EditorApp), and no usage needs cross-thread Send.
+    /// the native widget intercepts Ctrl+C without installing on_copy, and
+    /// the web adapter is single-threaded; no usage needs cross-thread Send.
     pub fn on_copy(&mut self, cb: impl Fn(String) + 'static) {
         self.callbacks.on_copy = Some(Box::new(cb));
     }
@@ -3155,7 +3149,7 @@ mod tests {
     }
 
     #[test]
-    fn build_scene_paints_scrollbar_chrome() {
+    fn compose_scene_paints_scrollbar_chrome() {
         // 180x400 page in 200x200 -> one vertical bar = strip + thumb + two
         // arrow-glyph fills on top of the desk + page fills.
         use imaging::record::{Command, Draw};
@@ -6755,10 +6749,10 @@ mod tests {
         assert!(c.tooltip_lines().is_none());
     }
 
-    // ---- build_scene paints the tooltip on top (spec §3.3) ----
+    // ---- compose_scene paints the tooltip on top (spec §3.3) ----
 
     #[test]
-    fn build_scene_appends_tooltip_draws_last() {
+    fn compose_scene_appends_tooltip_draws_last() {
         use imaging::record::{Command, Draw};
 
         let font =

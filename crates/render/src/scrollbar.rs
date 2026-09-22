@@ -916,10 +916,10 @@ mod paint_tests {
 
     #[test]
     fn paint_appends_chrome_without_clearing_scene() {
-        // Append-not-clear contract relied on by
-        // EditorComponent::build_scene: the composited page scene is passed
-        // in already populated, and the chrome must be appended AFTER it with
-        // the thumb last, never replacing it.
+        // Append-not-clear contract relied on by the component's scene
+        // composition: the composited page scene is passed in already
+        // populated, and the chrome must be appended AFTER it with the
+        // thumb last, never replacing it.
         let mut scene = Scene::new();
         // Pre-existing content authored with the same Painter call shape the
         // track fill uses.

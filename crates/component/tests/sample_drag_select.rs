@@ -129,10 +129,14 @@ fn drag_select_over_markup_annotation_produces_selection() {
     );
 
     // The scene must contain the selection overlay: clearing the selection
-    // must shrink the command list.
-    let with_sel = c.build_scene().commands().len();
+    // must shrink the command list. Selection changes mark the cache dirty;
+    // update_scene recomposes, scene() is the permanent public API the
+    // native widget paints from.
+    c.update_scene();
+    let with_sel = c.scene().commands().len();
     c.set_tool(Tool::Text); // clears text_selection
-    let without_sel = c.build_scene().commands().len();
+    c.update_scene();
+    let without_sel = c.scene().commands().len();
     assert!(
         with_sel > without_sel,
         "selection overlay must add commands to the scene ({with_sel} vs {without_sel})"
