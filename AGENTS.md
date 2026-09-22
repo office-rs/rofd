@@ -2,17 +2,17 @@
 
 本文件为在本仓库工作的 AI 编程代理（以及人类协作者）提供上下文。先读这里，再动代码。
 
-设计 spec 是事实的最终来源：[`docs/superpowers/specs/2026-07-08-ofd-editor-design.md`](docs/superpowers/specs/2026-07-08-ofd-editor-design.md)。本文档与代码现状对齐；二者冲突时以代码 + spec 为准，并回来修本文档。
+设计 spec 是事实的最终来源：最新一份 [`docs/superpowers/specs/2026-09-22-rofd-xilem-refactor-and-rename-design.md`](docs/superpowers/specs/2026-09-22-rofd-xilem-refactor-and-rename-design.md)。本文档与代码现状对齐；二者冲突时以代码 + spec 为准，并回来修本文档。
 
 ---
 
 ## 1. 项目是什么
 
-**rofd** 是一个 OFD（GB/T 33190）**查看 + 批注**编辑器**库**，Rust 实现，双平台（native + WASM）。参考项目是 `D:/code/reditor`（OOXML 编辑器库），复刻其分层架构。
+**rofd** 是一个 OFD（GB/T 33190）**查看 + 批注**编辑器**库**，Rust 实现，双平台（native + WASM）。as-built 参照项目是 `D:/code/rword`（OOXML 编辑器库，同型改造已全部落地）。
 
 - **v1 范围**：查看 + 批注。主文档（body）**只读渲染**；批注是**唯一可变层**。
-- **库形态**：以 `EditorComponent` 为唯一集成入口（类比 `<textarea>`），宿主控制消息循环并转发事件。库本身不取系统时间、不直接依赖 GUI 框架。
-- **平台边界**：库 = 平台无关核心（dom/io/render/editor/component）+ 两个平台适配器（native-view/web-view）；`crates/native-app`、`crates/web-app` 与 `crates/tauri-app` 是宿主应用，不是库的交付物（见 §4.9）。
+- **库形态**：以 `OfdComponent` 为唯一集成入口（类比 `<textarea>`），宿主控制消息循环并转发事件。库本身不取系统时间、不直接依赖 GUI 框架。
+- **平台边界**：库 = 平台无关核心（dom/io/render/editor/component）+ 两个平台适配器（xilem-view/web-view）；`crates/xilem-app`、`crates/web-app` 与 `crates/tauri-app` 是宿主应用，不是库的交付物（见 §4.9）。
 - **非目标**：编辑 body 内容、创建/验签电子签名、全保真渲染（模板继承/JBIG2/瓦片图按需补，v1 桩处理）、实时协同。
 - 为 B（后端生成）/ C（PDF→OFD）/ D（后端读改写）留门，但不实现。
 
@@ -26,7 +26,7 @@
 
 ```bash
 cargo build --workspace          # 全量编译
-cargo test  --workspace          # 全量测试
+cargo test  --workspace --exclude tauri-app --exclude rofd-web-view
 cargo test  -p rofd-io           # 单 crate 测试
 cargo test  -p rofd-io surgical  # 按名过滤（手术刀字节保留测试）
 cargo clippy --workspace --all-targets -- -D warnings
@@ -38,11 +38,11 @@ cargo fmt --all -- --check
 ### 运行 native 宿主
 
 ```bash
-cargo run -p native-app                           # 空编辑器
-cargo run -p native-app -- test/ru-yuan-ji-lu.ofd  # 打开根目录 test/ 下的 .ofd
+cargo run -p xilem-app                           # 空编辑器
+cargo run -p xilem-app -- test/ru-yuan-ji-lu.ofd  # 打开根目录 test/ 下的 .ofd
 ```
 
-native-app 按相对 CWD 的候选路径查找默认 CJK 字体（`crates/web-app/public/NotoSansSC-Regular.otf`）。若未下载，文字不渲染但程序不崩——先跑下面 web-app 的 `npm run fetch:font` 即可获得该字体文件。
+命令行路径参数经宿主 `host::document_io::load_ofd` 加载。xilem-app 按相对 CWD 的候选路径查找默认 CJK 字体（`crates/web-app/public/NotoSansSC-Regular.otf`）。若未下载，文字不渲染但程序不崩——先跑下面 web-app 的 `npm run fetch:font` 即可获得该字体文件。
 
 ### 构建 / 运行 web 宿主
 
@@ -70,196 +70,167 @@ npm run tauri build       # 打包：vite build -> tauri 打成桌面安装包
 
 tauri-app 前端**复用 web-app 源码**（`main.ts` 从 `../web-app/src` 导入 App.vue）；仅在挂载前用 `setFileHost` 注入原生文件桥（`src/host/tauri.ts`，走 tauri-plugin-dialog + tauri-plugin-fs 的原生打开/保存对话框）。字体与 sample.ofd 从 web-app 的 `public/` 本地加载（vite `publicDir` 指向它），脱离 CDN。`src-tauri` 的 Rust 壳只启动窗口 + 注册插件，**不依赖任何 rofd crate**（§4.9）。平台支持：Windows（WebView2）开箱即用；macOS/Linux 受 WebKit 的 WebGPU 进度限制。
 
-产物命名统一为 `rofd`：`tauri.conf.json` 的 `productName` + `mainBinaryName` 与 `src-tauri/Cargo.toml` 的 `[[bin]] name` 都设为 `rofd`（package 名仍是 `tauri-app`，即 workspace 成员名）。安装包 `rofd_<version>_x64-setup.exe` / `rofd_<version>_x64_en-US.msi`、安装后主程序、中间 exe 全程叫 `rofd`。GitHub Release published 时，`.github/workflows/release-tauri.yml` 在 windows runner 上构建安装包并上传到该 Release 的 assets；版本号来自 git tag（`v0.1.0` → 写入 tauri.conf.json/package.json 的 `version`），与 SDK 发布同样的「tag 即版本」约定。
+产物命名统一为 `rofd`（详见 release-tauri.yml）。
 
 ---
 
 ## 3. 仓库布局与分层
 
-严格 5 层单向依赖，**反向边禁止**。每个 crate 的 `[dependencies]` 是依赖方向的唯一事实来源。**平台边界线画在 component 与适配器之间**：component 及以下五个 crate 平台无关（不依赖 winit/web-sys/wgpu/arboard 等平台 crate），native-view / web-view 是仅有的两层平台绑定。
+严格 5 层单向依赖，**反向边禁止**。每个 crate 的 `[dependencies]` 是依赖方向的唯一事实来源。**平台边界线画在 component 与适配器之间**：component 及以下五个 crate 平台无关（不依赖 winit/web-sys/wgpu/arboard 等平台 crate），xilem-view / web-view 是仅有的两层平台绑定。
 
 ```
-crates/native-app     ─┐
-                       ├─► native-view ─┐
+crates/xilem-app      ─┐
+                       ├─► xilem-view ─┐
                        │                ├─► component ─┬─► render ──┐
 crates/web-app ─► web-view ─────────────┘              ├─► editor ──┴─► dom
    (JS + Vite,         (wasm-bindgen     │              │
     非 cargo 成员)      适配器)           │              └─► io ────────┘
-                                          │
-                                          └─ native-view / web-view 另直接依赖 io（parse_ofd / save_ofd）
 ```
 
-| crate              | 路径                 | 职责                                                                                                                     | 依赖（rofd 内部）                                                       |
-| ------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
-| `rofd-dom`         | `crates/dom`         | 纯数据模型 `OfdDocument`（PageModel 只读 body + AnnotationModel 可变批注 + 元数据）。无 ZIP/XML。public 字段 + `Default` | —                                                                       |
-| `rofd-io`          | `crates/io`          | `parse_ofd` / `save_ofd`（手术刀）/ `write_ofd`（全量）+ `PackageHandle`                                                 | dom                                                                     |
-| `rofd-render`      | `crates/render`      | `imaging::record::Scene` 构建（body + CTM + 批注 overlay）+ `text/`（font/glyph/shape）+ `hit_test`/`caret_rect`         | dom                                                                     |
-| `rofd-editor`      | `crates/editor`      | 批注选区、命令模式、Step/Transaction/History（cap 100）                                                                  | dom                                                                     |
-| `rofd-component`   | `crates/component`   | **唯一集成入口** `EditorComponent`：`ViewEvent`、`RenderTarget`、Callbacks、脏缓存                                       | dom + render + editor（**不依赖 io**）                                  |
-| `rofd-native-view` | `crates/native-view` | native 薄适配器：`EditorApp` + `WinitEventBridge`                                                                        | component + render + io + dom + winit                                   |
-| `rofd-web-view`    | `crates/web-view`    | WASM 薄适配器：`WasmEditor` + `WebGpuRenderTarget` + TS SDK                                                              | component + io + dom + vello + imaging + imaging_vello + wgpu + web-sys |
-| `native-app`       | `crates/native-app`  | xilem + masonry 宿主应用                                                                                                 | native-view + component + xilem + masonry_winit + rfd                   |
-| web-app            | `crates/web-app`     | Vite + TS 宿主应用（非 cargo 成员）                                                                                      | `@office-rs/rofd`（= `crates/web-view/sdk`）                            |
-| `tauri-app`        | `crates/tauri-app`   | Tauri 桌面宿主应用：`src-tauri` 是 cargo 成员（tauri 壳，不依赖任何 rofd crate），前端复用 web-app 源码                  | tauri + tauri-plugin-dialog + tauri-plugin-fs；前端经 web-app + SDK     |
+| crate            | 路径                 | 职责 | 依赖（rofd 内部） |
+| ---------------- | -------------------- | --- | ----------------- |
+| `rofd-dom`       | `crates/dom`         | 纯数据模型 | — |
+| `rofd-io`        | `crates/io`          | `parse_ofd` / `save_ofd`（手术刀）/ `write_ofd`（全量）+ `PackageHandle` | dom |
+| `rofd-render`    | `crates/render`      | `imaging::record::Scene` 构建 + hit_test/caret_rect | dom |
+| `rofd-editor`    | `crates/editor`      | 批注选区、命令模式、Step/Transaction/History | dom |
+| `rofd-component` | `crates/component`   | **唯一集成入口** `OfdComponent`：ViewEvent、Callbacks、脏缓存 | dom + render + editor（**不依赖 io**） |
+| `rofd-xilem-view`| `crates/xilem-view`  | masonry/xilem 薄适配器：`OfdWidget` + `ofd()`/`ofd_with_config()` | component |
+| `rofd-web-view`  | `crates/web-view`    | WASM 薄适配器：`WasmOfd` + `WebGpuRenderTarget` + TS SDK | component + io + dom + vello + imaging + imaging_vello + wgpu + web-sys |
+| `xilem-app`      | `crates/xilem-app`   | xilem 宿主应用（文件对话框 + 工具栏 UI 策略） | xilem-view + component + io + dom + xilem + rfd |
+| web-app          | `crates/web-app`     | Vite + TS 宿主应用（非 cargo 成员） | `@office-rs/rofd`（= `crates/web-view/sdk`） |
+| `tauri-app`      | `crates/tauri-app`   | Tauri 桌面宿主应用 | tauri 壳不依赖 rofd crate；前端复用 web-app |
 
-> **关键偏离 spec**：spec 设想 `component` 依赖 io 做 load/save 便利方法；**实际实现把 io 依赖下放到适配器层**（native-view / web-view 持有 `PackageHandle`、调 `parse_ofd`/`save_ofd`），`EditorComponent` 保持 io-free、更易复用。改 component 时不要往里塞 io 调用。
+> **两条历史偏离（改造后的 as-built）**：
+> 1. component 保持 io-free——io 依赖从不下沉到组件；
+> 2. native 侧 io 调用已**上移到宿主**（`xilem-app/src/host/document_io.rs`），适配器 rofd-xilem-view 不依赖 io；web-view 侧仍持 io（wasm 宿主自己就是"宿主"）。
 
 ---
 
 ## 4. 不可违反的不变量
 
-动任何 crate 前先内化这些。违反任一条都应视为 bug。
-
 ### 4.1 依赖严格向上，反向边禁止
-
-`dom` 不依赖任何 rofd crate；`io`/`render`/`editor` 只依赖 `dom`；`component` 不依赖 `io`/`native-view`/`web-view`。需要"从 dom 反查渲染信息"时，用 render 的查询 API（`hit_test`/`caret_rect`），不要让 dom/render 反向依赖 editor。
 
 ### 4.2 body 只读；批注是唯一可变面
 
-`Editor` 拥有整个 `OfdDocument`，但**只通过命令改 `.annotations`**，绝不碰 `pages`。`pages` 在 editor 里只读是**运行约定**（由 io 的 save 逻辑编码"重写批注、保留 body 原样"保证），类型不锁死——生成/D 场景可自由构造 `Page`。
-
 ### 4.3 手术刀保存：未触碰条目字节级保留
 
-`save_ofd(doc, pkg)`：**批注条目从 `AnnotationModel` 重新序列化；`Document.xml` 字节级打补丁（`<MaxUnitID>` + 缺失时插入 `<Annotations>` loc，WPS 等严格阅读器只经此引用发现批注）；其余条目原样拷字节**（`PackageHandle` 以 `Arc` 保留原始字节）。这就是 subset 模型仍能保真的原因。核心测试：`parse_ofd → save_ofd → 未触碰条目字节逐字节相等`（见 `crates/io/tests/round_trip.rs`、`save_surgical.rs`）。改 io 的保存逻辑后，此测试必须仍绿。
+`save_ofd(doc, pkg)`：批注条目从 `AnnotationModel` 重新序列化；`Document.xml` 字节级打补丁（`<MaxUnitID>` + 缺失时插入 `<Annotations>` loc，严格阅读器只经此引用发现批注）；其余条目原样拷字节。改 io 保存逻辑后，核心测试（`crates/io/tests/round_trip.rs`、`save_surgical.rs`）必须仍绿。宿主层另有 `crates/xilem-app/tests/c2_save.rs`（#[ignore]，真实样例）。
 
 ### 4.4 库不取系统时间
 
-库内**绝不**调 `Date::now()` / `SystemTime`。宿主通过 `editor.set_clock(author, ts)` 注入 author + 时间戳；命令用 `self.current_ts` 填 `created`/`modified`。wasm 宿主传 `Date.now()`，native 宿主自定。
+库内**绝不**调 `Date::now()` / `SystemTime::now()`。宿主通过 `set_clock(author, ts)` 注入；命令用注入时间填 `created`/`modified`。**例外（2026-09 明确）**：单调 `Instant`（非挂钟、不可持久化、不随系统时钟跳变）可用于动画计时——native 侧 caret blink 的 `tick_blink` 即此用途；wasm 侧不使用 `Instant`。
 
 ### 4.5 渲染产出 `imaging::record::Scene`，不是 `vello::Scene`
 
-`rofd-render` 产出 backend-agnostic 的 `imaging::record::Scene`（来自 forest-rs/imaging）。native 侧用 `Painter::replay` 回放进 masonry canvas；web 侧用 `imaging_vello::VelloSceneSink` 转 `vello::Scene` 再渲染。**改 render 时用 imaging Painter API（fill/stroke/glyphs/draw_image）**，不要直接构造 `vello::Scene`。imaging 无 transform-aware 子场景回放，需把 `page_origin + zoom + CTM` 烘焙进每个 draw call（不缓存 body/annotation 子场景）。
-
 ### 4.6 错误显式分层，绝不静默吞
-
-- 硬错（ZIP 损坏/XML 畸形）→ `Result<_, OfdError>`（结构化 enum：`Zip`/`Xml`/`Schema`/`Io`）。
-- 可降级问题（模板未展开/JBIG2/未知对象/字体替换/缺资源）→ `OfdWarning`，继续加载，经 `on_warning` 回调上抛。
-- 所有 `?` 带 context；无裸 `unwrap`/`ignore`；输入校验在 io 边界 fail-fast。
 
 ### 4.7 没有 `Format` trait
 
-单格式项目，YAGNI。JSON 测试 fixture 由模型 `derive serde` 后用 `serde_json` 直接获得，不引入多格式抽象。
-
 ### 4.8 ID 约定
 
-`ObjectId`/`PageId` = OFD ID 字符串 newtype；`AnnotationId` 同为整数串 newtype，编辑器从 `max_unit_id + 1` 分配（GB/T 33190 ST_ID，保证 WPS 等严格阅读器可解析），见 `dom/src/ids.rs`。
-
 ### 4.9 平台边界：功能内聚核心层，适配器只做绑定
-
-- **component 及以下平台无关**：不依赖任何平台 crate（winit/web-sys/wgpu/arboard/文件对话框等），必须同时可编译 native 与 wasm32。平台差异只允许出现在 native-view / web-view。
-- **功能内聚**：状态机、几何/命中、命令等业务逻辑一律落在 component 及以下；适配器**不实现功能**，只做事件映射、渲染目标对接、平台能力默认装配。
-- **平台能力经回调下沉**：功能需要平台能力（剪贴板/保存路径/时钟/光标）时，component 定义回调（如 `on_copy`/`on_save_request`），适配器默认接好（可配置关闭），宿主零配置。库自身绝不直接触碰平台设施。
-- **API 以宿主易用为先**：适配器与 SDK 对外 API 遵循"默认开箱即用、可选覆盖"；宿主接入代码量最小化是 API 设计的验收标准，native-app / web-app 即用量样板。
 
 ---
 
 ## 5. 各 crate 工作要点
 
-### rofd-dom
-
-- 所有结构 `#[derive(Debug, Clone, Default)]` + public 字段。
-- `AnnotationModel` 是唯一可变面；批注的 Appearance **不存模型**——overlay 几何由 render 从 `payload` 实时算。
-- 字体/图片以 `Arc<Vec<u8>>` 共享，避免 CJK 字体大对象重复拷贝。
-
-### rofd-io
-
-- 三个入口：`parse_ofd`（→ `LoadReport{document, package, warnings}`）、`save_ofd`（手术刀，A+D）、`write_ofd`（全量，B+C）。
-- `PackageHandle` 对外不透明：原始条目字节（`Arc`）+ name→位置 + 条目分类索引。
-- 改 parse 时：未建模对象（模板/JBIG2/冷门）→ 跳过 + warning，**不 fatal**。
-- 改 save 时：保持"只重写批注条目"语义；为 D 的 body 重写留路（条目驱动选择性重写）。
-
-### rofd-render
-
-- 产出 `imaging::record::Scene`。`text/` 子模块：`font`（OTF/TTF 解析 + `FontCache`）、`glyph`（按字形 ID + delta 画轮廓，body 文字用此、不整形）、`shape`（Parley 整形，仅批注文本用）。
-- 脏缓存：body_scene 一次构建后稳定缓存（body 只读永不失效）；批注编辑只让对应页的 annotation_scene 失效。
-- 交互 API：`hit_test` / `caret_rect` 算几何（像素→逻辑量 `HitTarget`），喂给 editor；editor 只存 `(AnnotationId, offset)`，不碰像素。
-
-### rofd-editor
-
-- 命令模式 + Step/Transaction/History。每命令 apply→undo 必须可还原。文本编辑产生 `ReplaceAnnotationStep`（before/after 整个 annotation）。
-- editor **无回调**——宿主/component 层在命令后查询状态。变更经 `on_change(affected_pages)` 在 component 层失效缓存。
-- left/right = ±1 char（纯逻辑）；up/down 视觉行导航 v1 降级（见 spec §10）。
-
 ### rofd-component
 
-- 唯一入口 `EditorComponent`：`new_native()`/`new_wasm()`（构造目标用 `#[cfg(target_arch = "wasm32")]` 门控，非 feature）、`handle_event`、`render`、`register_font`。
-- `RenderTarget` trait：native 由 `VelloRenderTarget`、wasm 由 `WebGpuRenderTarget` 实现。
-- `ViewEvent`：Key/Pointer/Scroll/Zoom/Resize/Ime/Focus 等，平台无关。
-- **不依赖 io**——load/save 的字节→文档转换由上层适配器完成。
+- 唯一入口 `OfdComponent`：`new_native()`/`new_wasm()`（`#[cfg(target_arch = "wasm32")]` 门控，非 feature）、`handle_event`。
+- `OfdConfig`：`default_font_bytes`、`page_gap`（默认 20）、`zoom`（初始 PX_PER_MM，`with_zoom` 可覆盖）。
+- 场景脏缓存（终态公共 API）：`update_scene()` 按脏标志重合成、`scene() -> &Scene`、`set_viewport_size(f64,f64)`、`mark_scene_dirty`（pub(crate)）。
+- 文本编辑：`paste_text`、`delete_annotation`、`tick_blink`（native）、preedit 状态机（组件自持 `Option<PreeditState>`，简化 caret overlay，不做 ghost-document 回流）。
 
-### rofd-native-view
+### rofd-xilem-view（as-built 九条契约）
 
-- 薄适配器：只做 winit/masonry 事件映射与平台能力默认装配（剪贴板等），不承载功能逻辑（§4.9）。
-- 三层：Host（crates/native-app，masonry/xilem 状态 + 渲染循环）、`WinitEventBridge`（modifiers/cursor/scale_factor/canvas_origin）、`EditorApp`（EditorComponent + 文件路径 + modified）。
-- Bridge **不进** EditorApp（框架无关、host 可前置拦截、生命周期不同）。
-- 输入在 **winit 层**路由到 editor（不经 masonry widget 事件系统）；canvas widget 仅渲染。
-- 坐标链：`winit CursorMoved(物理px) ÷ scale_factor − canvas_origin → 画布逻辑px → ViewEvent::PointerMove`。
-- `EditorApp` 持 `Rc<RefCell<parley::FontContext>>`（经 FontStore），**非 `Send`**；单线程，`Arc<Mutex>` 镜像 reditor 模式（见 `#[allow(clippy::arc_with_non_send_sync)]`）。
+见 §"Native Ofd Widget"。
 
 ### rofd-web-view
 
-- 薄适配器：只做 DOM 事件桥、WebGPU 对接与平台能力默认装配（剪贴板等），不承载功能逻辑（§4.9）。
-- `WasmEditor`（wasm-bindgen）+ `WebGpuRenderTarget` + JS 事件桥。`wasm-pack --target web`。
-- SDK 在 `crates/web-view/sdk/`，入口 `Editor.create(canvas, fontBytes)`，发布为 npm 包 `@office-rs/rofd`。
-- 默认字体 NotoSans + NotoSansCJKsc，`Arc<Vec<u8>>` 共享，`warmup()` 预编译 shader。
-- **WebGPU only**，无 Canvas2D 回退（Chrome/Edge 113+）。
+- `WasmOfd`（wasm-bindgen）+ `WebGpuRenderTarget` + JS 事件桥。工厂 `create_wasm_ofd`。wasm-pack --target web。
+- SDK 在 `crates/web-view/sdk/`，入口 `Ofd.init(container, config?)`，发布为 npm 包 `@office-rs/rofd`。
+
+### xilem-app
+
+- 纯 `Xilem::new_simple` 宿主。AppState 为 plain data（命令队列 + file/package 路径 + modified + has_selection + warnings + context_menu），另持一个 `Arc<Mutex<Option<Result<(), String>>>>` 保存结果槽：保存命令回传落盘结果，`app_logic` 开头排空，成功才清 modified、失败保持未保存态。命令队列与结果槽的锁仅在瞬间持有。
+- 文件 I/O 落 `src/host/document_io.rs`：`LoadedOfd{document, package, warnings}`、`load_ofd`、`save_ofd`（Some(pkg) 手术刀 / None 全量；原子写）。Save-As 不产生新 PackageHandle。
+
+---
+
+## Native Ofd Widget（masonry/xilem 适配器）
+
+`rofd-xilem-view` 把编辑器嵌为一等 masonry widget。宿主不碰 winit——focus、pointer capture、IME session、clipboard 路由全部经 masonry：
+
+```
+ofd(queue) / ofd_with_config(queue, config)    xilem View (ofd_view.rs)
+  │ build: OfdWidget::new(config); actions ↔ .on_change/.on_context_menu/… handlers
+  │ rebuild: drains `queue` → OfdWidget::with_component (host→widget commands)
+  ▼
+OfdWidget (masonry Widget)                      owns OfdComponent, pending queue,
+  │                                               effective focus, pointer cursor
+  │ masonry events → masonry_events.rs → ViewEvent
+  │ component callbacks → pending queue → ctx.submit_action (after every touch)
+  │ paint: component.update_scene() + painter.replay(scene)
+  ▼
+OfdComponent (rofd-component)
+```
+
+Key contracts:
+
+1. **Host→widget commands**：`OfdCommand = Arc<dyn Fn(&mut OfdComponent) + Send + Sync>`；`OfdCommandQueue = Arc<Mutex<Vec<OfdCommand>>>`，rebuild 时经 `with_component` 排空。任何被处理的回调返回 `MessageResult::Action(())` → 重跑宿主逻辑 → rebuild → 排空。命令必须 `Fn`（按钮重复触发），捕获数据在闭包内 clone。
+   命令排空非空时提交一次内部 `OfdWidgetAction::HostCommandWake`（不映射任何宿主 handler，仅触发再一拍 app_logic），使宿主能消费命令结果；下一拍队列已空、不再提交 wake，故有界、不产生无限重渲染。
+2. **Widget→host events**：`OfdWidgetAction` 镜像组件回调面；`PointerCursorChanged` 内部消费（驱动 `get_cursor`），绝不 submit。
+3. **有效焦点** = widget 键盘焦点 ∧ 窗口焦点；组件出生未聚焦（首次点击前 caret 隐藏）。`Ime::Disabled → FocusLost` 强制提交 preedit，带防御性 regain。
+4. **IME**：`accepts_text_input` 自动起停 session；每个触点末尾从 `caret_rect()` 刷新 `set_ime_area`。
+5. **剪贴板**：Ctrl+V = `TextEvent::ClipboardPaste` → `paste_text`；Ctrl+C 在 widget 拦截经 `ctx.set_clipboard` 写出。Ctrl+X 在 rofd 为 copy-only（运行期 body 只读、无 selection extent，绝不删除）；宿主菜单无 Cut 项。
+6. **Zoom（rofd 有意差异，无镜像）**：组件 viewport 直接乘法缩放（`zoom *= factor`，基线 `PX_PER_MM = 96/25.4`）；ctrl+wheel 发 `ZoomAt{factor, center}`（×1.1 / ×0.9，center = 指针视口位置），钳制 `[PX_PER_MM×0.25, PX_PER_MM×3.0]`。宿主/widget 不保留 f32 zoom 镜像。
+7. **Blink**：`on_anim_frame` 在聚焦期间保活动画；500ms 时序归组件 `tick_blink`（单调 Instant）。
+8. **Scroll**：wheel 事件 set_handled——滚动与自绘滚动条归组件；无 portal、无 CANVAS_CONTENT_HEIGHT。
+9. **无障碍**：`Role::Document`。
+
+If you're tempted to reintroduce a winit-layer bridge、canvas-origin 记账、或每帧 force_repaint 排序——don't；widget 就是整个平台适配器。
 
 ---
 
 ## 6. 测试约定
 
-- **目标 80% 覆盖，TDD（先红后绿）**。
-- **手术刀字节保留是核心测试**（`crates/io/tests/round_trip.rs`、`save_surgical.rs`）：`parse → save_ofd → 未触碰条目逐字节相等`。
-- **每命令 apply→undo→还原**（`crates/editor/tests/integration.rs`）；History cap=100 溢出丢最旧。
-- Fixture：模型 derive serde → `serde_json` fixture（免费跨 crate）；真实 .ofd fixture 放仓库根 `test/`（如 `test/ru-yuan-ji-lu.ofd`），生成 fixture 放 `crates/io/tests/fixtures/`。
-- 渲染用**场景结构断言**（对象数/类型，非像素）；GPU 快照易 flaky，v1 不作阻塞 CI。
-- Integration：真实 .ofd → 加载 → 批注 → 保存 → 重开 → 断言批注保留 + body 字节一致。
+- 目标 80% 覆盖，TDD（先红后绿）。
+- 手术刀字节保留是核心测试；真实样例测试保持 `#[ignore]`：
+  - `cargo test -p xilem-app --test c2_save -- --ignored`
+- 渲染用场景结构断言（对象数/类型，非像素）。
+- xilem-view 无头 harness（masonry_testing，7 个）：打字、双击选词、IME、滚轮、ctrl+wheel、Ctrl+C、窗口焦点门控。
 
 ---
 
 ## 7. 依赖钉版（动之前必读）
 
-`xilem` + `masonry_winit` + `imaging` + `imaging_vello` 是 **git rev 钉版**，定义在根 `Cargo.toml` `[workspace.dependencies]`：
+| crate | 源 | 版本/rev |
+| ----- | -- | --------- |
+| `xilem` | linebender/xilem git | `271a27a6d4a930f7878d404f9014e3c50a3a9b88` |
+| `masonry_testing` | 同上（dev-dep） | 同 rev |
+| `imaging` / `imaging_vello` | crates.io | `0.0.1` |
+| vello / parley | crates.io | `0.8` |
+| wgpu | crates.io | `28` |
 
-| crate                      | git 源            | rev                                        |
-| -------------------------- | ----------------- | ------------------------------------------ |
-| `xilem`, `masonry_winit`   | linebender/xilem  | `bf81712d44e3`                             |
-| `imaging`, `imaging_vello` | forest-rs/imaging | `0eea0499d2666195103b9837ac4c3ee474176a5b` |
-
-**这四个 rev 必须作为整体一起 bump**。原因：xilem@`bf81712d44e3` 内部 pin 了同一个 imaging git rev，所以 xilem + imaging 统一到单一 imaging 源；published crates.io 的 xilem/masonry 0.4.0 仍 ship vello 0.6（与 rofd 的 vello 0.8 不兼容），故 xilem **必须来自 git**。
-
-升级 Linebender 栈时（vello/parley/xilem），预期 alpha/beta 的 breaking change——bump 后可能需要调整 render/native-view/web-view 的调用代码。完整背景见记忆 `imaging-xilem-migration` 与 `docs/superpowers/plans/2026-07-10-rofd-xilem-imaging-migration.md`。
+Toolchain：`rust-toolchain.toml` 钉 `1.98.1`；新 pin 的包声明 `rust-version = 1.96`。已无 masonry_winit/winit 直接依赖（masonry_winit 内部使用 winit）。
 
 ---
 
 ## 8. 工作流
 
-本项目用 **superpowers 规划工作流**：
-
-- 设计 spec：`docs/superpowers/specs/`（架构与决策记录，事实来源）。
-- 实现 plan：`docs/superpowers/plans/`（每 crate/阶段一份，TDD 任务细化）。
-- 新功能：先写/更新 spec → 写 plan → TDD（RED→GREEN→REFACTOR）→ 实现 → 自审 → 提交。
-- 提交信息遵循 conventional commits（`feat`/`fix`/`refactor`/`docs`/`test`/`chore`/`perf`/`ci`）。
+superpowers 工作流：spec → plan → TDD → 自审 → 提交，全部 conventional commits。
 
 ---
 
-## 9. 常见陷阱（Do / Don't）
+## 9. 常见陷阱
 
-| ✅ Do                                          | ❌ Don't                                   |
-| ---------------------------------------------- | ------------------------------------------ |
-| render 用 imaging Painter API                  | 在 render 里直接构造 `vello::Scene`        |
-| 宿主 `set_clock(author, ts)`                   | 库内调 `Date::now()` / `SystemTime::now()` |
-| editor 只改 `.annotations`                     | 在 editor 里改 `pages`（body 只读）        |
-| 依赖只向上                                     | 给 dom/render 加反向依赖到 editor/io       |
-| 硬错 `OfdError`、降级 `OfdWarning`             | 裸 `unwrap` / 静默 `ignore` 错误           |
-| bump 四个 git rev 一起动                       | 单独 bump xilem 或 imaging 之一            |
-| 功能逻辑落 component 及以下                    | 在适配器层写状态机/几何/业务逻辑           |
-| component 出回调、适配器默认装配（宿主零配置） | 让每个宿主重复对接平台能力                 |
-| 宿主应用（native-app/web-app）只当接入样例参照 | 把库功能写进宿主应用                       |
-| body_scene 稳定缓存、只失效批注页              | 每帧重建 body_scene                        |
-| 适配器层（native-view/web-view）持 io          | 往 component 里塞 io 调用                  |
-| 改 io save 后跑手术刀字节保留测试              | 只靠单元测试断言模型相等                   |
-| public 字段 + `Default` on dom 结构            | 用 private 字段 + setter 锁死构造能力      |
+| ✅ Do | ❌ Don't |
+| ----- | -------- |
+| render 用 imaging Painter API | 在 render 里直接构造 vello::Scene |
+| 宿主 set_clock（Instant 仅用于 blink 动画） | 库内调挂钟 |
+| editor 只改 .annotations | 在 editor 里改 pages |
+| xilem-view 只依赖 component | 往适配器塞 io/业务逻辑 |
+| 改 io 后跑手术刀测试 | 只断言模型相等 |
 
 ---
 
@@ -267,7 +238,9 @@ crates/web-app ─► web-view ─────────────┘       
 
 - 设计文档可以保留 WPS 字样，但是代码注释、代码变量、代码文件命名不要存留 WPS 字样。
 
+---
+
 ## 11. 参考项目
 
-- **`D:/code/reditor`** — Rust + GPU 的 OOXML 编辑器库，rofd 的分层骨架直接复刻自它。遇到"rofd 这里该怎么组织"时，先看 reditor 对应 crate（reditor-dom/reditor-ooxml/reditor-renderer/reditor-editor/reditor-component/reditor-native-view/reditor-web-view）如何处理。
-- 关键差异见 spec §2.3：rofd 无独立 layout crate（OFD 固定版式无回流）、dom 双模型（PageModel + AnnotationModel）、io 双写入路径（手术刀 + 全量）、无 Format trait、editor 操作对象是批注而非文本光标。
+- **`D:/code/rword`** — Rust + GPU 的文档编辑器库，rofd 本次 masonry/xilem 改造与更名的 as-built 参照：适配器三文件（word_widget/masonry_events/word_view）、宿主（xilem-app + host/document_io）、更名 commit 序列。
+- **`D:/code/reditor`** — 更早的 OOXML 编辑器库，rofd 分层骨架的历史来源。
