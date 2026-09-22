@@ -46,7 +46,7 @@ pub fn parse_key(s: &str) -> Key {
 }
 
 /// Map a JS-friendly tool-kind string to a [`Tool`]. Unknown strings fall
-/// back to [`Tool::Text`] (safe default). Mirrors the native-app's toolbar
+/// back to [`Tool::Text`] (safe default). Mirrors the xilem-app's toolbar
 /// buttons: text / hand / freehand / rect. `"select"` and `"textSelect"` are
 /// kept as aliases of `"text"` (the unified tool - spec §3).
 ///
@@ -561,7 +561,7 @@ mod wasm_impl {
         /// `"squiggly"`) are no longer tools (spec 2026-09-10) and fall back
         /// to `Text`, like any unknown string - use `applyMarkup` on the
         /// body-text selection instead.
-        /// Mirrors the native-app's toolbar buttons.
+        /// Mirrors the xilem-app's toolbar buttons.
         #[wasm_bindgen(js_name = setTool)]
         pub fn set_tool(&mut self, kind: &str) {
             let tool = parse_tool_kind(kind);

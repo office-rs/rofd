@@ -1,9 +1,8 @@
-//! rofd-native-view - masonry/xilem adapter for rofd.
+//! rofd-xilem-view - masonry/xilem adapter for rofd.
 //!
 //! `OfdWidget` hosts an `EditorComponent`; embed it in a xilem tree via
-//! `ofd()` / `ofd_with_config()`. Transform B renames this crate to
-//! rofd-xilem-view; transform C renames the core family to Ofd*, making
-//! `OfdCommand = Fn(&mut OfdComponent)` self-consistent.
+//! `ofd()` / `ofd_with_config()`. Transform C renames the core family to
+//! Ofd*, making `OfdCommand = Fn(&mut OfdComponent)` self-consistent.
 
 pub mod masonry_events;
 pub mod ofd_view;
