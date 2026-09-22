@@ -52,15 +52,26 @@ pub fn save_ofd(
     write_atomic(path, &bytes)
 }
 
+/// Removes the temp file on drop unless disarmed after a successful rename.
+struct TempFileGuard(PathBuf);
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Write bytes to a sibling `.ofd.tmp` file, then rename over destination.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut tmp: PathBuf = path.to_path_buf();
     tmp.set_extension("ofd.tmp");
+    let _guard = TempFileGuard(tmp.clone());
     std::fs::write(&tmp, bytes).map_err(|e| format!("write {}: {e}", tmp.display()))?;
     if let Err(e) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
+        // Dropping _guard removes the temp file; error semantics unchanged.
         return Err(format!("rename {}: {e}", path.display()));
     }
+    std::mem::forget(_guard);
     Ok(())
 }
 
