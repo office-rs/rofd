@@ -45,7 +45,10 @@ use xilem::style::{Padding, Style};
 use xilem::view::{canvas, flex_col, flex_row, sized_box, task, text_button, FlexExt};
 use xilem::{EventLoop, WidgetView, Xilem};
 
-const BTN_PAD: Padding = Padding::from_vh(0.0, 6.0);
+const BTN_PAD: Padding = Padding::from_vh(
+    xilem::masonry::layout::Length::const_px(0.0),
+    xilem::masonry::layout::Length::const_px(6.0),
+);
 
 type SharedEditor = Arc<Mutex<EditorApp>>;
 type SharedCanvasId = Arc<Mutex<Option<WidgetId>>>;
@@ -72,8 +75,8 @@ fn tool_button(label: &'static str, tool: Tool) -> impl WidgetView<AppState> + u
         app.editor.lock().unwrap().component.set_tool(tool.clone());
     })
     .padding(BTN_PAD)
-    .border_width(0.0)
-    .corner_radius(2.0)
+    .border_width(xilem::masonry::layout::Length::const_px(0.0))
+    .corner_radius(xilem::masonry::layout::Length::const_px(2.0))
 }
 
 /// Markup button: an ACTION over the current body-text selection, not a
@@ -88,8 +91,8 @@ fn markup_button(
     })
     .disabled(disabled)
     .padding(BTN_PAD)
-    .border_width(0.0)
-    .corner_radius(2.0)
+    .border_width(xilem::masonry::layout::Length::const_px(0.0))
+    .corner_radius(xilem::masonry::layout::Length::const_px(2.0))
 }
 
 /// Combined application state for the xilem view.
@@ -164,16 +167,16 @@ fn app_logic(app: &mut AppState) -> std::iter::Once<xilem::WindowView<AppState>>
         }
     })
     .padding(BTN_PAD)
-    .border_width(0.0)
-    .corner_radius(2.0);
+    .border_width(xilem::masonry::layout::Length::const_px(0.0))
+    .corner_radius(xilem::masonry::layout::Length::const_px(2.0));
 
     let btn_save = text_button("Save", |app: &mut AppState| {
         let mut editor = app.editor.lock().unwrap();
         do_save(&mut editor);
     })
     .padding(BTN_PAD)
-    .border_width(0.0)
-    .corner_radius(2.0);
+    .border_width(xilem::masonry::layout::Length::const_px(0.0))
+    .corner_radius(xilem::masonry::layout::Length::const_px(2.0));
 
     let file_row =
         flex_row((btn_open, btn_save)).gap(xilem::masonry::layout::Length::const_px(2.0));
@@ -209,7 +212,10 @@ fn app_logic(app: &mut AppState) -> std::iter::Once<xilem::WindowView<AppState>>
     .gap(xilem::masonry::layout::Length::const_px(8.0));
 
     let menu_bar = sized_box(flex_col((file_row, tool_row)))
-        .padding(Padding::from_vh(2.0, 4.0))
+        .padding(Padding::from_vh(
+            xilem::masonry::layout::Length::const_px(2.0),
+            xilem::masonry::layout::Length::const_px(4.0),
+        ))
         .background_color(Color::from_rgb8(240, 240, 240));
 
     // OFD canvas: a masonry Canvas widget whose paint closure builds the editor
@@ -265,7 +271,7 @@ fn app_logic(app: &mut AppState) -> std::iter::Once<xilem::WindowView<AppState>>
 
 /// winit `ApplicationHandler` host owning the masonry state + the editor/bridge.
 struct NativeApp {
-    masonry_state: MasonryState<'static>,
+    masonry_state: MasonryState,
     app_driver: Box<dyn AppDriver>,
     editor: SharedEditor,
     bridge: WinitEventBridge,
