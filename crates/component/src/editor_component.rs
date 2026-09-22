@@ -51,7 +51,7 @@ pub enum Tool {
 }
 
 /// In-progress pointer drag state. Internal to the component - T3's
-/// PointerDown/Move/Up handlers create/update/clear this, and `build_scene`
+/// PointerDown/Move/Up handlers create/update/clear this, and `compose_scene`
 /// maps it to a [`DragPreview`] for live rendering.
 ///
 /// `Create` covers Shape drags (rect-bounded, or endpoint-bounded Line/Arrow)
@@ -180,7 +180,7 @@ pub struct EditorComponent {
     /// Annotation under the pointer for the hover tooltip (spec
     /// 2026-09-18-annotation-hover-tooltip §3.1). Maintained in the no-drag
     /// PointerMove arm; cleared on press / chrome hover / tool switch /
-    /// document swap. `build_scene` self-heals via `find` when the
+    /// document swap. `compose_scene` self-heals via `find` when the
     /// annotation vanished (delete/undo).
     pub(crate) hover: Option<HoverState>,
     /// Current body-text selection (TextSelect tool). Pure UI state - never
@@ -256,7 +256,7 @@ impl EditorComponent {
 
     /// Build a `FontStore` from the document's fonts + the default font + any
     /// runtime-registered fonts. Called on `load_document`/`new_document` and
-    /// lazily by `build_scene`.
+    /// lazily by `compose_scene`.
     fn build_font_store(&self) -> FontStore {
         let font_bytes = self.render.default_font_bytes.clone();
         let mut store = FontStore::from_resources(&self.editor.document().resources, font_bytes);
@@ -270,7 +270,7 @@ impl EditorComponent {
     /// the web SDK after the editor is constructed. Mirrors reditor's
     /// `register_font_data`. If a `FontStore` already exists, the font is
     /// registered with it immediately; otherwise it is folded in when the
-    /// `FontStore` is next built (on `load_document`/`build_scene`).
+    /// `FontStore` is next built (on `load_document`/`compose_scene`).
     ///
     /// Returns `true` if the bytes parsed as a valid font.
     pub fn register_font_data(&mut self, bytes: Vec<u8>) -> bool {
@@ -465,6 +465,7 @@ impl EditorComponent {
         f: impl Fn(&rofd_dom::Annotation) -> Vec<String> + 'static + Send,
     ) {
         self.callbacks.tooltip_formatter = Some(Box::new(f));
+        self.mark_scene_dirty();
     }
     #[cfg(target_arch = "wasm32")]
     pub fn set_tooltip_formatter(
@@ -472,11 +473,13 @@ impl EditorComponent {
         f: impl Fn(&rofd_dom::Annotation) -> Vec<String> + 'static,
     ) {
         self.callbacks.tooltip_formatter = Some(Box::new(f));
+        self.mark_scene_dirty();
     }
 
     /// Remove the tooltip text provider (hides the tooltip).
     pub fn clear_tooltip_formatter(&mut self) {
         self.callbacks.tooltip_formatter = None;
+        self.mark_scene_dirty();
     }
 
     /// The tooltip lines to show right now, or None when suppressed: no
@@ -1912,6 +1915,7 @@ impl EditorComponent {
     // where the body-text selection must survive untouched.
     fn notify_document_change(&mut self) {
         self.modified = true;
+        self.mark_scene_dirty();
         if let Some(cb) = &self.callbacks.on_change {
             cb(self.editor.document());
         }
@@ -6596,5 +6600,25 @@ mod tests {
         assert!(c.scene_dirty);
         c.update_scene();
         assert!(!c.scene().commands().is_empty());
+    }
+
+    #[test]
+    fn direct_mutator_invalidates_scene_cache() {
+        // Programmatic mutators (delete/undo/move/…) bypass handle_event, so
+        // they must mark the cache dirty themselves — the wasm rAF loop would
+        // otherwise keep painting the pre-change scene.
+        let mut c = component_with_textbox();
+        c.update_scene();
+        assert!(!c.scene_dirty);
+        let id = c
+            .document()
+            .annotations
+            .for_page(&PageId::new("P0"))
+            .first()
+            .expect("one annotation")
+            .id
+            .clone();
+        c.delete_annotation(&id);
+        assert!(c.scene_dirty);
     }
 }
