@@ -386,6 +386,12 @@ impl Widget for OfdWidget {
                     self.size.height,
                 );
                 if ctrl {
+                    if dy.abs() < f64::EPSILON {
+                        // Pure horizontal scroll with Ctrl: not a zoom gesture.
+                        ctx.set_handled();
+                        self.after_event(ctx);
+                        return;
+                    }
                     // Wheel-down (dy > 0 after conversion) zooms out,
                     // wheel-up zooms in. Multiplicative; the component
                     // clamps to its own [MIN_ZOOM, MAX_ZOOM] (no mirror).

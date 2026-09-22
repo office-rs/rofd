@@ -992,6 +992,10 @@ impl OfdComponent {
 
     /// Update the viewport (content region) size. Called by the widget layout.
     pub fn set_viewport_size(&mut self, width: f64, height: f64) {
+        // Defensive: NaN/non-positive sizes must never enter the viewport.
+        if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+            return;
+        }
         if (self.viewport.size.0 - width).abs() < f64::EPSILON
             && (self.viewport.size.1 - height).abs() < f64::EPSILON
         {
@@ -1684,6 +1688,12 @@ impl OfdComponent {
                 }
             }
             ViewEvent::Zoom { factor } => {
+                // Defensive: a non-finite factor must not poison zoom/scroll.
+                if !factor.is_finite() {
+                    return EventOutcome {
+                        needs_repaint: false,
+                    };
+                }
                 let old_zoom = self.viewport.zoom;
                 self.viewport.zoom = (self.viewport.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
                 self.viewport.scroll =
@@ -1753,6 +1763,12 @@ impl OfdComponent {
                 }
             }
             ViewEvent::ZoomAt { factor, center } => {
+                // Defensive: a non-finite factor must not poison zoom/scroll.
+                if !factor.is_finite() {
+                    return EventOutcome {
+                        needs_repaint: false,
+                    };
+                }
                 let old_zoom = self.viewport.zoom;
                 self.viewport.zoom = (self.viewport.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
                 // Adjust scroll so the `center` viewport point maps to the
@@ -3288,6 +3304,25 @@ mod tests {
         assert!(outcome.needs_repaint);
         // Default zoom is PX_PER_MM (96 DPI); Zoom multiplies on top.
         assert_eq!(c.viewport.zoom, rofd_render::PX_PER_MM * 2.0);
+    }
+
+    #[test]
+    fn zoom_rejects_non_finite_factor() {
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
+        let outcome = c.handle_event(&ViewEvent::Zoom { factor: f64::NAN });
+        assert!(!outcome.needs_repaint);
+        assert_eq!(c.viewport.zoom, PX_PER_MM);
+    }
+
+    #[test]
+    fn zoomat_rejects_non_finite_factor() {
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
+        let outcome = c.handle_event(&ViewEvent::ZoomAt {
+            factor: f64::NAN,
+            center: (10.0, 10.0),
+        });
+        assert!(!outcome.needs_repaint);
+        assert_eq!(c.viewport.zoom, PX_PER_MM);
     }
 
     #[test]
@@ -6833,6 +6868,16 @@ mod tests {
         assert!(c.scene_dirty);
         c.update_scene();
         assert!(!c.scene().commands().is_empty());
+    }
+
+    #[test]
+    fn set_viewport_size_rejects_non_finite_and_non_positive() {
+        let mut c = component_with_textbox();
+        c.set_viewport_size(100.0, 50.0);
+        c.set_viewport_size(f64::NAN, 800.0);
+        assert_eq!(c.viewport.size, (100.0, 50.0), "NaN width rejected");
+        c.set_viewport_size(0.0, 800.0);
+        assert_eq!(c.viewport.size, (100.0, 50.0), "zero width rejected");
     }
 
     #[test]

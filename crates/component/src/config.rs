@@ -19,10 +19,14 @@ impl OfdConfig {
         }
     }
 
-    /// Set the initial viewport zoom (builder chainer). Clamped to
-    /// `[MIN_ZOOM, MAX_ZOOM]`.
+    /// Set the initial viewport zoom (builder chainer). Non-finite input
+    /// falls back to [`PX_PER_MM`]; otherwise clamped to the supported range.
     pub fn with_zoom(mut self, zoom: f64) -> Self {
-        self.zoom = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+        self.zoom = if zoom.is_finite() {
+            zoom.clamp(MIN_ZOOM, MAX_ZOOM)
+        } else {
+            PX_PER_MM
+        };
         self
     }
 }
@@ -46,5 +50,11 @@ mod tests {
         assert_eq!(c.zoom, MAX_ZOOM);
         let c = OfdConfig::new(Arc::new(vec![])).with_zoom(0.0);
         assert_eq!(c.zoom, MIN_ZOOM);
+    }
+
+    #[test]
+    fn with_zoom_non_finite_falls_back_to_baseline() {
+        let c = OfdConfig::new(Arc::new(vec![])).with_zoom(f64::NAN);
+        assert_eq!(c.zoom, PX_PER_MM);
     }
 }
