@@ -27,7 +27,7 @@ pub use body_text::{
     body_text_ranges_between, hit_test_body_text, paragraph_range_at, text_selection_rects,
     word_range_at, BodyTextRange, BodyTextSelection, TextHit,
 };
-pub use caret_rect::caret_rect;
+pub use caret_rect::{caret_rect, paint_caret};
 pub use composite::{page_origin, page_origins, DragPreview, RenderEngine};
 pub use ctm::{compose_transform, ctm_to_affine};
 pub use handles::{annotation_handle_positions, annotation_handles, handle_center_local};

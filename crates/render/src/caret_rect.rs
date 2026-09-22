@@ -20,6 +20,8 @@
 //! [`Shape`]: AnnotationPayload::Shape
 //! [`Stamp`]: AnnotationPayload::Stamp
 
+use imaging::kurbo::{Rect as KurboRect, Shape};
+use imaging::{record::Scene, Painter};
 use rofd_dom::{AnnotationId, AnnotationPayload, OfdDocument, Rect};
 
 use crate::text::FontStore;
@@ -99,6 +101,16 @@ pub fn caret_rect(
         w: 1.0 * vp.zoom,
         h: size * vp.zoom,
     })
+}
+
+/// Paint the text caret: a vertical bar filled black at `rect` (viewport
+/// coordinates). Called by the component after body, annotations and
+/// scrollbars composite.
+pub fn paint_caret(scene: &mut Scene, rect: &rofd_dom::Rect) {
+    let rect = KurboRect::new(rect.x, rect.y, rect.x + rect.w, rect.y + rect.h);
+    let bez = rect.to_path(0.1);
+    let mut painter = Painter::new(scene);
+    painter.fill(&bez, peniko::Color::from_rgb8(0, 0, 0)).draw();
 }
 
 #[cfg(test)]
