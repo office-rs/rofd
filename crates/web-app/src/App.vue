@@ -399,7 +399,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue';
 import { message } from 'ant-design-vue';
 import type { Component } from 'vue';
-import { Editor } from '@office-rs/rofd';
+import { Ofd } from '@office-rs/rofd';
 import type { MarkupKind } from '@office-rs/rofd';
 import RibbonGroup from './components/RibbonGroup.vue';
 import ToolButton from './components/ToolButton.vue';
@@ -500,7 +500,7 @@ const PX_PER_MM = 96 / 25.4;
 
 const containerRef = ref<HTMLElement>();
 const colorInputRef = ref<HTMLInputElement>();
-const editor = shallowRef<Editor | null>(null);
+const ofd = shallowRef<Ofd | null>(null);
 
 const loading = ref(true);
 const activeTab = ref<(typeof TABS)[number]['key']>('read');
@@ -541,38 +541,38 @@ function setTool(kind: string): void {
   if (kind in SHAPE_TOOLS) {
     activeShape.value = kind;
   }
-  editor.value?.setTool(kind);
+  ofd.value?.setTool(kind);
 }
 
 /** markup 四种是选区上的动作而非工具：无选区时按钮禁用（不会走到这里）。
  * 一次点击 = 一条批注 = 一次撤销；选区保留可继续叠加。 */
 function applyMarkup(kind: MarkupKind): void {
-  editor.value?.applyMarkup(kind);
+  ofd.value?.applyMarkup(kind);
   refreshHistoryState();
 }
 
 function refreshHistoryState(): void {
-  canUndo.value = editor.value?.canUndo() ?? false;
-  canRedo.value = editor.value?.canRedo() ?? false;
+  canUndo.value = ofd.value?.canUndo() ?? false;
+  canRedo.value = ofd.value?.canRedo() ?? false;
 }
 
 function undo(): void {
-  editor.value?.undo();
+  ofd.value?.undo();
   refreshHistoryState();
 }
 
 function redo(): void {
-  editor.value?.redo();
+  ofd.value?.redo();
   refreshHistoryState();
 }
 
 /** 以画布中心为锚点缩放（与 Ctrl+滚轮 的锚定行为一致）。 */
 function zoomBy(factor: number): void {
   const el = containerRef.value;
-  if (!el || !editor.value) return;
+  if (!el || !ofd.value) return;
   const rect = el.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
-  editor.value.handleZoomAt(factor, (rect.width / 2) * dpr, (rect.height / 2) * dpr);
+  ofd.value.handleZoomAt(factor, (rect.width / 2) * dpr, (rect.height / 2) * dpr);
 }
 
 /** 设置显示比例到指定百分数（显示比例下拉 / 实际大小按钮）。 */
@@ -582,11 +582,11 @@ function setZoomPercent(percent: number): void {
 }
 
 function scrollPage(direction: 'up' | 'down'): void {
-  editor.value?.handleScrollPage(direction);
+  ofd.value?.handleScrollPage(direction);
 }
 
 function deleteSelectedAnnotations(): void {
-  const n = editor.value?.deleteSelected() ?? 0;
+  const n = ofd.value?.deleteSelected() ?? 0;
   if (n > 0) message.success(`已删除 ${n} 个批注`);
   else message.info('没有选中的批注');
   refreshHistoryState();
@@ -607,7 +607,7 @@ function toggleAutoPage(): void {
     autoPaging.value = false;
   } else {
     autoPaging.value = true;
-    autoPageTimer = window.setInterval(() => editor.value?.handleScrollPage('down'), 3000);
+    autoPageTimer = window.setInterval(() => ofd.value?.handleScrollPage('down'), 3000);
   }
 }
 
@@ -683,7 +683,7 @@ function markupColorOf(kind: MarkupKind): string {
 
 function pickHighlightColor(color: string): void {
   highlightColor.value = color;
-  editor.value?.setHighlightColor(color);
+  ofd.value?.setHighlightColor(color);
   if (hasTextSelection.value) {
     applyMarkup('highlight'); // 选色即应用（R4）
   }
@@ -699,7 +699,7 @@ function pickMarkupColor(kind: Exclude<MarkupKind, 'highlight'>, color: string):
   } else {
     squigglyColor.value = color;
   }
-  editor.value?.setMarkupColor(kind, color);
+  ofd.value?.setMarkupColor(kind, color);
   if (hasTextSelection.value) {
     applyMarkup(kind);
   }
@@ -746,13 +746,13 @@ function pickBackground(color: string): void {
 
 async function openFile(): Promise<void> {
   const bytes = await fileHost.open();
-  if (bytes) editor.value?.loadOfd(bytes);
+  if (bytes) ofd.value?.loadOfd(bytes);
 }
 
 async function save(): Promise<void> {
-  const ed = editor.value;
-  if (!ed) return;
-  const ok = await fileHost.save(ed.saveOfd(), 'document.ofd');
+  const ofdInst = ofd.value;
+  if (!ofdInst) return;
+  const ok = await fileHost.save(ofdInst.saveOfd(), 'document.ofd');
   if (ok) message.success('已保存 document.ofd');
 }
 
@@ -769,7 +769,7 @@ function showCtxMenu(x: number, y: number, annotationId: string | null): void {
 }
 
 function deleteCtxAnnotation(): void {
-  if (ctxMenu.id) editor.value?.deleteAnnotation(ctxMenu.id);
+  if (ctxMenu.id) ofd.value?.deleteAnnotation(ctxMenu.id);
   ctxMenu.visible = false;
   refreshHistoryState();
 }
@@ -796,7 +796,7 @@ onMounted(async () => {
   window.addEventListener('mousedown', closeCtxMenu, true);
   document.addEventListener('fullscreenchange', onFullscreenChange);
   try {
-    const ed = await Editor.init(containerRef.value!, {
+    const ofdInst = await Ofd.init(containerRef.value!, {
       fonts: [
         { url: `${BASE}fonts/NotoSans-Regular.ttf` },
         { url: `${BASE}fonts/NotoSansCJKsc-Regular.otf` },
@@ -829,15 +829,15 @@ onMounted(async () => {
       // 文字选区出现/变化/清除（信号回调）：驱动 markup 按钮禁用态。
       // SDK 将回调推迟到微任务（deferCb），这里可安全回查编辑器。
       onTextSelectionChange: () => {
-        hasTextSelection.value = editor.value?.hasTextSelection() ?? false;
+        hasTextSelection.value = ofd.value?.hasTextSelection() ?? false;
       },
     });
-    editor.value = ed;
-    ed.setClock('rofd', Date.now());
+    ofd.value = ofdInst;
+    ofdInst.setClock('rofd', Date.now());
     // 默认打开示例文档（public/sample.ofd），失败不阻塞空编辑器。
     try {
       const res = await fetch(`${BASE}sample.ofd`);
-      if (res.ok) ed.loadOfd(new Uint8Array(await res.arrayBuffer()));
+      if (res.ok) ofdInst.loadOfd(new Uint8Array(await res.arrayBuffer()));
     } catch (e) {
       console.warn('[rofd] sample.ofd 加载失败:', e);
     }
@@ -853,8 +853,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('mousedown', closeCtxMenu, true);
   document.removeEventListener('fullscreenchange', onFullscreenChange);
   if (autoPageTimer !== null) window.clearInterval(autoPageTimer);
-  editor.value?.destroy();
-  editor.value = null;
+  ofd.value?.destroy();
+  ofd.value = null;
 });
 </script>
 

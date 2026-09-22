@@ -47,7 +47,10 @@ const browserFileHost: FileHost = {
   },
 
   save(bytes, suggestedName) {
-    const blob = new Blob([bytes], { type: 'application/ofd' });
+    // TS 5.7+ made TypedArrays generic over their buffer; BlobPart wants
+    // Uint8Array<ArrayBuffer> while bytes is Uint8Array<ArrayBufferLike>.
+    // Blob accepts any view at runtime, so the cast is sound.
+    const blob = new Blob([bytes as BlobPart], { type: 'application/ofd' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
