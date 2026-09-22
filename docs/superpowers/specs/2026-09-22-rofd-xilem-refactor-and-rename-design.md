@@ -45,7 +45,7 @@ as-built 参照：`D:/code/rword`（姐妹项目，已完成同型重构 + 改�
 |---|---|---|
 | `xilem` | git rev `bf81712d44e3` | git rev **`271a27a6d4a930f7878d404f9014e3c50a3a9b88`** |
 | `masonry_testing` | — | **新增**，与 xilem 同 git 同 rev（dev-dep） |
-| `masonry_winit` | git rev `bf81712d44e3` | **删除** |
+| `masonry_winit` | git rev `bf81712d44e3` | A0 跟随 xilem 升到 **`271a27a6…`**（旧宿主仍依赖 `MasonryState`/`AppDriver`）；**A 重写宿主时删除**（A0「不做架构变更」的约束优先） |
 | `imaging` / `imaging_vello` | git rev `0eea0499…` | **crates.io `0.0.1`** |
 
 vello 0.8 / parley 0.8 / winit 0.30 / wgpu 28 / rfd 0.15 维持。
