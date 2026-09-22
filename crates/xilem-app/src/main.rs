@@ -1,7 +1,7 @@
 //! rofd native host — pure xilem (`Xilem::new_simple`).
 //!
-//! The OFD editor lives in an `OfdWidget` (rofd-native-view; renamed
-//! rofd-xilem-view in transform B) embedded via `ofd_with_config`. This
+//! The OFD editor lives in an `OfdWidget` (rofd-xilem-view) embedded via
+//! `ofd_with_config`. This
 //! host owns only UI policy: the toolbar, the right-click context-menu
 //! overlay, and file dialogs. Every editor interaction goes through the
 //! command queue — buttons push closures run against the component at the
@@ -16,7 +16,7 @@ use rfd::FileDialog;
 use rofd_component::{ContextTarget, CreateKind, EditorConfig, Tool};
 use rofd_dom::{AnnotationId, AnnotationKind, ShapeKind};
 use rofd_io::PackageHandle;
-use rofd_native_view::{command_queue, ofd_with_config, OfdCommandQueue, OfdContextMenu};
+use rofd_xilem_view::{command_queue, ofd_with_config, OfdCommandQueue, OfdContextMenu};
 use xilem::kurbo::Vec2;
 use xilem::masonry::layout::{Length, UnitPoint};
 use xilem::masonry::peniko::Color;
@@ -24,7 +24,7 @@ use xilem::style::{Padding, Style};
 use xilem::view::{flex_col, flex_row, sized_box, text_button, transformed, zstack, FlexExt};
 use xilem::{EventLoop, WidgetView, WindowOptions, Xilem};
 
-use native_app::host;
+use xilem_app::host;
 
 const BTN_PAD: Padding = Padding::from_vh(Length::ZERO, Length::const_px(6.0));
 

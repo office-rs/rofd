@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use masonry_testing::TestHarness;
 use rofd_component::EditorConfig;
-use rofd_native_view::{OfdCommand, OfdWidget, OfdWidgetAction};
+use rofd_xilem_view::{OfdCommand, OfdWidget, OfdWidgetAction};
 use xilem::masonry::core::keyboard::{Key as MasonryKey, KeyState};
 use xilem::masonry::core::pointer::PointerButtons;
 use xilem::masonry::core::{

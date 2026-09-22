@@ -3325,18 +3325,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "native-app"
-version = "0.1.0"
-dependencies = [
- "rfd 0.15.4",
- "rofd-component",
- "rofd-dom",
- "rofd-io",
- "rofd-native-view",
- "xilem",
-]
-
-[[package]]
 name = "ndk"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4654,17 +4642,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rofd-native-view"
-version = "0.1.0"
-dependencies = [
- "dpi",
- "masonry_testing",
- "rofd-component",
- "rofd-dom",
- "xilem",
-]
-
-[[package]]
 name = "rofd-render"
 version = "0.1.0"
 dependencies = [
@@ -4695,6 +4672,17 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "wgpu",
+]
+
+[[package]]
+name = "rofd-xilem-view"
+version = "0.1.0"
+dependencies = [
+ "dpi",
+ "masonry_testing",
+ "rofd-component",
+ "rofd-dom",
+ "xilem",
 ]
 
 [[package]]
@@ -7878,6 +7866,18 @@ dependencies = [
  "winit",
  "xilem_core",
  "xilem_masonry",
+]
+
+[[package]]
+name = "xilem-app"
+version = "0.1.0"
+dependencies = [
+ "rfd 0.15.4",
+ "rofd-component",
+ "rofd-dom",
+ "rofd-io",
+ "rofd-xilem-view",
+ "xilem",
 ]
 
 [[package]]

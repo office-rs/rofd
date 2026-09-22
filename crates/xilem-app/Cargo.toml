@@ -1,10 +1,10 @@
 [package]
-name = "native-app"
+name = "xilem-app"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rofd-native-view = { workspace = true }
+rofd-xilem-view = { workspace = true }
 rofd-component = { workspace = true }
 rofd-dom = { workspace = true }
 rofd-io = { workspace = true }

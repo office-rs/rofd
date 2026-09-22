@@ -1,8 +1,7 @@
 //! Host-layer real-sample integration test for surgical save.
 //!
-//! Migrated from rofd-native-view after the winit bridge removal; the
-//! binary crate's helpers are reached through the `native_app` library
-//! surface. Exercises the full host path —
+//! After the winit bridge removal; the binary crate's helpers are reached
+//! through the `xilem_app` library surface. Exercises the full host path —
 //! `document_io::load_ofd` (retains PackageHandle) →
 //! `document_io::save_ofd` (routes to surgical save for a package) — and
 //! asserts invariant 4.3 (body `Content.xml` byte-identical) at the host
@@ -10,12 +9,12 @@
 //!
 //! Marked `#[ignore]`: `test/ru-yuan-ji-lu.ofd` is gitignored (not in CI).
 //! Run locally:
-//! `cargo test -p native-app --test c2_save -- --ignored`.
+//! `cargo test -p xilem-app --test c2_save -- --ignored`.
 
 use std::path::Path;
 
-use native_app::host::document_io::{load_ofd, save_ofd};
 use rofd_io::zip_util::read_all_entries;
+use xilem_app::host::document_io::{load_ofd, save_ofd};
 
 #[test]
 #[ignore = "requires the real OFD at ../../test/ru-yuan-ji-lu.ofd"]

@@ -1,4 +1,4 @@
-//! native-app library surface.
+//! xilem-app library surface.
 //!
 //! The binary (`main.rs`) owns AppState/app_logic; the library exposes the
 //! host-side helpers (`host`) so external integration tests can exercise

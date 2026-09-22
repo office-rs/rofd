@@ -9,8 +9,8 @@
 //! render directly to the surface. Instead we render into an intermediate
 //! `Rgba8Unorm` texture (the format vello requires, with `STORAGE_BINDING`),
 //! then blit it to the surface with [`wgpu::util::TextureBlitter`]. This mirrors
-//! vello's own `RenderSurface` in `vello::util` and the native-view's
-//! [`VelloRenderTarget`](../../native_view/vello_render_target/struct.VelloRenderTarget.html).
+//! vello's own `RenderSurface` in `vello::util`; the rofd xilem adapter
+//! (`OfdWidget`) paints the same backend-agnostic scene on native.
 
 use imaging::kurbo::Rect as KurboRect;
 use imaging::record::Scene;
