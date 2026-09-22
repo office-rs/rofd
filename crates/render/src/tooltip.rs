@@ -1,6 +1,6 @@
 //! Hover tooltip chrome (spec 2026-09-18-annotation-hover-tooltip §3.3).
 //! Viewport-space UI: fixed logical-pixel sizes, never zoom-scaled, painted
-//! last (above scrollbars) by `EditorComponent::build_scene`.
+//! last (above scrollbars) when the component composites its scene.
 
 use imaging::kurbo::{Affine, RoundedRect, Stroke};
 use imaging::record::{Glyph, Scene};

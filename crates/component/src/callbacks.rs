@@ -13,9 +13,10 @@ use rofd_editor::{AnnotationSelection, TextCursor};
 // Target-gated `Send`: the host (Phase 4b native) requires `Send` callbacks. On native
 // targets the aliases below add `+ Send`; on wasm they do not (wasm is single-threaded).
 // Phase 4b can rely on these aliases directly when storing callbacks across threads.
-// Exception: `OnCopy` is NOT Send on any target. The native adapter's default
-// clipboard assembly captures `Rc<Cell<bool>>` (EditorApp is single-threaded,
-// non-Send by design), and no existing usage relies on Send.
+// Exception: `OnCopy` is NOT Send on any target. The native widget adapter
+// intercepts Ctrl+C itself and never installs on_copy (it writes the OS
+// clipboard from component copy_selection); on_copy exists for the web
+// adapter, which is single-threaded by design. No usage relies on Send.
 #[cfg(not(target_arch = "wasm32"))]
 pub type OnChange = dyn Fn(&OfdDocument) + Send;
 #[cfg(not(target_arch = "wasm32"))]
