@@ -5,7 +5,9 @@ use rofd_dom::{
     OfdWarning, PageId, PathCommand, PathData, Point, Rect, ShapeKind,
 };
 use rofd_editor::{Editor, TextCursor};
-use rofd_render::{DragPreview, FontStore, HandlePos, RenderEngine, Scene, Viewport, PX_PER_MM};
+use rofd_render::{
+    DragPreview, FontStore, HandlePos, RenderEngine, Scene, Viewport, MAX_ZOOM, MIN_ZOOM, PX_PER_MM,
+};
 
 use crate::callbacks::{Callbacks, ContextTarget, PointerCursor};
 use crate::config::EditorConfig;
@@ -1391,7 +1393,7 @@ impl EditorComponent {
             }
             ViewEvent::Zoom { factor } => {
                 let old_zoom = self.viewport.zoom;
-                self.viewport.zoom *= factor;
+                self.viewport.zoom = (self.viewport.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
                 self.viewport.scroll =
                     rofd_render::clamp_scroll(self.editor.document(), &self.viewport);
                 // Only fire on_zoom_change if the zoom actually changed (a
@@ -1435,7 +1437,7 @@ impl EditorComponent {
             }
             ViewEvent::ZoomAt { factor, center } => {
                 let old_zoom = self.viewport.zoom;
-                self.viewport.zoom *= factor;
+                self.viewport.zoom = (self.viewport.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
                 // Adjust scroll so the `center` viewport point maps to the
                 // same document position before and after zoom. Derivation:
                 // doc_pos = (viewport_pt - scroll) / old_zoom; after zoom,
@@ -2823,10 +2825,15 @@ mod tests {
     #[test]
     fn zoom_out_reclamps_overshoot_scroll() {
         let mut c = component_with_tall_page();
+        // 500px 高视口、zoom 2.0：400mm 页面高 800px，出竖条；内容区
+        // 188x488、y_max = 800-488 = 312，scroll 200 合法。
+        c.viewport.size = (200.0, 500.0);
+        c.viewport.zoom = 2.0;
         c.handle_event(&ViewEvent::Scroll { dx: 0.0, dy: 200.0 });
         assert_eq!(c.viewport.scroll.1, 200.0);
-        // Zoom out 0.5x: content becomes 200 tall and fits the 200px viewport
-        // (no bar) -> y_max 0, scroll must come back into bounds.
+        // Zoom out 0.5x：zoom 2.0 -> 1.0（落在 [MIN_ZOOM, MAX_ZOOM] 内），
+        // 页面变为 400 高、放进 500px 视口（无滚动条）-> y_max 0，scroll
+        // 必须回到界内。
         c.handle_event(&ViewEvent::Zoom { factor: 0.5 });
         assert_eq!(
             c.viewport.scroll.1, 0.0,
@@ -2894,6 +2901,34 @@ mod tests {
         assert!(outcome.needs_repaint);
         // Default zoom is PX_PER_MM (96 DPI); Zoom multiplies on top.
         assert_eq!(c.viewport.zoom, rofd_render::PX_PER_MM * 2.0);
+    }
+
+    #[test]
+    fn zoom_arm_clamps_to_min_and_max() {
+        let mut c = component_with_note();
+        c.viewport.zoom = MAX_ZOOM;
+        c.handle_event(&ViewEvent::Zoom { factor: 1.1 });
+        assert_eq!(c.viewport.zoom, MAX_ZOOM);
+        c.viewport.zoom = MIN_ZOOM;
+        c.handle_event(&ViewEvent::Zoom { factor: 0.9 });
+        assert_eq!(c.viewport.zoom, MIN_ZOOM);
+    }
+
+    #[test]
+    fn zoomat_arm_clamps_to_bounds() {
+        let mut c = component_with_note();
+        c.viewport.zoom = MAX_ZOOM;
+        c.handle_event(&ViewEvent::ZoomAt {
+            factor: 1.1,
+            center: (0.0, 0.0),
+        });
+        assert_eq!(c.viewport.zoom, MAX_ZOOM);
+        c.viewport.zoom = MIN_ZOOM;
+        c.handle_event(&ViewEvent::ZoomAt {
+            factor: 0.9,
+            center: (0.0, 0.0),
+        });
+        assert_eq!(c.viewport.zoom, MIN_ZOOM);
     }
 
     #[test]
