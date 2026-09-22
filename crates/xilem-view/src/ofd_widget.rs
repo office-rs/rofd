@@ -85,6 +85,11 @@ pub enum OfdWidgetAction {
     TextSelectionChanged(Option<BodyTextSelection>),
     Warnings(Vec<OfdWarning>),
     PointerCursorChanged(PointerCursor),
+    /// Internal wake: host commands were drained during `rebuild`; rerun
+    /// app logic once so the host observes command results such as the
+    /// queued save outcome. The next rebuild has an empty command queue,
+    /// so this cannot self-perpetuate.
+    HostCommandWake,
 }
 
 /// Recompute effective focus and notify the component on transitions.
@@ -244,6 +249,14 @@ impl OfdWidget {
     pub fn with_component(this: &mut WidgetMut<'_, Self>, command: &OfdCommand) {
         command(&mut this.widget.component);
         after_touch!(this.widget, this.ctx);
+    }
+
+    /// Submit [`OfdWidgetAction::HostCommandWake`]. Called once after a
+    /// non-empty command-queue drain in `OfdView::rebuild`; guarantees
+    /// the host gets one further app-logic pass to consume results.
+    pub fn wake_after_commands(this: &mut WidgetMut<'_, Self>) {
+        this.ctx
+            .submit_action::<OfdWidgetAction>(OfdWidgetAction::HostCommandWake);
     }
 
     /// Copy the current selection to the OS clipboard. False when empty.

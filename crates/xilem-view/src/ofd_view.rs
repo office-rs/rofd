@@ -184,9 +184,16 @@ impl<State: 'static> View<State, (), ViewCtx> for OfdView<State> {
         // Drain host commands queued since the last rerun. This is the
         // second half of the host→widget channel.
         let commands: Vec<_> = std::mem::take(&mut *self.queue.lock().unwrap());
-        for command in commands {
-            OfdWidget::with_component(&mut element, &command);
+        if commands.is_empty() {
+            return;
         }
+        for command in &commands {
+            OfdWidget::with_component(&mut element, command);
+        }
+        // One bounded rerun so the host can consume command results (save
+        // outcome). Queue was taken before the drain: next rebuild sees
+        // no commands and submits no wake.
+        OfdWidget::wake_after_commands(&mut element);
     }
 
     fn teardown(&self, (): &mut Self::ViewState, _: &mut ViewCtx, _: Mut<'_, Self::Element>) {}
@@ -272,6 +279,11 @@ impl<State: 'static> View<State, (), ViewCtx> for OfdView<State> {
                     f(app_state, warnings);
                     handled = true;
                 }
+            }
+            // Internal wake from a non-empty command drain: just rerun
+            // app logic (handled, no host handler).
+            OfdWidgetAction::HostCommandWake => {
+                handled = true;
             }
             // Consumed internally by the widget drain; never submitted.
             OfdWidgetAction::PointerCursorChanged(_) => {}
