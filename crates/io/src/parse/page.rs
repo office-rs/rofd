@@ -450,7 +450,7 @@ mod tests {
         assert_eq!(paths.len(), 2);
         assert_eq!(paths[0].stroke_enabled, Some(false), "Stroke=\"false\"");
         assert_eq!(paths[0].fill_enabled, Some(true), "Fill=\"true\"");
-        // WPS 表格线(sample-content.ofd):两个属性都不写 -> None,None。
+        // 常见生成器的表格线(sample-content.ofd):两个属性都不写 -> None,None。
         assert_eq!(paths[1].stroke_enabled, None, "absent Stroke -> None");
         assert_eq!(paths[1].fill_enabled, None, "absent Fill -> None");
     }
