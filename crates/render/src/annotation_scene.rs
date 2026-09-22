@@ -1594,4 +1594,73 @@ mod tests {
         assert!((last.p1.x - 40.94125).abs() < 1e-9);
         assert!((last.p2.x - 41.0).abs() < 1e-9);
     }
+
+    #[test]
+    fn preedit_overlay_glyphs_offset_by_textbox_origin() {
+        // Regression (Task 9 review): the overlay glyph affine must include
+        // the TextBox rect translate, exactly like draw_text_in_rect;
+        // otherwise the composition paints at the page corner for any
+        // off-origin TextBox (and clips out of view).
+        let rect = Rect {
+            x: 30.0,
+            y: 40.0,
+            w: 100.0,
+            h: 60.0,
+        };
+        let a = ann(
+            AnnotationPayload::TextBox {
+                rect,
+                content: "hello".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+            },
+            AnnotationKind::TextBox,
+        );
+        let mut annotations = rofd_dom::AnnotationModel::default();
+        annotations
+            .by_page
+            .insert(rofd_dom::PageId::new("P0"), vec![a]);
+        let doc = rofd_dom::OfdDocument {
+            pages: vec![rofd_dom::Page {
+                id: rofd_dom::PageId::new("P0"),
+                physical_box: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 200.0,
+                    h: 200.0,
+                },
+                layers: vec![],
+                template: None,
+            }],
+            annotations,
+            ..Default::default()
+        };
+        // Page 0 origin: page_w 200 == viewport width -> x 0; y = page_gap 20.
+        let vp = crate::Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (200.0, 200.0),
+            page_gap: 20.0,
+        };
+        let fonts = test_font_store();
+        let mut scene = Scene::new();
+        crate::preedit_overlay::paint_preedit_overlay(
+            &mut scene,
+            &doc,
+            &vp,
+            &fonts,
+            "hello",
+            &AnnotationId::from_int(1),
+        );
+        let baselines = glyph_baselines(&scene);
+        assert!(!baselines.is_empty(), "composition was drawn");
+        for b in &baselines {
+            assert!(
+                *b >= vp.page_gap + rect.y,
+                "glyph baseline {b} not offset by TextBox origin (page-corner regression)"
+            );
+        }
+    }
 }
