@@ -837,6 +837,23 @@ impl EditorComponent {
         target.draw_scene(&scene);
     }
 
+    /// Insert committed text at the current text cursor, then advance the
+    /// cursor and broadcast the change. Shared by `ViewEvent::ImeCommit`
+    /// and paste. Returns `false` (no repaint) when no cursor is set.
+    fn insert_at_cursor(&mut self, text: &str) -> bool {
+        if let Some(cursor) = self.editor.text_cursor().cloned() {
+            let new_off = cursor.offset + text.chars().count();
+            self.editor
+                .insert_text(&cursor.annotation, cursor.offset, text);
+            self.editor.set_cursor(cursor.annotation.clone(), new_off);
+            self.after_annotation_change();
+            self.fire_cursor_change();
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn handle_event(&mut self, event: &crate::event::ViewEvent) -> EventOutcome {
         use crate::event::{MouseButton, ScrollDirection, ViewEvent};
         match event {
@@ -1458,22 +1475,9 @@ impl EditorComponent {
                     needs_repaint: true,
                 }
             }
-            ViewEvent::Ime { text } => {
-                if let Some(cursor) = self.editor.text_cursor().cloned() {
-                    let new_off = cursor.offset + text.chars().count();
-                    self.editor
-                        .insert_text(&cursor.annotation, cursor.offset, text);
-                    self.editor.set_cursor(cursor.annotation.clone(), new_off);
-                    self.after_annotation_change();
-                    self.fire_cursor_change();
-                    return EventOutcome {
-                        needs_repaint: true,
-                    };
-                }
-                EventOutcome {
-                    needs_repaint: false,
-                }
-            }
+            ViewEvent::ImeCommit { text } => EventOutcome {
+                needs_repaint: self.insert_at_cursor(text),
+            },
             ViewEvent::KeyDown { key, modifiers } => self.handle_key(key, modifiers),
             _ => EventOutcome {
                 needs_repaint: false,
@@ -2582,6 +2586,77 @@ mod tests {
 
     fn component_with_note() -> EditorComponent {
         component_with_note_font(Arc::new(vec![]))
+    }
+
+    /// Single page 200x200 holding one TextBox (rect 0,0,120,40, content
+    /// "hi"), cursor parked at offset 2. Viewport size 200x200; zoom is the
+    /// default PX_PER_MM baseline.
+    fn component_with_textbox() -> EditorComponent {
+        let mut c = EditorComponent::new(EditorConfig::new(Arc::new(vec![])));
+        c.set_clock("t".into(), 1);
+        let mut doc = OfdDocument::default();
+        doc.pages.push(Page {
+            id: PageId::new("P0"),
+            physical_box: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 200.0,
+            },
+            layers: vec![Layer::default()],
+            template: None,
+        });
+        c.load_document(doc);
+        let id = c.editor.create_annotation(
+            AnnotationKind::TextBox,
+            PageId::new("P0"),
+            AnnotationPayload::TextBox {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 120.0,
+                    h: 40.0,
+                },
+                content: "hi".into(),
+                font: FontId::new("F1"),
+                size: 10.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+            },
+        );
+        c.editor.set_cursor(id, 2);
+        c.viewport.size = (200.0, 200.0);
+        c
+    }
+
+    fn textbox_content(c: &EditorComponent) -> String {
+        let ann = c
+            .document()
+            .annotations
+            .for_page(&PageId::new("P0"))
+            .first()
+            .expect("one annotation");
+        match &ann.payload {
+            AnnotationPayload::TextBox { content, .. } => content.clone(),
+            other => panic!("expected textbox, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ime_commit_inserts_at_cursor() {
+        let mut c = component_with_textbox();
+        let outcome = c.handle_event(&ViewEvent::ImeCommit { text: "ab".into() });
+        assert!(outcome.needs_repaint);
+        assert_eq!(textbox_content(&c), "hiab");
+    }
+
+    #[test]
+    fn ime_commit_without_cursor_is_noop() {
+        let mut c = component_with_textbox();
+        c.editor.clear_cursor();
+        let outcome = c.handle_event(&ViewEvent::ImeCommit { text: "ab".into() });
+        assert!(!outcome.needs_repaint);
+        assert_eq!(textbox_content(&c), "hi");
     }
 
     /// Single page 180x400, zoom 1, page_gap 0, viewport 200x200. Vertical
@@ -4286,7 +4361,7 @@ mod tests {
             _ => panic!("expected single selection from component_with_note"),
         };
         c.editor.set_cursor(id.clone(), 2);
-        let outcome = c.handle_event(&ViewEvent::Ime {
+        let outcome = c.handle_event(&ViewEvent::ImeCommit {
             text: "你好".into(),
         });
         assert!(outcome.needs_repaint);
@@ -4309,7 +4384,7 @@ mod tests {
     fn ime_without_cursor_does_nothing() {
         let mut c = component_with_note();
         c.editor.clear_cursor();
-        let outcome = c.handle_event(&ViewEvent::Ime {
+        let outcome = c.handle_event(&ViewEvent::ImeCommit {
             text: "你好".into(),
         });
         assert!(

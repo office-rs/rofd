@@ -338,7 +338,7 @@ impl ApplicationHandler<MasonryUserEvent> for NativeApp {
         // Handled here rather than in bridge.translate because the commit text
         // is an owned String extracted from the event.
         if let WindowEvent::Ime(winit::event::Ime::Commit(text)) = &ev {
-            let view_event = ViewEvent::Ime { text: text.clone() };
+            let view_event = ViewEvent::ImeCommit { text: text.clone() };
             let mut editor = self.editor.lock().unwrap();
             let outcome = editor.handle_event(&view_event);
             drop(editor);

@@ -97,9 +97,17 @@ pub enum ViewEvent {
         factor: f64,
         center: (f64, f64),
     },
-    /// IME composition commit: insert `text` at the text cursor (multi-char).
-    /// Falls through as a no-op when no text cursor is set.
-    Ime {
+    /// IME preedit update: composition text plus the preedit caret range
+    /// (byte offsets into `text`). Empty `text` cancels the composition
+    /// without committing. The state machine lands in Task 8; until then
+    /// the event is accepted as a no-op.
+    ImePreedit {
+        text: String,
+        caret: Option<(usize, usize)>,
+    },
+    /// IME composition commit: insert `text` at the text cursor.
+    /// No-op when no text cursor is set.
+    ImeCommit {
         text: String,
     },
 }
@@ -140,5 +148,20 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn ime_preedit_constructs() {
+        let e = ViewEvent::ImePreedit {
+            text: "ni".into(),
+            caret: Some((1, 2)),
+        };
+        assert!(matches!(e, ViewEvent::ImePreedit { .. }));
+    }
+
+    #[test]
+    fn ime_commit_constructs() {
+        let e = ViewEvent::ImeCommit { text: "你".into() };
+        assert!(matches!(e, ViewEvent::ImeCommit { .. }));
     }
 }
