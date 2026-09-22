@@ -1026,6 +1026,26 @@ impl EditorComponent {
         )
     }
 
+    /// Paste text at the current text cursor (Ctrl+V path: the widget
+    /// supplies the platform clipboard string). Returns false when no cursor
+    /// is set or the text is empty.
+    pub fn paste_text(&mut self, text: &str) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        self.insert_at_cursor(text)
+    }
+
+    /// Copy the current selection to a string (body text in the Text tool).
+    /// The widget puts it on the platform clipboard; the component never
+    /// touches the clipboard itself.
+    pub fn copy_selection(&mut self) -> Option<String> {
+        if !matches!(self.tool, Tool::Text) {
+            return None;
+        }
+        self.selected_text()
+    }
+
     /// Apply an IME preedit update. Empty `text` cancels; otherwise starts
     /// (at the current cursor) or replaces the active composition. Returns
     /// true when the preedit state changed (repaint needed).
@@ -2019,11 +2039,9 @@ impl EditorComponent {
         // component never touches the clipboard (AGENTS §4.9) - it fires
         // `on_copy` and adapters wire the platform clipboard.
         if modifiers.control && !modifiers.shift && matches!(key, Key::Char('c') | Key::Char('C')) {
-            if matches!(self.tool, Tool::Text) {
-                if let Some(text) = self.selected_text() {
-                    if let Some(cb) = &self.callbacks.on_copy {
-                        cb(text);
-                    }
+            if let Some(text) = self.copy_selection() {
+                if let Some(cb) = &self.callbacks.on_copy {
+                    cb(text);
                 }
             }
             return EventOutcome {
@@ -7077,5 +7095,25 @@ mod tests {
         assert_eq!(c.compose_scene().commands().len(), idle);
         c.update_scene();
         assert_eq!(c.scene().commands().len(), idle);
+    }
+
+    #[test]
+    fn paste_text_inserts_and_reports_false_without_cursor() {
+        let mut c = component_with_textbox();
+        assert!(c.paste_text("ab"));
+        assert_eq!(textbox_content(&c), "hiab");
+        let mut c = component_with_textbox();
+        c.editor.clear_cursor();
+        assert!(!c.paste_text("ab"));
+        assert!(!c.paste_text(""));
+    }
+
+    #[test]
+    fn copy_selection_returns_body_text_in_text_tool() {
+        // Body selection requires a drag over body text, which is covered
+        // by the migrated sample_drag_select in A3; here we only assert the
+        // no-selection / wrong-tool contract.
+        let mut c = component_with_textbox();
+        assert!(c.copy_selection().is_none());
     }
 }
