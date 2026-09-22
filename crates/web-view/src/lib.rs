@@ -1,21 +1,21 @@
 //! rofd_web_view - WASM/WebGPU adapter for rofd.
 //!
-//! Mirrors reditor's web-view: a `create_wasm_editor` async factory handles
-//! WebGPU init + warmup, and `WasmEditor` exposes `register_font`, event
+//! Mirrors reditor's web-view: a `create_wasm_ofd` async factory handles
+//! WebGPU init + warmup, and `WasmOfd` exposes `register_font`, event
 //! handlers, and a JS callback bridge. The web SDK (`@office-rs/rofd`) drives the
 //! full boot flow (font loading, event binding, render loop).
 //!
 //! Only meaningful when compiled for `wasm32-unknown-unknown`. The
-//! [`wasm_editor::parse_key`] helper and its tests are NOT cfg-gated - they are
+//! [`wasm_ofd::parse_key`] helper and its tests are NOT cfg-gated - they are
 //! pure Rust and run on native, giving TDD coverage for the JS key-string ->
 //! [`rofd_component::Key`] mapping without needing a browser.
 
-pub mod wasm_editor;
+pub mod wasm_ofd;
 #[cfg(target_arch = "wasm32")]
 pub mod webgpu_render_target;
 
 #[cfg(target_arch = "wasm32")]
-pub use wasm_editor::WasmEditor;
+pub use wasm_ofd::WasmOfd;
 #[cfg(target_arch = "wasm32")]
 pub use webgpu_render_target::WebGpuRenderTarget;
 
@@ -37,17 +37,17 @@ pub use startup::start;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
-/// Create a new `WasmEditor` instance with its own WebGPU context.
+/// Create a new `WasmOfd` instance with its own WebGPU context.
 ///
 /// Async because `WebGpuRenderTarget::new` requests a wgpu adapter + device
 /// (browser WebGPU Promises). Runs a warmup render to force shader compilation
 /// before the first user-visible frame. Fonts are NOT loaded here - the SDK
-/// calls [`WasmEditor::register_font`] after this returns (mirrors reditor).
+/// calls [`WasmOfd::register_font`] after this returns (mirrors reditor).
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
-pub async fn create_wasm_editor(
+pub async fn create_wasm_ofd(
     canvas: web_sys::HtmlCanvasElement,
-) -> Result<wasm_editor::WasmEditor, JsValue> {
+) -> Result<wasm_ofd::WasmOfd, JsValue> {
     let rect = canvas.get_bounding_client_rect();
     let width = rect.width() as u32;
     let height = rect.height() as u32;
@@ -57,5 +57,5 @@ pub async fn create_wasm_editor(
         .map_err(|e| JsValue::from_str(&e))?;
     render_target.warmup();
 
-    wasm_editor::WasmEditor::new_internal(width, height, render_target)
+    wasm_ofd::WasmOfd::new_internal(width, height, render_target)
 }

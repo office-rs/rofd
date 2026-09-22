@@ -1,12 +1,12 @@
-//! WasmEditor - wasm-bindgen surface for the rofd web editor.
+//! WasmOfd - wasm-bindgen surface for the rofd web editor.
 //!
-//! Mirrors reditor's `WasmEditor`: created via the `create_wasm_editor` factory
+//! Mirrors reditor's `WasmOfd`: created via the `create_wasm_ofd` factory
 //! (WebGPU init + warmup), then the SDK registers fonts (`register_font`),
 //! wires JS callbacks (`set_on_*`), and feeds DOM events (`handle_*`) from
 //! `requestAnimationFrame` + event listeners.
 //!
 //! # Module gating
-//! The `WasmEditor` struct + its `#[wasm_bindgen]` impl are gated behind
+//! The `WasmOfd` struct + its `#[wasm_bindgen]` impl are gated behind
 //! `cfg(target_arch = "wasm32")` because they use `wasm_bindgen`, `web_sys`,
 //! and [`WebGpuRenderTarget`](crate::WebGpuRenderTarget) (wasm32-only).
 //!
@@ -23,7 +23,7 @@ use rofd_dom::{AnnotationKind, ShapeKind};
 /// strings map to [`Key::Char`]; everything else is [`Key::Unidentified`].
 ///
 /// This function is pure Rust (no wasm types) so it runs under `cargo test`
-/// on native. The WasmEditor methods call it to translate JS key strings.
+/// on native. The WasmOfd methods call it to translate JS key strings.
 pub fn parse_key(s: &str) -> Key {
     match s {
         "Enter" => Key::Enter,
@@ -51,7 +51,7 @@ pub fn parse_key(s: &str) -> Key {
 /// kept as aliases of `"text"` (the unified tool - spec §3).
 ///
 /// Pure Rust (no wasm types) so it runs under `cargo test` on native, like
-/// [`parse_key`]. The WasmEditor's `setTool` method calls this.
+/// [`parse_key`]. The WasmOfd's `setTool` method calls this.
 pub fn parse_tool_kind(kind: &str) -> Tool {
     match kind {
         "text" | "select" | "textSelect" => Tool::Text,
@@ -100,7 +100,7 @@ pub fn pointer_cursor_str(c: PointerCursor) -> &'static str {
 /// typos, not an error worth surfacing.
 ///
 /// Pure Rust (no wasm types) so it runs under `cargo test` on native, like
-/// [`parse_key`]. The WasmEditor's `setHighlightColor`/`setMarkupColor` call
+/// [`parse_key`]. The WasmOfd's `setHighlightColor`/`setMarkupColor` call
 /// this.
 pub fn parse_color(s: &str) -> rofd_dom::Color {
     // ASCII check first: slicing multi-byte UTF-8 mid-char would panic, and
@@ -119,7 +119,7 @@ pub fn parse_color(s: &str) -> rofd_dom::Color {
     }
 }
 
-// ─── WasmEditor (wasm32 only) ────────────────────────────────────────────────
+// ─── WasmOfd (wasm32 only) ────────────────────────────────────────────────
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_impl {
@@ -135,13 +135,13 @@ mod wasm_impl {
     use rofd_io::{parse_ofd, save_ofd, write_ofd, PackageHandle};
     use wasm_bindgen::prelude::*;
 
-    use crate::wasm_editor::{
+    use crate::wasm_ofd::{
         parse_color, parse_key, parse_markup_kind, parse_tool_kind, pointer_cursor_str,
     };
     use crate::webgpu_render_target::WebGpuRenderTarget;
 
     /// JS callback slots. Each is an `Rc<RefCell<Option<Function>>>` so the
-    /// Rust bridge closures (registered in [`WasmEditor::setup_bridge_callbacks`])
+    /// Rust bridge closures (registered in [`WasmOfd::setup_bridge_callbacks`])
     /// can read the current slot, and JS can swap the callback via `set_on_*`
     /// at any time. Single-threaded (wasm32).
     #[derive(Default)]
@@ -165,10 +165,10 @@ mod wasm_impl {
     ///
     /// Owns an [`OfdComponent`] (model + render) and a [`WebGpuRenderTarget`]
     /// (canvas -> WebGPU -> vello). The SDK creates this via
-    /// [`create_wasm_editor`](crate::create_wasm_editor), then registers fonts
+    /// [`create_wasm_ofd`](crate::create_wasm_ofd), then registers fonts
     /// and JS callbacks, and feeds DOM events from listeners.
     #[wasm_bindgen]
-    pub struct WasmEditor {
+    pub struct WasmOfd {
         component: OfdComponent,
         render_target: WebGpuRenderTarget,
         callbacks: JsCallbacks,
@@ -176,7 +176,7 @@ mod wasm_impl {
     }
 
     #[wasm_bindgen]
-    impl WasmEditor {
+    impl WasmOfd {
         /// Render one frame. Called by the JS SDK on each requestAnimationFrame.
         #[wasm_bindgen(js_name = renderFrame)]
         pub fn render_frame(&mut self) -> Result<(), JsValue> {
@@ -185,7 +185,7 @@ mod wasm_impl {
         }
 
         /// Register font data (raw bytes) with the editor. Call after
-        /// `create_wasm_editor` to load fonts (e.g. NotoSansCJK) - the web can't
+        /// `create_wasm_ofd` to load fonts (e.g. NotoSansCJK) - the web can't
         /// access system fonts, so registered fonts are the only font source.
         /// Can be called multiple times. Returns `true` if the bytes parsed.
         #[wasm_bindgen(js_name = registerFont)]
@@ -625,8 +625,8 @@ mod wasm_impl {
         }
     }
 
-    impl WasmEditor {
-        /// Internal constructor. Called by `create_wasm_editor` after WebGPU
+    impl WasmOfd {
+        /// Internal constructor. Called by `create_wasm_ofd` after WebGPU
         /// init + warmup. Wires the component's Rust callbacks to the JS
         /// callback slots.
         pub(crate) fn new_internal(
@@ -844,7 +844,7 @@ mod wasm_impl {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub use wasm_impl::WasmEditor;
+pub use wasm_impl::WasmOfd;
 
 // ─── parse_key tests (native) ────────────────────────────────────────────────
 
