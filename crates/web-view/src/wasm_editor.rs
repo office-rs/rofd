@@ -127,7 +127,7 @@ mod wasm_impl {
     use std::rc::Rc;
 
     use rofd_component::{
-        BodyTextSelection, ContextTarget, EditorComponent, EditorConfig, Modifiers, MouseButton,
+        BodyTextSelection, ContextTarget, Modifiers, MouseButton, OfdComponent, OfdConfig,
         PointerCursor, ScrollDirection, ViewEvent,
     };
     use rofd_dom::{AnnotationId, AnnotationSelection, OfdDocument, OfdWarning};
@@ -163,13 +163,13 @@ mod wasm_impl {
 
     /// wasm-bindgen editor surface for the web.
     ///
-    /// Owns an [`EditorComponent`] (model + render) and a [`WebGpuRenderTarget`]
+    /// Owns an [`OfdComponent`] (model + render) and a [`WebGpuRenderTarget`]
     /// (canvas -> WebGPU -> vello). The SDK creates this via
     /// [`create_wasm_editor`](crate::create_wasm_editor), then registers fonts
     /// and JS callbacks, and feeds DOM events from listeners.
     #[wasm_bindgen]
     pub struct WasmEditor {
-        component: EditorComponent,
+        component: OfdComponent,
         render_target: WebGpuRenderTarget,
         callbacks: JsCallbacks,
         package: Option<PackageHandle>,
@@ -294,7 +294,7 @@ mod wasm_impl {
 
         /// The current body-text selection's text; null when there is no
         /// selection (or the selection can't be sliced to text - see
-        /// `EditorComponent::selected_text`).
+        /// `OfdComponent::selected_text`).
         #[wasm_bindgen(js_name = getSelectedText)]
         pub fn get_selected_text(&self) -> Option<String> {
             self.component.selected_text()
@@ -634,11 +634,11 @@ mod wasm_impl {
             height: u32,
             render_target: WebGpuRenderTarget,
         ) -> Result<Self, JsValue> {
-            let config = EditorConfig::new(std::sync::Arc::new(vec![]));
+            let config = OfdConfig::new(std::sync::Arc::new(vec![]));
             #[cfg(target_arch = "wasm32")]
-            let mut component = EditorComponent::new_wasm(config);
+            let mut component = OfdComponent::new_wasm(config);
             #[cfg(not(target_arch = "wasm32"))]
-            let mut component = EditorComponent::new_native(config);
+            let mut component = OfdComponent::new_native(config);
             // Default tooltip assembly (AGENTS §4.9): a titled author +
             // creation-time card in the user's local timezone.
             // Date#getTimezoneOffset returns UTC - local minutes, so negate

@@ -10,7 +10,7 @@
 //! wake task, and no manual MasonryState/AppDriver.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use rfd::FileDialog;
 use rofd_component::{ContextTarget, CreateKind, OfdConfig, Tool};
@@ -85,6 +85,12 @@ struct AppState {
     modified: bool,
     /// Body-text selection mirror; gates the markup buttons.
     has_selection: bool,
+    /// Result of the latest queued save, written by the command closure
+    /// and drained in `app_logic` before the next view build. The
+    /// modified mirror is never cleared until a save reports success, so
+    /// a failed save (disk full / permission / locked path) cannot be
+    /// mistaken for a clean document.
+    save_outcome: Arc<Mutex<Option<Result<(), String>>>>,
     /// Warnings collected from the last load/operation.
     warnings: Vec<rofd_dom::OfdWarning>,
     /// Open context-menu overlay, if any.
@@ -98,6 +104,7 @@ impl AppState {
             file: None,
             package: None,
             modified: false,
+            save_outcome: Arc::new(Mutex::new(None)),
             has_selection: false,
             warnings: Vec::new(),
             context_menu: None,
@@ -113,6 +120,22 @@ impl AppState {
 }
 
 // --- File operations ---
+
+/// Drain the queued save outcome before building the view. A successful
+/// save clears the modified mirror; a failed one leaves it set (and logs
+/// the error), so the next close/save cannot treat the document as clean.
+fn consume_save_outcome(app: &mut AppState) {
+    let Some(outcome) = app.save_outcome.lock().unwrap().take() else {
+        return;
+    };
+    match outcome {
+        Ok(()) => app.modified = false,
+        Err(e) => {
+            app.modified = true;
+            eprintln!("[ERROR] save failed: {e}");
+        }
+    }
+}
 
 fn do_new(app: &mut AppState) {
     push(app, |c| c.new_document());
@@ -147,15 +170,22 @@ fn do_open(app: &mut AppState) {
 
 /// Save to `path`: the snapshot must run at command time against the live
 /// component; the package rides along (Arc-backed, cheap to clone).
+///
+/// The command reports its result through `save_outcome`; `modified` is
+/// NOT cleared here. `consume_save_outcome` (start of each `app_logic`)
+/// clears it on success and keeps it set — with a logged error — on
+/// failure.
 fn save_to(app: &mut AppState, path: PathBuf) {
     let package = app.package.clone();
+    let outcome = app.save_outcome.clone();
     push(app, move |c| {
         let document = c.document().clone();
-        if let Err(e) = host::document_io::save_ofd(&document, package.as_ref(), &path) {
-            eprintln!("[ERROR] {e}");
-        }
+        *outcome.lock().unwrap() = Some(host::document_io::save_ofd(
+            &document,
+            package.as_ref(),
+            &path,
+        ));
     });
-    app.modified = false;
 }
 
 fn do_save(app: &mut AppState) {
@@ -213,6 +243,7 @@ fn open_context_menu(app: &mut AppState, event: OfdContextMenu) {
 }
 
 fn app_logic(app: &mut AppState) -> impl WidgetView<AppState> + use<> {
+    consume_save_outcome(app);
     // --- file row ---
     let btn_new = text_button("新建", |app: &mut AppState| do_new(app))
         .padding(BTN_PAD)
@@ -316,4 +347,37 @@ fn main() -> Result<(), xilem::winit::error::EventLoopError> {
         WindowOptions::new("rofd - OFD Editor"),
     )
     .run_in(EventLoop::with_user_event())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn save_success_clears_modified() {
+        let mut app = AppState::new();
+        app.modified = true;
+        *app.save_outcome.lock().unwrap() = Some(Ok(()));
+        consume_save_outcome(&mut app);
+        assert!(!app.modified);
+        assert!(app.save_outcome.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn save_failure_keeps_modified_and_logs() {
+        let mut app = AppState::new();
+        app.modified = true;
+        *app.save_outcome.lock().unwrap() = Some(Err("disk full".to_string()));
+        consume_save_outcome(&mut app);
+        assert!(app.modified);
+        assert!(app.save_outcome.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn no_outcome_leaves_modified_untouched() {
+        let mut app = AppState::new();
+        app.modified = true;
+        consume_save_outcome(&mut app);
+        assert!(app.modified);
+    }
 }
