@@ -23,7 +23,7 @@ npm install @office-rs/rofd
 
 ## Browser support
 
-WebGPU requires Chrome / Edge 113+ (or any browser shipping WebGPU). On unsupported browsers `Editor.init` throws `WebGPU is not supported in this browser`.
+WebGPU requires Chrome / Edge 113+ (or any browser shipping WebGPU). On unsupported browsers `Ofd.init` throws `WebGPU is not supported in this browser`.
 
 ## Quick start
 
@@ -31,30 +31,30 @@ WebGPU requires Chrome / Edge 113+ (or any browser shipping WebGPU). On unsuppor
 <div id="ofd-container" style="width: 800px; height: 600px"></div>
 
 <script type="module">
-  import { Editor } from '@office-rs/rofd';
+  import { Ofd } from '@office-rs/rofd';
 
   const container = document.getElementById('ofd-container');
-  const editor = await Editor.init(container, {
+  const ofd = await Ofd.init(container, {
     // Ctrl+S handler — host decides where to persist the bytes.
     onSaveRequest: async () => {
-      const bytes = editor.saveOfd();
+      const bytes = ofd.saveOfd();
       await fetch('/api/save', { method: 'POST', body: bytes });
     },
   });
 
   // Author + timestamp must be injected before editing (the library never
   // reads the system clock — see AGENTS.md §4.4).
-  editor.setClock('ravenq', Date.now());
+  ofd.setClock('ravenq', Date.now());
 
   // Load an .ofd package and start annotating.
   const resp = await fetch('/doc.ofd');
-  editor.loadOfd(new Uint8Array(await resp.arrayBuffer()));
+  ofd.loadOfd(new Uint8Array(await resp.arrayBuffer()));
 </script>
 ```
 
-## Editor API
+## Ofd API
 
-`Editor.init(container, config?)` boots the editor: loads the wasm module, checks WebGPU, creates a canvas, initializes the wasm editor, loads fonts, wires callbacks, binds DOM events, and starts the render loop.
+`Ofd.init(container, config?)` boots the editor: loads the wasm module, checks WebGPU, creates a canvas, initializes the wasm editor, loads fonts, wires callbacks, binds DOM events, and starts the render loop.
 
 | Method | Description |
 |---|---|
@@ -73,7 +73,7 @@ WebGPU requires Chrome / Edge 113+ (or any browser shipping WebGPU). On unsuppor
 | `get canUndo` / `get canRedo` | Whether undo / redo is available. |
 | `destroy()` | Stop the render loop and remove the canvas. |
 
-## Callbacks (passed to `Editor.init`)
+## Callbacks (passed to `Ofd.init`)
 
 | Callback | Fires when |
 |---|---|
@@ -96,10 +96,10 @@ The web can't read system fonts, so the SDK fetches defaults from CDN (jsDelivr,
 - `NotoSans-Regular.ttf`
 - `NotoSansCJKsc-Regular.otf`
 
-To use custom fonts, pass `fonts` in `EditorConfig`:
+To use custom fonts, pass `fonts` in `OfdConfig`:
 
 ```ts
-await Editor.init(container, {
+await Ofd.init(container, {
   fonts: [
     { url: '/fonts/MyFont.otf' },
     { data: myFontBytes }, // inline Uint8Array

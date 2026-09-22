@@ -1,18 +1,18 @@
-// @office-rs/rofd - TypeScript SDK wrapping the rofd WASM editor.
+// @office-rs/rofd - TypeScript SDK wrapping the rofd WASM OFD surface.
 //
-// Mirrors reditor's SDK: `Editor.init(container, config)` does the full boot
-// (load wasm -> check WebGPU -> create canvas -> create_wasm_editor -> load +
-// register fonts -> register callbacks -> bindEvents -> render loop). The web
-// app just calls `init` and optionally passes fonts/callbacks.
+// Mirrors the as-built adapter design: `Ofd.init(container, config)` does the
+// full boot (load wasm -> check WebGPU -> create canvas -> create_wasm_ofd ->
+// load + register fonts -> register callbacks -> bindEvents -> render loop).
+// The web app just calls `init` and optionally passes fonts/callbacks.
 
 // --- wasm module shape (wasm-pack --target web) ---
-// `default` is the async init; `create_wasm_editor` is the factory.
+// `default` is the async init; `create_wasm_ofd` is the factory.
 type WasmModule = {
   default(): Promise<void>;
-  create_wasm_editor(canvas: HTMLCanvasElement): Promise<WasmEditor>;
+  create_wasm_ofd(canvas: HTMLCanvasElement): Promise<WasmOfd>;
 };
 
-interface WasmEditor {
+interface WasmOfd {
   renderFrame(): void;
   registerFont(bytes: Uint8Array): boolean;
   handleResize(width: number, height: number): void;
@@ -90,8 +90,8 @@ export interface FontSource {
 /** The four text-markup annotation kinds (actions over a body-text selection). */
 export type MarkupKind = 'highlight' | 'underline' | 'strikeout' | 'squiggly';
 
-/** Configuration for `Editor.init`. */
-export interface EditorConfig {
+/** Configuration for `Ofd.init`. */
+export interface OfdConfig {
   /** Fonts to load + register. Defaults to Noto Sans + Noto Sans CJK SC from CDN. */
   fonts?: FontSource[];
   /** Fired when the document changes (signal-only; the render loop re-renders). */
@@ -130,8 +130,9 @@ export interface EditorConfig {
   clipboard?: boolean;
 }
 
-// Default font CDN (jsDelivr - ICP-licensed China CDN nodes). Same fonts reditor
-// uses. The web can't access system fonts, so these are the only font source.
+// Default font CDN (jsDelivr - ICP-licensed China CDN nodes). Same fonts the
+// sibling adapters use. The web can't access system fonts, so these are the
+// only font source.
 const FONT_CDN_BASE =
   'https://cdn.jsdelivr.net/gh/googlefonts/noto-cjk@main/Sans/OTF/SimplifiedChinese';
 const DEFAULT_FONTS: FontSource[] = [
@@ -143,7 +144,7 @@ const DEFAULT_FONTS: FontSource[] = [
  * Wrap a host callback so it runs in a microtask instead of synchronously.
  *
  * Rust fires callbacks from inside wasm exports that hold a mutable borrow
- * on the WasmEditor (e.g. handlePointerMove -> text-selection change). A
+ * on the WasmOfd (e.g. handlePointerMove -> text-selection change). A
  * handler that immediately calls back into the same editor (querying state,
  * saving, ...) re-enters that borrow and wasm-bindgen throws
  * "recursive use of an object detected". Deferring to a microtask runs the
@@ -160,23 +161,23 @@ function deferCb<A extends unknown[]>(cb: (...args: A) => void): (...args: A) =>
 }
 
 /**
- * rofd web editor. Created via [`Editor.init`]; the SDK owns the canvas, the
- * wasm editor, DOM event binding, and the render loop.
+ * rofd web OFD surface. Created via [`Ofd.init`]; the SDK owns the canvas,
+ * the wasm surface, DOM event binding, and the render loop.
  *
  * Usage:
  * ```ts
- * const editor = await Editor.init(container, {
- *   onSaveRequest: () => download(editor.saveOfd()),
+ * const ofd = await Ofd.init(container, {
+ *   onSaveRequest: () => download(ofd.saveOfd()),
  * });
- * editor.loadOfd(ofdBytes);
+ * ofd.loadOfd(ofdBytes);
  * ```
  */
-export class Editor {
-  private wasm: WasmEditor;
+export class Ofd {
+  private wasm: WasmOfd;
   private canvas: HTMLCanvasElement;
   private animFrameId: number | null = null;
   private abortController: AbortController;
-  // Click counting (mirrors the native winit bridge): pointerdown's
+  // Click counting (mirrors the native adapter): pointerdown's
   // `detail` is 0 for pointer events per the Pointer Events spec, so the
   // count is tracked here -- same 500ms window + 4px slop, cycling 1->2->3.
   private clickCount = 0;
@@ -184,22 +185,22 @@ export class Editor {
   private lastClickX = -Infinity;
   private lastClickY = -Infinity;
 
-  private constructor(wasm: WasmEditor, canvas: HTMLCanvasElement) {
+  private constructor(wasm: WasmOfd, canvas: HTMLCanvasElement) {
     this.wasm = wasm;
     this.canvas = canvas;
     this.abortController = new AbortController();
   }
 
   /**
-   * Initialize a new editor inside `container`: loads the wasm module, checks
-   * WebGPU, creates a canvas, initializes the wasm editor (WebGPU + warmup),
-   * loads + registers fonts, wires callbacks, binds DOM events, and starts the
-   * render loop. Returns a ready-to-use `Editor`.
+   * Initialize a new OFD surface inside `container`: loads the wasm module,
+   * checks WebGPU, creates a canvas, initializes the wasm surface (WebGPU +
+   * warmup), loads + registers fonts, wires callbacks, binds DOM events,
+   * and starts the render loop. Returns a ready-to-use `Ofd`.
    */
   static async init(
     container: HTMLElement,
-    config?: EditorConfig,
-  ): Promise<Editor> {
+    config?: OfdConfig,
+  ): Promise<Ofd> {
     // 1. Load wasm module (--target web: fetch-based, auto-resolves .wasm).
     const wasm = (await import('../dist/rofd_web_view.js')) as unknown as WasmModule;
     await wasm.default();
@@ -220,38 +221,38 @@ export class Editor {
     canvas.style.cursor = 'default';
     container.appendChild(canvas);
 
-    // 4. Create WasmEditor (async: WebGPU init + warmup).
-    const wasmEditor = await wasm.create_wasm_editor(canvas);
+    // 4. Create WasmOfd (async: WebGPU init + warmup).
+    const wasmOfd = await wasm.create_wasm_ofd(canvas);
 
     // 5. Load + register fonts (web can't access system fonts).
     const fonts = config?.fonts ?? DEFAULT_FONTS;
     for (const font of fonts) {
       try {
         const bytes = await loadFont(font);
-        wasmEditor.registerFont(bytes);
+        wasmOfd.registerFont(bytes);
       } catch (e) {
         console.warn('[rofd] font load failed; text may not render', e);
       }
     }
 
     // 6. Register callbacks (deferred: handlers run in a microtask so they
-    // may freely call back into the editor - see deferCb).
-    if (config?.onChange) wasmEditor.setOnChange(deferCb(config.onChange));
-    if (config?.onSelectionChange) wasmEditor.setOnSelectionChange(deferCb(config.onSelectionChange));
-    if (config?.onCursorChange) wasmEditor.setOnCursorChange(deferCb(config.onCursorChange));
-    if (config?.onSaveRequest) wasmEditor.setOnSaveRequest(deferCb(config.onSaveRequest));
-    if (config?.onContextMenu) wasmEditor.setOnContextMenu(deferCb(config.onContextMenu));
-    if (config?.onWarning) wasmEditor.setOnWarning(deferCb(config.onWarning));
-    if (config?.onAnnotationFocus) wasmEditor.setOnAnnotationFocus(deferCb(config.onAnnotationFocus));
-    if (config?.onAnnotationInteract) wasmEditor.setOnAnnotationInteract(deferCb(config.onAnnotationInteract));
-    if (config?.onPageChange) wasmEditor.setOnPageChange(deferCb(config.onPageChange));
-    if (config?.onZoomChange) wasmEditor.setOnZoomChange(deferCb(config.onZoomChange));
-    if (config?.onTextSelectionChange) wasmEditor.setOnTextSelectionChange(deferCb(config.onTextSelectionChange));
+    // may freely call back into the surface - see deferCb).
+    if (config?.onChange) wasmOfd.setOnChange(deferCb(config.onChange));
+    if (config?.onSelectionChange) wasmOfd.setOnSelectionChange(deferCb(config.onSelectionChange));
+    if (config?.onCursorChange) wasmOfd.setOnCursorChange(deferCb(config.onCursorChange));
+    if (config?.onSaveRequest) wasmOfd.setOnSaveRequest(deferCb(config.onSaveRequest));
+    if (config?.onContextMenu) wasmOfd.setOnContextMenu(deferCb(config.onContextMenu));
+    if (config?.onWarning) wasmOfd.setOnWarning(deferCb(config.onWarning));
+    if (config?.onAnnotationFocus) wasmOfd.setOnAnnotationFocus(deferCb(config.onAnnotationFocus));
+    if (config?.onAnnotationInteract) wasmOfd.setOnAnnotationInteract(deferCb(config.onAnnotationInteract));
+    if (config?.onPageChange) wasmOfd.setOnPageChange(deferCb(config.onPageChange));
+    if (config?.onZoomChange) wasmOfd.setOnZoomChange(deferCb(config.onZoomChange));
+    if (config?.onTextSelectionChange) wasmOfd.setOnTextSelectionChange(deferCb(config.onTextSelectionChange));
 
     // The wasm side reports CSS cursor names directly
     // ("default"/"grab"/"grabbing"/"text"), so no
     // mapping is needed on the TS side.
-    wasmEditor.setOnPointerCursor((shape: string) => {
+    wasmOfd.setOnPointerCursor((shape: string) => {
       canvas.style.cursor = shape;
     });
 
@@ -267,26 +268,26 @@ export class Editor {
         : (text: string) => {
             void navigator.clipboard.writeText(text);
           });
-    if (onCopy) wasmEditor.setOnCopy(deferCb(onCopy));
+    if (onCopy) wasmOfd.setOnCopy(deferCb(onCopy));
 
     // 7. Create wrapper + bind DOM events.
-    const editor = new Editor(wasmEditor, canvas);
-    editor.bindEvents();
+    const ofd = new Ofd(wasmOfd, canvas);
+    ofd.bindEvents();
 
     // Prevent the browser's native context menu on the canvas (right-click).
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
     // 8. Initial resize + render loop.
-    editor.resize();
-    editor.startRenderLoop();
+    ofd.resize();
+    ofd.startRenderLoop();
 
     // 9. Focus the canvas so keyboard input works immediately.
     canvas.focus();
 
-    return editor;
+    return ofd;
   }
 
-  /** Destroy the editor: stop the render loop, remove canvas, abort listeners. */
+  /** Destroy the surface: stop the render loop, remove canvas, abort listeners. */
   destroy(): void {
     if (this.animFrameId !== null) {
       cancelAnimationFrame(this.animFrameId);
@@ -332,7 +333,7 @@ export class Editor {
         // PageUp/PageDown scroll by one page height (ScrollPage), not a
         // generic KeyDown: the component's handle_key doesn't act on these
         // keys, so routing them as ScrollPage gives them an effect (viewport
-        // scroll by page_h + page_gap). Mirrors the native winit bridge.
+        // scroll by page_h + page_gap). Mirrors the native adapter.
         if (e.key === 'PageUp') {
           this.wasm.handleScrollPage('up');
         } else if (e.key === 'PageDown') {
@@ -358,7 +359,7 @@ export class Editor {
         const rect = this.canvas.getBoundingClientRect();
         const x = (e.clientX - rect.left) * dpr();
         const y = (e.clientY - rect.top) * dpr();
-        // Right-click resets the click chain (mirrors the native bridge).
+        // Right-click resets the click chain (mirrors the native adapter).
         if (e.button !== 0) {
           this.clickCount = 0;
         }
@@ -535,7 +536,7 @@ export class Editor {
   /** Fired when the body-text selection appears/changes/clears. Signal-only;
    * query hasTextSelection()/getSelectedText() afterwards. Handlers are
    * deferred to a microtask (see deferCb) so they may call back into the
-   * editor without re-entering the wasm borrow. */
+   * surface without re-entering the wasm borrow. */
   setOnTextSelectionChange(cb: (() => void) | null): void {
     this.wasm.setOnTextSelectionChange(cb && deferCb(cb));
   }
