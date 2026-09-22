@@ -15,11 +15,11 @@ OFD（GB/T 33190）**查看 + 批注**编辑器**库**，Rust 实现，native + 
 Web 端通过 npm 包 `@office-rs/rofd` 集成：
 
 ```ts
-import { Editor } from '@office-rs/rofd';
+import { Ofd } from '@office-rs/rofd';
 
 const container = document.getElementById('container') as HTMLElement;
 
-const editor = await Editor.init(container, {
+const ofd = await Ofd.init(container, {
     fonts: [
         { url: '/fonts/NotoSans-Regular.ttf' },
         { url: '/fonts/NotoSansCJKsc-Regular.otf' },
@@ -29,9 +29,9 @@ const editor = await Editor.init(container, {
         ...
     }
 });
-editor.setClock('rofd', Date.now());
+ofd.setClock('rofd', Date.now());
 
-editor.loadOfd(bytes);
+ofd.loadOfd(bytes);
 ```
 
 ---

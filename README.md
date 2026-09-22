@@ -19,11 +19,11 @@ An OFD (GB/T 33190) **view + annotate** editor **library**, written in Rust, dua
 Integrate on the web via the npm package `@office-rs/rofd`:
 
 ```ts
-import { Editor } from '@office-rs/rofd';
+import { Ofd } from '@office-rs/rofd';
 
 const container = document.getElementById('container') as HTMLElement;
 
-const editor = await Editor.init(container, {
+const ofd = await Ofd.init(container, {
     fonts: [
         { url: '/fonts/NotoSans-Regular.ttf' },
         { url: '/fonts/NotoSansCJKsc-Regular.otf' },
@@ -33,9 +33,9 @@ const editor = await Editor.init(container, {
         ...
     }
 });
-editor.setClock('rofd', Date.now());
+ofd.setClock('rofd', Date.now());
 
-editor.loadOfd(bytes);
+ofd.loadOfd(bytes);
 ```
 
 ---

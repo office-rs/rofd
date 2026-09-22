@@ -5,6 +5,34 @@ follow the git tags published to GitHub Releases (`vX.Y.Z`); the npm SDK
 `@office-rs/rofd` is versioned on its own track, documented under
 `SDK X.Y.Z` headings.
 
+## SDK 0.1.6 (@office-rs/rofd)
+
+Rename release: the SDK class and the wasm/Rust interface family move to
+their final `Ofd*` names. Ships together with the native masonry/xilem
+adapter rewrite and the crate renames (`rofd-xilem-view` / `xilem-app`).
+
+Note: 0.1.6 is chronologically newer than 0.2.0 but sits lower in semver
+numbering; it supersedes 0.2.0's API surface entirely.
+
+### Breaking
+- **`Editor` class → `Ofd`**: `Editor.init(...)` becomes `Ofd.init(...)`;
+  no alias is kept.
+- **`WasmEditor` → `WasmOfd`**; factory **`create_wasm_editor` →
+  `create_wasm_ofd`**; **`EditorConfig` → `OfdConfig`**.
+- **Rust core**: `EditorComponent` → `OfdComponent`, `EditorConfig` →
+  `OfdConfig`.
+- Crates `rofd-native-view` / `native-app` renamed `rofd-xilem-view` /
+  `xilem-app`.
+
+### Changed
+- Native adapter is now a masonry `Widget` + xilem `View` (`OfdWidget`,
+  `ofd()`/`ofd_with_config()`); the native host is a pure
+  `Xilem::new_simple` app with a command queue, toolbar and context-menu
+  overlay. Body zoom is component-owned multiplicative zoom (no host
+  mirror); Ctrl+X is copy-only.
+  - Queued saves report their result back to the host: a failed save no
+    longer clears the modified indicator (internal bounded wake).
+
 ## SDK 0.2.0 (@office-rs/rofd)
 
 Breaking release of the npm SDK: markup annotations (highlight / underline /
