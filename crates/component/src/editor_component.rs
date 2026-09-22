@@ -221,6 +221,8 @@ pub struct EditorComponent {
     blink_deadline: Option<std::time::Instant>,
     #[cfg(target_arch = "wasm32")]
     blink_elapsed_ms: u32,
+    /// Active IME preedit, if composing. Text enters the dom only on commit.
+    pub(crate) preedit: Option<crate::preedit::PreeditState>,
 }
 
 impl EditorComponent {
@@ -270,6 +272,7 @@ impl EditorComponent {
             blink_deadline: None,
             #[cfg(target_arch = "wasm32")]
             blink_elapsed_ms: 0,
+            preedit: None,
         }
     }
 
@@ -309,6 +312,7 @@ impl EditorComponent {
         // Clear any in-progress drag (Pan/Move/Resize) from the previous
         // document; its geometry is meaningless after the swap.
         self.drag = None;
+        self.preedit = None;
         // A new document starts at the top (zoom is intentionally kept - the
         // user's chosen display ratio survives document switches).
         self.viewport.scroll = (0.0, 0.0);
@@ -328,6 +332,7 @@ impl EditorComponent {
 
     pub fn new_document(&mut self) {
         self.drag = None;
+        self.preedit = None;
         // A new document starts at the top (zoom is intentionally kept - the
         // user's chosen display ratio survives document switches).
         self.viewport.scroll = (0.0, 0.0);
@@ -1010,6 +1015,67 @@ impl EditorComponent {
         )
     }
 
+    /// Apply an IME preedit update. Empty `text` cancels; otherwise starts
+    /// (at the current cursor) or replaces the active composition. Returns
+    /// true when the preedit state changed (repaint needed).
+    fn apply_preedit(&mut self, text: &str, caret: Option<(usize, usize)>) -> bool {
+        if text.is_empty() {
+            if self.preedit.take().is_some() {
+                self.mark_scene_dirty();
+                return true;
+            }
+            return false;
+        }
+        if let Some(state) = self.preedit.as_mut() {
+            let changed = state.text != text || state.caret != caret;
+            if changed {
+                state.text = text.to_string();
+                state.caret = caret;
+                self.mark_scene_dirty();
+            }
+            return changed;
+        }
+        if let Some(cursor) = self.editor.text_cursor().cloned() {
+            self.preedit = Some(crate::preedit::PreeditState {
+                text: text.to_string(),
+                caret,
+                annotation: cursor.annotation,
+                offset: cursor.offset,
+            });
+            self.mark_scene_dirty();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Force-commit the active preedit (focus loss / click elsewhere /
+    /// navigation): insert its text at the composition origin and clear it.
+    /// Returns true when something was committed.
+    fn force_commit_preedit(&mut self) -> bool {
+        let Some(state) = self.preedit.take() else {
+            return false;
+        };
+        let new_off = state.offset + state.text.chars().count();
+        self.editor
+            .insert_text(&state.annotation, state.offset, &state.text);
+        self.editor.set_cursor(state.annotation, new_off);
+        self.after_annotation_change();
+        self.reset_blink();
+        self.fire_cursor_change();
+        true
+    }
+
+    /// Commit path: an active preedit is the source of truth; otherwise the
+    /// event's own text is inserted directly.
+    fn commit_text(&mut self, text: &str) -> bool {
+        if self.preedit.is_some() {
+            self.force_commit_preedit()
+        } else {
+            self.insert_at_cursor(text)
+        }
+    }
+
     /// Insert committed text at the current text cursor, then advance the
     /// cursor and broadcast the change. Shared by `ViewEvent::ImeCommit`
     /// and paste. Returns `false` (no repaint) when no cursor is set.
@@ -1029,6 +1095,16 @@ impl EditorComponent {
 
     pub fn handle_event(&mut self, event: &crate::event::ViewEvent) -> EventOutcome {
         use crate::event::{MouseButton, ScrollDirection, ViewEvent};
+        // An in-progress composition must be committed before the next
+        // press/key is dispatched, so the gesture acts on the committed
+        // document.
+        if matches!(
+            event,
+            ViewEvent::PointerDown { .. } | ViewEvent::KeyDown { .. }
+        ) && self.preedit.is_some()
+        {
+            self.force_commit_preedit();
+        }
         let outcome = match event {
             ViewEvent::PointerDown {
                 button: MouseButton::Left,
@@ -1616,6 +1692,9 @@ impl EditorComponent {
                 }
             }
             ViewEvent::FocusLost => {
+                // Defensive: a composition stranded by focus loss must not
+                // be silently dropped.
+                self.force_commit_preedit();
                 self.focused = false;
                 self.cursor_visible = false;
                 #[cfg(not(target_arch = "wasm32"))]
@@ -1670,8 +1749,11 @@ impl EditorComponent {
                     needs_repaint: true,
                 }
             }
+            ViewEvent::ImePreedit { text, caret } => EventOutcome {
+                needs_repaint: self.apply_preedit(text, *caret),
+            },
             ViewEvent::ImeCommit { text } => EventOutcome {
-                needs_repaint: self.insert_at_cursor(text),
+                needs_repaint: self.commit_text(text),
             },
             ViewEvent::KeyDown { key, modifiers } => self.handle_key(key, modifiers),
             _ => EventOutcome {
@@ -6807,5 +6889,139 @@ mod tests {
     fn tick_blink_without_deadline_is_quiet() {
         let mut c = component_with_textbox();
         assert!(!c.tick_blink());
+    }
+
+    #[test]
+    fn preedit_starts_updates_and_cancels() {
+        let mut c = component_with_textbox();
+        assert!(
+            c.handle_event(&ViewEvent::ImePreedit {
+                text: "n".into(),
+                caret: None,
+            })
+            .needs_repaint
+        );
+        assert_eq!(c.preedit.as_ref().unwrap().text, "n");
+        assert!(
+            c.handle_event(&ViewEvent::ImePreedit {
+                text: "ni".into(),
+                caret: Some((2, 2)),
+            })
+            .needs_repaint
+        );
+        assert_eq!(c.preedit.as_ref().unwrap().text, "ni");
+        assert_eq!(c.preedit.as_ref().unwrap().caret, Some((2, 2)));
+        // Empty text cancels.
+        assert!(
+            c.handle_event(&ViewEvent::ImePreedit {
+                text: "".into(),
+                caret: None,
+            })
+            .needs_repaint
+        );
+        assert!(c.preedit.is_none());
+    }
+
+    #[test]
+    fn preedit_text_stays_outside_document_until_commit() {
+        let mut c = component_with_textbox();
+        c.handle_event(&ViewEvent::ImePreedit {
+            text: "你好".into(),
+            caret: None,
+        });
+        assert_eq!(textbox_content(&c), "hi");
+        c.handle_event(&ViewEvent::ImeCommit {
+            text: "你好".into(),
+        });
+        assert_eq!(textbox_content(&c), "hi你好");
+    }
+
+    #[test]
+    fn ime_commit_without_preedit_inserts_event_text() {
+        let mut c = component_with_textbox();
+        c.handle_event(&ViewEvent::ImeCommit { text: "ab".into() });
+        assert_eq!(textbox_content(&c), "hiab");
+    }
+
+    #[test]
+    fn ime_commit_while_preedit_commits_preedit_text() {
+        let mut c = component_with_textbox();
+        c.handle_event(&ViewEvent::ImePreedit {
+            text: "你".into(),
+            caret: None,
+        });
+        // Event payload differs from preedit; preedit is the source.
+        c.handle_event(&ViewEvent::ImeCommit { text: "x".into() });
+        assert_eq!(textbox_content(&c), "hi你");
+    }
+
+    #[test]
+    fn pointer_down_force_commits_before_press() {
+        let mut c = component_with_textbox();
+        c.handle_event(&ViewEvent::ImePreedit {
+            text: "你好".into(),
+            caret: None,
+        });
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 90.0,
+            y: 5.0,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        });
+        // The composition is committed before the press is dispatched.
+        assert_eq!(textbox_content(&c), "hi你好");
+        assert!(c.preedit.is_none());
+    }
+
+    #[test]
+    fn keydown_force_commits_before_key() {
+        let mut c = component_with_textbox();
+        c.handle_event(&ViewEvent::ImePreedit {
+            text: "你好".into(),
+            caret: None,
+        });
+        c.handle_event(&ViewEvent::KeyDown {
+            key: Key::ArrowRight,
+            modifiers: Modifiers::default(),
+        });
+        assert_eq!(textbox_content(&c), "hi你好");
+        assert!(c.preedit.is_none());
+    }
+
+    #[test]
+    fn focus_lost_commits_preedit() {
+        let mut c = component_with_textbox();
+        c.handle_event(&ViewEvent::FocusGained);
+        c.handle_event(&ViewEvent::ImePreedit {
+            text: "你好".into(),
+            caret: None,
+        });
+        c.handle_event(&ViewEvent::FocusLost);
+        assert_eq!(textbox_content(&c), "hi你好");
+        assert!(c.preedit.is_none());
+    }
+
+    #[test]
+    fn load_document_discards_preedit_without_commit() {
+        let mut c = component_with_textbox();
+        c.handle_event(&ViewEvent::ImePreedit {
+            text: "你好".into(),
+            caret: None,
+        });
+        c.load_document(OfdDocument::default());
+        assert!(c.preedit.is_none());
+    }
+
+    #[test]
+    fn preedit_ignored_without_cursor_anchor() {
+        let mut c = component_with_textbox();
+        c.editor.clear_cursor();
+        let outcome = c.handle_event(&ViewEvent::ImePreedit {
+            text: "n".into(),
+            caret: None,
+        });
+        assert!(!outcome.needs_repaint);
+        assert!(c.preedit.is_none());
     }
 }
