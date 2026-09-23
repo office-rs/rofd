@@ -12,6 +12,8 @@ OFD（GB/T 33190）**查看 + 批注**编辑器**库**，Rust 实现，native + 
 
 ## 使用
 
+### Web 端
+
 Web 端通过 npm 包 `@office-rs/rofd` 集成：
 
 ```ts
@@ -33,6 +35,65 @@ ofd.setClock('rofd', Date.now());
 
 ofd.loadOfd(bytes);
 ```
+
+### Native 端（`rofd-xilem-view`）
+
+运行参考桌面宿主：
+
+```bash
+cargo run -p xilem-app
+```
+
+把 rofd 嵌入 xilem（masonry）应用：
+
+```toml
+# Cargo.toml
+[dependencies]
+rofd-xilem-view = { git = "https://github.com/office-rs/rofd", branch = "main" }
+# xilem 必须钉到与工作区一致的 Linebender rev
+xilem = { git = "https://github.com/linebender/xilem", rev = "271a27a6d4a9" }
+```
+
+```rust
+use std::sync::Arc;
+use rofd_xilem_view::{command_queue, ofd, OfdCommandQueue};
+use xilem::view::{flex_col, text_button, FlexExt};
+use xilem::{EventLoop, WidgetView, WindowOptions, Xilem};
+
+struct AppState {
+    commands: OfdCommandQueue,
+    modified: bool,
+}
+
+fn app_logic(state: &mut AppState) -> impl WidgetView<AppState> + use<> {
+    let commands = state.commands.clone();
+    flex_col((
+        text_button("撤销", move |_: &mut AppState| {
+            // 宿主 → 编辑器：推入命令，view rebuild 时对实时 component 执行
+            commands.lock().unwrap().push(Arc::new(|c| {
+                c.undo();
+            }));
+        }),
+        ofd(state.commands.clone())
+            .on_change(|s: &mut AppState| s.modified = true) // 编辑器 → 宿主
+            .flex(1.0),
+    ))
+}
+
+fn main() -> Result<(), xilem::winit::error::EventLoopError> {
+    Xilem::new_simple(
+        AppState {
+            commands: command_queue(),
+            modified: false,
+        },
+        app_logic,
+        WindowOptions::new("rofd"),
+    )
+    .run_in(EventLoop::with_user_event())
+}
+```
+
+编辑器是一个标准 masonry widget：焦点、指针捕获、IME 会话、剪贴板快捷键、ctrl+wheel 缩放全部在内部处理——宿主无需接触 winit。宿主与编辑器之间有两条通道：component 回调体现为可链式调用的 `.on_change` / `.on_context_menu` / `.on_save_request` / … 处理器；命令式调用（工具栏按钮、程序化编辑）则是推入队列的 `Arc<dyn Fn(&mut OfdComponent)>` 命令，view 在每次 rebuild 时排空执行。完整参考实现（工具栏、右键菜单、文件 I/O、缩放）位于 [`crates/xilem-app`](crates/xilem-app)。
 
 ---
 

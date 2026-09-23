@@ -16,6 +16,8 @@ An OFD (GB/T 33190) **view + annotate** editor **library**, written in Rust, dua
 
 ## Usage
 
+### Web
+
 Integrate on the web via the npm package `@office-rs/rofd`:
 
 ```ts
@@ -37,6 +39,66 @@ ofd.setClock('rofd', Date.now());
 
 ofd.loadOfd(bytes);
 ```
+
+### Native (`rofd-xilem-view`)
+
+Run the reference desktop host:
+
+```bash
+cargo run -p xilem-app
+```
+
+Embed rofd in a xilem (masonry) application:
+
+```toml
+# Cargo.toml
+[dependencies]
+rofd-xilem-view = { git = "https://github.com/office-rs/rofd", branch = "main" }
+# xilem must be pinned to the same Linebender rev the workspace uses
+xilem = { git = "https://github.com/linebender/xilem", rev = "271a27a6d4a9" }
+```
+
+```rust
+use std::sync::Arc;
+use rofd_xilem_view::{command_queue, ofd, OfdCommandQueue};
+use xilem::view::{flex_col, text_button, FlexExt};
+use xilem::{EventLoop, WidgetView, WindowOptions, Xilem};
+
+struct AppState {
+    commands: OfdCommandQueue,
+    modified: bool,
+}
+
+fn app_logic(state: &mut AppState) -> impl WidgetView<AppState> + use<> {
+    let commands = state.commands.clone();
+    flex_col((
+        text_button("Undo", move |_: &mut AppState| {
+            // Host → editor: push a command; the view rebuild executes it
+            // against the live component.
+            commands.lock().unwrap().push(Arc::new(|c| {
+                c.undo();
+            }));
+        }),
+        ofd(state.commands.clone())
+            .on_change(|s: &mut AppState| s.modified = true) // editor → host
+            .flex(1.0),
+    ))
+}
+
+fn main() -> Result<(), xilem::winit::error::EventLoopError> {
+    Xilem::new_simple(
+        AppState {
+            commands: command_queue(),
+            modified: false,
+        },
+        app_logic,
+        WindowOptions::new("rofd"),
+    )
+    .run_in(EventLoop::with_user_event())
+}
+```
+
+The editor is a first-class masonry widget: focus, pointer capture, IME sessions, clipboard shortcuts, and ctrl+wheel zoom are handled inside — the host never touches winit. Two channels connect host and editor: component callbacks surface as chainable `.on_change` / `.on_context_menu` / `.on_save_request` / … handlers, and imperative calls (toolbar buttons, programmatic edits) are `Arc<dyn Fn(&mut OfdComponent)>` commands pushed onto a queue the view drains on every rebuild. The full reference implementation (toolbar, context menu, file I/O, zoom) is in [`crates/xilem-app`](crates/xilem-app).
 
 ---
 
