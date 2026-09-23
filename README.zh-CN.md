@@ -2,7 +2,7 @@
 
 [![Rust 2021](https://img.shields.io/badge/Rust-2021-orange.svg)](https://www.rust-lang.org/)
 [![Platform: Desktop](https://img.shields.io/badge/platform-desktop%20%7C%20web-blue.svg)](#平台支持)
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 [English](README.md) | **简体中文**
 
@@ -127,6 +127,6 @@ fn main() -> Result<(), xilem::winit::error::EventLoopError> {
 
 ## 许可
 
-本项目基于 [GNU 通用公共许可证 v3 或更高版本（GPL-3.0-or-later）](LICENSE) 开源。使用、修改与分发均须遵守该协议条款；分发（含作为 larger program 的一部分）时必须以相同协议开源并附带源代码。
+基于 **Apache License 2.0 (Apache-2.0)** 许可发布。完整许可证文本见 [LICENSE](LICENSE)。
 
 版权所有 © 2026 rofd 贡献者。

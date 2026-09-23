@@ -2,7 +2,7 @@
 
 [![Rust 2021](https://img.shields.io/badge/Rust-2021-orange.svg)](https://www.rust-lang.org/)
 [![Platform: Desktop](https://img.shields.io/badge/platform-desktop%20%7C%20web-blue.svg)](#platform-support)
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 **English** | [简体中文](README.zh-CN.md)
 
@@ -132,6 +132,6 @@ Go to this repo's [Releases](../../releases) page and grab an installer from the
 
 ## License
 
-This project is released under the [GNU General Public License v3 or later (GPL-3.0-or-later)](LICENSE). Use, modification, and distribution must comply with its terms; when distributing (including as part of a larger program) you must open-source under the same license and include the source code.
+Licensed under the **Apache License 2.0 (Apache-2.0)**. See [LICENSE](LICENSE) for the full license text.
 
 Copyright © 2026 rofd contributors.

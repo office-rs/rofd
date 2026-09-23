@@ -2,7 +2,7 @@
 name = "rofd-editor"
 version = "0.1.0"
 edition = "2021"
-license = "GPL-3.0-or-later"
+license = "Apache-2.0"
 authors = ["ravenq"]
 description = "Annotation command/transaction layer for the rofd OFD editor."
 repository = "https://github.com/office-rs/rofd"
