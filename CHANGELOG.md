@@ -5,6 +5,62 @@ follow the git tags published to GitHub Releases (`vX.Y.Z`); the npm SDK
 `@office-rs/rofd` is versioned on its own track, documented under
 `SDK X.Y.Z` headings.
 
+## v0.1.6
+
+This is the **masonry/xilem rewrite + final naming** release: the winit
+bridge is gone, the native adapter is a standard masonry widget, and the
+`Editor*` API family moves to its final `Ofd*` names. It ships together
+with SDK 0.1.6 (below). The license changes to Apache-2.0.
+
+### Changed
+- **Native adapter rewrite:** the winit event bridge and `EditorApp` are
+  deleted. The adapter is now a masonry `Widget` + xilem `View` in three
+  files — `OfdWidget`, `masonry_events` (pure translation table), and
+  `OfdView` (11 event chains). Focus, pointer capture, IME sessions,
+  clipboard shortcuts, and ctrl+wheel zoom are handled inside the widget;
+  the host never touches winit.
+- **Host rewrite:** the desktop host is a pure `Xilem::new_simple` app
+  with an `Arc<dyn Fn(&mut OfdComponent)>` command queue, a toolbar and a
+  right-click overlay; file load/save routing and atomic writes live in
+  `host/document_io`.
+- **Crate renames:** `rofd-native-view` → `rofd-xilem-view`,
+  `native-app` → `xilem-app`.
+- **API renames:** `EditorComponent` → `OfdComponent`,
+  `EditorConfig` → `OfdConfig`, `WasmEditor` → `WasmOfd`,
+  `create_wasm_editor` → `create_wasm_ofd`; the SDK class
+  `Editor` → `Ofd`. No aliases are kept.
+
+### Added
+- **CJK IME support:** preedit state machine (forced commit/cancel/navigation
+  guards), a preedit overlay at the caret (Parley shaping, TextBox clipping),
+  and a focus-gated blinking caret on both native and web.
+- **Clipboard editing:** `paste_text(&str) -> bool` and
+  `copy_selection() -> Option<String>` (Ctrl+X is copy-only).
+- A README native integration example for `rofd-xilem-view`.
+
+### Fixed
+- **Queued save results are reported back:** a failed save no longer
+  clears the modified indicator (internal bounded wake, no rerender loop).
+- **Save-As** switches the file path only after the save succeeds; failure
+  keeps the previous path.
+- **Zoom defenses:** non-finite/non-positive inputs are rejected at the
+  boundary, and Ctrl + pure horizontal scrolling no longer triggers zoom
+  (native and web).
+- Scrollbar thumb clamping no longer panics on very small windows; the
+  preedit overlay is offset by the TextBox origin; direct annotation
+  mutation now invalidates the scene cache.
+
+### License
+- Changed from GPL-3.0-or-later to **Apache-2.0**.
+
+### Downloads
+Windows installers (pick one):
+
+| File | Installer | Notes |
+|---|---|---|
+| `rofd_0.1.6_x64-setup.exe` | NSIS | Standard install wizard, recommended |
+| `rofd_0.1.6_x64_en-US.msi` | MSI | Suited for enterprise bulk deployment |
+
 ## SDK 0.1.6 (@office-rs/rofd)
 
 Rename release: the SDK class and the wasm/Rust interface family move to

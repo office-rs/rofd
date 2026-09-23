@@ -114,13 +114,17 @@ jobs:
             p.version = process.env.VERSION;
             // 2) main/types/exports 指向编译产物。本地开发时仍指向 src/index.ts，
             //    发布时切到 dist 让普通 bundler / node 也能直接消费。
-            p.main = "dist/index.js";
-            p.types = "dist/index.d.ts";
+            p.main = "./dist/index.js";
+            p.types = "./dist/index.d.ts";
             p.exports = {
-              ".": { "types": "dist/index.d.ts", "import": "dist/index.js" }
+              ".": {
+                "types": "./dist/index.d.ts",
+                "import": "./dist/index.js",
+                "default": "./dist/index.js"
+              }
             };
             // 3) 发布到 npm 不需要源码目录，从 files 里去掉 src/ 让包更小。
-            p.files = ["dist"];
+            p.files = ["dist/"];
             fs.writeFileSync("package.json", JSON.stringify(p, null, 2) + "\n");
           '
 
