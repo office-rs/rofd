@@ -10,4 +10,4 @@ Part of [rofd](https://github.com/office-rs/rofd) — OFD (GB/T 33190) view + an
 
 ## License
 
-GPL-3.0-or-later. See [LICENSE](https://github.com/office-rs/rofd/blob/main/LICENSE).
+Apache-2.0. See [LICENSE](https://github.com/office-rs/rofd/blob/main/LICENSE).

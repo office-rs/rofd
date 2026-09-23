@@ -109,4 +109,4 @@ await Ofd.init(container, {
 
 ## License
 
-GPL-3.0-or-later. See [LICENSE](https://github.com/office-rs/rofd/blob/main/LICENSE).
+Apache-2.0. See [LICENSE](https://github.com/office-rs/rofd/blob/main/LICENSE).

@@ -2,7 +2,7 @@
 name = "rofd-dom"
 version = "0.1.0"
 edition = "2021"
-license = "GPL-3.0-or-later"
+license = "Apache-2.0"
 authors = ["ravenq"]
 description = "OFD (GB/T 33190) document model — page body + annotation data structures for the rofd editor."
 repository = "https://github.com/office-rs/rofd"
