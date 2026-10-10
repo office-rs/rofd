@@ -12,7 +12,7 @@
 //!
 //! [`parse_key`] and its tests are NOT cfg-gated - pure Rust, run on native.
 
-use rofd_component::{CreateKind, Key, PointerCursor, Tool};
+use rofd_component::{CreateKind, Key, PointerCursor, Tool, ZoomMode};
 use rofd_dom::{AnnotationKind, ShapeKind};
 
 // ─── parse_key (native + wasm) ───────────────────────────────────────────────
@@ -66,6 +66,27 @@ pub fn parse_tool_kind(kind: &str) -> Tool {
         "line" => Tool::Create(CreateKind::Shape(ShapeKind::Line)),
         "polygon" => Tool::Create(CreateKind::Shape(ShapeKind::Polygon)),
         _ => Tool::Text,
+    }
+}
+
+/// Parse a JS zoom-mode string. Unknown values fall back to `Custom`
+/// (same lenient contract as [`parse_tool_kind`]).
+pub fn parse_zoom_mode(s: &str) -> ZoomMode {
+    match s {
+        "fit-width" => ZoomMode::FitWidth,
+        "fit-height" => ZoomMode::FitHeight,
+        "fit-page" => ZoomMode::FitPage,
+        _ => ZoomMode::Custom,
+    }
+}
+
+/// ZoomMode as the JS-facing string (round-trips [`parse_zoom_mode`]).
+pub fn zoom_mode_str(mode: ZoomMode) -> &'static str {
+    match mode {
+        ZoomMode::Custom => "custom",
+        ZoomMode::FitWidth => "fit-width",
+        ZoomMode::FitHeight => "fit-height",
+        ZoomMode::FitPage => "fit-page",
     }
 }
 
@@ -128,7 +149,7 @@ mod wasm_impl {
 
     use rofd_component::{
         BodyTextSelection, ContextTarget, Modifiers, MouseButton, OfdComponent, OfdConfig,
-        PointerCursor, ScrollDirection, ViewEvent,
+        PointerCursor, ScrollDirection, ViewEvent, ZoomMode,
     };
     use rofd_dom::{AnnotationId, AnnotationSelection, OfdDocument, OfdWarning};
     use rofd_editor::TextCursor;
@@ -136,7 +157,8 @@ mod wasm_impl {
     use wasm_bindgen::prelude::*;
 
     use crate::wasm_ofd::{
-        parse_color, parse_key, parse_markup_kind, parse_tool_kind, pointer_cursor_str,
+        parse_color, parse_key, parse_markup_kind, parse_tool_kind, parse_zoom_mode,
+        pointer_cursor_str, zoom_mode_str,
     };
     use crate::webgpu_render_target::WebGpuRenderTarget;
 
@@ -156,6 +178,7 @@ mod wasm_impl {
         pub on_annotation_interact: Rc<RefCell<Option<js_sys::Function>>>,
         pub on_page_change: Rc<RefCell<Option<js_sys::Function>>>,
         pub on_zoom_change: Rc<RefCell<Option<js_sys::Function>>>,
+        pub on_zoom_mode_change: Rc<RefCell<Option<js_sys::Function>>>,
         pub on_pointer_cursor: Rc<RefCell<Option<js_sys::Function>>>,
         pub on_copy: Rc<RefCell<Option<js_sys::Function>>>,
         pub on_text_selection_change: Rc<RefCell<Option<js_sys::Function>>>,
@@ -273,6 +296,30 @@ mod wasm_impl {
         #[wasm_bindgen(js_name = setOnZoomChange)]
         pub fn set_on_zoom_change(&mut self, callback: Option<js_sys::Function>) {
             *self.callbacks.on_zoom_change.borrow_mut() = callback;
+        }
+
+        /// Register the zoom-mode-change callback. JS receives the new mode
+        /// string ("custom" | "fit-width" | "fit-height" | "fit-page").
+        /// Fired when the mode actually changes: entering via `setZoomMode`,
+        /// or a manual zoom exiting to "custom".
+        #[wasm_bindgen(js_name = setOnZoomModeChange)]
+        pub fn set_on_zoom_mode_change(&mut self, callback: Option<js_sys::Function>) {
+            *self.callbacks.on_zoom_mode_change.borrow_mut() = callback;
+        }
+
+        /// Set the zoom mode ("custom" | "fit-width" | "fit-height" |
+        /// "fit-page"; unknown strings fall back to "custom"). Fit modes
+        /// re-derive on viewport resize / document changes; manual zoom
+        /// exits to "custom".
+        #[wasm_bindgen(js_name = setZoomMode)]
+        pub fn set_zoom_mode(&mut self, mode: &str) {
+            self.component.set_zoom_mode(parse_zoom_mode(mode));
+        }
+
+        /// The current zoom mode string.
+        #[wasm_bindgen(js_name = zoomMode)]
+        pub fn zoom_mode(&self) -> String {
+            zoom_mode_str(self.component.zoom_mode()).to_owned()
         }
 
         /// Register the pointer-cursor callback. JS receives a CSS cursor
@@ -735,6 +782,12 @@ mod wasm_impl {
             self.component.on_zoom_change(Box::new(move |zoom: f64| {
                 call_js1_f64(&on_zoom_change_js, zoom);
             }));
+
+            let on_zoom_mode_change_js = self.callbacks.on_zoom_mode_change.clone();
+            self.component
+                .on_zoom_mode_change(Box::new(move |mode: ZoomMode| {
+                    call_js1_str(&on_zoom_mode_change_js, zoom_mode_str(mode));
+                }));
 
             let on_pointer_cursor_js = self.callbacks.on_pointer_cursor.clone();
             self.component
