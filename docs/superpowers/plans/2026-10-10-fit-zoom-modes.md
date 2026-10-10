@@ -649,8 +649,9 @@ git commit -m "feat(component): ZoomMode 枚举与 on_zoom_mode_change 回调/�
     fn load_document_refits_active_fit_mode() {
         let mut c = fit_width_component(&[(210.0, 297.0)], (780.0, 500.0));
         c.set_zoom_mode(ZoomMode::FitWidth);
-        c.load_document(zoom_fit_doc(&[(100.0, 100.0)]));
-        assert_eq!(c.viewport.zoom, MAX_ZOOM, "100mm page overflows the 300% cap");
+        c.load_document(zoom_fit_doc(&[(50.0, 50.0)]));
+        // 50mm 页：z = 768/50 = 15.36 超过 300% 上限（MAX_ZOOM≈11.34）。
+        assert_eq!(c.viewport.zoom, MAX_ZOOM, "50mm page overflows the 300% cap");
         assert_eq!(c.zoom_mode(), ZoomMode::FitWidth);
     }
 
