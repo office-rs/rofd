@@ -240,6 +240,28 @@ mod tests {
     }
 
     #[test]
+    fn fit_returns_none_for_non_finite_inputs() {
+        // NaN page width and NaN viewport dim each trip an is_finite guard
+        // (alongside the zero-dim cases above).
+        let doc = doc_of(&[(210.0, 297.0)]);
+        let good = vp((780.0, 500.0), 96.0 / 25.4);
+        let nan_page_w = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: f64::NAN,
+            h: 297.0,
+        };
+        assert!(fit_zoom(&doc, &good, &nan_page_w, FitTarget::Width).is_none());
+        assert!(fit_zoom(
+            &doc,
+            &vp((f64::NAN, 500.0), 96.0 / 25.4),
+            &doc.pages[0].physical_box,
+            FitTarget::Width
+        )
+        .is_none());
+    }
+
+    #[test]
     fn fit_agrees_with_scrollbar_layout() {
         // 一致性锚定：应用算出的 z 后，scrollbar_layout 的条出现性与预估一致。
         let doc = doc_of(&[(210.0, 297.0), (210.0, 297.0)]);
@@ -250,8 +272,7 @@ mod tests {
             FitTarget::Width,
         )
         .unwrap();
-        let mut after = vp((780.0, 500.0), z);
-        after.zoom = z;
+        let after = vp((780.0, 500.0), z);
         let layout = scrollbar_layout(&doc, &after);
         assert!(layout.vertical.is_some(), "vertical bar predicted");
         assert!(

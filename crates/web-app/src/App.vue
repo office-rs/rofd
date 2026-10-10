@@ -420,8 +420,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue';
 import { message } from 'ant-design-vue';
 import type { Component } from 'vue';
-import { Ofd, type ZoomMode } from '@office-rs/rofd';
-import type { MarkupKind } from '@office-rs/rofd';
+import { Ofd, type MarkupKind, type ZoomMode } from '@office-rs/rofd';
 import RibbonGroup from './components/RibbonGroup.vue';
 import ToolButton from './components/ToolButton.vue';
 import FileMenu from './components/FileMenu.vue';

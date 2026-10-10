@@ -1710,8 +1710,11 @@ impl OfdComponent {
                     (self.viewport.zoom * factor).clamp(zoom_floor(old_zoom), MAX_ZOOM);
                 self.viewport.scroll =
                     rofd_render::clamp_scroll(self.editor.document(), &self.viewport);
-                // Only fire on_zoom_change if the zoom actually changed (a
-                // factor of 1.0 is a no-op). ZoomAt already has this guard (T2).
+                // Only fire on_zoom_change if the zoom value actually
+                // changed (ZoomAt has the same guard, T2). The fit-mode
+                // exit above is NOT value-gated: any finite factor counts
+                // as manual zoom and fires on_zoom_mode_change even when
+                // the zoom itself cannot move (already at a clamp bound).
                 if (self.viewport.zoom - old_zoom).abs() > f64::EPSILON {
                     self.fire_zoom_change(self.viewport.zoom);
                 }

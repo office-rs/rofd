@@ -123,6 +123,10 @@ pub fn fit_zoom(doc: &OfdDocument, vp: &Viewport, page: &Rect, target: FitTarget
 5. fire `on_zoom_mode_change`（模式实变才 fire；第 4 步 None 挂起也 fire——
    模式确实切换了，UI 高亮需要反映）。
 
+> 终审修正（2026-10-10）：中心锚定的 Y 轴精确公式为
+> `scroll.1' = (gap − c) + (c − gap + scroll.1) · ratio`（绕内容原点而非
+> 视口原点求解，与 page_origin 叠加模型一致）；ZoomAt 同步采用。
+
 #### 3.2.3 退出与 re-fit 触发点
 
 - **退出**：`Zoom` / `ZoomAt` 事件处理器开头，若 `zoom_mode != Custom` → 置

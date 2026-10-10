@@ -997,6 +997,27 @@ mod tests {
     }
 
     #[test]
+    fn parse_zoom_mode_round_trips_all_variants() {
+        for m in [
+            ZoomMode::Custom,
+            ZoomMode::FitWidth,
+            ZoomMode::FitHeight,
+            ZoomMode::FitPage,
+        ] {
+            assert_eq!(parse_zoom_mode(zoom_mode_str(m)), m);
+        }
+    }
+
+    #[test]
+    fn parse_zoom_mode_unknown_falls_back_to_custom() {
+        assert_eq!(parse_zoom_mode("unknown"), ZoomMode::Custom);
+        assert_eq!(parse_zoom_mode(""), ZoomMode::Custom);
+        // Exact match required: no trimming, case-sensitive.
+        assert_eq!(parse_zoom_mode("fit-width "), ZoomMode::Custom);
+        assert_eq!(parse_zoom_mode("Fit-Width"), ZoomMode::Custom);
+    }
+
+    #[test]
     fn parse_color_hex_rrggbb() {
         assert_eq!(parse_color("#ff0000"), rofd_dom::Color::Rgb(255, 0, 0));
         assert_eq!(parse_color("#00ff00"), rofd_dom::Color::Rgb(0, 255, 0));

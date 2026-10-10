@@ -197,7 +197,7 @@ If you're tempted to reintroduce a winit-layer bridge、canvas-origin 记账、�
 - 手术刀字节保留是核心测试；真实样例测试保持 `#[ignore]`：
   - `cargo test -p xilem-app --test c2_save -- --ignored`
 - 渲染用场景结构断言（对象数/类型，非像素）。
-- xilem-view 无头 harness（masonry_testing，9 个）：打字、双击选词、IME、滚轮、ctrl+wheel、Ctrl+C、窗口焦点门控、ctrl+滚轮纯横向、fit 模式命令与退出。
+- xilem-view 无头 harness（masonry_testing，9 个）：打字、双击选词、IME、滚轮、ctrl+wheel、ctrl+wheel 纯横向、Ctrl+C、窗口焦点门控、fit 模式命令与退出。
 
 ---
 

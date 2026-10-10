@@ -1,8 +1,9 @@
 //! Headless integration tests driving `OfdWidget` through
-//! `masonry_testing`'s `TestHarness` (spec §6.2, seven contracts):
+//! `masonry_testing`'s `TestHarness` (spec §6.2, nine contracts):
 //! click-to-edit, double-click word select, IME preedit/commit, plain
-//! wheel, ctrl+wheel ZoomAt accumulation/clamp, drag-select + Ctrl+C,
-//! window-focus caret gating, and fit-mode command + exit.
+//! wheel, ctrl+wheel ZoomAt accumulation/clamp, ctrl+wheel horizontal-only
+//! scroll (no zoom), drag-select + Ctrl+C, window-focus caret gating, and
+//! fit-mode command + exit.
 
 use std::sync::{Arc, Mutex};
 
