@@ -55,13 +55,28 @@
             <ToolButton label="实际大小" tooltip="实际大小 (100%)" @click="setZoomPercent(100)">
               <ActualSizeIcon />
             </ToolButton>
-            <ToolButton label="适应宽度" tooltip="v1 暂未开放" disabled>
+            <ToolButton
+              label="适应宽度"
+              tooltip="适应宽度：当前页宽铺满可视区（Ctrl+滚轮退出）"
+              :active="zoomMode === 'fit-width'"
+              @click="setZoomMode('fit-width')"
+            >
               <FitWidthIcon />
             </ToolButton>
-            <ToolButton label="适应高度" tooltip="v1 暂未开放" disabled>
+            <ToolButton
+              label="适应高度"
+              tooltip="适应高度：当前页高铺满可视区（Ctrl+滚轮退出）"
+              :active="zoomMode === 'fit-height'"
+              @click="setZoomMode('fit-height')"
+            >
               <FitHeightIcon />
             </ToolButton>
-            <ToolButton label="适应页面" tooltip="v1 暂未开放" disabled>
+            <ToolButton
+              label="适应页面"
+              tooltip="适应页面：当前页整页可见（Ctrl+滚轮退出）"
+              :active="zoomMode === 'fit-page'"
+              @click="setZoomMode('fit-page')"
+            >
               <FitPageIcon />
             </ToolButton>
           </RibbonGroup>
@@ -355,7 +370,13 @@
           @custom="openCustomColor"
         />
         <ShapeMenu v-else-if="dropdown.kind === 'shape'" :model-value="activeShape" @select="pickShape" />
-        <ZoomMenu v-else-if="dropdown.kind === 'zoom'" :model-value="zoomPercent" @select="pickZoom" />
+        <ZoomMenu
+          v-else-if="dropdown.kind === 'zoom'"
+          :model-value="zoomPercent"
+          :mode="zoomMode"
+          @select="pickZoom"
+          @fit="setZoomMode"
+        />
         <div v-else-if="dropdown.kind === 'background'" class="dd-bg">
           <button
             v-for="b in DESK_BACKGROUNDS"
@@ -399,7 +420,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue';
 import { message } from 'ant-design-vue';
 import type { Component } from 'vue';
-import { Ofd } from '@office-rs/rofd';
+import { Ofd, type ZoomMode } from '@office-rs/rofd';
 import type { MarkupKind } from '@office-rs/rofd';
 import RibbonGroup from './components/RibbonGroup.vue';
 import ToolButton from './components/ToolButton.vue';
@@ -514,6 +535,7 @@ const squigglyColor = ref('#0000FF');
 const hasTextSelection = ref(false);
 const pageIndex = ref(0);
 const zoom = ref(PX_PER_MM);
+const zoomMode = ref<ZoomMode>('custom');
 const zoomPercent = computed(() => Math.round((zoom.value / PX_PER_MM) * 100));
 const canUndo = ref(false);
 const canRedo = ref(false);
@@ -579,6 +601,11 @@ function zoomBy(factor: number): void {
 function setZoomPercent(percent: number): void {
   const factor = ((percent / 100) * PX_PER_MM) / zoom.value;
   if (factor > 0 && Number.isFinite(factor) && factor !== 1) zoomBy(factor);
+}
+
+/** 进入/退出适应模式（三个适应按钮 + 显示比例下拉）。 */
+function setZoomMode(mode: ZoomMode): void {
+  ofd.value?.setZoomMode(mode);
 }
 
 function scrollPage(direction: 'up' | 'down'): void {
@@ -825,6 +852,9 @@ onMounted(async () => {
       },
       onZoomChange: (z) => {
         zoom.value = z;
+      },
+      onZoomModeChange: (m) => {
+        zoomMode.value = m;
       },
       // 文字选区出现/变化/清除（信号回调）：驱动 markup 按钮禁用态。
       // SDK 将回调推迟到微任务（deferCb），这里可安全回查编辑器。

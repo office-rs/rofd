@@ -66,6 +66,9 @@ interface WasmOfd {
   setOnAnnotationInteract(cb: ((annotationId: string) => void) | null): void;
   setOnPageChange(cb: ((pageIndex: number) => void) | null): void;
   setOnZoomChange(cb: ((zoom: number) => void) | null): void;
+  setZoomMode(mode: string): void;
+  zoomMode(): string;
+  setOnZoomModeChange(cb: ((mode: string) => void) | null): void;
   setOnPointerCursor(cb: ((shape: string) => void) | null): void;
   setOnCopy(cb: ((text: string) => void) | null): void;
   getSelectedText(): string | null;
@@ -89,6 +92,9 @@ export interface FontSource {
 
 /** The four text-markup annotation kinds (actions over a body-text selection). */
 export type MarkupKind = 'highlight' | 'underline' | 'strikeout' | 'squiggly';
+
+/** Viewport zoom mode (适应宽度/高度/页面 state machine). */
+export type ZoomMode = 'custom' | 'fit-width' | 'fit-height' | 'fit-page';
 
 /** Configuration for `Ofd.init`. */
 export interface OfdConfig {
@@ -118,6 +124,12 @@ export interface OfdConfig {
   /** Fired when the viewport zoom changes. Receives the new zoom factor
    * (1.0 = 100%). Only fires when the zoom actually differs. */
   onZoomChange?: (zoom: number) => void;
+  /** Initial zoom mode. Fit modes apply once the viewport is laid out
+   * (the first resize after init). */
+  zoomMode?: Exclude<ZoomMode, 'custom'>;
+  /** Fired when the zoom mode changes (entering a fit mode, or a manual
+   * zoom exiting to 'custom'). Receives the new mode string. */
+  onZoomModeChange?: (mode: ZoomMode) => void;
   /** Fired on Ctrl+C with body text selected (TextSelect tool). Defaults to
    * writing the text to the system clipboard via navigator.clipboard
    * (inside the user-activation window); pass `clipboard: false` and use
@@ -247,6 +259,9 @@ export class Ofd {
     if (config?.onAnnotationInteract) wasmOfd.setOnAnnotationInteract(deferCb(config.onAnnotationInteract));
     if (config?.onPageChange) wasmOfd.setOnPageChange(deferCb(config.onPageChange));
     if (config?.onZoomChange) wasmOfd.setOnZoomChange(deferCb(config.onZoomChange));
+    // The wasm bridge passes zoom_mode_str() values - exactly the ZoomMode
+    // literals - so the string-typed callback safely narrows to ZoomMode.
+    if (config?.onZoomModeChange) wasmOfd.setOnZoomModeChange(deferCb(config.onZoomModeChange as (mode: string) => void));
     if (config?.onTextSelectionChange) wasmOfd.setOnTextSelectionChange(deferCb(config.onTextSelectionChange));
 
     // The wasm side reports CSS cursor names directly
@@ -269,6 +284,12 @@ export class Ofd {
             void navigator.clipboard.writeText(text);
           });
     if (onCopy) wasmOfd.setOnCopy(deferCb(onCopy));
+
+    // Initial zoom mode: recorded now, applied on the first resize below
+    // (the component defers fit until the viewport is laid out).
+    if (config?.zoomMode) {
+      wasmOfd.setZoomMode(config.zoomMode);
+    }
 
     // 7. Create wrapper + bind DOM events.
     const ofd = new Ofd(wasmOfd, canvas);
@@ -588,6 +609,19 @@ export class Ofd {
    * zoom (cursor position = center). */
   handleZoomAt(factor: number, cx: number, cy: number): void {
     this.wasm.handleZoomAt(factor, cx, cy);
+  }
+
+  /** Set the viewport zoom mode: 'fit-width' | 'fit-height' | 'fit-page'
+   * enters a fit mode (re-derived on resize / document changes), 'custom'
+   * exits. Manual zoom (Ctrl+wheel, percent presets) also exits to
+   * 'custom'. */
+  setZoomMode(mode: ZoomMode): void {
+    this.wasm.setZoomMode(mode);
+  }
+
+  /** The current zoom mode string. */
+  zoomMode(): ZoomMode {
+    return this.wasm.zoomMode() as ZoomMode;
   }
 }
 
