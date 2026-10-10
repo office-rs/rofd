@@ -2,7 +2,7 @@
 //! `masonry_testing`'s `TestHarness` (spec §6.2, seven contracts):
 //! click-to-edit, double-click word select, IME preedit/commit, plain
 //! wheel, ctrl+wheel ZoomAt accumulation/clamp, drag-select + Ctrl+C,
-//! and window-focus caret gating.
+//! window-focus caret gating, and fit-mode command + exit.
 
 use std::sync::{Arc, Mutex};
 
@@ -426,4 +426,41 @@ fn window_focus_gates_caret_visibility() {
     harness.process_text_event(TextEvent::WindowFocusChange(true));
     let regained = harness.render();
     assert_eq!(focused, regained, "caret should reappear on refocus");
+}
+
+// 9. Host command drives set_zoom_mode; ZoomModeChanged reaches the host;
+//    ctrl+wheel exits back to Custom.
+#[test]
+fn fit_mode_command_actions_and_exit() {
+    let mut harness = create_harness();
+    run_setup(&mut harness);
+
+    let command: OfdCommand = Arc::new(|c| c.set_zoom_mode(rofd_component::ZoomMode::FitPage));
+    harness.edit_root_widget(|mut w| OfdWidget::with_component(&mut w, &command));
+
+    let actions = drain_actions::<OfdWidgetAction>(&mut harness);
+    assert!(
+        actions.iter().any(|a| matches!(
+            a,
+            OfdWidgetAction::ZoomModeChanged(rofd_component::ZoomMode::FitPage)
+        )),
+        "ZoomModeChanged expected, got {actions:?}"
+    );
+    // 200x200mm 页、800x600 视口：BASE 下页宽 ≈755.9px < 800，无横条
+    // （竖条在场），FitPage z = 600/200 = 3.0（zoom 实变）。
+    let z = zoom_changes(&actions)
+        .pop()
+        .expect("ZoomChanged after entering fit");
+    assert!((z - 600.0 / 200.0).abs() < 1e-9, "fit-page zoom: {z}");
+
+    // Ctrl+wheel exits the mode (and reports Custom).
+    wheel(&mut harness, 120.0, Modifiers::CONTROL);
+    let actions = drain_actions::<OfdWidgetAction>(&mut harness);
+    assert!(
+        actions.iter().any(|a| matches!(
+            a,
+            OfdWidgetAction::ZoomModeChanged(rofd_component::ZoomMode::Custom)
+        )),
+        "ctrl+wheel must exit to Custom, got {actions:?}"
+    );
 }

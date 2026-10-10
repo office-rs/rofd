@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 
 use rofd_component::{
     AnnotationId, AnnotationSelection, BodyTextSelection, ContextTarget, MouseButton, OfdComponent,
-    OfdConfig, OfdWarning, PointerCursor, TextCursor, ViewEvent,
+    OfdConfig, OfdWarning, PointerCursor, TextCursor, ViewEvent, ZoomMode,
 };
 use xilem::masonry::accesskit::{Node, Role};
 use xilem::masonry::core::keyboard::{Key as MasonryKey, KeyState};
@@ -82,6 +82,9 @@ pub enum OfdWidgetAction {
     AnnotationInteract(AnnotationId),
     PageChanged(usize),
     ZoomChanged(f64),
+    /// `on_zoom_mode_change` — the active zoom mode changed (entering a
+    /// fit mode, or a manual zoom exiting to Custom).
+    ZoomModeChanged(ZoomMode),
     TextSelectionChanged(Option<BodyTextSelection>),
     Warnings(Vec<OfdWarning>),
     PointerCursorChanged(PointerCursor),
@@ -216,6 +219,9 @@ impl OfdWidget {
         component.on_page_change(move |idx| queue(&p, OfdWidgetAction::PageChanged(idx)));
         let p = pending.clone();
         component.on_zoom_change(move |factor| queue(&p, OfdWidgetAction::ZoomChanged(factor)));
+        let p = pending.clone();
+        component
+            .on_zoom_mode_change(move |mode| queue(&p, OfdWidgetAction::ZoomModeChanged(mode)));
         let p = pending.clone();
         component.on_text_selection_change(move |sel| {
             queue(&p, OfdWidgetAction::TextSelectionChanged(sel.cloned()))
@@ -578,7 +584,7 @@ mod tests {
 
     #[test]
     fn widget_starts_unfocused() {
-        // Constructing the widget registers 12 callbacks on the component
+        // Constructing the widget registers 13 callbacks on the component
         // and sends an initial FocusLost. The invariant that matters is
         // the focus mirror: no caret until the widget is focused.
         let widget = OfdWidget::new(OfdConfig::new(Arc::new(vec![])));

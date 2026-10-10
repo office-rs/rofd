@@ -21,7 +21,7 @@ use std::marker::PhantomData;
 
 use rofd_component::{
     AnnotationId, AnnotationSelection, BodyTextSelection, ContextTarget, OfdConfig, OfdWarning,
-    TextCursor,
+    TextCursor, ZoomMode,
 };
 use xilem::core::{MessageCtx, MessageResult, Mut, View, ViewMarker};
 use xilem::{Pod, ViewCtx};
@@ -48,6 +48,7 @@ pub struct OfdView<State> {
     on_annotation_interact: Option<Handler<State, AnnotationId>>,
     on_page_change: Option<Handler<State, usize>>,
     on_zoom_change: Option<Handler<State, f64>>,
+    on_zoom_mode_change: Option<Handler<State, ZoomMode>>,
     on_text_selection_change: Option<Handler<State, Option<BodyTextSelection>>>,
     on_warnings: Option<Handler<State, Vec<OfdWarning>>>,
     phantom: PhantomData<fn() -> State>,
@@ -75,6 +76,7 @@ pub fn ofd_with_config<State: 'static>(
         on_annotation_interact: None,
         on_page_change: None,
         on_zoom_change: None,
+        on_zoom_mode_change: None,
         on_text_selection_change: None,
         on_warnings: None,
         phantom: PhantomData,
@@ -142,6 +144,14 @@ impl<State: 'static> OfdView<State> {
 
     pub fn on_zoom_change(mut self, f: impl Fn(&mut State, f64) + Send + Sync + 'static) -> Self {
         self.on_zoom_change = Some(Box::new(f));
+        self
+    }
+
+    pub fn on_zoom_mode_change(
+        mut self,
+        f: impl Fn(&mut State, ZoomMode) + Send + Sync + 'static,
+    ) -> Self {
+        self.on_zoom_mode_change = Some(Box::new(f));
         self
     }
 
@@ -265,6 +275,12 @@ impl<State: 'static> View<State, (), ViewCtx> for OfdView<State> {
             OfdWidgetAction::ZoomChanged(zoom) => {
                 if let Some(f) = &self.on_zoom_change {
                     f(app_state, zoom);
+                    handled = true;
+                }
+            }
+            OfdWidgetAction::ZoomModeChanged(mode) => {
+                if let Some(f) = &self.on_zoom_mode_change {
+                    f(app_state, mode);
                     handled = true;
                 }
             }
