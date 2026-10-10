@@ -1787,14 +1787,19 @@ impl OfdComponent {
                 self.viewport.zoom =
                     (self.viewport.zoom * factor).clamp(zoom_floor(old_zoom), MAX_ZOOM);
                 // Adjust scroll so the `center` viewport point maps to the
-                // same document position before and after zoom. Derivation:
-                // doc_pos = (viewport_pt - scroll) / old_zoom; after zoom,
-                // viewport_pt = doc_pos * new_zoom + new_scroll. Solving for
-                // new_scroll: new_scroll = center - (center - old_scroll) *
-                // (new_zoom / old_zoom).
+                // same document position before and after zoom. X solves in
+                // the overflow regime (`viewport_x = scroll.0 +
+                // doc_x·zoom`): new_scroll.0 = center.0 − (center.0 −
+                // scroll.0)·ratio. Y must solve about the content origin
+                // instead, because the page stack is offset by the gap
+                // (`viewport_y = gap − scroll.1 + doc_y·zoom`, page_origin):
+                // new_scroll.1 = (gap − center.1) + (center.1 − gap +
+                // scroll.1)·ratio (anchored_scroll_y).
                 let ratio = self.viewport.zoom / old_zoom;
+                let scroll_y = self.viewport.scroll.1;
                 self.viewport.scroll.0 = center.0 - (center.0 - self.viewport.scroll.0) * ratio;
-                self.viewport.scroll.1 = center.1 - (center.1 - self.viewport.scroll.1) * ratio;
+                self.viewport.scroll.1 =
+                    anchored_scroll_y(scroll_y, center.1, ratio, self.viewport.page_gap);
                 self.viewport.scroll =
                     rofd_render::clamp_scroll(self.editor.document(), &self.viewport);
                 if (self.viewport.zoom - old_zoom).abs() > f64::EPSILON {
@@ -2276,12 +2281,16 @@ impl OfdComponent {
         if page_top {
             self.scroll_page_to_top(idx);
         } else {
-            // Center anchor (ZoomAt's math): keep the viewport-center
-            // document position fixed across the zoom change.
+            // Center anchor (ZoomAt's math): keep the document point under
+            // the viewport center fixed across the zoom change. X solves in
+            // the overflow regime; Y solves about the content origin (the
+            // gap-offset stacking model — anchored_scroll_y).
             let center = (self.viewport.size.0 / 2.0, self.viewport.size.1 / 2.0);
             let ratio = z / old_zoom;
+            let scroll_y = self.viewport.scroll.1;
             self.viewport.scroll.0 = center.0 - (center.0 - self.viewport.scroll.0) * ratio;
-            self.viewport.scroll.1 = center.1 - (center.1 - self.viewport.scroll.1) * ratio;
+            self.viewport.scroll.1 =
+                anchored_scroll_y(scroll_y, center.1, ratio, self.viewport.page_gap);
         }
         self.viewport.scroll = rofd_render::clamp_scroll(self.editor.document(), &self.viewport);
         if (self.viewport.zoom - old_zoom).abs() > f64::EPSILON {
@@ -2565,6 +2574,15 @@ fn zoom_floor(old_zoom: f64) -> f64 {
     } else {
         MIN_ZOOM
     }
+}
+
+/// Zoom-anchored Y scroll update: keep the document point under viewport
+/// Y `c` fixed across a zoom change (`ratio` = new/old). The stacking
+/// model is `viewport_y = gap − scroll.1 + doc_y·zoom` (page_origin), so
+/// the anchor solves about the content origin, not the viewport origin
+/// (终审修正 of spec 2026-10-10 §3.2.2's "同 ZoomAt 数学" citation).
+fn anchored_scroll_y(scroll_y: f64, c: f64, ratio: f64, gap: f64) -> f64 {
+    (gap - c) + (c - gap + scroll_y) * ratio
 }
 
 /// Map an in-progress [`DragState`] to a renderable [`DragPreview`].
@@ -3660,6 +3678,38 @@ mod tests {
         assert_eq!(*zoom_fired.lock().unwrap(), Some(768.0 / 210.0));
     }
 
+    /// D5 end-to-end: a fit mode in `OfdConfig` beats `with_zoom` once the
+    /// viewport is laid out — the explicit zoom is only the pending initial
+    /// value, and the first `set_viewport_size` applies the fit (firing
+    /// `on_zoom_change` with the fitted value).
+    #[test]
+    fn config_zoom_mode_fit_overrides_pending_initial_zoom() {
+        let config = OfdConfig::new(Arc::new(vec![]))
+            .with_zoom(PX_PER_MM * 2.0)
+            .with_zoom_mode(ZoomMode::FitWidth);
+        let mut c = OfdComponent::new(config);
+        let zoom_fired = Arc::new(Mutex::new(None));
+        let zf = zoom_fired.clone();
+        c.on_zoom_change(move |z| *zf.lock().unwrap() = Some(z));
+        c.load_document(zoom_fit_doc(&[(210.0, 297.0)]));
+        assert_eq!(
+            c.viewport.zoom,
+            PX_PER_MM * 2.0,
+            "with_zoom is the pending initial before layout"
+        );
+        assert!(
+            zoom_fired.lock().unwrap().is_none(),
+            "no zoom fire while the viewport is 0x0"
+        );
+        c.set_viewport_size(780.0, 500.0);
+        assert!(
+            (c.viewport.zoom - 768.0 / 210.0).abs() < 1e-9,
+            "fit wins over the pending 200% initial (D5): {}",
+            c.viewport.zoom
+        );
+        assert_eq!(*zoom_fired.lock().unwrap(), Some(768.0 / 210.0));
+    }
+
     #[test]
     fn fit_page_scrolls_reference_page_to_top() {
         let mut c = fit_width_component(&[(210.0, 297.0), (210.0, 297.0)], (780.0, 500.0));
@@ -3685,20 +3735,48 @@ mod tests {
 
     #[test]
     fn fit_width_keeps_viewport_center_anchored() {
+        // TRUE geometric invariant (inverse of page_origin's stacking model
+        // `viewport_y = gap − scroll.1 + doc_y·zoom`): the stacked document
+        // Y under the viewport center, `doc_y = (center_y − gap +
+        // scroll.1) / zoom`, survives the fit zoom change. Fixture: A4,
+        // viewport 780×500, zoom MAX_ZOOM, scroll y 600 — the exact anchor
+        // target ≈ 37.7 sits inside the clamp bounds [0, 626.2], so no
+        // clamping interferes. (ratio = (768/210)/MAX_ZOOM ≈ 0.3225;
+        // y' = (20 − 250) + (250 − 20 + 600)·ratio ≈ 37.71.)
         let mut c = fit_width_component(&[(210.0, 297.0)], (780.0, 500.0));
         c.viewport.zoom = MAX_ZOOM;
-        c.handle_event(&ViewEvent::Scroll { dx: 0.0, dy: 300.0 });
-        let center_y = c.viewport.size.1 / 2.0;
-        // Fit preserves ZoomAt's anchor invariant (center - scroll)/zoom
-        // (spec D4: 同 ZoomAt 数学). The post-fit scroll (~266.1) sits inside
-        // the clamp bounds, so the anchor holds exactly.
-        let anchor_before = (center_y - c.viewport.scroll.1) / c.viewport.zoom;
-        c.set_zoom_mode(ZoomMode::FitWidth);
-        let anchor_after = (center_y - c.viewport.scroll.1) / c.viewport.zoom;
-        assert!(
-            (anchor_after - anchor_before).abs() < 1e-9,
-            "center anchor: {anchor_after} vs {anchor_before}"
+        c.handle_event(&ViewEvent::Scroll { dx: 0.0, dy: 600.0 });
+        assert_eq!(
+            c.viewport.scroll.1, 600.0,
+            "600 is inside y_max at MAX_ZOOM"
         );
+        let center_y = c.viewport.size.1 / 2.0;
+        let gap = c.viewport.page_gap;
+        let doc_y_before = (center_y - gap + c.viewport.scroll.1) / c.viewport.zoom;
+        c.set_zoom_mode(ZoomMode::FitWidth);
+        let doc_y_after = (center_y - gap + c.viewport.scroll.1) / c.viewport.zoom;
+        assert!(
+            (doc_y_after - doc_y_before).abs() < 1e-9,
+            "content-origin anchor: {doc_y_after} vs {doc_y_before}"
+        );
+    }
+
+    #[test]
+    fn fit_width_from_document_top_stays_at_top() {
+        // Fresh view at the document top (scroll y 0): the exact anchor's
+        // target (gap − center)·(1 − ratio) = −230·0.0324 ≈ −7.4 is
+        // negative (zoom shrinks 3.78 → 3.66), so clamp_scroll pins it to
+        // 0 — the top of the document stays put.
+        let mut c = fit_width_component(&[(210.0, 297.0)], (780.0, 500.0));
+        assert_eq!(c.viewport.scroll.1, 0.0);
+        c.set_zoom_mode(ZoomMode::FitWidth);
+        assert_eq!(
+            c.viewport.scroll.1, 0.0,
+            "document top stays anchored at the region top"
+        );
+        // The fit zoom actually applied (the anchor is meaningful, not a
+        // no-op because apply_fit bailed).
+        assert!((c.viewport.zoom - 768.0 / 210.0).abs() < 1e-9);
     }
 
     #[test]
@@ -5056,7 +5134,7 @@ mod tests {
         let mut c = component_with_note();
         c.viewport.zoom = 1.0;
         c.viewport.size = (400.0, 200.0);
-        c.viewport.scroll = (0.0, 150.0);
+        c.viewport.scroll = (0.0, 20.0);
         let center = (0.0, 100.0);
         let outcome = c.handle_event(&ViewEvent::ZoomAt {
             factor: 2.0,
@@ -5064,11 +5142,20 @@ mod tests {
         });
         assert!(outcome.needs_repaint);
         assert!((c.viewport.zoom - 2.0).abs() < 0.01);
-        // Anchor math gives y = 100 - (100-150)*2 = 200; after zoom the content
-        // is 400 tall, two-pass region 388x188, y_max 212 -> 200 stays in
-        // bounds. x pins to 0 (x_margin 6, anchor x 0 -> 0).
+        // Y anchor solves about the content origin (page_origin model
+        // `viewport_y = gap − scroll.1 + doc_y·zoom`, gap 0 fixture):
+        // y' = (0 − 100) + (100 − 0 + 20)·2 = 140. After zoom the content is
+        // 400 tall, two-pass region 388x188, y_max 212 -> 140 stays in
+        // bounds, so the anchor holds exactly: doc_y under the center =
+        // (100 + scroll.1)/zoom = 120 before and after. x pins to 0
+        // (x_margin 6, anchor x 0 -> 0).
         assert!((c.viewport.scroll.0 - 0.0).abs() < 0.01);
-        assert!((c.viewport.scroll.1 - 200.0).abs() < 0.01);
+        assert!((c.viewport.scroll.1 - 140.0).abs() < 0.01);
+        let doc_y = (center.1 - c.viewport.page_gap + c.viewport.scroll.1) / c.viewport.zoom;
+        assert!(
+            (doc_y - 120.0).abs() < 1e-9,
+            "center doc position stable: {doc_y}"
+        );
     }
 
     #[test]
