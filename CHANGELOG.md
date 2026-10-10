@@ -5,6 +5,11 @@ follow the git tags published to GitHub Releases (`vX.Y.Z`); the npm SDK
 `@office-rs/rofd` is versioned on its own track, documented under
 `SDK X.Y.Z` headings.
 
+## Unreleased
+
+### Added
+- 适应宽度 / 适应高度 / 适应页面缩放模式：`set_zoom_mode` 组件 API、SDK `zoomMode`/`setZoomMode`、web 与 native 工具栏按钮；resize/换文档自动重适配，手动缩放退出；fit 可低于 25%（下限 5%）
+
 ## v0.1.6
 
 This is the **masonry/xilem rewrite + final naming** release: the winit

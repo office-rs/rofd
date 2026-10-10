@@ -182,7 +182,7 @@ Key contracts:
 3. **有效焦点** = widget 键盘焦点 ∧ 窗口焦点；组件出生未聚焦（首次点击前 caret 隐藏）。`Ime::Disabled → FocusLost` 强制提交 preedit，带防御性 regain。
 4. **IME**：`accepts_text_input` 自动起停 session；每个触点末尾从 `caret_rect()` 刷新 `set_ime_area`。
 5. **剪贴板**：Ctrl+V = `TextEvent::ClipboardPaste` → `paste_text`；Ctrl+C 在 widget 拦截经 `ctx.set_clipboard` 写出。Ctrl+X 在 rofd 为 copy-only（运行期 body 只读、无 selection extent，绝不删除）；宿主菜单无 Cut 项。
-6. **Zoom（rofd 有意差异，无镜像）**：组件 viewport 直接乘法缩放（`zoom *= factor`，基线 `PX_PER_MM = 96/25.4`）；ctrl+wheel 发 `ZoomAt{factor, center}`（×1.1 / ×0.9，center = 指针视口位置），钳制 `[PX_PER_MM×0.25, PX_PER_MM×3.0]`。宿主/widget 不保留 f32 zoom 镜像。
+6. **Zoom（rofd 有意差异，无镜像）**：组件 viewport 直接乘法缩放（`zoom *= factor`，基线 `PX_PER_MM = 96/25.4`）；ctrl+wheel 发 `ZoomAt{factor, center}`（×1.1 / ×0.9，center = 指针视口位置），钳制 `[PX_PER_MM×0.25, PX_PER_MM×3.0]`。宿主/widget 不保留 f32 zoom 镜像。fit 缩放模式（适应宽度/高度/页面，spec 2026-10-10）：`set_zoom_mode(ZoomMode)`，基准页=当前页；resize/换文档自动重适配、翻页不重适配；手动缩放退出回 Custom 并 fire `on_zoom_mode_change`。fit 结果钳 `[FIT_MIN_ZOOM, MAX_ZOOM]`（5%~300%）；手动缩放下限动态——zoom 已低于 25% 时下限放宽到 5%（防上拽）。
 7. **Blink**：`on_anim_frame` 在聚焦期间保活动画；500ms 时序归组件 `tick_blink`（单调 Instant）。
 8. **Scroll**：wheel 事件 set_handled——滚动与自绘滚动条归组件；无 portal、无 CANVAS_CONTENT_HEIGHT。
 9. **无障碍**：`Role::Document`。
@@ -197,7 +197,7 @@ If you're tempted to reintroduce a winit-layer bridge、canvas-origin 记账、�
 - 手术刀字节保留是核心测试；真实样例测试保持 `#[ignore]`：
   - `cargo test -p xilem-app --test c2_save -- --ignored`
 - 渲染用场景结构断言（对象数/类型，非像素）。
-- xilem-view 无头 harness（masonry_testing，7 个）：打字、双击选词、IME、滚轮、ctrl+wheel、Ctrl+C、窗口焦点门控。
+- xilem-view 无头 harness（masonry_testing，9 个）：打字、双击选词、IME、滚轮、ctrl+wheel、Ctrl+C、窗口焦点门控、ctrl+滚轮纯横向、fit 模式命令与退出。
 
 ---
 
