@@ -7,6 +7,7 @@ pub mod ofd_component;
 pub mod preedit;
 pub mod render_target;
 pub mod tooltip_text;
+pub mod zoom_mode;
 
 pub use callbacks::{Callbacks, ContextTarget, PointerCursor, TooltipFormatter};
 pub use config::OfdConfig;
@@ -14,6 +15,7 @@ pub use event::{EventOutcome, Key, Modifiers, MouseButton, ScrollDirection, View
 pub use ofd_component::{CreateKind, OfdComponent, Tool};
 pub use render_target::RenderTarget;
 pub use tooltip_text::{default_tooltip_lines, format_tooltip_datetime};
+pub use zoom_mode::ZoomMode;
 
 // Re-exported so adapters can name the types in widget actions / callbacks
 // without taking direct rofd-render / rofd-dom / rofd-editor dependencies.

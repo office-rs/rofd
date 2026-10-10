@@ -13,6 +13,7 @@ use crate::callbacks::{Callbacks, ContextTarget, PointerCursor};
 use crate::config::OfdConfig;
 use crate::event::EventOutcome;
 use crate::render_target::RenderTarget;
+use crate::zoom_mode::ZoomMode;
 
 /// The annotation kinds that CAN be a drag-create tool. Markup kinds are
 /// deliberately absent: markup is a command over the body-text selection
@@ -192,6 +193,10 @@ pub struct OfdComponent {
     /// document loaded. Updated after Scroll/Resize; when it changes,
     /// `on_page_change` fires. T4.
     pub(crate) current_page: Option<usize>,
+    /// Active zoom mode (适应宽度/高度/页面 state machine, spec 2026-10-10
+    /// §3.2). Custom = ordinary multiplicative zoom; fit modes re-derive on
+    /// viewport/document changes and any manual zoom exits to Custom.
+    pub(crate) zoom_mode: ZoomMode,
     /// Color used when a Highlight markup is applied
     /// ([`Self::apply_markup`]). Defaults to yellow (`DEFAULT_HIGHLIGHT_COLOR`);
     /// the host can override via [`Self::set_highlight_color`]
@@ -260,6 +265,7 @@ impl OfdComponent {
             hover: None,
             text_selection: None,
             current_page: None,
+            zoom_mode: config.zoom_mode,
             highlight_color: DEFAULT_HIGHLIGHT_COLOR,
             underline_color: DEFAULT_MARKUP_COLOR,
             strikeout_color: DEFAULT_MARKUP_COLOR,
@@ -2230,6 +2236,14 @@ impl OfdComponent {
         }
     }
 
+    /// Fire `on_zoom_mode_change` with the new mode. Called after
+    /// `self.zoom_mode` is updated (set_zoom_mode, manual-zoom exit).
+    fn fire_zoom_mode_change(&self, mode: ZoomMode) {
+        if let Some(cb) = &self.callbacks.on_zoom_mode_change {
+            cb(mode);
+        }
+    }
+
     /// Fire `on_warning` with the given warnings. Called by the host / adapter
     /// layer after `parse_ofd` returns a `LoadReport` with
     /// warnings - the component itself is io-free and never parses, so it never
@@ -2397,6 +2411,34 @@ impl OfdComponent {
     #[cfg(target_arch = "wasm32")]
     pub fn on_zoom_change(&mut self, cb: impl Fn(f64) + 'static) {
         self.callbacks.on_zoom_change = Some(Box::new(cb));
+    }
+
+    /// The active zoom mode (spec 2026-10-10 §3.2).
+    pub fn zoom_mode(&self) -> ZoomMode {
+        self.zoom_mode
+    }
+
+    /// Set the zoom mode (适应宽度/高度/页面). Same-value calls are no-ops.
+    /// Entering a fit mode recomputes the zoom for the current page; when
+    /// the viewport is not laid out yet (or the document is empty) the mode
+    /// is recorded and applied at the next viewport size change.
+    pub fn set_zoom_mode(&mut self, mode: ZoomMode) {
+        if mode == self.zoom_mode {
+            return;
+        }
+        self.zoom_mode = mode;
+        // fit application lands in the next commit; this one records +
+        // fires the mode transition only.
+        self.fire_zoom_mode_change(mode);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn on_zoom_mode_change(&mut self, cb: impl Fn(ZoomMode) + 'static + Send) {
+        self.callbacks.on_zoom_mode_change = Some(Box::new(cb));
+    }
+    #[cfg(target_arch = "wasm32")]
+    pub fn on_zoom_mode_change(&mut self, cb: impl Fn(ZoomMode) + 'static) {
+        self.callbacks.on_zoom_mode_change = Some(Box::new(cb));
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -4634,6 +4676,38 @@ mod tests {
         assert!(
             !*fired.lock().unwrap(),
             "zoom_change must not fire when factor=1.0 (no zoom change)"
+        );
+    }
+
+    // --- 2026-10-10 fit zoom modes（spec 2026-10-10 §3.2）---
+
+    #[test]
+    fn set_zoom_mode_records_and_fires_mode_change() {
+        let fired = Arc::new(Mutex::new(None));
+        let f = fired.clone();
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
+        c.on_zoom_mode_change(move |m| {
+            *f.lock().unwrap() = Some(m);
+        });
+        c.set_zoom_mode(ZoomMode::FitWidth);
+        assert_eq!(c.zoom_mode(), ZoomMode::FitWidth);
+        assert_eq!(*fired.lock().unwrap(), Some(ZoomMode::FitWidth));
+    }
+
+    #[test]
+    fn set_zoom_mode_same_value_is_noop() {
+        let fired = Arc::new(Mutex::new(0));
+        let f = fired.clone();
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
+        c.on_zoom_mode_change(move |_m| {
+            *f.lock().unwrap() += 1;
+        });
+        c.set_zoom_mode(ZoomMode::FitPage);
+        c.set_zoom_mode(ZoomMode::FitPage);
+        assert_eq!(
+            *fired.lock().unwrap(),
+            1,
+            "same-value call must not re-fire"
         );
     }
 

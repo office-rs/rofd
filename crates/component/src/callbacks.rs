@@ -1,11 +1,14 @@
 use rofd_dom::{Annotation, AnnotationId, OfdDocument, OfdWarning};
 use rofd_editor::{AnnotationSelection, TextCursor};
 
+use crate::zoom_mode::ZoomMode;
+
 // The callback types. on_change passes &OfdDocument; on_selection_change
 // passes &AnnotationSelection; on_cursor_change passes Option<&TextCursor>;
 // on_save_request passes (); on_annotation_focus/on_annotation_interact pass
 // &AnnotationId; on_context_menu passes ((f64,f64), ContextTarget);
-// on_page_change passes usize; on_zoom_change passes f64; on_warning passes
+// on_page_change passes usize; on_zoom_change passes f64; on_zoom_mode_change
+// passes ZoomMode; on_warning passes
 // &[OfdWarning]; on_pointer_cursor passes PointerCursor; on_copy passes
 // String (the selected body text); on_text_selection_change passes
 // Option<&rofd_render::BodyTextSelection>.
@@ -36,6 +39,8 @@ pub type OnPageChange = dyn Fn(usize) + Send;
 #[cfg(not(target_arch = "wasm32"))]
 pub type OnZoomChange = dyn Fn(f64) + Send;
 #[cfg(not(target_arch = "wasm32"))]
+pub type OnZoomModeChange = dyn Fn(ZoomMode) + Send;
+#[cfg(not(target_arch = "wasm32"))]
 pub type OnPointerCursor = dyn Fn(PointerCursor) + Send;
 #[cfg(not(target_arch = "wasm32"))]
 pub type OnTextSelectionChange = dyn Fn(Option<&rofd_render::BodyTextSelection>) + Send;
@@ -63,6 +68,8 @@ pub type OnContextMenu = dyn Fn((f64, f64), ContextTarget);
 pub type OnPageChange = dyn Fn(usize);
 #[cfg(target_arch = "wasm32")]
 pub type OnZoomChange = dyn Fn(f64);
+#[cfg(target_arch = "wasm32")]
+pub type OnZoomModeChange = dyn Fn(ZoomMode);
 #[cfg(target_arch = "wasm32")]
 pub type OnPointerCursor = dyn Fn(PointerCursor);
 #[cfg(target_arch = "wasm32")]
@@ -118,6 +125,7 @@ pub struct Callbacks {
     pub on_context_menu: Option<Box<OnContextMenu>>,
     pub on_page_change: Option<Box<OnPageChange>>,
     pub on_zoom_change: Option<Box<OnZoomChange>>,
+    pub on_zoom_mode_change: Option<Box<OnZoomModeChange>>,
     pub on_pointer_cursor: Option<Box<OnPointerCursor>>,
     pub on_text_selection_change: Option<Box<OnTextSelectionChange>>,
     pub on_warning: Option<Box<OnWarning>>,
