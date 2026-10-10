@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use rfd::FileDialog;
-use rofd_component::{ContextTarget, CreateKind, OfdConfig, Tool};
+use rofd_component::{ContextTarget, CreateKind, OfdConfig, Tool, ViewEvent, ZoomMode};
 use rofd_dom::{AnnotationId, AnnotationKind, ShapeKind};
 use rofd_io::PackageHandle;
 use rofd_xilem_view::{command_queue, ofd_with_config, OfdCommandQueue, OfdContextMenu};
@@ -27,6 +27,10 @@ use xilem::{EventLoop, WidgetView, WindowOptions, Xilem};
 use xilem_app::host;
 
 const BTN_PAD: Padding = Padding::from_vh(Length::ZERO, Length::const_px(6.0));
+
+/// viewport.zoom 的基数（96 DPI，mm→px）。xilem-app 不依赖 rofd-render，
+/// 显示百分比在宿主本地换算（与 web App.vue 的 PX_PER_MM 同法）。
+const PX_PER_MM: f64 = 96.0 / 25.4;
 
 /// Push a host command onto the host→widget channel.
 fn push(app: &mut AppState, f: impl Fn(&mut rofd_component::OfdComponent) + Send + Sync + 'static) {
@@ -61,6 +65,29 @@ fn markup_button(
     .padding(BTN_PAD)
     .border_width(Length::ZERO)
     .corner_radius(Length::const_px(2.0))
+}
+
+/// 适应模式按钮：active 时底色高亮（复用 web 端选中蓝底）。
+fn zoom_mode_button(
+    label: &str,
+    mode: ZoomMode,
+    active: bool,
+) -> impl WidgetView<AppState> + use<'_> {
+    let bg = if active {
+        Color::from_rgb8(227, 240, 252)
+    } else {
+        Color::from_rgba8(0, 0, 0, 0)
+    };
+    sized_box(
+        text_button(label, move |app: &mut AppState| {
+            let m = mode;
+            push(app, move |c| c.set_zoom_mode(m));
+        })
+        .padding(BTN_PAD)
+        .border_width(Length::ZERO)
+        .corner_radius(Length::const_px(2.0)),
+    )
+    .background_color(bg)
 }
 
 /// Open right-click overlay state, in ofd-widget-local (= zstack-local)
@@ -98,6 +125,11 @@ struct AppState {
     warnings: Vec<rofd_dom::OfdWarning>,
     /// Open context-menu overlay, if any.
     context_menu: Option<ContextMenuState>,
+    /// Current viewport zoom (mirror of on_zoom_change; drives the percent
+    /// label and the 100% factor).
+    zoom: f64,
+    /// Active zoom mode (mirror of on_zoom_mode_change; button highlight).
+    zoom_mode: ZoomMode,
 }
 
 impl AppState {
@@ -112,6 +144,8 @@ impl AppState {
             has_selection: false,
             warnings: Vec::new(),
             context_menu: None,
+            zoom: PX_PER_MM,
+            zoom_mode: ZoomMode::Custom,
         };
         // Default assembly (AGENTS §4.9): clock + UTC tooltip formatter,
         // zero extra host code. Empty default font: system fallback.
@@ -294,7 +328,74 @@ fn app_logic(app: &mut AppState) -> impl WidgetView<AppState> + use<> {
     ))
     .gap(Length::const_px(8.0));
 
-    let menu_bar = sized_box(flex_col((file_row, tool_row)))
+    // --- zoom row（缩放按钮组，spec D3）---
+    let zoom_percent = ((app.zoom / PX_PER_MM) * 100.0).round() as i32;
+    let btn_zoom_out = text_button("缩小", |app: &mut AppState| {
+        push(app, |c| {
+            c.handle_event(&ViewEvent::Zoom { factor: 0.9 });
+        });
+    })
+    .padding(BTN_PAD)
+    .border_width(Length::ZERO)
+    .corner_radius(Length::const_px(2.0));
+    let percent_label = format!("{zoom_percent}%");
+    // text_button 接受 impl Into<ArcStr>：直接传 String 取得所有权——
+    // 不要传 `percent_label.as_str()`（借用在 app_logic 返回后悬垂）。
+    let btn_zoom_label = text_button(percent_label, |app: &mut AppState| {
+        // 点击回 100%：按宿主镜像算倍率（Zoom 事件同样退出 fit 模式）。
+        let factor = PX_PER_MM / app.zoom;
+        push(app, move |c| {
+            c.handle_event(&ViewEvent::Zoom { factor });
+        });
+    })
+    .padding(BTN_PAD)
+    .border_width(Length::ZERO)
+    .corner_radius(Length::const_px(2.0));
+    let btn_zoom_in = text_button("放大", |app: &mut AppState| {
+        push(app, |c| {
+            c.handle_event(&ViewEvent::Zoom { factor: 1.1 });
+        });
+    })
+    .padding(BTN_PAD)
+    .border_width(Length::ZERO)
+    .corner_radius(Length::const_px(2.0));
+    let btn_actual_size = text_button("实际大小", |app: &mut AppState| {
+        let factor = PX_PER_MM / app.zoom;
+        push(app, move |c| {
+            c.handle_event(&ViewEvent::Zoom { factor });
+        });
+    })
+    .padding(BTN_PAD)
+    .border_width(Length::ZERO)
+    .corner_radius(Length::const_px(2.0));
+
+    let btn_fit_width = zoom_mode_button(
+        "适应宽度",
+        ZoomMode::FitWidth,
+        app.zoom_mode == ZoomMode::FitWidth,
+    );
+    let btn_fit_height = zoom_mode_button(
+        "适应高度",
+        ZoomMode::FitHeight,
+        app.zoom_mode == ZoomMode::FitHeight,
+    );
+    let btn_fit_page = zoom_mode_button(
+        "适应页面",
+        ZoomMode::FitPage,
+        app.zoom_mode == ZoomMode::FitPage,
+    );
+    let zoom_row = flex_row((
+        btn_zoom_out,
+        btn_zoom_label,
+        btn_zoom_in,
+        btn_actual_size,
+        btn_fit_width,
+        btn_fit_height,
+        btn_fit_page,
+    ))
+    .gap(Length::const_px(2.0));
+
+    let menu_bar = sized_box(flex_col((file_row, tool_row, zoom_row)))
         .padding(Padding::from_vh(
             Length::const_px(2.0),
             Length::const_px(4.0),
@@ -304,6 +405,8 @@ fn app_logic(app: &mut AppState) -> impl WidgetView<AppState> + use<> {
     // --- editor: ofd view with the component callback surface mapped ---
     let editor = ofd_with_config(app.commands.clone(), OfdConfig::new(Arc::new(vec![])))
         .on_change(|app: &mut AppState| app.modified = true)
+        .on_zoom_change(|app: &mut AppState, z| app.zoom = z)
+        .on_zoom_mode_change(|app: &mut AppState, m| app.zoom_mode = m)
         .on_text_selection_change(|app, sel| app.has_selection = sel.is_some())
         .on_save_request(do_save)
         // Any cursor movement dismisses the popup. In rofd, right-click does
