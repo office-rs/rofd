@@ -42,6 +42,10 @@ mod tests {
             Some(rofd_render::FitTarget::Width)
         );
         assert_eq!(
+            ZoomMode::FitHeight.fit_target(),
+            Some(rofd_render::FitTarget::Height)
+        );
+        assert_eq!(
             ZoomMode::FitPage.fit_target(),
             Some(rofd_render::FitTarget::Page)
         );

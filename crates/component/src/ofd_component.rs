@@ -6,7 +6,8 @@ use rofd_dom::{
 };
 use rofd_editor::{Editor, TextCursor};
 use rofd_render::{
-    DragPreview, FontStore, HandlePos, RenderEngine, Scene, Viewport, MAX_ZOOM, MIN_ZOOM,
+    DragPreview, FontStore, HandlePos, RenderEngine, Scene, Viewport, FIT_MIN_ZOOM, MAX_ZOOM,
+    MIN_ZOOM,
 };
 
 use crate::callbacks::{Callbacks, ContextTarget, PointerCursor};
@@ -333,6 +334,7 @@ impl OfdComponent {
         // different page count/layout, so the stale index must not persist
         // (it is recomputed on the next Scroll/Resize via maybe_fire_page_change).
         self.current_page = None;
+        self.apply_fit(false);
         self.mark_scene_dirty();
     }
 
@@ -349,6 +351,7 @@ impl OfdComponent {
         self.font_store = Some(self.build_font_store());
         self.modified = false;
         self.current_page = None;
+        self.apply_fit(false);
         self.mark_scene_dirty();
     }
 
@@ -1009,6 +1012,7 @@ impl OfdComponent {
         }
         self.viewport.size = (width, height);
         self.viewport.scroll = rofd_render::clamp_scroll(self.editor.document(), &self.viewport);
+        self.apply_fit(false);
         self.maybe_fire_page_change();
         self.mark_scene_dirty();
     }
@@ -1700,8 +1704,10 @@ impl OfdComponent {
                         needs_repaint: false,
                     };
                 }
+                self.exit_fit_mode();
                 let old_zoom = self.viewport.zoom;
-                self.viewport.zoom = (self.viewport.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
+                self.viewport.zoom =
+                    (self.viewport.zoom * factor).clamp(zoom_floor(old_zoom), MAX_ZOOM);
                 self.viewport.scroll =
                     rofd_render::clamp_scroll(self.editor.document(), &self.viewport);
                 // Only fire on_zoom_change if the zoom actually changed (a
@@ -1720,6 +1726,7 @@ impl OfdComponent {
                 self.viewport.size = (*width, *height);
                 self.viewport.scroll =
                     rofd_render::clamp_scroll(self.editor.document(), &self.viewport);
+                self.apply_fit(false);
                 self.maybe_fire_page_change();
                 EventOutcome {
                     needs_repaint: true,
@@ -1775,8 +1782,10 @@ impl OfdComponent {
                         needs_repaint: false,
                     };
                 }
+                self.exit_fit_mode();
                 let old_zoom = self.viewport.zoom;
-                self.viewport.zoom = (self.viewport.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
+                self.viewport.zoom =
+                    (self.viewport.zoom * factor).clamp(zoom_floor(old_zoom), MAX_ZOOM);
                 // Adjust scroll so the `center` viewport point maps to the
                 // same document position before and after zoom. Derivation:
                 // doc_pos = (viewport_pt - scroll) / old_zoom; after zoom,
@@ -2236,6 +2245,74 @@ impl OfdComponent {
         }
     }
 
+    /// Recompute the zoom for the active fit mode and apply it. No-op for
+    /// `Custom`, when the reference page cannot be resolved, or when
+    /// `fit_zoom` is not ready (the mode stays pending; the next
+    /// viewport-size change retries). `page_top` scrolls the reference
+    /// page's top edge to the content-region top instead of center
+    /// anchoring. Fires `on_zoom_change` only when the zoom actually
+    /// changes (spec §3.2.2).
+    fn apply_fit(&mut self, page_top: bool) {
+        let Some(target) = self.zoom_mode.fit_target() else {
+            return;
+        };
+        let idx = self.current_page.unwrap_or(0);
+        let Some(page_box) = self
+            .editor
+            .document()
+            .pages
+            .get(idx)
+            .map(|p| p.physical_box)
+        else {
+            return;
+        };
+        let Some(z) =
+            rofd_render::fit_zoom(self.editor.document(), &self.viewport, &page_box, target)
+        else {
+            return;
+        };
+        let old_zoom = self.viewport.zoom;
+        self.viewport.zoom = z;
+        if page_top {
+            self.scroll_page_to_top(idx);
+        } else {
+            // Center anchor (ZoomAt's math): keep the viewport-center
+            // document position fixed across the zoom change.
+            let center = (self.viewport.size.0 / 2.0, self.viewport.size.1 / 2.0);
+            let ratio = z / old_zoom;
+            self.viewport.scroll.0 = center.0 - (center.0 - self.viewport.scroll.0) * ratio;
+            self.viewport.scroll.1 = center.1 - (center.1 - self.viewport.scroll.1) * ratio;
+        }
+        self.viewport.scroll = rofd_render::clamp_scroll(self.editor.document(), &self.viewport);
+        if (self.viewport.zoom - old_zoom).abs() > f64::EPSILON {
+            self.fire_zoom_change(self.viewport.zoom);
+        }
+        self.maybe_fire_page_change();
+        self.mark_scene_dirty();
+    }
+
+    /// Scroll so page `idx`'s top edge sits at the content-region top
+    /// (y = 0). Inverse of `page_origin`'s stacking math (spec §3.2.2:
+    /// FitPage anchoring); `clamp_scroll` re-centers x.
+    fn scroll_page_to_top(&mut self, idx: usize) {
+        let z = self.viewport.zoom;
+        let gap = self.viewport.page_gap;
+        let mut y = gap;
+        for page in &self.editor.document().pages[..idx] {
+            y += page.physical_box.h * z + gap;
+        }
+        self.viewport.scroll.1 = y;
+    }
+
+    /// Manual zoom exits any fit mode (spec §3.2.3). Fires even when the
+    /// zoom value itself cannot change (already at a clamp bound).
+    fn exit_fit_mode(&mut self) {
+        if self.zoom_mode != ZoomMode::Custom {
+            self.zoom_mode = ZoomMode::Custom;
+            self.fire_zoom_mode_change(ZoomMode::Custom);
+        }
+    }
+
     /// Fire `on_zoom_mode_change` with the new mode. Called after
     /// `self.zoom_mode` is updated (set_zoom_mode, manual-zoom exit).
     fn fire_zoom_mode_change(&self, mode: ZoomMode) {
@@ -2427,8 +2504,11 @@ impl OfdComponent {
             return;
         }
         self.zoom_mode = mode;
-        // fit application lands in the next commit; this one records +
-        // fires the mode transition only.
+        // FitPage shows the whole page: anchor by scrolling the reference
+        // page's top to the content-region top (spec D4). Width/Height keep
+        // the viewport center fixed (ZoomAt's anchor math).
+        let page_top = matches!(mode, ZoomMode::FitPage);
+        self.apply_fit(page_top);
         self.fire_zoom_mode_change(mode);
     }
 
@@ -2472,6 +2552,18 @@ impl OfdComponent {
     #[cfg(target_arch = "wasm32")]
     pub fn on_pointer_cursor(&mut self, cb: impl Fn(PointerCursor) + 'static) {
         self.callbacks.on_pointer_cursor = Some(Box::new(cb));
+    }
+}
+
+/// Manual multiplicative zoom floor (spec §3.2.4): at/above MIN_ZOOM the
+/// floor stays MIN_ZOOM (contract-6 semantics unchanged); below it (a fit
+/// mode landed there) the floor drops to FIT_MIN_ZOOM so zooming back up
+/// never yanks the view to 25%.
+fn zoom_floor(old_zoom: f64) -> f64 {
+    if old_zoom < MIN_ZOOM {
+        FIT_MIN_ZOOM
+    } else {
+        MIN_ZOOM
     }
 }
 
@@ -3393,6 +3485,220 @@ mod tests {
             center: (0.0, 0.0),
         });
         assert_eq!(c.viewport.zoom, MIN_ZOOM);
+    }
+
+    fn zoom_fit_doc(pages: &[(f64, f64)]) -> OfdDocument {
+        let mut doc = OfdDocument::default();
+        for (i, &(w, h)) in pages.iter().enumerate() {
+            doc.pages.push(Page {
+                id: PageId::new(format!("P{i}")),
+                physical_box: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w,
+                    h,
+                },
+                layers: vec![],
+                template: None,
+            });
+        }
+        doc
+    }
+
+    fn fit_width_component(pages: &[(f64, f64)], vp: (f64, f64)) -> OfdComponent {
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
+        c.load_document(zoom_fit_doc(pages));
+        c.set_viewport_size(vp.0, vp.1);
+        c
+    }
+
+    #[test]
+    fn set_zoom_mode_fit_width_updates_zoom_and_fires() {
+        let mut c = fit_width_component(&[(210.0, 297.0)], (780.0, 500.0));
+        let zoom_fired = Arc::new(Mutex::new(None));
+        let mode_fired = Arc::new(Mutex::new(None));
+        let zf = zoom_fired.clone();
+        let mf = mode_fired.clone();
+        c.on_zoom_change(move |z| *zf.lock().unwrap() = Some(z));
+        c.on_zoom_mode_change(move |m| *mf.lock().unwrap() = Some(m));
+        c.set_zoom_mode(ZoomMode::FitWidth);
+        // 竖条在场：z = (780-12)/210。
+        assert!(
+            (c.viewport.zoom - 768.0 / 210.0).abs() < 1e-9,
+            "z={}",
+            c.viewport.zoom
+        );
+        assert_eq!(*zoom_fired.lock().unwrap(), Some(768.0 / 210.0));
+        assert_eq!(*mode_fired.lock().unwrap(), Some(ZoomMode::FitWidth));
+    }
+
+    #[test]
+    fn zoomat_exits_fit_mode_and_fires_mode_change() {
+        let mut c = fit_width_component(&[(210.0, 297.0)], (780.0, 500.0));
+        c.set_zoom_mode(ZoomMode::FitWidth);
+        let mode_fired = Arc::new(Mutex::new(None));
+        let mf = mode_fired.clone();
+        c.on_zoom_mode_change(move |m| *mf.lock().unwrap() = Some(m));
+        c.handle_event(&ViewEvent::ZoomAt {
+            factor: 0.9,
+            center: (390.0, 250.0),
+        });
+        assert_eq!(c.zoom_mode(), ZoomMode::Custom);
+        assert_eq!(*mode_fired.lock().unwrap(), Some(ZoomMode::Custom));
+        assert!((c.viewport.zoom - (768.0 / 210.0) * 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn zoom_at_max_still_exits_fit_mode() {
+        // zoom 已顶格无法实变时，模式仍必须退出（spec §3.2.3）。
+        let mut c = fit_width_component(&[(210.0, 297.0)], (780.0, 500.0));
+        c.set_zoom_mode(ZoomMode::FitWidth);
+        c.viewport.zoom = MAX_ZOOM;
+        let fired = Arc::new(Mutex::new(false));
+        let f = fired.clone();
+        c.on_zoom_mode_change(move |_m| *f.lock().unwrap() = true);
+        c.handle_event(&ViewEvent::ZoomAt {
+            factor: 1.1,
+            center: (390.0, 250.0),
+        });
+        assert_eq!(c.viewport.zoom, MAX_ZOOM, "zoom stays clamped");
+        assert_eq!(c.zoom_mode(), ZoomMode::Custom);
+        assert!(
+            *fired.lock().unwrap(),
+            "mode exit fires even without zoom change"
+        );
+    }
+
+    #[test]
+    fn manual_zoom_dynamic_floor_no_yank() {
+        // A0 小视口：fit 落到 25% 以下；随后 ×1.1 平滑爬升，绝不上拽到 25%。
+        let mut c = fit_width_component(&[(841.0, 1189.0)], (400.0, 300.0));
+        c.set_zoom_mode(ZoomMode::FitWidth);
+        let fitted = c.viewport.zoom; // 388/841 ≈ 0.461
+        assert!(fitted < MIN_ZOOM, "fit breaks below MIN_ZOOM: {fitted}");
+        c.handle_event(&ViewEvent::ZoomAt {
+            factor: 1.1,
+            center: (200.0, 150.0),
+        });
+        assert!(
+            (c.viewport.zoom - fitted * 1.1).abs() < 1e-9,
+            "no yank: {}",
+            c.viewport.zoom
+        );
+        assert!(c.viewport.zoom < MIN_ZOOM);
+
+        // 回归：从 ≥25% 手动缩小仍在 25% 停（契约 6 语义不变）。
+        let mut c2 = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
+        c2.viewport.zoom = MIN_ZOOM;
+        c2.handle_event(&ViewEvent::Zoom { factor: 0.9 });
+        assert_eq!(c2.viewport.zoom, MIN_ZOOM);
+    }
+
+    #[test]
+    fn resize_refits_active_fit_mode() {
+        let mut c = fit_width_component(&[(210.0, 297.0)], (780.0, 500.0));
+        c.set_zoom_mode(ZoomMode::FitWidth);
+        c.set_viewport_size(700.0, 500.0);
+        // z = (700-12)/210。
+        assert!(
+            (c.viewport.zoom - 688.0 / 210.0).abs() < 1e-9,
+            "z={}",
+            c.viewport.zoom
+        );
+        assert_eq!(c.zoom_mode(), ZoomMode::FitWidth, "mode survives resize");
+    }
+
+    #[test]
+    fn load_document_refits_active_fit_mode() {
+        let mut c = fit_width_component(&[(210.0, 297.0)], (780.0, 500.0));
+        c.set_zoom_mode(ZoomMode::FitWidth);
+        c.load_document(zoom_fit_doc(&[(50.0, 50.0)]));
+        // 50mm 页：z = 768/50 = 15.36 超过 300% 上限（MAX_ZOOM≈11.34）。
+        assert_eq!(
+            c.viewport.zoom, MAX_ZOOM,
+            "50mm page overflows the 300% cap"
+        );
+        assert_eq!(c.zoom_mode(), ZoomMode::FitWidth);
+    }
+
+    #[test]
+    fn page_change_does_not_refit() {
+        let mut c = fit_width_component(&[(210.0, 297.0), (210.0, 297.0)], (780.0, 500.0));
+        c.set_zoom_mode(ZoomMode::FitWidth);
+        let before = c.viewport.zoom;
+        c.handle_event(&ViewEvent::Scroll { dx: 0.0, dy: 900.0 });
+        assert_eq!(c.current_page, Some(1), "scrolled to page 1");
+        assert_eq!(
+            c.viewport.zoom, before,
+            "paging must not re-derive fit zoom"
+        );
+    }
+
+    #[test]
+    fn fit_pending_until_viewport_laid_out() {
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
+        c.load_document(zoom_fit_doc(&[(210.0, 297.0)]));
+        let zoom_fired = Arc::new(Mutex::new(None));
+        let zf = zoom_fired.clone();
+        c.on_zoom_change(move |z| *zf.lock().unwrap() = Some(z));
+        c.set_zoom_mode(ZoomMode::FitWidth); // 视口仍为 0x0
+        assert_eq!(
+            c.zoom_mode(),
+            ZoomMode::FitWidth,
+            "mode recorded while pending"
+        );
+        assert_eq!(c.viewport.zoom, PX_PER_MM, "zoom untouched while pending");
+        assert!(
+            zoom_fired.lock().unwrap().is_none(),
+            "no zoom fire while pending"
+        );
+        c.set_viewport_size(780.0, 500.0);
+        assert!(
+            (c.viewport.zoom - 768.0 / 210.0).abs() < 1e-9,
+            "applied once laid out"
+        );
+        assert_eq!(*zoom_fired.lock().unwrap(), Some(768.0 / 210.0));
+    }
+
+    #[test]
+    fn fit_page_scrolls_reference_page_to_top() {
+        let mut c = fit_width_component(&[(210.0, 297.0), (210.0, 297.0)], (780.0, 500.0));
+        // At the default zoom a 297mm page is ~1122.5px tall, so dy must
+        // exceed 20 + 1122.5 + 20 - 250 = 912.5 for the viewport center to
+        // land inside page 1 rather than the inter-page gap.
+        c.handle_event(&ViewEvent::Scroll {
+            dx: 0.0,
+            dy: 1000.0,
+        });
+        assert_eq!(c.current_page, Some(1));
+        c.set_zoom_mode(ZoomMode::FitPage);
+        let z = c.viewport.zoom; // min(768/210, 500/297) = 500/297
+        let expected = 20.0 + 297.0 * z + 20.0; // gap + 页0高 + gap
+        assert!(
+            (c.viewport.scroll.1 - expected).abs() < 1e-6,
+            "scroll={}",
+            c.viewport.scroll.1
+        );
+        let (_, y1) = rofd_render::page_origin(c.document(), &c.viewport, 1).unwrap();
+        assert!(y1.abs() < 1e-6, "page 1 top sits at the region top: {y1}");
+    }
+
+    #[test]
+    fn fit_width_keeps_viewport_center_anchored() {
+        let mut c = fit_width_component(&[(210.0, 297.0)], (780.0, 500.0));
+        c.viewport.zoom = MAX_ZOOM;
+        c.handle_event(&ViewEvent::Scroll { dx: 0.0, dy: 300.0 });
+        let center_y = c.viewport.size.1 / 2.0;
+        // Fit preserves ZoomAt's anchor invariant (center - scroll)/zoom
+        // (spec D4: 同 ZoomAt 数学). The post-fit scroll (~266.1) sits inside
+        // the clamp bounds, so the anchor holds exactly.
+        let anchor_before = (center_y - c.viewport.scroll.1) / c.viewport.zoom;
+        c.set_zoom_mode(ZoomMode::FitWidth);
+        let anchor_after = (center_y - c.viewport.scroll.1) / c.viewport.zoom;
+        assert!(
+            (anchor_after - anchor_before).abs() < 1e-9,
+            "center anchor: {anchor_after} vs {anchor_before}"
+        );
     }
 
     #[test]
