@@ -12,6 +12,7 @@ pub mod caret_rect;
 pub mod color;
 pub mod composite;
 pub mod ctm;
+pub mod fit;
 pub mod handles;
 pub mod hit_test;
 pub mod image;
@@ -31,6 +32,7 @@ pub use body_text::{
 pub use caret_rect::{caret_rect, paint_caret};
 pub use composite::{page_origin, page_origins, DragPreview, RenderEngine};
 pub use ctm::{compose_transform, ctm_to_affine};
+pub use fit::{fit_zoom, FitTarget};
 pub use handles::{annotation_handle_positions, annotation_handles, handle_center_local};
 pub use hit_test::{annotation_local_rect, hit_test, HandlePos, HitTarget};
 pub use image::decode_image;
@@ -44,7 +46,7 @@ pub use scrollbar::{
 };
 pub use text::{shape_text, FontStore, ShapedGlyph};
 pub use tooltip::{paint_tooltip, tooltip_anchor};
-pub use viewport::{clamp_scroll, Viewport, MAX_ZOOM, MIN_ZOOM, PX_PER_MM};
+pub use viewport::{clamp_scroll, Viewport, FIT_MIN_ZOOM, MAX_ZOOM, MIN_ZOOM, PX_PER_MM};
 
 /// The backend-agnostic scene type this crate produces.
 pub use imaging::record::Scene;

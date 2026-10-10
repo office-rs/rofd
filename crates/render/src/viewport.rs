@@ -23,6 +23,13 @@ pub const MIN_ZOOM: f64 = PX_PER_MM * 0.25;
 /// Maximum permitted viewport zoom: 300% of the 96-DPI baseline.
 pub const MAX_ZOOM: f64 = PX_PER_MM * 3.0;
 
+/// Minimum zoom a fit mode (适应宽度/高度/页面) may produce. Fit results
+/// may break below [`MIN_ZOOM`] (an A0 sheet in a small window genuinely
+/// fits at <25%); manual multiplicative zoom keeps [`MIN_ZOOM`] as its
+/// floor while the current zoom is at or above it, and drops to this floor
+/// once below (anti-yank, spec 2026-10-10-fit-zoom-modes §3.2.4).
+pub const FIT_MIN_ZOOM: f64 = PX_PER_MM * 0.05;
+
 /// Paper-on-desk viewport state. All fields are in device pixels.
 ///
 /// - `scroll`: (x, y) desk offset to apply (added to page positions; positive y
@@ -174,5 +181,8 @@ mod clamp_tests {
         assert_eq!(MAX_ZOOM, PX_PER_MM * 3.0);
         assert!(MIN_ZOOM < PX_PER_MM);
         assert!(MAX_ZOOM > PX_PER_MM);
+        assert_eq!(FIT_MIN_ZOOM, PX_PER_MM * 0.05);
+        assert!(FIT_MIN_ZOOM < MIN_ZOOM);
+        assert!(FIT_MIN_ZOOM > 0.0);
     }
 }

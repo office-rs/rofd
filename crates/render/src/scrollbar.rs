@@ -91,7 +91,7 @@ pub fn scroll_x_margin(content_w: f64, region_w: f64) -> f64 {
 
 /// Region dimension after reserving a bar strip. Non-positive viewport dims
 /// (degenerate test sizes) pin to 0 instead of going negative.
-fn region_dim(full: f64, bar_present: bool) -> f64 {
+pub(crate) fn region_dim(full: f64, bar_present: bool) -> f64 {
     if full <= 0.0 {
         0.0
     } else {
