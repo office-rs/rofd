@@ -71,7 +71,7 @@ WebGPU requires Chrome / Edge 113+ (or any browser shipping WebGPU). On unsuppor
 | `handleScrollPage(direction: 'up' \| 'down')` | Scroll by one page height. |
 | `handleZoomAt(factor: number, cx: number, cy: number)` | Zoom by `factor` while keeping `(cx, cy)` (device pixels) anchored. |
 | `get canUndo` / `get canRedo` | Whether undo / redo is available. |
-| `destroy()` | Stop the render loop and remove the canvas. |
+| `destroy()` | Stop rendering (dispose the scheduler) and remove the canvas. |
 
 ### Rendering
 

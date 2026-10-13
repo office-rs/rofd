@@ -2,7 +2,8 @@
 //
 // Mirrors the as-built adapter design: `Ofd.init(container, config)` does the
 // full boot (load wasm -> check WebGPU -> create canvas -> create_wasm_ofd ->
-// load + register fonts -> register callbacks -> bindEvents -> render loop).
+// load + register fonts -> register callbacks -> bindEvents -> start
+// on-demand rendering).
 // The web app just calls `init` and optionally passes fonts/callbacks.
 
 import { RenderScheduler } from './scheduler';
@@ -108,7 +109,7 @@ export type ZoomMode = 'custom' | 'fit-width' | 'fit-height' | 'fit-page';
 export interface OfdConfig {
   /** Fonts to load + register. Defaults to Noto Sans + Noto Sans CJK SC from CDN. */
   fonts?: FontSource[];
-  /** Fired when the document changes (signal-only; the render loop re-renders). */
+  /** Fired when the document changes (signal-only; on-demand rendering repaints). */
   onChange?: () => void;
   onSelectionChange?: () => void;
   onCursorChange?: () => void;
@@ -182,7 +183,7 @@ function deferCb<A extends unknown[]>(cb: (...args: A) => void): (...args: A) =>
 
 /**
  * rofd web OFD surface. Created via [`Ofd.init`]; the SDK owns the canvas,
- * the wasm surface, DOM event binding, and the render loop.
+ * the wasm surface, DOM event binding, and the on-demand render scheduler.
  *
  * Usage:
  * ```ts
@@ -216,7 +217,7 @@ export class Ofd {
    * Initialize a new OFD surface inside `container`: loads the wasm module,
    * checks WebGPU, creates a canvas, initializes the wasm surface (WebGPU +
    * warmup), loads + registers fonts, wires callbacks, binds DOM events,
-   * and starts the render loop. Returns a ready-to-use `Ofd`.
+   * and starts on-demand rendering. Returns a ready-to-use `Ofd`.
    */
   static async init(
     container: HTMLElement,

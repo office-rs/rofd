@@ -953,7 +953,7 @@ impl OfdComponent {
     const BLINK_PHASE: std::time::Duration = std::time::Duration::from_millis(500);
 
     /// Restart the blink cycle: caret visible, deadline pushed out. Called
-    /// on focus gain and every caret-moving edit/click.
+    /// on focus gain and preedit commit (the two caret-reset points).
     pub(crate) fn reset_blink(&mut self) {
         self.cursor_visible = true;
         self.blink_deadline = Some(Instant::now() + Self::BLINK_PHASE);

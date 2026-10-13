@@ -138,7 +138,7 @@ crates/web-app ─► web-view ─────────────┘       
 - 唯一入口 `OfdComponent`：`new_native()`/`new_wasm()`（`#[cfg(target_arch = "wasm32")]` 门控，非 feature）、`handle_event`。
 - `OfdConfig`：`default_font_bytes`、`page_gap`（默认 20）、`zoom`（初始 PX_PER_MM，`with_zoom` 可覆盖）。
 - 场景脏缓存（终态公共 API）：`update_scene()` 按脏标志重合成、`scene() -> &Scene`、`set_viewport_size(f64,f64)`、`mark_scene_dirty`（pub(crate)）。
-- 文本编辑：`paste_text`、`delete_annotation`、`tick_blink`（native）、preedit 状态机（组件自持 `Option<PreeditState>`，简化 caret overlay，不做 ghost-document 回流）。
+- 文本编辑：`paste_text`、`delete_annotation`、`tick_blink`（两目标统一，wasm 由 `renderFrame` 驱动，见 §4.4）、preedit 状态机（组件自持 `Option<PreeditState>`，简化 caret overlay，不做 ghost-document 回流）。
 
 ### rofd-xilem-view（as-built 九条契约）
 
