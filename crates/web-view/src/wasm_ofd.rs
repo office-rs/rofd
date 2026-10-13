@@ -148,8 +148,8 @@ mod wasm_impl {
     use std::rc::Rc;
 
     use rofd_component::{
-        BodyTextSelection, ContextTarget, Modifiers, MouseButton, OfdComponent, OfdConfig,
-        PointerCursor, ScrollDirection, ViewEvent, ZoomMode,
+        BodyTextSelection, ContextTarget, FrameNeed, Modifiers, MouseButton, OfdComponent,
+        OfdConfig, PointerCursor, ScrollDirection, ViewEvent, ZoomMode,
     };
     use rofd_dom::{AnnotationId, AnnotationSelection, OfdDocument, OfdWarning};
     use rofd_editor::TextCursor;
@@ -200,11 +200,18 @@ mod wasm_impl {
 
     #[wasm_bindgen]
     impl WasmOfd {
-        /// Render one frame. Called by the JS SDK on each requestAnimationFrame.
+        /// Render one frame and return the next scheduling need:
+        /// 0.0 = render again immediately, >0 = ms until the next needed
+        /// frame (blink deadline), -1.0 = suspend until an event kick.
         #[wasm_bindgen(js_name = renderFrame)]
-        pub fn render_frame(&mut self) -> Result<(), JsValue> {
+        pub fn render_frame(&mut self) -> Result<f64, JsValue> {
+            self.component.tick_blink();
             self.component.render(&mut self.render_target);
-            Ok(())
+            Ok(match self.component.needs_frame() {
+                FrameNeed::Now => 0.0,
+                FrameNeed::At(d) => d.as_secs_f64() * 1000.0,
+                FrameNeed::None => -1.0,
+            })
         }
 
         /// Register font data (raw bytes) with the editor. Call after

@@ -13,7 +13,12 @@ type WasmModule = {
 };
 
 interface WasmOfd {
-  renderFrame(): void;
+  /**
+   * Render one frame and return the next scheduling need:
+   * `0` = render again immediately, `>0` = ms until the next needed
+   * frame (blink deadline), `-1` = suspend until an event kick.
+   */
+  renderFrame(): number;
   registerFont(bytes: Uint8Array): boolean;
   handleResize(width: number, height: number): void;
   handleKeyDown(
