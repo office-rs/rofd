@@ -5,6 +5,9 @@
 // load + register fonts -> register callbacks -> bindEvents -> render loop).
 // The web app just calls `init` and optionally passes fonts/callbacks.
 
+import { RenderScheduler } from './scheduler';
+import { withKick } from './with-kick';
+
 // --- wasm module shape (wasm-pack --target web) ---
 // `default` is the async init; `create_wasm_ofd` is the factory.
 type WasmModule = {
@@ -192,7 +195,7 @@ function deferCb<A extends unknown[]>(cb: (...args: A) => void): (...args: A) =>
 export class Ofd {
   private wasm: WasmOfd;
   private canvas: HTMLCanvasElement;
-  private animFrameId: number | null = null;
+  private scheduler: RenderScheduler;
   private abortController: AbortController;
   // Click counting (mirrors the native adapter): pointerdown's
   // `detail` is 0 for pointer events per the Pointer Events spec, so the
@@ -205,6 +208,7 @@ export class Ofd {
   private constructor(wasm: WasmOfd, canvas: HTMLCanvasElement) {
     this.wasm = wasm;
     this.canvas = canvas;
+    this.scheduler = new RenderScheduler(() => this.wasm.renderFrame());
     this.abortController = new AbortController();
   }
 
@@ -296,16 +300,15 @@ export class Ofd {
       wasmOfd.setZoomMode(config.zoomMode);
     }
 
-    // 7. Create wrapper + bind DOM events.
-    const ofd = new Ofd(wasmOfd, canvas);
-    ofd.bindEvents();
+    // 7. Create wrapper (proxy + events + watchdog) via the shared wiring.
+    const ofd = Ofd.wire(wasmOfd, canvas);
 
     // Prevent the browser's native context menu on the canvas (right-click).
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
-    // 8. Initial resize + render loop.
+    // 8. Initial resize (eager direct render) + first frame kick.
     ofd.resize();
-    ofd.startRenderLoop();
+    ofd.kick();
 
     // 9. Focus the canvas so keyboard input works immediately.
     canvas.focus();
@@ -313,12 +316,29 @@ export class Ofd {
     return ofd;
   }
 
-  /** Destroy the surface: stop the render loop, remove canvas, abort listeners. */
+  /** Shared wiring for `init` and `__testNew`: proxy-wrap the wasm surface,
+   * construct, bind DOM events, connect the kick closure. The kick closure
+   * is redirectable because the scheduler lives on the Ofd instance, which
+   * does not exist until after the proxy wraps the surface. */
+  private static wire(wasmOfd: WasmOfd, canvas: HTMLCanvasElement): Ofd {
+    let kickLoop: () => void = () => {};
+    const proxied = withKick(wasmOfd, () => kickLoop());
+    const ofd = new Ofd(proxied, canvas);
+    ofd.bindEvents();
+    kickLoop = () => ofd.kick();
+    return ofd;
+  }
+
+  /** @internal Test seam: same wiring as init minus the wasm boot
+   * (fonts/callbacks/resize). Does NOT kick - tests drive scheduling
+   * explicitly. */
+  static __testNew(wasm: WasmOfd, canvas: HTMLCanvasElement): Ofd {
+    return Ofd.wire(wasm, canvas);
+  }
+
+  /** Destroy the surface: stop the scheduler, abort listeners, remove canvas. */
   destroy(): void {
-    if (this.animFrameId !== null) {
-      cancelAnimationFrame(this.animFrameId);
-      this.animFrameId = null;
-    }
+    this.scheduler.dispose();
     this.abortController.abort();
     if (this.canvas.parentNode) {
       this.canvas.parentNode.removeChild(this.canvas);
@@ -489,16 +509,26 @@ export class Ofd {
     this.wasm.renderFrame();
   }
 
-  /** Start the requestAnimationFrame render loop. */
-  private startRenderLoop(): void {
-    const loop = () => {
-      this.wasm.renderFrame();
-      this.animFrameId = requestAnimationFrame(loop);
-    };
-    this.animFrameId = requestAnimationFrame(loop);
+  // ─── Public API ───────────────────────────────────────────────────────────
+
+  /** @internal Ensure a frame is scheduled (idempotent). The kick proxy
+   * calls this after every wasm method; the watchdog calls it on page
+   * visibility/focus changes. */
+  kick(): void {
+    this.scheduler.kick();
   }
 
-  // ─── Public API ───────────────────────────────────────────────────────────
+  /** Stop rendering and drop all pending work (host policy for hiding the
+   * component: hidden panels, inactive tabs). Paired with `resumeRendering`. */
+  pauseRendering(): void {
+    this.scheduler.pause();
+  }
+
+  /** Resume after `pauseRendering`; schedules one frame immediately. No-op
+   * when already running or destroyed. */
+  resumeRendering(): void {
+    this.scheduler.resume();
+  }
 
   /** Load an OFD document from raw `.ofd` package bytes. */
   loadOfd(bytes: Uint8Array): void {
