@@ -495,6 +495,23 @@ export class Ofd {
 
     // Resize.
     window.addEventListener('resize', () => this.resize(), opts);
+
+    // Watchdog (spec 2026-10-13 §7.4): hidden tabs are fully silenced -
+    // Chromium still releases ~1 rAF/s for hidden pages with pending
+    // frames and aligns timers to 1s slots (rword pitfall 2), so gating
+    // alone is not enough. Returning to visible or window focus kicks.
+    document.addEventListener(
+      'visibilitychange',
+      () => {
+        if (document.hidden) {
+          this.scheduler.suspendForHidden();
+        } else {
+          this.scheduler.resumeFromHidden();
+        }
+      },
+      opts,
+    );
+    window.addEventListener('focus', () => this.scheduler.kick(), opts);
   }
 
   /** Resize the canvas backing store to match its CSS size (× DPR) + notify wasm. */
