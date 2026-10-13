@@ -167,11 +167,13 @@ impl WebGpuRenderTarget {
             None,
             &vello::kurbo::Rect::ZERO,
         );
-        self.render_vello_scene(&vello_scene);
+        let _ = self.render_vello_scene(&vello_scene);
     }
 
-    /// Render a [`vello::Scene`] to the surface via Vello + blit.
-    fn render_vello_scene(&mut self, vello_scene: &vello::Scene) {
+    /// Render a [`vello::Scene`] to the surface via Vello + blit. Returns
+    /// false when the frame did not reach the screen (the component retries
+    /// via `scene_needs_paint` on the next vsync).
+    fn render_vello_scene(&mut self, vello_scene: &vello::Scene) -> bool {
         // 1) Vello renders the scene into the intermediate Rgba8Unorm storage
         //    texture. render_to_texture submits its own command buffer.
         if let Err(e) = self.renderer.render_to_texture(
@@ -187,7 +189,7 @@ impl WebGpuRenderTarget {
             },
         ) {
             web_sys::console::error_1(&format!("vello render failed: {e:?}").into());
-            return;
+            return false;
         }
 
         // 2) Blit the intermediate texture to the surface texture, then present.
@@ -195,11 +197,11 @@ impl WebGpuRenderTarget {
             Ok(f) => f,
             Err(wgpu::SurfaceError::Outdated) | Err(wgpu::SurfaceError::Lost) => {
                 self.surface.configure(&self.device, &self.config);
-                return;
+                return false;
             }
             Err(e) => {
                 web_sys::console::warn_1(&format!("surface error: {e:?}").into());
-                return;
+                return false;
             }
         };
         let surface_view = frame
@@ -215,11 +217,12 @@ impl WebGpuRenderTarget {
             .copy(&self.device, &mut encoder, &self.target_view, &surface_view);
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
+        true
     }
 }
 
 impl RenderTarget for WebGpuRenderTarget {
-    fn draw_scene(&mut self, scene: &Scene) {
+    fn draw_scene(&mut self, scene: &Scene) -> bool {
         // Convert the backend-agnostic imaging scene to a vello::Scene via
         // VelloSceneSink, then render via the existing vello + blit path.
         let mut vello_scene = vello::Scene::new();
@@ -227,7 +230,7 @@ impl RenderTarget for WebGpuRenderTarget {
         let mut sink = VelloSceneSink::new(&mut vello_scene, bounds);
         imaging::record::replay(scene, &mut sink);
         let _ = sink.finish();
-        self.render_vello_scene(&vello_scene);
+        self.render_vello_scene(&vello_scene)
     }
 
     fn size(&self) -> (f64, f64) {

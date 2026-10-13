@@ -16,6 +16,15 @@ use crate::event::EventOutcome;
 use crate::render_target::RenderTarget;
 use crate::zoom_mode::ZoomMode;
 
+// Monotonic animation clock. `std::time::Instant::now()` is a hard panic on
+// wasm32-unknown-unknown ("time not implemented on this platform");
+// `web_time::Instant` is backed by performance.now() there and is a
+// re-export of std on native (AGENTS §4.4: monotonic, never a wall clock).
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
+
 /// The annotation kinds that CAN be a drag-create tool. Markup kinds are
 /// deliberately absent: markup is a command over the body-text selection
 /// ([`OfdComponent::apply_markup`]), never a tool (spec 2026-09-10 §4.1).
@@ -153,6 +162,20 @@ pub(crate) struct HoverState {
     pos: (f64, f64),
 }
 
+/// The host's next-frame scheduling need (on-demand rendering, spec
+/// 2026-10-13 web-render-on-demand §5.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameNeed {
+    /// Dirty work pending (scene recompose or a failed/absent GPU draw) -
+    /// render again immediately.
+    Now,
+    /// Nothing dirty, but the blink deadline expires after this duration -
+    /// wake up then (web: setTimeout, the browser's WaitUntil).
+    At(std::time::Duration),
+    /// No work at all - suspend until an external event kicks the host.
+    None,
+}
+
 pub struct OfdComponent {
     pub(crate) editor: Editor,
     pub(crate) render: RenderEngine,
@@ -221,12 +244,13 @@ pub struct OfdComponent {
     pub(crate) focused: bool,
     /// Current caret visibility phase, toggled by blink.
     pub(crate) cursor_visible: bool,
-    /// Monotonic deadline of the next blink toggle (native only; Instant is
-    /// an animation timer, allowed by AGENTS §4.4).
-    #[cfg(not(target_arch = "wasm32"))]
-    blink_deadline: Option<std::time::Instant>,
-    #[cfg(target_arch = "wasm32")]
-    blink_elapsed_ms: u32,
+    /// Monotonic deadline of the next blink toggle (Instant is an animation
+    /// timer, allowed by AGENTS §4.4; web_time on wasm = performance.now()).
+    blink_deadline: Option<Instant>,
+    /// True when the last GPU draw did not reach the screen (draw failure or
+    /// nothing drawn yet). Feeds `needs_frame` so the host retries on the
+    /// next frame instead of suspending on a broken frame.
+    pub(crate) scene_needs_paint: bool,
     /// Active IME preedit, if composing. Text enters the dom only on commit.
     pub(crate) preedit: Option<crate::preedit::PreeditState>,
 }
@@ -273,12 +297,10 @@ impl OfdComponent {
             squiggly_color: DEFAULT_MARKUP_COLOR,
             scene_cache: Scene::default(),
             scene_dirty: true,
+            scene_needs_paint: true,
             focused: false,
             cursor_visible: true,
-            #[cfg(not(target_arch = "wasm32"))]
             blink_deadline: None,
-            #[cfg(target_arch = "wasm32")]
-            blink_elapsed_ms: 0,
             preedit: None,
         }
     }
@@ -919,7 +941,7 @@ impl OfdComponent {
 
     pub fn render(&mut self, target: &mut dyn RenderTarget) {
         self.update_scene();
-        target.draw_scene(&self.scene_cache);
+        self.scene_needs_paint = !target.draw_scene(&self.scene_cache);
     }
 
     /// Mark the cached scene stale. The next `update_scene` recomposes.
@@ -928,38 +950,45 @@ impl OfdComponent {
     }
 
     /// One caret-blink phase.
-    #[cfg(not(target_arch = "wasm32"))]
     const BLINK_PHASE: std::time::Duration = std::time::Duration::from_millis(500);
 
     /// Restart the blink cycle: caret visible, deadline pushed out. Called
-    /// on focus gain and (later) every caret-moving edit/click.
+    /// on focus gain and every caret-moving edit/click.
     pub(crate) fn reset_blink(&mut self) {
         self.cursor_visible = true;
-        #[cfg(target_arch = "wasm32")]
-        {
-            self.blink_elapsed_ms = 0;
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.blink_deadline = Some(std::time::Instant::now() + Self::BLINK_PHASE);
-        }
+        self.blink_deadline = Some(Instant::now() + Self::BLINK_PHASE);
         self.mark_scene_dirty();
     }
 
-    /// Advance the blink phase from the native anim frame. Returns true
-    /// when the caret visibility flipped (repaint needed).
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Advance the blink phase from a host frame tick (native anim frame or
+    /// wasm render_frame). Returns true when the caret visibility flipped
+    /// (repaint needed). Safe to call every frame; no-op before the deadline.
     pub fn tick_blink(&mut self) -> bool {
         let Some(deadline) = self.blink_deadline else {
             return false;
         };
-        if std::time::Instant::now() < deadline {
+        let now = Instant::now();
+        if now < deadline {
             return false;
         }
         self.cursor_visible = !self.cursor_visible;
-        self.blink_deadline = Some(std::time::Instant::now() + Self::BLINK_PHASE);
+        self.blink_deadline = Some(now + Self::BLINK_PHASE);
         self.mark_scene_dirty();
         true
+    }
+
+    /// The host's next-frame scheduling need - the single source of truth
+    /// for on-demand rendering. Web maps it to rAF / setTimeout / suspend
+    /// via the fused `render_frame` export; native ignores it (masonry's
+    /// own repaint contract drives frames).
+    pub fn needs_frame(&self) -> FrameNeed {
+        if self.scene_dirty || self.scene_needs_paint {
+            return FrameNeed::Now;
+        }
+        match self.blink_deadline {
+            Some(deadline) => FrameNeed::At(deadline.saturating_duration_since(Instant::now())),
+            None => FrameNeed::None,
+        }
     }
 
     /// Whether the component currently holds effective focus.
@@ -968,25 +997,10 @@ impl OfdComponent {
     }
 
     /// Recompose the cached scene when stale. Native paint and wasm
-    /// conversion call this before reading `scene()`.
+    /// conversion call this before reading `scene()`. Never advances blink
+    /// on any target - hosts drive blink via `tick_blink` (native anim
+    /// frame / wasm render_frame).
     pub fn update_scene(&mut self) {
-        // Blink timing (wasm only): the host's requestAnimationFrame loop
-        // calls update_scene at ~60 Hz, so advance by 16ms per call; a
-        // completed phase flips caret visibility and marks the scene dirty.
-        // Native leaves blink to tick_blink() driven by anim frames.
-        #[cfg(target_arch = "wasm32")]
-        {
-            const BLINK_INTERVAL_MS: u32 = 500;
-            const FRAME_MS: u32 = 16;
-            if self.focused {
-                self.blink_elapsed_ms += FRAME_MS;
-                if self.blink_elapsed_ms >= BLINK_INTERVAL_MS {
-                    self.blink_elapsed_ms = 0;
-                    self.cursor_visible = !self.cursor_visible;
-                    self.scene_dirty = true;
-                }
-            }
-        }
         if !self.scene_dirty {
             return;
         }
@@ -1748,14 +1762,7 @@ impl OfdComponent {
                 self.force_commit_preedit();
                 self.focused = false;
                 self.cursor_visible = false;
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    self.blink_deadline = None;
-                }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    self.blink_elapsed_ms = 0;
-                }
+                self.blink_deadline = None;
                 EventOutcome {
                     needs_repaint: true,
                 }
@@ -2974,8 +2981,9 @@ mod tests {
         h: f64,
     }
     impl RenderTarget for MockRenderTarget {
-        fn draw_scene(&mut self, _: &Scene) {
+        fn draw_scene(&mut self, _: &Scene) -> bool {
             self.drawn += 1;
+            true
         }
         fn size(&self) -> (f64, f64) {
             (self.w, self.h)
@@ -7426,6 +7434,116 @@ mod tests {
     fn tick_blink_without_deadline_is_quiet() {
         let mut c = component_with_textbox();
         assert!(!c.tick_blink());
+    }
+
+    // ─── needs_frame truth table (spec 2026-10-13 §13.1) ─────────────────
+
+    fn clean_rt() -> MockRenderTarget {
+        MockRenderTarget {
+            drawn: 0,
+            w: 800.0,
+            h: 600.0,
+        }
+    }
+
+    #[test]
+    fn needs_frame_now_while_dirty_or_undrawn() {
+        let mut c = component_with_textbox();
+        // Fresh component: scene never composed AND never drawn -> Now.
+        assert_eq!(c.needs_frame(), FrameNeed::Now);
+        let mut rt = clean_rt();
+        c.render(&mut rt);
+        // Clean + unfocused (no blink deadline) -> None.
+        assert_eq!(c.needs_frame(), FrameNeed::None);
+    }
+
+    #[test]
+    fn needs_frame_at_when_focused_and_clean() {
+        let mut c = component_with_textbox();
+        c.handle_event(&ViewEvent::FocusGained);
+        let mut rt = clean_rt();
+        c.render(&mut rt);
+        match c.needs_frame() {
+            FrameNeed::At(d) => {
+                assert!(
+                    d <= std::time::Duration::from_millis(500),
+                    "deadline read must be within one blink phase"
+                );
+            }
+            other => panic!("expected At, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn needs_frame_none_when_blurred_and_clean() {
+        let mut c = component_with_textbox();
+        c.handle_event(&ViewEvent::FocusGained);
+        c.handle_event(&ViewEvent::FocusLost);
+        // FocusLost marks the scene dirty (caret removal) - clean it first.
+        let mut rt = clean_rt();
+        c.render(&mut rt);
+        assert_eq!(c.needs_frame(), FrameNeed::None);
+    }
+
+    #[test]
+    fn needs_frame_now_when_dirtied_again() {
+        let mut c = component_with_textbox();
+        let mut rt = clean_rt();
+        c.render(&mut rt);
+        assert_eq!(c.needs_frame(), FrameNeed::None);
+        c.set_viewport_size(100.0, 100.0);
+        assert_eq!(c.needs_frame(), FrameNeed::Now);
+    }
+
+    #[test]
+    fn needs_frame_at_zero_when_blink_deadline_passed() {
+        let mut c = component_with_textbox();
+        c.handle_event(&ViewEvent::FocusGained);
+        let mut rt = clean_rt();
+        c.render(&mut rt);
+        // Backdate the deadline: the saturating read gives At(0) == "now".
+        c.blink_deadline = Some(Instant::now() - std::time::Duration::from_millis(100));
+        match c.needs_frame() {
+            FrameNeed::At(d) => assert!(d.is_zero(), "expected At(0)"),
+            other => panic!("expected At, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn needs_frame_retry_after_failed_draw() {
+        let mut c = component_with_textbox();
+        struct FailingTarget;
+        impl RenderTarget for FailingTarget {
+            fn draw_scene(&mut self, _: &Scene) -> bool {
+                false
+            }
+            fn size(&self) -> (f64, f64) {
+                (800.0, 600.0)
+            }
+        }
+        let mut rt = clean_rt();
+        c.render(&mut rt);
+        assert_eq!(c.needs_frame(), FrameNeed::None);
+        // A failed GPU draw must ask for an immediate retry frame.
+        c.render(&mut FailingTarget);
+        assert_eq!(c.needs_frame(), FrameNeed::Now);
+        // A successful draw clears the retry flag.
+        c.render(&mut rt);
+        assert_eq!(c.needs_frame(), FrameNeed::None);
+    }
+
+    #[test]
+    fn update_scene_does_not_advance_blink_on_any_target() {
+        let mut c = component_with_textbox();
+        c.handle_event(&ViewEvent::FocusGained);
+        let mut rt = clean_rt();
+        c.render(&mut rt);
+        // Backdate far past the deadline; update_scene alone must not flip.
+        c.blink_deadline = Some(Instant::now() - std::time::Duration::from_secs(10));
+        c.scene_dirty = true;
+        c.update_scene();
+        assert!(c.cursor_visible, "update_scene must not toggle the caret");
+        assert!(!c.scene_dirty);
     }
 
     #[test]

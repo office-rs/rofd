@@ -16,3 +16,8 @@ imaging = { workspace = true }
 # Migrated sample_drag_select parses the real fixture and builds points.
 rofd-io = { workspace = true }
 kurbo = { workspace = true }
+
+# Monotonic animation clock for the wasm target (blink deadline). See the
+# matching entry in the root Cargo.toml for why web-time and not std.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-time = { workspace = true }

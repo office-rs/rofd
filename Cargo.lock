@@ -4612,6 +4612,7 @@ dependencies = [
  "rofd-editor",
  "rofd-io",
  "rofd-render",
+ "web-time",
 ]
 
 [[package]]

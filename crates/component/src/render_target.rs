@@ -7,7 +7,10 @@ use rofd_render::Scene;
 /// implements it, converting the imaging scene to a `vello::Scene` via
 /// `imaging_vello::VelloSceneSink` before rendering.
 pub trait RenderTarget {
-    fn draw_scene(&mut self, scene: &Scene);
+    /// Blit the scene to the GPU. Returns `true` when the frame reached the
+    /// screen; `false` means the caller should retry on the next frame
+    /// (feeds the component's `scene_needs_paint`).
+    fn draw_scene(&mut self, scene: &Scene) -> bool;
     fn size(&self) -> (f64, f64);
 }
 
@@ -21,8 +24,9 @@ mod tests {
         h: f64,
     }
     impl RenderTarget for MockRenderTarget {
-        fn draw_scene(&mut self, _scene: &Scene) {
+        fn draw_scene(&mut self, _scene: &Scene) -> bool {
             self.drawn += 1;
+            true
         }
         fn size(&self) -> (f64, f64) {
             (self.w, self.h)

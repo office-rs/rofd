@@ -7,8 +7,9 @@ struct MockRenderTarget {
     drawn: usize,
 }
 impl RenderTarget for MockRenderTarget {
-    fn draw_scene(&mut self, _: &Scene) {
+    fn draw_scene(&mut self, _: &Scene) -> bool {
         self.drawn += 1;
+        true
     }
     fn size(&self) -> (f64, f64) {
         (800.0, 600.0)

@@ -44,3 +44,7 @@ console_error_panic_hook = "0.1"
 # build on wasm32-unknown-unknown. `std` provides from_timestamp_millis /
 # parse_from_str / format / and_utc / timestamp_millis / and_hms_opt — all dateutil needs.
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+# web_time::Instant — performance.now() on wasm (std Instant::now() is a hard
+# panic on wasm32-unknown-unknown); a std re-export on native. Only the
+# monotonic blink animation clock uses it (AGENTS §4.4).
+web-time = "1"
