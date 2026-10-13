@@ -9,6 +9,11 @@ follow the git tags published to GitHub Releases (`vX.Y.Z`); the npm SDK
 
 ### Added
 - 适应宽度 / 适应高度 / 适应页面缩放模式：`set_zoom_mode` 组件 API、SDK `zoomMode`/`setZoomMode`、web 与 native 工具栏按钮；resize/换文档自动重适配，手动缩放退出；fit 可低于 25%（下限 5%）
+- Web 按需渲染：SDK 渲染循环自挂起调度（聚焦静止 ~2 帧/s，失焦/后台标签 0 帧 0 定时器），新增 `pauseRendering()` / `resumeRendering()` 宿主政策层 API（spec 2026-10-13 web-render-on-demand）
+- 组件 `needs_frame() -> FrameNeed` 调度真值；`RenderTarget::draw_scene` 返回绘制成败，失败下一 vsync 重试
+
+### Changed
+- wasm caret blink 从 60Hz 帧累计器改为真实时钟 deadline（`web_time::Instant`）；`renderFrame()` 返回下一帧调度需求（0 / 毫秒 / -1）
 
 ## v0.1.6
 

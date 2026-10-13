@@ -117,7 +117,7 @@ crates/web-app ─► web-view ─────────────┘       
 
 ### 4.4 库不取系统时间
 
-库内**绝不**调 `Date::now()` / `SystemTime::now()`。宿主通过 `set_clock(author, ts)` 注入；命令用注入时间填 `created`/`modified`。**例外（2026-09 明确）**：单调 `Instant`（非挂钟、不可持久化、不随系统时钟跳变）可用于动画计时——native 侧 caret blink 的 `tick_blink` 即此用途；wasm 侧不使用 `Instant`。
+库内**绝不**调 `Date::now()` / `SystemTime::now()`。宿主通过 `set_clock(author, ts)` 注入；命令用注入时间填 `created`/`modified`。**例外（2026-09 明确，2026-10-13 修订）**：单调 `Instant`（非挂钟、不可持久化、不随系统时钟跳变）可用于动画计时——caret blink 的 deadline/`tick_blink` 在两目标统一使用。wasm 侧经 `web_time::Instant` cfg 别名（`performance.now()` 支撑；`std::time::Instant::now()` 在 wasm32-unknown-unknown 是硬 panic），native 侧仍为 std。
 
 ### 4.5 渲染产出 `imaging::record::Scene`，不是 `vello::Scene`
 
@@ -148,6 +148,7 @@ crates/web-app ─► web-view ─────────────┘       
 
 - `WasmOfd`（wasm-bindgen）+ `WebGpuRenderTarget` + JS 事件桥。工厂 `create_wasm_ofd`。wasm-pack --target web。
 - SDK 在 `crates/web-view/sdk/`，入口 `Ofd.init(container, config?)`，发布为 npm 包 `@office-rs/rofd`。
+- 渲染调度（spec 2026-10-13 web-render-on-demand）：内核 `needs_frame() -> FrameNeed` 是唯一真值；wasm 融合导出 `renderFrame()` 返回 `0` / `>0`ms / `-1`。SDK 自挂起调度器（`scheduler.ts` `RenderScheduler` + `with-kick.ts` Proxy kick + watchdog）：`0`→rAF 立即重渲、`>0`→唯一 `setTimeout` 唤醒（blink deadline，web 的 WaitUntil）、`-1`→完全挂起；任何 wasm 方法调用经 Proxy kick 恰预约一个 rAF（`renderFrame` 豁免）；`visibilitychange` 隐藏完全静默；`pauseRendering`/`resumeRendering` 为宿主政策层手柄。
 
 ### xilem-app
 
@@ -230,6 +231,7 @@ superpowers 工作流：spec → plan → TDD → 自审 → 提交，全部 con
 | editor 只改 .annotations | 在 editor 里改 pages |
 | xilem-view 只依赖 component | 往适配器塞 io/业务逻辑 |
 | 改 io 后跑手术刀测试 | 只断言模型相等 |
+| SDK 渲染调度经 `RenderScheduler`/kick（真值 = `needs_frame`） | 在 SDK 起恒定 rAF 循环；往 tick 里加经 Proxy 的 wasm 读而不依赖 `inLoopTick` 兜底 |
 
 ---
 

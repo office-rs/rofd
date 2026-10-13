@@ -73,6 +73,21 @@ WebGPU requires Chrome / Edge 113+ (or any browser shipping WebGPU). On unsuppor
 | `get canUndo` / `get canRedo` | Whether undo / redo is available. |
 | `destroy()` | Stop the render loop and remove the canvas. |
 
+### Rendering
+
+The SDK renders on demand: the render loop suspends when the editor has no
+work (blurred or idle) and wakes on input, caret blink (~2 frames/s while
+focused), or page visibility changes. A background tab is fully silenced -
+zero frames, zero timers.
+
+- `pauseRendering()` — host policy: stop rendering and drop pending work
+  (e.g. a hidden panel or inactive tab in your app).
+- `resumeRendering()` — resume after `pauseRendering()`; schedules one
+  frame immediately.
+
+`kick` / `withKick` / the scheduler are `@internal` and not part of the
+public API surface.
+
 ## Callbacks (passed to `Ofd.init`)
 
 | Callback | Fires when |
