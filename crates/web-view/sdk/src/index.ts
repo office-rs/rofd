@@ -392,15 +392,20 @@ export class Ofd {
     this.fontWatch?.kick();
   }
 
-  private startFontFlow(cfg: FontSlicesConfig, onWarning?: (warnings: string[]) => void): void {
+  /** @internal 启动切片字体流（init 的 fontSlices 分支；测试接线直接驱动）。
+   * onWarning 与其它宿主回调一致经 deferCb 延迟——宿主抛错只落在微任务里，
+   * 不会沿 onError→ensureFonts 反向传播楔死 retryFontFlow 的状态机。 */
+  startFontFlow(cfg: FontSlicesConfig, onWarning?: (warnings: string[]) => void): void {
     this.fontSlicesCfg = cfg;
-    this.onWarningCb = onWarning;
+    this.onWarningCb = onWarning ? deferCb(onWarning) : undefined;
     void this.retryFontFlow();
   }
 
   private async retryFontFlow(): Promise<void> {
     const cfg = this.fontSlicesCfg;
-    if (!cfg || this.fontFlowState === 'init') {
+    // 流只从 off 态进入：init 中重入会双重拉流，ready 中重入会双挂
+    // watcher（泄漏一个 300ms debounce 定时器）。
+    if (!cfg || this.fontFlowState !== 'off') {
       return;
     }
     this.fontFlowState = 'init';
