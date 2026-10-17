@@ -13,6 +13,7 @@ use rofd_render::{
 use crate::callbacks::{Callbacks, ContextTarget, PointerCursor};
 use crate::config::OfdConfig;
 use crate::event::EventOutcome;
+use crate::font_req::{self, FontRequirements};
 use crate::render_target::RenderTarget;
 use crate::zoom_mode::ZoomMode;
 
@@ -253,6 +254,11 @@ pub struct OfdComponent {
     pub(crate) scene_needs_paint: bool,
     /// Active IME preedit, if composing. Text enters the dom only on commit.
     pub(crate) preedit: Option<crate::preedit::PreeditState>,
+    /// body 静态字体需求缓存（spec 2026-10-17 字体切片 §2.1）：页面
+    /// TextObject 码点 ∪ 声明族（排除嵌入）。在 `load_document`/`new_document`
+    /// 换文档时重算一次；批注/preedit 的动态部分由 [`Self::font_requirements`]
+    /// 每次现扫，不入缓存。
+    body_font_req: FontRequirements,
 }
 
 impl OfdComponent {
@@ -302,6 +308,7 @@ impl OfdComponent {
             cursor_visible: true,
             blink_deadline: None,
             preedit: None,
+            body_font_req: FontRequirements::default(),
         }
     }
 
@@ -350,6 +357,7 @@ impl OfdComponent {
         // Body-text selection belongs to the old document's pages.
         self.set_text_selection(None);
         self.editor.load_document(doc);
+        self.body_font_req = font_req::body_requirements(self.editor.document());
         self.font_store = Some(self.build_font_store());
         self.modified = false;
         // Reset the visible-page cache: a newly loaded document may have a
@@ -370,11 +378,33 @@ impl OfdComponent {
         self.hover = None;
         self.set_text_selection(None);
         self.editor.load_document(OfdDocument::default());
+        self.body_font_req = font_req::body_requirements(self.editor.document());
         self.font_store = Some(self.build_font_store());
         self.modified = false;
         self.current_page = None;
         self.apply_fit(false);
         self.mark_scene_dirty();
+    }
+
+    /// 全量字体需求 = body 静态缓存 ∪ 批注动态文本（TextBox/Watermark ∪
+    /// preedit）。init / loadOfd 后 / watcher tick 共用（spec §2.1）。
+    pub fn font_requirements(&self) -> FontRequirements {
+        let (mut families, cps) = font_req::annotation_requirements(self.editor.document());
+        families.extend(self.body_font_req.families.iter().cloned());
+        let mut all = self.body_font_req.codepoints.clone();
+        all.extend(cps);
+        if let Some(p) = &self.preedit {
+            all.extend(p.text.chars().map(u32::from));
+        }
+        let mut req = font_req::FontRequirements {
+            families,
+            codepoints: all,
+        };
+        req.families.sort_unstable();
+        req.families.dedup();
+        req.codepoints.sort_unstable();
+        req.codepoints.dedup();
+        req
     }
 
     pub fn document(&self) -> &OfdDocument {
@@ -7741,5 +7771,184 @@ mod tests {
         // no-selection / wrong-tool contract.
         let mut c = component_with_textbox();
         assert!(c.copy_selection().is_none());
+    }
+
+    // ---- font requirements collection (spec 2026-10-17 §2.1) ----
+
+    /// Bare component (no default font bytes) - the doc under test is
+    /// installed per-test via `load_document`.
+    fn test_component() -> OfdComponent {
+        OfdComponent::new(OfdConfig::new(Arc::new(vec![])))
+    }
+
+    /// One page P0 with three TextObjects covering the three font shapes:
+    /// F1 declares 宋体 (family -> simsun), F2 declares nothing (codepoints
+    /// only), F3 carries embedded bytes (family + bytes: excluded entirely
+    /// from families, codepoints still collected).
+    fn doc_with_font_needs() -> OfdDocument {
+        use rofd_dom::FontRef;
+        let mut doc = OfdDocument::default();
+        doc.resources.fonts.insert(
+            FontId::new("F1"),
+            FontRef {
+                id: FontId::new("F1"),
+                family_name: Some("宋体".into()),
+            },
+        );
+        // 无 family_name：不产族，码点进全局集
+        doc.resources.fonts.insert(
+            FontId::new("F2"),
+            FontRef {
+                id: FontId::new("F2"),
+                family_name: None,
+            },
+        );
+        // 嵌入：排除
+        doc.resources
+            .font_data
+            .insert(FontId::new("F3"), Arc::new(vec![0u8; 4]));
+        doc.resources.fonts.insert(
+            FontId::new("F3"),
+            FontRef {
+                id: FontId::new("F3"),
+                family_name: Some("SimHei".into()),
+            },
+        );
+        doc.pages.push(Page {
+            id: PageId::new("P0"),
+            physical_box: Rect::default(),
+            layers: vec![Layer {
+                layer_type: LayerType::Body,
+                objects: vec![
+                    PageObject::Text(TextObject {
+                        id: ObjectId::new("t1"),
+                        font: FontId::new("F1"),
+                        size: 12.0,
+                        codes: vec![TextCode {
+                            text: "中文字".into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }),
+                    PageObject::Text(TextObject {
+                        id: ObjectId::new("t2"),
+                        font: FontId::new("F2"),
+                        size: 12.0,
+                        codes: vec![TextCode {
+                            text: "abc".into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }),
+                    PageObject::Text(TextObject {
+                        id: ObjectId::new("t3"),
+                        font: FontId::new("F3"),
+                        size: 12.0,
+                        codes: vec![TextCode {
+                            text: "嵌入".into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }),
+                ],
+            }],
+            template: None,
+        });
+        doc
+    }
+
+    #[test]
+    fn font_requirements_collects_body_and_normalizes() {
+        let mut c = test_component();
+        c.load_document(doc_with_font_needs());
+        let req = c.font_requirements();
+        assert_eq!(
+            req.families,
+            vec!["simsun".to_string()],
+            "宋体归一 + F2/F3 不产族"
+        );
+        let cps: Vec<u32> = "中文字abc嵌入".chars().map(u32::from).collect();
+        let mut want = cps;
+        want.sort_unstable();
+        want.dedup();
+        assert_eq!(
+            req.codepoints, want,
+            "body 码点升序去重（含无声明/嵌入族的文本）"
+        );
+    }
+
+    #[test]
+    fn font_requirements_union_annotation_and_preedit() {
+        use rofd_dom::Annotation;
+        let mut c = test_component();
+        let mut doc = doc_with_font_needs();
+        doc.annotations.insert(Annotation {
+            id: AnnotationId::from_int(1),
+            kind: AnnotationKind::TextBox,
+            page: PageId::new("P0"),
+            creator: String::new(),
+            created: 0,
+            modified: 0,
+            reply_to: None,
+            payload: AnnotationPayload::TextBox {
+                rect: Rect::default(),
+                content: "批注龘".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+            },
+        });
+        c.load_document(doc);
+        let req = c.font_requirements();
+        assert!(req.codepoints.contains(&u32::from('龘')), "批注码点并入");
+        // preedit 并入（组件自持，不入 dom）。PreeditState 无 Default，
+        // 全字段构造（与既有测试同风格）。
+        c.preedit = Some(crate::preedit::PreeditState {
+            text: "𠮷".into(),
+            caret: Some((1, 1)),
+            annotation: AnnotationId::from_int(1),
+            offset: 0,
+        });
+        let req2 = c.font_requirements();
+        assert!(
+            req2.codepoints.contains(&u32::from('𠮷')),
+            "preedit 码点并入"
+        );
+    }
+
+    #[test]
+    fn font_requirements_annotation_family_declared() {
+        // 批注引用的族也进 families（排除嵌入）。
+        use rofd_dom::{Annotation, FontRef};
+        let mut c = test_component();
+        let mut doc = doc_with_font_needs();
+        doc.resources.fonts.insert(
+            FontId::new("F4"),
+            FontRef {
+                id: FontId::new("F4"),
+                family_name: Some("微软雅黑".into()),
+            },
+        );
+        doc.annotations.insert(Annotation {
+            id: AnnotationId::from_int(2),
+            kind: AnnotationKind::TextBox,
+            page: PageId::new("P0"),
+            creator: String::new(),
+            created: 0,
+            modified: 0,
+            reply_to: None,
+            payload: AnnotationPayload::TextBox {
+                rect: Rect::default(),
+                content: "x".into(),
+                font: FontId::new("F4"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+            },
+        });
+        c.load_document(doc);
+        let req = c.font_requirements();
+        assert!(req.families.contains(&"msyh".to_string()));
     }
 }

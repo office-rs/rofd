@@ -3,6 +3,7 @@
 pub mod callbacks;
 pub mod config;
 pub mod event;
+pub mod font_req;
 pub mod ofd_component;
 pub mod preedit;
 pub mod render_target;
@@ -12,6 +13,7 @@ pub mod zoom_mode;
 pub use callbacks::{Callbacks, ContextTarget, PointerCursor, TooltipFormatter};
 pub use config::OfdConfig;
 pub use event::{EventOutcome, Key, Modifiers, MouseButton, ScrollDirection, ViewEvent};
+pub use font_req::FontRequirements;
 pub use ofd_component::{CreateKind, FrameNeed, OfdComponent, Tool};
 pub use render_target::RenderTarget;
 pub use tooltip_text::{default_tooltip_lines, format_tooltip_datetime};
