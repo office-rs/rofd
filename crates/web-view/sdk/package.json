@@ -23,6 +23,9 @@
     "rust"
   ],
   "type": "module",
+  "dependencies": {
+    "@office-rs/font-runtime": "file:../../../../fonts/packages/font-runtime"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
