@@ -30,14 +30,18 @@ export function toFontFlowError(e: unknown): FontFlowError {
   return { family: '', message: e instanceof Error ? e.message : String(e) };
 }
 
-/** 预检 manifest URL（spec §5）：404/网络失败的条目静默剔除（console.info，
- * 不进 onWarning）——新 clone 无商用切片目录、tauri 发布不带切片时天然降级。 */
+/** 预检 manifest URL（spec §5）：404/网络失败/HTML 回退的条目静默剔除
+ * （console.info，不进 onWarning）——新 clone 无商用切片目录、tauri 发布不带
+ * 切片时天然降级。dev 态 Vite SPA fallback 会把缺失路径回退成 index.html
+ * （200 text/html，浏览器 fetch 的默认 Accept 头即可命中），故 ok 之外还须
+ * content-type 含 json（application/json 或 +json）才算活着。 */
 export async function filterLiveManifests(urls: string[]): Promise<string[]> {
   const live: string[] = [];
   for (const url of urls) {
     try {
       const res = await fetch(url);
-      if (res.ok) { live.push(url); } else { console.info(`[rofd] font manifest unavailable (degraded): ${url}`); }
+      const type = res.headers.get('content-type') ?? '';
+      if (res.ok && type.includes('json')) { live.push(url); } else { console.info(`[rofd] font manifest unavailable (degraded): ${url}`); }
     } catch { console.info(`[rofd] font manifest unreachable (degraded): ${url}`); }
   }
   return live;

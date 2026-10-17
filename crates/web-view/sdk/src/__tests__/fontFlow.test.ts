@@ -135,8 +135,10 @@ describe('scheduleFontWatch', () => {
 describe('filterLiveManifests', () => {
   it('keeps live manifests in order, dropping 404 and network failures', async () => {
     const fetchMock = vi.fn(async (url: string) => {
-      if (url.endsWith('/live.json')) { return { ok: true } as Response; }
-      if (url.endsWith('/gone.json')) { return { ok: false } as Response; }
+      if (url.endsWith('/live.json')) {
+        return { ok: true, headers: new Headers({ 'content-type': 'application/json' }) } as Response;
+      }
+      if (url.endsWith('/gone.json')) { return { ok: false, headers: new Headers() } as Response; }
       throw new TypeError('network down');
     });
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
@@ -149,6 +151,34 @@ describe('filterLiveManifests', () => {
       ]);
       expect(live).toEqual(['https://fonts.example/live.json']);
       expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.unstubAllGlobals();
+      info.mockRestore();
+    }
+  });
+
+  it('drops ok responses whose content-type is not JSON (dev Vite SPA fallback regression)', async () => {
+    // dev 态 Vite html-fallback 把缺失 manifest 回退成 index.html：
+    // 200 + text/html——res.ok 为真也必须拒收（spec §5 降级不告警）。
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/real.json')) {
+        return { ok: true, headers: new Headers({ 'content-type': 'application/json' }) } as Response;
+      }
+      // +json 后缀（RFC 6839 结构化语法类型）同样放行。
+      if (url.endsWith('/vendor.json')) {
+        return { ok: true, headers: new Headers({ 'content-type': 'application/vnd.rofd+json' }) } as Response;
+      }
+      return { ok: true, headers: new Headers({ 'content-type': 'text/html; charset=utf-8' }) } as Response;
+    });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const live = await filterLiveManifests([
+        'https://fonts.example/spa-fallback.json',
+        'https://fonts.example/real.json',
+        'https://fonts.example/vendor.json',
+      ]);
+      expect(live).toEqual(['https://fonts.example/real.json', 'https://fonts.example/vendor.json']);
     } finally {
       vi.unstubAllGlobals();
       info.mockRestore();
