@@ -10,6 +10,10 @@ peniko = { workspace = true }
 kurbo = { workspace = true }
 image = { workspace = true }
 imaging = { workspace = true }
+# 整字体注册的 name-table 预扫（collect_localized_family_aliases）：读全部
+# 本地化族名（Family/TypographicFamily，ttc 逐面），拒收已被切片锚定的族
+# （spec §2.3-4，跟随 rword as-built）。仅渲染 crate 直依赖，不进 wasm API 面。
+swash = "0.2"
 
 [dev-dependencies]
 rofd-io = { workspace = true }

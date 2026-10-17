@@ -8,6 +8,7 @@ use parley::fontique::{FamilyId, FontInfoOverride};
 use parley::style::{FontFamily, FontFamilyName, GenericFamily};
 use peniko::FontData;
 use rofd_dom::{FontId, Resources};
+use swash::{FontRef, StringId};
 
 use super::shape::{
     register_font_with_ids, shape_grouped_with_family, shape_with_family, ShapedGlyph,
@@ -149,8 +150,20 @@ impl FontStore {
     /// rebuilt in the deterministic slice-first order ([`Self::rebuild_sansserif`]);
     /// otherwise the legacy append semantics are kept.
     ///
-    /// Returns `false` for empty/invalid bytes (no font registered).
+    /// Returns `false` for empty/invalid bytes (no font registered). Also
+    /// returns `false` — with zero registration — when the bytes' name-table
+    /// family (any localized alias, normalized) is already anchored by a slice
+    /// chain (spec §2.3-4, following rword): the whole font would shadow the
+    /// slice family, so the legacy whole-font channel refuses it.
     pub fn register_font(&mut self, bytes: Arc<Vec<u8>>) -> bool {
+        let aliases = collect_localized_family_aliases(&bytes);
+        if aliases
+            .iter()
+            .map(|n| super::family::normalize_family_key(n))
+            .any(|key| self.slice_chains.contains_key(&key))
+        {
+            return false; // 该族已被切片锚定，整字体不再注册（防遮蔽/防重复）
+        }
         let font = match make_font(bytes) {
             Some(f) => f,
             None => return false,
@@ -418,6 +431,57 @@ fn chain_names(chains: &HashMap<String, Vec<String>>, key: &str) -> Vec<FontFami
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// 读字体 name table 的全部本地化族名（en-US "SimSun" + zh-CN "宋体" 等，
+/// 含 TypographicFamily）；ttc 逐面。解析失败返回空（best-effort）。
+fn collect_localized_family_aliases(data: &[u8]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |name: String| {
+        if !name.is_empty() && !out.contains(&name) {
+            out.push(name);
+        }
+    };
+
+    let mut faces: Vec<FontRef<'_>> = Vec::new();
+    if data.len() >= 4 && &data[..4] == b"ttcf" {
+        if data.len() >= 12 {
+            let num_fonts = u32::from_be_bytes([data[8], data[9], data[10], data[11]]) as usize;
+            for i in 0..num_fonts {
+                let off_idx = 12 + i * 4;
+                if off_idx + 4 > data.len() {
+                    break;
+                }
+                let offset = u32::from_be_bytes([
+                    data[off_idx],
+                    data[off_idx + 1],
+                    data[off_idx + 2],
+                    data[off_idx + 3],
+                ]);
+                if let Some(face) = FontRef::from_offset(data, offset) {
+                    faces.push(face);
+                }
+            }
+        }
+    } else if let Some(face) = FontRef::from_index(data, 0) {
+        faces.push(face);
+    }
+
+    for face in faces {
+        for s in face.localized_strings() {
+            let id = s.id();
+            if id != StringId::Family && id != StringId::TypographicFamily {
+                continue;
+            }
+            if !s.is_decodable() {
+                continue;
+            }
+            let name: String = s.chars().collect();
+            push(name);
+        }
+    }
+
+    out
 }
 
 #[cfg(test)]
@@ -757,9 +821,12 @@ mod tests {
     #[test]
     fn whole_font_after_slice_does_not_shadow_generic_order() {
         // rword 修正 4.1：切片后注册的整字体不得在 SansSerif 泛型里排在切片前。
+        // 切片键须避开夹具真实 name-table 族名（"Noto Sans CJK SC" 归一为
+        // "notosanscjksc"）：同名族在整只通道已被拒收（spec §2.3-4），故排序
+        // 场景用异族键（simsun）锚定切片，整只照常注册。
         let cjk = include_bytes!("../../tests/fixtures/fonts/TestFontCjk.otf") as &[u8];
         let mut store = FontStore::from_resources(&Resources::default(), Arc::new(vec![]));
-        assert!(store.register_font_slice(Arc::new(cjk.to_vec()), "notosanscjksc", "common-0"));
+        assert!(store.register_font_slice(Arc::new(cjk.to_vec()), "simsun", "common-0"));
         assert!(
             store.register_font(Arc::new(cjk.to_vec())),
             "whole font registers"
@@ -801,6 +868,35 @@ mod tests {
             store.slice_chains.is_empty(),
             "failed slice leaves no chain entry"
         );
+    }
+
+    #[test]
+    fn register_font_rejected_when_family_slice_anchored() {
+        // 同族"切片 + 整字体"并存：整字体注册被拒（spec §2.3-4 跟随 rword）。
+        // 切片键用夹具真实 name-table 族名的归一键（swash 预扫发现：
+        // "Noto Sans CJK SC" -> "notosanscjksc"），整只注册同名命中守卫。
+        let cjk = include_bytes!("../../tests/fixtures/fonts/TestFontCjk.otf") as &[u8];
+        let mut store = FontStore::from_resources(&Resources::default(), Arc::new(vec![]));
+        assert!(store.register_font_slice(Arc::new(cjk.to_vec()), "notosanscjksc", "common-0"));
+        let before = store.whole_family_ids.len();
+        assert!(
+            !store.register_font(Arc::new(cjk.to_vec())),
+            "whole font of sliced family rejected"
+        );
+        assert_eq!(
+            store.whole_family_ids.len(),
+            before,
+            "rejected font leaves no ids"
+        );
+    }
+
+    #[test]
+    fn register_font_accepted_when_no_slices_anchor_family() {
+        // 无切片时整只注册照旧（legacy 通道现状行为；夹具真实族名
+        // "DejaVu Sans" 归一 "dejavu sans"，无切片锚定，不受守卫影响）。
+        let latin = include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        let mut store = FontStore::from_resources(&Resources::default(), Arc::new(vec![]));
+        assert!(store.register_font(Arc::new(latin.to_vec())));
     }
 
     #[test]
