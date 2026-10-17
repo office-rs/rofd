@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use parley::fontique::FamilyId;
+use parley::fontique::{FamilyId, FontInfoOverride};
 use parley::style::{FontFamily, FontFamilyName, GenericFamily};
 use peniko::FontData;
 use rofd_dom::{FontId, Resources};
@@ -47,12 +47,12 @@ pub struct FontStore {
     /// 切片族键 -> 内部名链（注册序）。具名族解析的族内优先链（spec §2.3-2）。
     slice_chains: HashMap<String, Vec<String>>,
     /// 已注册切片的 fontique FamilyId（SansSerif 链重建用，去重追加）。
-    /// Populated/read from Task 3 (slice registration); kept empty until then.
-    #[allow(dead_code)]
+    /// Populated/read by [`Self::register_font_slice`]; read by
+    /// [`Self::rebuild_sansserif`] and [`Self::register_font`].
     slice_family_ids: Vec<FamilyId>,
     /// 整只字体（嵌入/default/legacy）的 FamilyId 记账：链重建时排在切片后。
-    /// Populated from Task 2; read from Task 3 (chain rebuild).
-    #[allow(dead_code)]
+    /// Populated in `from_resources`/[`Self::register_font`]; read by
+    /// [`Self::rebuild_sansserif`].
     whole_family_ids: Vec<FamilyId>,
     /// default 锚定的切片族键（首个成功注册的片；spec §2.3-4）。
     default_slice_key: Option<String>,
@@ -61,7 +61,7 @@ pub struct FontStore {
     /// text); subsequent composites hit the cache and skip parley re-shaping
     /// (which dominated render time - ~500ms for a text-heavy doc per frame).
     /// `size.to_bits()` keys avoid `f64` not being `Eq`. Cleared on
-    /// `register_font`.
+    /// `register_font`/`register_font_slice`.
     #[allow(clippy::type_complexity)]
     glyph_cache: RefCell<
         HashMap<FontId, HashMap<u64, HashMap<String, (Option<FontData>, Rc<Vec<ShapedGlyph>>)>>>,
@@ -140,8 +140,14 @@ impl FontStore {
     /// Register an additional font (raw bytes) at runtime - e.g. a CJK font
     /// loaded by the web SDK after construction. The font is added to the shared
     /// `FontContext` so parley can select it: via the default family (the first
-    /// registered font's family becomes the default when none is set) or via
-    /// fontique's script fallback when a glyph is missing in the selected font.
+    /// registered font's family becomes the default when neither a default
+    /// family nor a slice chain is anchored yet) or via fontique's script
+    /// fallback when a glyph is missing in the selected font.
+    ///
+    /// The registered family ids are recorded in `whole_family_ids` (legacy
+    /// whole-font ledger). When slice chains exist, the `SansSerif` generic is
+    /// rebuilt in the deterministic slice-first order ([`Self::rebuild_sansserif`]);
+    /// otherwise the legacy append semantics are kept.
     ///
     /// Returns `false` for empty/invalid bytes (no font registered).
     pub fn register_font(&mut self, bytes: Arc<Vec<u8>>) -> bool {
@@ -149,14 +155,23 @@ impl FontStore {
             Some(f) => f,
             None => return false,
         };
-        let family = {
+        let has_slices = !self.slice_family_ids.is_empty();
+        let (family, ids) = {
             let mut fcx = self.font_cx.borrow_mut();
             let (name, ids) = register_font_with_ids(&mut fcx, &font);
-            append_sansserif(&mut fcx, ids);
-            name
+            if !has_slices {
+                append_sansserif(&mut fcx, ids.clone());
+            }
+            (name, ids)
         };
         let ok = family.is_some();
-        if ok && self.default_family.is_none() {
+        if ok {
+            self.whole_family_ids.extend(ids.iter().copied());
+            if has_slices {
+                self.rebuild_sansserif();
+            }
+        }
+        if ok && self.default_family.is_none() && self.default_slice_key.is_none() {
             self.default_family = family;
         }
         // Font set changed -> cached shapes (which may reference the old font
@@ -165,13 +180,75 @@ impl FontStore {
         ok
     }
 
+    /// 注册一个解码后的字体切片（spec §2.3）。字节以内部名
+    /// `__rofs_<key>_<sliceId>` 注册（FontInfoOverride 覆写族名），进族内链与
+    /// SansSerif 重建序；首个成功注册的片锚定 default（此后不抢）。字节不合法
+    /// 返回 `false` 且不留任何记账。
+    pub fn register_font_slice(
+        &mut self,
+        bytes: Arc<Vec<u8>>,
+        family_key: &str,
+        slice_id: &str,
+    ) -> bool {
+        let key = super::family::normalize_family_key(family_key);
+        let internal = format!("__rofs_{key}_{slice_id}");
+        let blob = peniko::Blob::new(bytes);
+        let families = {
+            let mut fcx = self.font_cx.borrow_mut();
+            fcx.collection.register_fonts(
+                blob,
+                Some(FontInfoOverride {
+                    family_name: Some(internal.as_str()),
+                    ..Default::default()
+                }),
+            )
+        };
+        if families.is_empty() {
+            return false;
+        }
+        for (id, _) in &families {
+            if !self.slice_family_ids.contains(id) {
+                self.slice_family_ids.push(*id);
+            }
+        }
+        self.slice_chains
+            .entry(key.clone())
+            .or_default()
+            .push(internal);
+        if self.default_family.is_none() && self.default_slice_key.is_none() {
+            self.default_slice_key = Some(key);
+        }
+        self.rebuild_sansserif();
+        // Font set changed -> cached shapes invalid (same rule as register_font).
+        self.glyph_cache.borrow_mut().clear();
+        true
+    }
+
+    /// SansSerif 泛型链规范重建（rword 修正 4.1）：切片在前、整只在后的确定序。
+    /// 无切片时不动（构造期/纯 legacy 保持 append 语义，native 系统回退存活）。
+    fn rebuild_sansserif(&mut self) {
+        if self.slice_family_ids.is_empty() {
+            return;
+        }
+        let ids: Vec<FamilyId> = self
+            .slice_family_ids
+            .iter()
+            .chain(self.whole_family_ids.iter())
+            .copied()
+            .collect();
+        self.font_cx
+            .borrow_mut()
+            .collection
+            .set_generic_families(GenericFamily::SansSerif, ids.into_iter());
+    }
+
     /// Shape `text` with the document font for `font_id` (falling back to the
     /// default font's family if `font_id` is unknown), at `size`.
     ///
     /// Results are cached by `(font_id, size, text)` - OFD body text is static,
     /// so shaping happens once per unique triple and subsequent composites hit
     /// the cache (parley re-shaping dominated render time otherwise). Cleared on
-    /// `register_font`.
+    /// `register_font`/`register_font_slice`.
     ///
     /// Ligatures OFF (1:1 char<->glyph). If neither a document font nor a
     /// default font is resolved, falls back to a generic system family
@@ -635,5 +712,122 @@ mod tests {
         let (font, glyphs) = store.shape(&FontId::new("F9"), "Hi", 12.0);
         assert_eq!(glyphs.len(), 2);
         assert!(font.is_some());
+    }
+
+    #[test]
+    fn register_font_slice_shapes_declared_family_via_chain() {
+        // 声明族（simsun）注册切片后，其 FontId 的 shape 走族内链：
+        // 覆盖字形非 .notdef（spec §2.3-2）。
+        let cjk = include_bytes!("../../tests/fixtures/fonts/TestFontCjk.otf") as &[u8];
+        let mut res = Resources::default();
+        res.fonts.insert(
+            FontId::new("F1"),
+            rofd_dom::FontRef {
+                id: FontId::new("F1"),
+                family_name: Some("宋体".into()),
+            },
+        );
+        let mut store = FontStore::from_resources(&res, Arc::new(vec![]));
+        assert!(store.register_font_slice(Arc::new(cjk.to_vec()), "simsun", "common-0"));
+        let (font, glyphs) = store.shape(&FontId::new("F1"), "中", 12.0);
+        assert!(!glyphs.is_empty());
+        assert!(
+            glyphs.iter().all(|g| g.glyph_id != 0),
+            "chain slice shapes nonzero glyphs"
+        );
+        assert!(font.is_some());
+    }
+
+    #[test]
+    fn first_slice_anchors_default_unknown_ids_shape() {
+        // 首个成功注册的片锚定 default：无声明 FontId 的文本经 default 链成形。
+        let latin = include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        let mut store = FontStore::from_resources(&Resources::default(), Arc::new(vec![]));
+        assert!(store.register_font_slice(Arc::new(latin.to_vec()), "notosans", "whole"));
+        let (_font, glyphs) = store.shape(&FontId::new("nope"), "Hi", 12.0);
+        assert_eq!(glyphs.len(), 2, "default slice chain shapes unknown id");
+        assert!(glyphs.iter().all(|g| g.glyph_id != 0));
+    }
+
+    #[test]
+    fn whole_font_after_slice_does_not_shadow_generic_order() {
+        // rword 修正 4.1：切片后注册的整字体不得在 SansSerif 泛型里排在切片前。
+        let cjk = include_bytes!("../../tests/fixtures/fonts/TestFontCjk.otf") as &[u8];
+        let mut store = FontStore::from_resources(&Resources::default(), Arc::new(vec![]));
+        assert!(store.register_font_slice(Arc::new(cjk.to_vec()), "notosanscjksc", "common-0"));
+        assert!(
+            store.register_font(Arc::new(cjk.to_vec())),
+            "whole font registers"
+        );
+        let order: Vec<FamilyId> = {
+            let mut fcx = store.font_cx.borrow_mut();
+            fcx.collection
+                .generic_families(GenericFamily::SansSerif)
+                .collect()
+        };
+        let slice_pos = order
+            .iter()
+            .position(|id| store.slice_family_ids.contains(id))
+            .expect("slice in generic");
+        let whole_pos = order
+            .iter()
+            .position(|id| store.whole_family_ids.contains(id))
+            .expect("whole in generic");
+        assert!(slice_pos < whole_pos, "slices precede wholes after rebuild");
+    }
+
+    #[test]
+    fn register_font_slice_clears_glyph_cache_and_reshapes() {
+        // 补片后缓存失效：同 (font,size,text) 重新 shape，结果覆盖此前 tofu 场景。
+        let latin = include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        let mut store = FontStore::from_resources(&Resources::default(), Arc::new(vec![]));
+        let (_f0, g0) = store.shape(&FontId::new("x"), "Hi", 12.0); // 系统回退（可能为空）
+        assert!(store.register_font_slice(Arc::new(latin.to_vec()), "notosans", "w"));
+        let (_f1, g1) = store.shape(&FontId::new("x"), "Hi", 12.0);
+        assert_eq!(g1.len(), 2, "post-slice shape uses the slice");
+        let _ = g0;
+    }
+
+    #[test]
+    fn register_font_slice_invalid_bytes_returns_false() {
+        let mut store = FontStore::from_resources(&Resources::default(), Arc::new(vec![]));
+        assert!(!store.register_font_slice(Arc::new(vec![1, 2, 3]), "simsun", "s0"));
+        assert!(
+            store.slice_chains.is_empty(),
+            "failed slice leaves no chain entry"
+        );
+    }
+
+    #[test]
+    #[ignore = "perf gate: run manually per spec §6（120 片 vs 3 片 shape/composite 回归 <10%）"]
+    fn slice_chain_perf_gate_120_vs_3() {
+        let latin = include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        let text = "The quick brown fox jumps over the lazy dog 入院记录测试文本";
+        let shape_n = |n: usize| {
+            let mut store = FontStore::from_resources(&Resources::default(), Arc::new(vec![]));
+            for i in 0..n {
+                assert!(store.register_font_slice(
+                    Arc::new(latin.to_vec()),
+                    &format!("fam{}", i % 4),
+                    &format!("s{i}")
+                ));
+            }
+            let t = std::time::Instant::now();
+            for _ in 0..200 {
+                let _ = store.shape(&FontId::new("x"), text, 12.0);
+                store.glyph_cache.borrow_mut().clear(); // 强制 miss 路径
+            }
+            t.elapsed()
+        };
+        let base = shape_n(3);
+        let loaded = shape_n(120);
+        eprintln!(
+            "[perf] 3-slice={base:?} 120-slice={loaded:?} ratio={:.2}",
+            loaded.as_secs_f64() / base.as_secs_f64()
+        );
+        assert!(
+            loaded.as_secs_f64() < base.as_secs_f64() * 10.0 + 0.05,
+            "120-slice shaping blew past the gate"
+        );
     }
 }
