@@ -21,3 +21,8 @@
   `?legacyFonts=1` fixture）；新 clone 无此目录时 legacy 缝自动降级（console.warn）。
 - tauri 发布**默认不含**商用切片（安装包分发=网络分发商用子集，需授权）；
   `fonts-sliced/` 缺席即降级，README 同样适用。
+- **桌面（tauri）不依赖上述本机切片**：宿主桥提供 `readSystemFont` 能力时
+  （`tauri-app/src/host/tauri.ts` → `src-tauri/src/fonts.rs` 白名单 IPC），
+  `resolveFontConfig()` 自动改读 `%WINDIR%\Fonts` 的已授权商用字体（六文件白名
+  单，零再分发）走整字体通道，并把商用切片 manifest 从配置中排除（一族一通
+  道）；Noto 仍走切片。浏览器路径逐字节不变（决策层单测 `npm test`）。

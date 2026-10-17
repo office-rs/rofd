@@ -421,7 +421,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 
 import { message } from 'ant-design-vue';
 import type { Component } from 'vue';
 import { Ofd, type MarkupKind, type ZoomMode } from '@office-rs/rofd';
-import { FONT_SLICES, LEGACY_FONTS } from './config/fonts';
+import { resolveFontConfig } from './config/fonts';
 import RibbonGroup from './components/RibbonGroup.vue';
 import ToolButton from './components/ToolButton.vue';
 import FileMenu from './components/FileMenu.vue';
@@ -825,7 +825,9 @@ onMounted(async () => {
   try {
     const ofdInst = await Ofd.init(containerRef.value!, {
       // 字体通道：切片按需（?legacyFonts=1 时整字体全量回归）。
-      ...(FONT_SLICES ? { fontSlices: FONT_SLICES } : { fonts: LEGACY_FONTS }),
+      // 字体通道按宿主能力分流（draft 2026-10-17 §1.2）：浏览器切片 / 桌面
+      // 本机系统字体整字体 + Noto 切片 / ?legacyFonts=1 本地整字体回归缝。
+      ...(await resolveFontConfig()),
       // 文档变更（含撤销/重做/删除）后刷新工具栏的撤销/恢复可用态。
       onChange: refreshHistoryState,
       // Ctrl+S：保存下载（与状态栏保存按钮一致）。
