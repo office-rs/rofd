@@ -106,19 +106,23 @@ public API surface.
 
 ## Fonts
 
-The web can't read system fonts, so the SDK fetches defaults from CDN (jsDelivr, ICP-licensed China CDN nodes):
+The web can't read system fonts, and a bare `Ofd.init` now fetches **no fonts
+at all** — the built-in jsDelivr Noto defaults (`DEFAULT_FONTS`) were removed.
+Supply fonts explicitly through one of two channels:
 
-- `NotoSans-Regular.ttf`
-- `NotoSansCJKsc-Regular.otf`
-
-To use custom fonts, pass `fonts` in `OfdConfig`:
+- `fontSlices` — on-demand sliced channel: point `manifests` at slice
+  manifests produced by the `@office-rs/font-runtime` toolchain; glyph subset
+  slices load lazily as documents reference codepoints. `defaultFamily`
+  prioritizes one family's slices; `includeDefaultNoto: true` also merges the
+  built-in Noto npm-package manifests. Unreachable or missing manifests are
+  dropped silently (degraded, non-blocking).
+- `fonts` — whole font files, loaded eagerly.
 
 ```ts
 await Ofd.init(container, {
-  fonts: [
-    { url: '/fonts/MyFont.otf' },
-    { data: myFontBytes }, // inline Uint8Array
-  ],
+  fontSlices: { manifests: ['/fonts/manifest.json'], defaultFamily: 'notosanscjksc' },
+  // or whole fonts:
+  // fonts: [{ url: '/fonts/MyFont.otf' }, { data: myFontBytes }],
 });
 ```
 

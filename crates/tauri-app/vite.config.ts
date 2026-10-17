@@ -1,5 +1,6 @@
 import { defineConfig, type Plugin } from "vite";
 import vue from "@vitejs/plugin-vue";
+import rwordFonts from "@office-rs/font-runtime/vite";
 import { fileURLToPath } from "node:url";
 
 // 复用 web-app 前端：App.vue 从 ../web-app/src 导入，其内部相对 import 与
@@ -33,7 +34,12 @@ function corpAllResponses(): Plugin {
 
 // Tauri 期望固定的 dev 端口且不清屏；envPrefix 放行 TAURI_ 前缀变量。
 export default defineConfig({
-  plugins: [vue(), corpAllResponses()],
+  plugins: [
+    vue(),
+    corpAllResponses(),
+    // Noto 切片通道：build 产出 dist/rword-fonts/，dev 经 /@rword-fonts 中间件。
+    rwordFonts({ families: ["notosans", "notosanscjksc"] }),
+  ],
   resolve: {
     alias: { "@office-rs/rofd": sdkEntry },
     // App.vue 从 ../web-app/src 导入，其裸导入（vue / ant-design-vue）按 importer
@@ -46,10 +52,12 @@ export default defineConfig({
   // Keep the SDK out of dep pre-bundle: it pulls in a .wasm via import.meta.url,
   // which must be resolved by Vite's dev pipeline, not esbuild.
   optimizeDeps: { exclude: ["@office-rs/rofd"] },
+  // FontWorker 动态 import woff2 解码器会拆 worker bundle——必须 ES 格式。
+  worker: { format: "es" },
   clearScreen: false,
   envPrefix: ["VITE_", "TAURI_"],
   build: {
-    target: "esnext",
+    target: "es2022", // 切片流顶层 await 最低目标
     rollupOptions: {
       output: {
         manualChunks: {
@@ -64,6 +72,10 @@ export default defineConfig({
     strictPort: true,
     // Repo root covers crates/web-view/sdk/dist/*.wasm, crates/web-app/src, and
     // crates/web-app/public - without this those out-of-root fetches 403.
-    fs: { allow: ["../.."] },
+    // `../../../fonts` is the sibling fonts checkout (same depth as web-app):
+    // the file: deps stay symlinked there, and the rword-fonts dev middleware
+    // serves FontWorker scripts from it - without it slices silently fall back
+    // to the main-thread decode path.
+    fs: { allow: ["../..", "../../../fonts"] },
   },
 });

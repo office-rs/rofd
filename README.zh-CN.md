@@ -22,11 +22,9 @@ import { Ofd } from '@office-rs/rofd';
 const container = document.getElementById('container') as HTMLElement;
 
 const ofd = await Ofd.init(container, {
-    fonts: [
-        { url: '/fonts/NotoSans-Regular.ttf' },
-        { url: '/fonts/NotoSansCJKsc-Regular.otf' },
-        { url: '/fonts/NotoSerifCJKsc-Regular.otf' }
-    ],
+    // 字体为显式配置：裸 init 不再拉任何字体。可用 `fontSlices` 指向切片
+    // manifest（按需字形子集），或用 `fonts` 传整字体文件。
+    fontSlices: { manifests: ['/fonts/manifest.json'] },
     onContextMenu: (x, y, annotationId) => {
         ...
     }

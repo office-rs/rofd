@@ -10,6 +10,9 @@
   },
   "dependencies": {
     "@ant-design/icons-vue": "^7.0.1",
+    "@office-rs/font-runtime": "file:../../../fonts/packages/font-runtime",
+    "@office-rs/fonts-notosans": "file:../../../fonts/packages/fonts-notosans",
+    "@office-rs/fonts-notosanscjksc": "file:../../../fonts/packages/fonts-notosanscjksc",
     "@office-rs/rofd": "file:../web-view/sdk",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.3",

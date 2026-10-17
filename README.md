@@ -26,11 +26,9 @@ import { Ofd } from '@office-rs/rofd';
 const container = document.getElementById('container') as HTMLElement;
 
 const ofd = await Ofd.init(container, {
-    fonts: [
-        { url: '/fonts/NotoSans-Regular.ttf' },
-        { url: '/fonts/NotoSansCJKsc-Regular.otf' },
-        { url: '/fonts/NotoSerifCJKsc-Regular.otf' }
-    ],
+    // Fonts are opt-in: a bare init fetches none. Either point `fontSlices`
+    // at slice manifests (on-demand glyph subsets) or pass whole files via `fonts`.
+    fontSlices: { manifests: ['/fonts/manifest.json'] },
     onContextMenu: (x, y, annotationId) => {
         ...
     }

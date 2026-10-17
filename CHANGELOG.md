@@ -7,7 +7,21 @@ follow the git tags published to GitHub Releases (`vX.Y.Z`); the npm SDK
 
 ## Unreleased
 
+### Breaking
+- **裸 `Ofd.init` 零字体请求**：SDK 不再默认从 jsDelivr 拉 Noto（内置
+  `DEFAULT_FONTS` 已删除）。宿主需显式传 `fontSlices`（切片按需通道）或
+  `fonts`（整字体）；两者都不传则不加载任何字体，文本回退宿主环境字形。
+
 ### Added
+- **Web 字体切片按需加载**（spec 2026-10-17 font-slicing）：SDK `Ofd.init`
+  新增 `fontSlices`（`FontSlicesConfig { manifests, defaultFamily?,
+  includeDefaultNoto? }`；缺失目录的 manifest 静默剔除、降级不阻塞渲染）；
+  wasm 面 `collectFontRequirements` / `registerFontSlice(bytes, familyKey,
+  sliceId)`；渲染内核字形切片注册与缓存失效。web-app 与 tauri-app 宿主经
+  `@office-rs/font-runtime/vite` 接入 Noto 两族 npm 切片，商用六族走本机切片
+  `public/fonts-sliced/`（gitignored，详见 `crates/web-app/README.md`）。
+  验收：首载实测 7 个切片请求（预算 ≤20、总量 <3MB、无单条 >1MB）；
+  120 片注册链性能门 ratio 1.36（阈值 10×）。
 - 适应宽度 / 适应高度 / 适应页面缩放模式：`set_zoom_mode` 组件 API、SDK `zoomMode`/`setZoomMode`、web 与 native 工具栏按钮；resize/换文档自动重适配，手动缩放退出；fit 可低于 25%（下限 5%）
 - Web 按需渲染：SDK 渲染循环自挂起调度（聚焦静止 ~2 帧/s，失焦/后台标签 0 帧 0 定时器），新增 `pauseRendering()` / `resumeRendering()` 宿主政策层 API（spec 2026-10-13 web-render-on-demand）
 - 组件 `needs_frame() -> FrameNeed` 调度真值；`RenderTarget::draw_scene` 返回绘制成败，失败下一 vsync 重试
