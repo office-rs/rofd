@@ -2,7 +2,7 @@
 
 ## 字体资产（切片通道）
 
-- Noto 两族经 `@office-rs/font-runtime/vite` 从 npm 包（`file:` 过渡依赖）取切片，无需手工步骤。
+- Noto 两族经 `@office-rs/font-runtime/vite` 从 npm 包（`file:` 过渡依赖）取切片，无需手工步骤。`file:` 过渡依赖需要 sibling 检出 `D:/code/fonts`（spec 2026-10-17 §7：npm 包上线后切 `^1.0.0`，届时移除本注记）。
 - 商用六族走**本地切片**：`public/fonts-sliced/`（gitignored，不入库——商用字体
   子集化分发需单独授权）。从内网拷回该目录，或用 fonts 仓库工具自切：
 

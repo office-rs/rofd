@@ -24,3 +24,8 @@ test/ru-yuan-ji-lu.ofd
 
 # 商用字体本机切片产物（tools/slice.py 产出，授权字体不入库，spec 2026-10-17 §4.1）
 crates/web-app/public/fonts-sliced/
+
+# 商用整字体仅磁盘 fixture（授权字体不入库）；playwright 产物不入库
+crates/web-app/public/fonts/
+crates/web-app/test-results/
+crates/web-app/playwright-report/

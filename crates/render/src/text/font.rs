@@ -156,13 +156,16 @@ impl FontStore {
     /// chain (spec §2.3-4, following rword): the whole font would shadow the
     /// slice family, so the legacy whole-font channel refuses it.
     pub fn register_font(&mut self, bytes: Arc<Vec<u8>>) -> bool {
-        let aliases = collect_localized_family_aliases(&bytes);
-        if aliases
-            .iter()
-            .map(|n| super::family::normalize_family_key(n))
-            .any(|key| self.slice_chains.contains_key(&key))
-        {
-            return false; // 该族已被切片锚定，整字体不再注册（防遮蔽/防重复）
+        // 无切片时直接注册（legacy 现状）：拒绝只在切片链存在时才可能，跳过 prescan。
+        if !self.slice_chains.is_empty() {
+            let aliases = collect_localized_family_aliases(&bytes);
+            if aliases
+                .iter()
+                .map(|n| super::family::normalize_family_key(n))
+                .any(|key| self.slice_chains.contains_key(&key))
+            {
+                return false; // 该族已被切片锚定，整字体不再注册（防遮蔽/防重复）
+            }
         }
         let font = match make_font(bytes) {
             Some(f) => f,

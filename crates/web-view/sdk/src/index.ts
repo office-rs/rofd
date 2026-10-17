@@ -435,6 +435,9 @@ export class Ofd {
     }
     this.fontWatch = fontFlow.scheduleFontWatch(wasmFont, runtime, { onError });
     this.fontFlowState = 'ready';
+    // 文档已在 init 窗口期间加载的情形：就绪后立即补一拍，watcher 会收集
+    // 加载后的需求并补片——runtime 去重使竞争外的情形为空转。
+    this.fontWatch?.kick();
   }
 
   // ─── Internal: event binding ──────────────────────────────────────────────

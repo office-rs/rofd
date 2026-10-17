@@ -56,7 +56,7 @@ npm run build             # vite 生产构建
 ```
 
 `build:sdk` 等价于 `cd ../web-view && wasm-pack build --target web --out-dir sdk/dist`。
-字体通道：Noto 两族经 `@office-rs/font-runtime/vite` 从 npm 切片按需加载，商用六族走本机切片 `public/fonts-sliced/`（gitignored，裸 `Ofd.init` 不再默认拉 CDN 字体）——详见 `crates/web-app/README.md`。
+字体通道：Noto 两族经 `@office-rs/font-runtime/vite` 从 npm 切片按需加载，商用六族走本机切片 `public/fonts-sliced/`（gitignored，裸 `Ofd.init` 不再默认拉 CDN 字体）——详见 `crates/web-app/README.md`。`file:` 过渡依赖需要 sibling 检出 `D:/code/fonts`（spec 2026-10-17 §7：npm 包上线后切 `^1.0.0`，届时移除本注记）。
 
 ### 构建 / 运行 tauri 桌面宿主
 

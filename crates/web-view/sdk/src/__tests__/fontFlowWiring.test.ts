@@ -118,6 +118,29 @@ describe('Ofd slice font-flow wiring', () => {
     expect(ensureFonts).toHaveBeenCalledTimes(1);
     expect(scheduleFontWatch).toHaveBeenCalledTimes(1);
     ofd.loadOfd(new Uint8Array([1]));
+    // 2 次 kick：ready 收尾的就绪补拍（首文档竞争兜底）+ loadOfd 的 ready 分支。
+    expect(lastWatch().kick).toHaveBeenCalledTimes(2);
+  });
+
+  it('loadOfd during the init window gets a catch-up kick when ready', async () => {
+    // 首文档竞争：ensureFonts 尚未决出（init 窗口）时 loadOfd 进来——
+    // 既不在 ready 分支 kick、也不会重入流；就绪后必须补一拍。
+    const ofd = makeOfd();
+    let resolveEnsure!: (ok: boolean) => void;
+    ensureFonts.mockImplementation(
+      () => new Promise<boolean>((res) => { resolveEnsure = res; }),
+    );
+    ofd.startFontFlow({ manifests: MANIFESTS });
+    await settle();
+    expect(scheduleFontWatch).not.toHaveBeenCalled();
+    // init 窗口内加载：无 kick 可发、无重试可走（流未就绪）。
+    ofd.loadOfd(new Uint8Array([1]));
+    await settle();
+    expect(filterLiveManifests).toHaveBeenCalledTimes(1);
+    resolveEnsure(true);
+    await settle();
+    expect(scheduleFontWatch).toHaveBeenCalledTimes(1);
+    // watcher 挂上即收到就绪补拍（唯一一次 kick，来自 retryFontFlow 收尾）。
     expect(lastWatch().kick).toHaveBeenCalledTimes(1);
   });
 

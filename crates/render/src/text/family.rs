@@ -10,9 +10,10 @@ pub fn normalize_family_key(name: &str) -> String {
         "宋体" | "simsun" => "simsun",
         "新宋体" | "nsimsun" => "nsimsun",
         "黑体" | "simhei" => "simhei",
-        "仿宋" | "仿宋_gb2312" | "fangsong" => "fangsong",
-        "楷体" | "楷体_gb2312" | "kaiti" => "kaiti",
+        "仿宋" | "仿宋_gb2312" | "fangsong" | "fangsong_gb2312" => "fangsong",
+        "楷体" | "楷体_gb2312" | "kaiti" | "kaiti_gb2312" => "kaiti",
         "微软雅黑" | "雅黑" | "msyh" | "microsoft yahei" => "msyh",
+        "times new roman" | "times" => "times",
         "noto sans" | "notosans" => "notosans",
         "noto sans cjk sc" | "notosanscjksc" => "notosanscjksc",
         "noto serif cjk sc" | "notoserifcjksc" => "notoserifcjksc",
@@ -32,7 +33,9 @@ mod tests {
         assert_eq!(normalize_family_key("黑体"), "simhei");
         assert_eq!(normalize_family_key("仿宋"), "fangsong");
         assert_eq!(normalize_family_key("仿宋_GB2312"), "fangsong");
+        assert_eq!(normalize_family_key("FangSong_GB2312"), "fangsong");
         assert_eq!(normalize_family_key("楷体"), "kaiti");
+        assert_eq!(normalize_family_key("KaiTi_GB2312"), "kaiti");
         assert_eq!(normalize_family_key("微软雅黑"), "msyh");
         assert_eq!(normalize_family_key("雅黑"), "msyh");
     }
@@ -42,6 +45,8 @@ mod tests {
         assert_eq!(normalize_family_key("  SimSun "), "simsun");
         assert_eq!(normalize_family_key("Microsoft YaHei"), "msyh");
         assert_eq!(normalize_family_key("NSimSun"), "nsimsun");
+        assert_eq!(normalize_family_key("Times New Roman"), "times");
+        assert_eq!(normalize_family_key("Times"), "times");
     }
 
     #[test]
@@ -53,7 +58,8 @@ mod tests {
 
     #[test]
     fn unknown_names_pass_through_lowercased() {
-        assert_eq!(normalize_family_key("KaiTi_GB2312".trim()), "kaiti_gb2312");
+        // KaiTi_GB2312 曾是未知名直通，现归一到 kaiti（公文正文标准字体别名）。
+        assert_eq!(normalize_family_key("KaiTi_GB2312".trim()), "kaiti");
         assert_eq!(normalize_family_key("SomeCustom"), "somecustom");
         assert_eq!(normalize_family_key("   "), "");
     }
