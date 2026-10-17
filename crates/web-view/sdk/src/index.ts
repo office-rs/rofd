@@ -2,12 +2,17 @@
 //
 // Mirrors the as-built adapter design: `Ofd.init(container, config)` does the
 // full boot (load wasm -> check WebGPU -> create canvas -> create_wasm_ofd ->
-// load + register fonts -> register callbacks -> bindEvents -> start
-// on-demand rendering).
+// fonts [legacy whole fonts awaited, or the slice flow started after wire] ->
+// register callbacks -> bindEvents -> start on-demand rendering).
 // The web app just calls `init` and optionally passes fonts/callbacks.
 
+import { FontRuntime } from '@office-rs/font-runtime';
 import { RenderScheduler } from './scheduler';
 import { withKick } from './with-kick';
+import * as fontFlow from './fontFlow';
+import type { FontSlicesConfig } from './fontFlow';
+
+export type { FontSlicesConfig } from './fontFlow';
 
 // --- wasm module shape (wasm-pack --target web) ---
 // `default` is the async init; `create_wasm_ofd` is the factory.
@@ -111,8 +116,13 @@ export type ZoomMode = 'custom' | 'fit-width' | 'fit-height' | 'fit-page';
 
 /** Configuration for `Ofd.init`. */
 export interface OfdConfig {
-  /** Fonts to load + register. Defaults to Noto Sans + Noto Sans CJK SC from CDN. */
+  /** Fonts to load + register whole (legacy channel). No default anymore —
+   * bare init issues zero font requests (spec 2026-10-17 §3.1); hosts opt in
+   * via this or `fontSlices`. */
   fonts?: FontSource[];
+  /** 字体切片按需加载（spec 2026-10-17 §3.1）。设置后启用切片通道；
+   * `fonts` 优先级更低（并存合法但建议二选一）。 */
+  fontSlices?: FontSlicesConfig;
   /** Fired when the document changes (signal-only; on-demand rendering repaints). */
   onChange?: () => void;
   onSelectionChange?: () => void;
@@ -154,16 +164,6 @@ export interface OfdConfig {
   /** Set false to disable the default Ctrl+C -> clipboard wiring. */
   clipboard?: boolean;
 }
-
-// Default font CDN (jsDelivr - ICP-licensed China CDN nodes). Same fonts the
-// sibling adapters use. The web can't access system fonts, so these are the
-// only font source.
-const FONT_CDN_BASE =
-  'https://cdn.jsdelivr.net/gh/googlefonts/noto-cjk@main/Sans/OTF/SimplifiedChinese';
-const DEFAULT_FONTS: FontSource[] = [
-  { url: `${FONT_CDN_BASE}/NotoSans-Regular.ttf` },
-  { url: `${FONT_CDN_BASE}/NotoSansCJKsc-Regular.otf` },
-];
 
 /**
  * Wrap a host callback so it runs in a microtask instead of synchronously.
@@ -209,6 +209,12 @@ export class Ofd {
   private lastClickTime = 0;
   private lastClickX = -Infinity;
   private lastClickY = -Infinity;
+  /** 字体流状态：off=未启用 init=进行中 ready=watcher 已挂（失败回 off，
+   * 下次 loadOfd 重试——spec §5 渲染不阻塞）。 */
+  private fontFlowState: 'off' | 'init' | 'ready' = 'off';
+  private fontWatch?: fontFlow.FontWatch;
+  private fontSlicesCfg?: FontSlicesConfig;
+  private onWarningCb?: (warnings: string[]) => void;
 
   private constructor(wasm: WasmOfd, canvas: HTMLCanvasElement) {
     this.wasm = wasm;
@@ -217,11 +223,29 @@ export class Ofd {
     this.abortController = new AbortController();
   }
 
+  /** init 的字体分派（可测导出）：`fonts` 走 legacy 逐个 await 全量加载
+   * （行为与切片改造前逐字节一致，失败 warn 后继续）；无 `fonts` 则零请求。
+   * 切片通道不在这里——由实例 startFontFlow 驱动（需 proxied wasm + kick）。 */
+  static async dispatchFonts(
+    wasmOfd: { registerFont(bytes: Uint8Array): boolean } | undefined,
+    fonts: FontSource[] | undefined,
+  ): Promise<void> {
+    for (const font of fonts ?? []) {
+      try {
+        const bytes = await loadFont(font);
+        wasmOfd?.registerFont(bytes);
+      } catch (e) {
+        console.warn('[rofd] font load failed; text may not render', e);
+      }
+    }
+  }
+
   /**
    * Initialize a new OFD surface inside `container`: loads the wasm module,
    * checks WebGPU, creates a canvas, initializes the wasm surface (WebGPU +
-   * warmup), loads + registers fonts, wires callbacks, binds DOM events,
-   * and starts on-demand rendering. Returns a ready-to-use `Ofd`.
+   * warmup), loads fonts (legacy whole fonts awaited here; the slice flow
+   * starts after wire), wires callbacks, binds DOM events, and starts
+   * on-demand rendering. Returns a ready-to-use `Ofd`.
    */
   static async init(
     container: HTMLElement,
@@ -250,20 +274,21 @@ export class Ofd {
     // 4. Create WasmOfd (async: WebGPU init + warmup).
     const wasmOfd = await wasm.create_wasm_ofd(canvas);
 
-    // 5. Load + register fonts (web can't access system fonts).
-    const fonts = config?.fonts ?? DEFAULT_FONTS;
-    for (const font of fonts) {
-      try {
-        const bytes = await loadFont(font);
-        wasmOfd.registerFont(bytes);
-      } catch (e) {
-        console.warn('[rofd] font load failed; text may not render', e);
-      }
-    }
+    // 5. Fonts: legacy whole fonts awaited here (byte-compatible behavior);
+    //    slice mode starts after wire (progressive, kicks the scheduler).
+    await Ofd.dispatchFonts(wasmOfd, config?.fonts);
 
     // 6. Register callbacks (deferred: handlers run in a microtask so they
     // may freely call back into the surface - see deferCb).
-    if (config?.onChange) wasmOfd.setOnChange(deferCb(config.onChange));
+    // onChange 双消费者：宿主回调 + 字体 watcher kick（批注文本变更补片）。
+    let fontKick: () => void = () => {};
+    const userOnChange = config?.onChange;
+    if (userOnChange || config?.fontSlices) {
+      wasmOfd.setOnChange(deferCb(() => {
+        userOnChange?.();
+        fontKick();
+      }));
+    }
     if (config?.onSelectionChange) wasmOfd.setOnSelectionChange(deferCb(config.onSelectionChange));
     if (config?.onCursorChange) wasmOfd.setOnCursorChange(deferCb(config.onCursorChange));
     if (config?.onSaveRequest) wasmOfd.setOnSaveRequest(deferCb(config.onSaveRequest));
@@ -308,6 +333,14 @@ export class Ofd {
     // 7. Create wrapper (proxy + events + watchdog) via the shared wiring.
     const ofd = Ofd.wire(wasmOfd, canvas);
 
+    // Slice font flow (if configured) starts now: the instance holds the
+    // proxied wasm font surface, so every registered slice kicks the
+    // scheduler (first slice renders as soon as it lands).
+    if (config?.fontSlices) {
+      ofd.startFontFlow(config.fontSlices, config.onWarning);
+    }
+    fontKick = () => ofd.fontWatchKick();
+
     // Prevent the browser's native context menu on the canvas (right-click).
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
@@ -341,13 +374,62 @@ export class Ofd {
     return Ofd.wire(wasm, canvas);
   }
 
-  /** Destroy the surface: stop the scheduler, abort listeners, remove canvas. */
+  /** Destroy the surface: stop the scheduler, abort listeners, cancel the
+   * font watcher, remove canvas. */
   destroy(): void {
+    this.fontWatch?.cancel();
     this.scheduler.dispose();
     this.abortController.abort();
     if (this.canvas.parentNode) {
       this.canvas.parentNode.removeChild(this.canvas);
     }
+  }
+
+  // ─── Font slice flow (spec 2026-10-17 §3.2) ───────────────────────────────
+
+  /** @internal watcher kick 缝（init 的 fontKick 闭包指向这里）。 */
+  fontWatchKick(): void {
+    this.fontWatch?.kick();
+  }
+
+  private startFontFlow(cfg: FontSlicesConfig, onWarning?: (warnings: string[]) => void): void {
+    this.fontSlicesCfg = cfg;
+    this.onWarningCb = onWarning;
+    void this.retryFontFlow();
+  }
+
+  private async retryFontFlow(): Promise<void> {
+    const cfg = this.fontSlicesCfg;
+    if (!cfg || this.fontFlowState === 'init') {
+      return;
+    }
+    this.fontFlowState = 'init';
+    const live = await fontFlow.filterLiveManifests(cfg.manifests);
+    if (live.length === 0) {
+      this.fontFlowState = 'off';
+      return;
+    }
+    const runtime = new FontRuntime({
+      manifests: live,
+      includeDefaultNoto: cfg.includeDefaultNoto ?? false,
+    });
+    const wasmFont: fontFlow.WasmFontSurface = {
+      collectFontRequirements: () => this.wasm.collectFontRequirements(),
+      registerFontSlice: (b, f, s) => this.wasm.registerFontSlice(b, f, s),
+    };
+    const onError = (err: fontFlow.FontFlowError): void => {
+      this.onWarningCb?.([`fonts: ${err.family ? `${err.family} ` : ''}${err.message}`]);
+    };
+    const ok = await fontFlow.ensureFonts(wasmFont, runtime, {
+      defaultFamily: cfg.defaultFamily,
+      onError,
+    });
+    if (!ok) {
+      this.fontFlowState = 'off';
+      return;
+    }
+    this.fontWatch = fontFlow.scheduleFontWatch(wasmFont, runtime, { onError });
+    this.fontFlowState = 'ready';
   }
 
   // ─── Internal: event binding ──────────────────────────────────────────────
@@ -555,6 +637,12 @@ export class Ofd {
   /** Load an OFD document from raw `.ofd` package bytes. */
   loadOfd(bytes: Uint8Array): void {
     this.wasm.loadOfd(bytes);
+    // 文档换了需求全变：立即 kick watcher；流此前失败则重试（spec §3.2）。
+    if (this.fontFlowState === 'ready') {
+      this.fontWatch?.kick();
+    } else if (this.fontFlowState === 'off' && this.fontSlicesCfg) {
+      void this.retryFontFlow();
+    }
   }
 
   /** Serialize the current document to OFD package bytes. */
