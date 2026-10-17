@@ -421,6 +421,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 
 import { message } from 'ant-design-vue';
 import type { Component } from 'vue';
 import { Ofd, type MarkupKind, type ZoomMode } from '@office-rs/rofd';
+import { FONT_SLICES, LEGACY_FONTS } from './config/fonts';
 import RibbonGroup from './components/RibbonGroup.vue';
 import ToolButton from './components/ToolButton.vue';
 import FileMenu from './components/FileMenu.vue';
@@ -823,17 +824,8 @@ onMounted(async () => {
   document.addEventListener('fullscreenchange', onFullscreenChange);
   try {
     const ofdInst = await Ofd.init(containerRef.value!, {
-      fonts: [
-        { url: `${BASE}fonts/NotoSans-Regular.ttf` },
-        { url: `${BASE}fonts/NotoSansCJKsc-Regular.otf` },
-        { url: `${BASE}fonts/NotoSerifCJKsc-Regular.otf` },
-        { url: `${BASE}fonts/simsun.ttc` },
-        { url: `${BASE}fonts/simhei.ttf` },
-        { url: `${BASE}fonts/msyh.ttc` },
-        { url: `${BASE}fonts/arial.ttf` },
-        { url: `${BASE}fonts/times.ttf` },
-        { url: `${BASE}fonts/calibri.ttf` },
-      ],
+      // 字体通道：切片按需（?legacyFonts=1 时整字体全量回归）。
+      ...(FONT_SLICES ? { fontSlices: FONT_SLICES } : { fonts: LEGACY_FONTS }),
       // 文档变更（含撤销/重做/删除）后刷新工具栏的撤销/恢复可用态。
       onChange: refreshHistoryState,
       // Ctrl+S：保存下载（与状态栏保存按钮一致）。
