@@ -223,6 +223,38 @@ mod wasm_impl {
             self.component.register_font_data(bytes.to_vec())
         }
 
+        /// 收集当前字体需求（spec 2026-10-17 §2.2）：families 为归一键，
+        /// codepoints 升序去重。init / loadOfd 后 / watcher tick 调用。
+        #[wasm_bindgen(js_name = collectFontRequirements)]
+        pub fn collect_font_requirements(&self) -> JsValue {
+            let req = self.component.font_requirements();
+            let obj = js_sys::Object::new();
+            let families = js_sys::Array::new();
+            for f in &req.families {
+                families.push(&JsValue::from(f.as_str()));
+            }
+            let codepoints = js_sys::Array::new();
+            for cp in &req.codepoints {
+                codepoints.push(&JsValue::from(*cp));
+            }
+            let _ = js_sys::Reflect::set(&obj, &JsValue::from("families"), &families);
+            let _ = js_sys::Reflect::set(&obj, &JsValue::from("codepoints"), &codepoints);
+            obj.into()
+        }
+
+        /// 注册一个解码后的字体切片（spec §2.2）。`family_key` 归一化后作为
+        /// 族内链键；返回 false 表示字节未解析出族。
+        #[wasm_bindgen(js_name = registerFontSlice)]
+        pub fn register_font_slice(
+            &mut self,
+            bytes: &[u8],
+            family_key: &str,
+            slice_id: &str,
+        ) -> bool {
+            self.component
+                .register_font_slice(bytes.to_vec(), family_key, slice_id)
+        }
+
         /// Handle viewport resize (device pixels). Reconfigures the WebGPU
         /// surface and updates the editor viewport.
         #[wasm_bindgen(js_name = handleResize)]

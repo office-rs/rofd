@@ -24,6 +24,10 @@ interface WasmOfd {
    */
   renderFrame(): number;
   registerFont(bytes: Uint8Array): boolean;
+  /** Current font requirements: normalized family keys + sorted deduped codepoints. */
+  collectFontRequirements(): { families: string[]; codepoints: number[] };
+  /** Register a decoded (OTF/TTF) font slice. `false` = bytes parsed to no family. */
+  registerFontSlice(bytes: Uint8Array, familyKey: string, sliceId: string): boolean;
   handleResize(width: number, height: number): void;
   handleKeyDown(
     key: string,
