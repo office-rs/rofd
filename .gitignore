@@ -21,3 +21,6 @@ agent.*
 test/ru-yuan-ji-lu.ofd
 /docs/《国家板式文档规范》33190-2016-gbt-cd-300.pdf
 /.codegraph/
+
+# 商用字体本机切片产物（tools/slice.py 产出，授权字体不入库，spec 2026-10-17 §4.1）
+crates/web-app/public/fonts-sliced/
