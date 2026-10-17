@@ -854,6 +854,10 @@ onMounted(async () => {
       },
     });
     ofd.value = ofdInst;
+    // e2e seam：dev 态暴露实例，测试断言网络预算/驱动 loadOfd。
+    if (import.meta.env.DEV) {
+      (window as unknown as { __ofd: unknown }).__ofd = ofdInst;
+    }
     ofdInst.setClock('rofd', Date.now());
     // 默认打开示例文档（public/sample.ofd），失败不阻塞空编辑器。
     try {
