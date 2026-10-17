@@ -7,12 +7,14 @@
 pub fn normalize_family_key(name: &str) -> String {
     let lower = name.trim().to_lowercase();
     match lower.as_str() {
-        "宋体" | "simsun" => "simsun",
-        "新宋体" | "nsimsun" => "nsimsun",
+        // 新宋体/NSimSun 是 simsun.ttc 的独立 face，切片与桌面通道交付的都是
+        // SimSun face——归一到最接近的可交付渲染（表与可交付族同步，§2.4 原则）。
+        "宋体" | "新宋体" | "simsun" | "nsimsun" => "simsun",
         "黑体" | "simhei" => "simhei",
         "仿宋" | "仿宋_gb2312" | "fangsong" | "fangsong_gb2312" => "fangsong",
         "楷体" | "楷体_gb2312" | "kaiti" | "kaiti_gb2312" => "kaiti",
-        "微软雅黑" | "雅黑" | "msyh" | "microsoft yahei" => "msyh",
+        // UI face 与常规 face 同在 msyh.ttc，交付常规 face。
+        "微软雅黑" | "雅黑" | "msyh" | "microsoft yahei" | "microsoft yahei ui" => "msyh",
         "times new roman" | "times" => "times",
         "noto sans" | "notosans" => "notosans",
         "noto sans cjk sc" | "notosanscjksc" => "notosanscjksc",
@@ -29,7 +31,9 @@ mod tests {
     #[test]
     fn chinese_aliases_map_to_canonical_keys() {
         assert_eq!(normalize_family_key("宋体"), "simsun");
-        assert_eq!(normalize_family_key("新宋体"), "nsimsun");
+        // 新宋体（NSimSun）是 simsun.ttc 的独立 face，但切片/桌面通道交付的是
+        // SimSun face——归一到最接近的可交付渲染，好于落入 Noto 兜底。
+        assert_eq!(normalize_family_key("新宋体"), "simsun");
         assert_eq!(normalize_family_key("黑体"), "simhei");
         assert_eq!(normalize_family_key("仿宋"), "fangsong");
         assert_eq!(normalize_family_key("仿宋_GB2312"), "fangsong");
@@ -44,7 +48,9 @@ mod tests {
     fn english_names_case_fold_and_trim() {
         assert_eq!(normalize_family_key("  SimSun "), "simsun");
         assert_eq!(normalize_family_key("Microsoft YaHei"), "msyh");
-        assert_eq!(normalize_family_key("NSimSun"), "nsimsun");
+        // UI face 与常规 face 同在 msyh.ttc——交付的是常规 face。
+        assert_eq!(normalize_family_key("Microsoft YaHei UI"), "msyh");
+        assert_eq!(normalize_family_key("NSimSun"), "simsun");
         assert_eq!(normalize_family_key("Times New Roman"), "times");
         assert_eq!(normalize_family_key("Times"), "times");
     }
