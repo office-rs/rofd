@@ -350,11 +350,16 @@ impl FontStore {
     }
 
     /// default 解析名单：切片链优先（default_slice_key），退化整只名（legacy）。
+    ///
+    /// default 族按构造即首个成功注册的切片族，其链按注册序构成重建后
+    /// SansSerif 泛型名单（切片在前、整只在后）的最前部——全量展开只会重复
+    /// 探测（性能闸门 120 片 vs 3 片 ratio 超标的主因）；截断至首片保留头部
+    /// 优先，链内其余片经泛型按同一注册序仍然可达。声明族路径
+    /// （`family_list_for`）不截断：族内优先序在彼处是承重语义（rword 4.2）。
     fn default_names(&self) -> Vec<FontFamilyName<'_>> {
         if let Some(key) = &self.default_slice_key {
-            let chain = chain_names(&self.slice_chains, key);
-            if !chain.is_empty() {
-                return chain;
+            if let Some(name) = self.slice_chains.get(key).and_then(|chain| chain.first()) {
+                return vec![FontFamilyName::Named(Cow::Owned(name.clone()))];
             }
         }
         self.default_family
