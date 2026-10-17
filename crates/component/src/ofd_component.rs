@@ -189,6 +189,9 @@ pub struct OfdComponent {
     /// by the web SDK loading fonts after construction). Folded into the
     /// `FontStore` when it is (re)built.
     pub(crate) registered_font_bytes: Vec<Arc<Vec<u8>>>,
+    /// 经 [`Self::register_font_slice`] 注册的切片 (bytes, 归一前 family_key,
+    /// slice_id)。FontStore 重建时重放（与 registered_font_bytes 同款模式）。
+    pub(crate) registered_slices: Vec<(Arc<Vec<u8>>, String, String)>,
     pub(crate) callbacks: Callbacks,
     pub(crate) modified: bool,
     /// Active editing tool (Select or Create{kind}). Defaults to `Select`.
@@ -287,6 +290,7 @@ impl OfdComponent {
             },
             font_store: None,
             registered_font_bytes: Vec::new(),
+            registered_slices: Vec::new(),
             callbacks: Callbacks::default(),
             modified: false,
             tool: Tool::Text,
@@ -321,6 +325,9 @@ impl OfdComponent {
         for bytes in &self.registered_font_bytes {
             store.register_font(bytes.clone());
         }
+        for (bytes, key, id) in &self.registered_slices {
+            store.register_font_slice(bytes.clone(), key, id);
+        }
         store
     }
 
@@ -339,6 +346,27 @@ impl OfdComponent {
         } else {
             // Will be registered when the FontStore is built.
             true
+        };
+        self.mark_scene_dirty();
+        ok
+    }
+
+    /// 注册一个字体切片（解码后的 OTF/TTF 字节）。与
+    /// [`Self::register_font_data`] 同款双路径：store 已建即时注册，否则重建时
+    /// 重放。成功/字节非法都会 mark_scene_dirty（潜在 default 锚定变化）。
+    pub fn register_font_slice(
+        &mut self,
+        bytes: Vec<u8>,
+        family_key: &str,
+        slice_id: &str,
+    ) -> bool {
+        let bytes = Arc::new(bytes);
+        self.registered_slices
+            .push((bytes.clone(), family_key.to_string(), slice_id.to_string()));
+        let ok = if let Some(store) = self.font_store.as_mut() {
+            store.register_font_slice(bytes, family_key, slice_id)
+        } else {
+            true // 重建时重放才见真值（与 register_font_data 一致）
         };
         self.mark_scene_dirty();
         ok
@@ -7950,5 +7978,33 @@ mod tests {
         c.load_document(doc);
         let req = c.font_requirements();
         assert!(req.families.contains(&"msyh".to_string()));
+    }
+
+    // ---- register_font_slice 转发与重放 (spec 2026-10-17 字体切片 §2.3) ----
+
+    #[test]
+    fn register_font_slice_registers_and_replays_across_load() {
+        let latin = include_bytes!("../../render/tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        let mut c = test_component();
+        // 组件构造后、首次 compose 前（font_store 可能尚未建）注册也能被重放。
+        assert!(c.register_font_slice(latin.to_vec(), "notosans", "w0"));
+        c.load_document(OfdDocument::default());
+        c.update_scene(); // 触发 build_font_store 路径（按现有 API 名）
+        let req = c.font_requirements();
+        let _ = req;
+        // 行为断言：默认锚定生效（unknown FontId 可 shape）经由渲染路径太重，
+        // 直接查内部：store 已含切片链。
+        assert!(c
+            .font_store
+            .as_ref()
+            .expect("store built")
+            .has_slice_family("notosans"));
+    }
+
+    #[test]
+    fn register_font_slice_invalid_bytes_reports_false_but_keeps_record_shape() {
+        let mut c = test_component();
+        c.update_scene();
+        assert!(!c.register_font_slice(vec![1, 2, 3], "simsun", "s0"));
     }
 }

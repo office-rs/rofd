@@ -237,6 +237,12 @@ impl FontStore {
         true
     }
 
+    /// 该族键（归一化后）是否已有切片链（测试钩子）。
+    pub fn has_slice_family(&self, key: &str) -> bool {
+        self.slice_chains
+            .contains_key(&super::family::normalize_family_key(key))
+    }
+
     /// SansSerif 泛型链规范重建（rword 修正 4.1）：切片在前、整只在后的确定序。
     /// 无切片时不动（构造期/纯 legacy 保持 append 语义，native 系统回退存活）。
     fn rebuild_sansserif(&mut self) {
