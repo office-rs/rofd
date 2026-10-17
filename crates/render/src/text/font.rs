@@ -41,6 +41,21 @@ pub struct FontStore {
     families: HashMap<FontId, String>,
     /// Registered family name for the default font.
     default_family: Option<String>,
+    /// 声明族键（Resources.fonts 的 family_name 归一化）per FontId——
+    /// 声明族切片链解析入口（spec §2.3-1/2）。
+    declared_families: HashMap<FontId, String>,
+    /// 切片族键 -> 内部名链（注册序）。具名族解析的族内优先链（spec §2.3-2）。
+    slice_chains: HashMap<String, Vec<String>>,
+    /// 已注册切片的 fontique FamilyId（SansSerif 链重建用，去重追加）。
+    /// Populated/read from Task 3 (slice registration); kept empty until then.
+    #[allow(dead_code)]
+    slice_family_ids: Vec<FamilyId>,
+    /// 整只字体（嵌入/default/legacy）的 FamilyId 记账：链重建时排在切片后。
+    /// Populated from Task 2; read from Task 3 (chain rebuild).
+    #[allow(dead_code)]
+    whole_family_ids: Vec<FamilyId>,
+    /// default 锚定的切片族键（首个成功注册的片；spec §2.3-4）。
+    default_slice_key: Option<String>,
     /// Shaped-glyph cache: `font_id -> (size_bits -> (text -> (font, glyphs)))`.
     /// OFD body text is static, so shaping happens once per unique (font, size,
     /// text); subsequent composites hit the cache and skip parley re-shaping
@@ -59,6 +74,18 @@ impl FontStore {
         let mut fonts = HashMap::new();
         let mut families = HashMap::new();
         let mut font_cx = parley::FontContext::new();
+        // 声明族映射（spec §2.3-1）：FontRef.family_name 归一化后按 FontId 记录。
+        let declared_families = res
+            .fonts
+            .iter()
+            .filter_map(|(id, fr)| {
+                fr.family_name
+                    .as_ref()
+                    .map(|n| (id.clone(), super::family::normalize_family_key(n)))
+            })
+            .collect();
+        // 整只字体（嵌入/default）的 FamilyId 记账：Task 3 链重建时排在切片后。
+        let mut whole_family_ids = Vec::new();
 
         for (id, bytes) in &res.font_data {
             if let Some(font) = make_font(bytes.clone()) {
@@ -66,6 +93,7 @@ impl FontStore {
                 if let Some(name) = family {
                     families.insert(id.clone(), name);
                 }
+                whole_family_ids.extend(ids.iter().cloned());
                 append_sansserif(&mut font_cx, ids);
                 fonts.insert(id.clone(), font);
             }
@@ -76,6 +104,7 @@ impl FontStore {
             Some(font) => register_font_with_ids(&mut font_cx, font),
             None => (None, Vec::new()),
         };
+        whole_family_ids.extend(default_ids.iter().cloned());
         append_sansserif(&mut font_cx, default_ids);
 
         Self {
@@ -84,6 +113,11 @@ impl FontStore {
             font_cx: Rc::new(RefCell::new(font_cx)),
             families,
             default_family,
+            declared_families,
+            slice_chains: HashMap::new(),
+            slice_family_ids: Vec::new(),
+            whole_family_ids,
+            default_slice_key: None,
             glyph_cache: RefCell::new(HashMap::new()),
         }
     }
@@ -171,25 +205,13 @@ impl FontStore {
             return cached;
         }
         // Cache miss: shape, cache, return.
-        let family_name = self
-            .families
-            .get(font_id)
-            .map(String::as_str)
-            .or(self.default_family.as_deref());
         // Build a family list: the named document/default font first, then
         // `SansSerif` as a glyph-coverage fallback. `SansSerif` resolves to
         // every registered font (appended in `from_resources`/`register_font`)
         // plus system fonts (native), so a CJK char in a Latin-only named
         // family falls back to a registered CJK font. On wasm, system fonts
         // are unavailable, so without this list CJK renders as .notdef (tofu).
-        let family = match family_name {
-            Some(name) => FontFamily::List(Cow::Owned(vec![
-                FontFamilyName::Named(Cow::Owned(name.to_string())),
-                FontFamilyName::Generic(GenericFamily::SansSerif),
-            ])),
-            // No document/default font resolved -> generic family.
-            None => FontFamily::from(GenericFamily::SansSerif),
-        };
+        let family = self.family_list_for(font_id);
         let result = {
             let mut fcx = self.font_cx.borrow_mut();
             shape_with_family(&mut fcx, text, size, family)
@@ -212,15 +234,56 @@ impl FontStore {
     /// split a line; a glyph id is only valid with its own font) plus the line
     /// width (px).
     pub fn shape_default(&self, text: &str, size: f64) -> (Vec<(FontData, Vec<ShapedGlyph>)>, f64) {
-        let family = match self.default_family.as_deref() {
-            Some(name) => FontFamily::List(Cow::Owned(vec![
-                FontFamilyName::Named(Cow::Owned(name.to_string())),
-                FontFamilyName::Generic(GenericFamily::SansSerif),
-            ])),
-            None => FontFamily::from(GenericFamily::SansSerif),
+        let names = self.default_names();
+        let family = if names.is_empty() {
+            FontFamily::from(GenericFamily::SansSerif)
+        } else {
+            let mut names = names;
+            names.push(FontFamilyName::Generic(GenericFamily::SansSerif));
+            FontFamily::List(Cow::Owned(names))
         };
         let mut fcx = self.font_cx.borrow_mut();
         shape_grouped_with_family(&mut fcx, text, size, family)
+    }
+
+    /// shape 的 family list（spec §2.3-2）：嵌入族名 -> 声明族切片链 ->
+    /// default（切片链优先，退化整只名）-> SansSerif 兜底。
+    ///
+    /// `SansSerif` resolves to every registered font (appended in
+    /// `from_resources`/`register_font`) plus system fonts (native), so a CJK
+    /// char in a Latin-only named family falls back to a registered CJK font.
+    /// On wasm, system fonts are unavailable, so without SansSerif in the list
+    /// CJK renders as .notdef (tofu).
+    fn family_list_for(&self, font_id: &FontId) -> FontFamily<'_> {
+        if let Some(name) = self.families.get(font_id) {
+            return named_then_sansserif(name);
+        }
+        let mut names: Vec<FontFamilyName> = Vec::new();
+        if let Some(declared) = self.declared_families.get(font_id) {
+            names.extend(chain_names(&self.slice_chains, declared));
+        }
+        if names.is_empty() {
+            names.extend(self.default_names());
+        }
+        if names.is_empty() {
+            return FontFamily::from(GenericFamily::SansSerif);
+        }
+        names.push(FontFamilyName::Generic(GenericFamily::SansSerif));
+        FontFamily::List(Cow::Owned(names))
+    }
+
+    /// default 解析名单：切片链优先（default_slice_key），退化整只名（legacy）。
+    fn default_names(&self) -> Vec<FontFamilyName<'_>> {
+        if let Some(key) = &self.default_slice_key {
+            let chain = chain_names(&self.slice_chains, key);
+            if !chain.is_empty() {
+                return chain;
+            }
+        }
+        self.default_family
+            .as_ref()
+            .map(|n| vec![FontFamilyName::Named(Cow::Owned(n.clone()))])
+            .unwrap_or_default()
     }
 }
 
@@ -251,6 +314,28 @@ fn append_sansserif(fcx: &mut parley::FontContext, ids: Vec<FamilyId>) {
     }
     fcx.collection
         .append_generic_families(GenericFamily::SansSerif, ids.into_iter());
+}
+
+/// 具名族 + SansSerif 兜底的家族列表（嵌入/整只字体的 shape 解析，spec §2.3-2）。
+fn named_then_sansserif(name: &str) -> FontFamily<'_> {
+    FontFamily::List(Cow::Owned(vec![
+        FontFamilyName::Named(Cow::Owned(name.to_string())),
+        FontFamilyName::Generic(GenericFamily::SansSerif),
+    ]))
+}
+
+/// 切片族键 -> 内部名链的家族名展开；未注册该键时为空（调用方退化）。
+/// 全部为 Owned 名单，故 `'static`（无借用）。
+fn chain_names(chains: &HashMap<String, Vec<String>>, key: &str) -> Vec<FontFamilyName<'static>> {
+    chains
+        .get(key)
+        .map(|v| {
+            v.iter()
+                .cloned()
+                .map(|n| FontFamilyName::Named(Cow::Owned(n)))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -510,5 +595,45 @@ mod tests {
         // still resolve SansSerif. The contract here is only: never panic.
         let store = FontStore::from_resources(&Resources::default(), Arc::new(Vec::new()));
         let _ = store.shape_default("x", 12.0);
+    }
+
+    #[test]
+    fn from_resources_records_declared_family_names() {
+        // Resources.fonts 的 FontRef.family_name（归一化后）进入 declared_families，
+        // 供声明族 -> 切片链解析（spec §2.3-1）。
+        let mut res = Resources::default();
+        res.fonts.insert(
+            FontId::new("F1"),
+            rofd_dom::FontRef {
+                id: FontId::new("F1"),
+                family_name: Some("宋体".into()),
+            },
+        );
+        let store = FontStore::from_resources(&res, Arc::new(vec![]));
+        assert_eq!(
+            store
+                .declared_families
+                .get(&FontId::new("F1"))
+                .map(String::as_str),
+            Some("simsun")
+        );
+    }
+
+    #[test]
+    fn shape_declared_family_without_slices_falls_to_default() {
+        // 声明族尚无片：解析落 default/SansSerif（现状行为），不 panic。
+        let font_bytes = include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        let mut res = Resources::default();
+        res.fonts.insert(
+            FontId::new("F9"),
+            rofd_dom::FontRef {
+                id: FontId::new("F9"),
+                family_name: Some("simsun".into()),
+            },
+        );
+        let store = FontStore::from_resources(&res, Arc::new(font_bytes.to_vec()));
+        let (font, glyphs) = store.shape(&FontId::new("F9"), "Hi", 12.0);
+        assert_eq!(glyphs.len(), 2);
+        assert!(font.is_some());
     }
 }
