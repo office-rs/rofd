@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { FontRuntime, FontSlice } from '@office-rs/font-runtime';
 import {
-  ensureFonts, scheduleFontWatch, WATCH_DEBOUNCE_MS,
+  ensureFonts, scheduleFontWatch, filterLiveManifests, WATCH_DEBOUNCE_MS,
   type WasmFontSurface, type FontFlowError,
 } from '../fontFlow';
 
@@ -30,15 +30,21 @@ function fakeRuntime(opts: {
         simsun: { displayName: 'SimSun', slices: [] },
       },
     },
+    // notosans 在前、simsun 在后：defaultFirst 若不把 default 族前置则无法通过（防同义反复）。
     selectInitial: vi.fn(() => ({ families: [
-      { family: 'simsun', load: 'slices', sliceIds: ['s1'] },
       { family: 'notosans', load: 'whole', sliceIds: [] },
+      { family: 'simsun', load: 'slices', sliceIds: ['s1'] },
     ] })),
-    watchText: vi.fn(() => ({ families: [] })),
+    watchText: vi.fn(() => ({
+      families: opts.watch?.map((s) => ({ family: s.family, load: 'slices', sliceIds: [s.id] })) ?? [],
+    })),
     ensure: async function* () {
-      const list = opts.slices ?? [
-        { family: 'notosans', id: '__whole__' },
-        { family: 'simsun', id: 's1' },
+      const list = [
+        ...(opts.slices ?? [
+          { family: 'notosans', id: '__whole__' },
+          { family: 'simsun', id: 's1' },
+        ]),
+        ...(opts.watch ?? []),
       ];
       for (const s of list) { yield sliceFor(s); }
     },
@@ -65,6 +71,7 @@ describe('ensureFonts', () => {
     const wasm = fakeWasm([], []);
     await ensureFonts(wasm, rt, { defaultFamily: 'simsun' });
     expect(order[0]).toBe('simsun');
+    expect(order).toEqual(['simsun', 'notosans']);
   });
 
   it('reports register failures via onError without aborting', async () => {
@@ -99,6 +106,10 @@ describe('scheduleFontWatch', () => {
     watch.kick();
     await vi.advanceTimersByTimeAsync(WATCH_DEBOUNCE_MS);
     expect(rt.selectInitial).toHaveBeenCalledTimes(1);
+    // delta = 两次 collect 做差（上次为空集）→ watchText 收到整个新增码位集。
+    expect(rt.watchText).toHaveBeenCalledWith([0x4e2d]);
+    // watch 计划的切片经 ensure 流到 registerFontSlice。
+    expect(wasm.registered).toContainEqual({ family: 'simsun', id: 's9' });
     watch.cancel();
     vi.useRealTimers();
   });
@@ -113,7 +124,34 @@ describe('scheduleFontWatch', () => {
     watch.kick();
     await vi.advanceTimersByTimeAsync(WATCH_DEBOUNCE_MS);
     expect(rt.selectInitial).toHaveBeenCalledTimes(1);
+    // 首拍对空基线本就是 delta（watchText 一次）；需求签名未变 → 第二拍在
+    // key 检查处短路，不再产生 delta 计划。
+    expect(rt.watchText).toHaveBeenCalledTimes(1);
     watch.cancel();
     vi.useRealTimers();
+  });
+});
+
+describe('filterLiveManifests', () => {
+  it('keeps live manifests in order, dropping 404 and network failures', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/live.json')) { return { ok: true } as Response; }
+      if (url.endsWith('/gone.json')) { return { ok: false } as Response; }
+      throw new TypeError('network down');
+    });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const live = await filterLiveManifests([
+        'https://fonts.example/gone.json',
+        'https://fonts.example/live.json',
+        'https://fonts.example/down.json',
+      ]);
+      expect(live).toEqual(['https://fonts.example/live.json']);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.unstubAllGlobals();
+      info.mockRestore();
+    }
   });
 });
