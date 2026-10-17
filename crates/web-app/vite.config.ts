@@ -1,5 +1,6 @@
 import { defineConfig, type Plugin } from "vite";
 import vue from "@vitejs/plugin-vue";
+import rwordFonts from "@office-rs/font-runtime/vite";
 import { fileURLToPath } from "node:url";
 
 // Alias the SDK package name to its source so Vite serves and transforms the
@@ -26,15 +27,22 @@ function corpAllResponses(): Plugin {
 }
 
 export default defineConfig(({ mode }) => ({
-  plugins: [vue(), corpAllResponses()],
+  plugins: [
+    vue(),
+    corpAllResponses(),
+    // Noto 切片通道：build 产出 dist/rword-fonts/，dev 经 /@rword-fonts 中间件。
+    rwordFonts({ families: ["notosans", "notosanscjksc"] }),
+  ],
   resolve: {
     alias: { "@office-rs/rofd": sdkEntry },
   },
   // Keep the SDK out of dep pre-bundle: it pulls in a .wasm via
   // import.meta.url, which must be resolved by Vite's dev pipeline, not esbuild.
   optimizeDeps: { exclude: ["@office-rs/rofd"] },
+  // FontWorker 动态 import woff2 解码器会拆 worker bundle——必须 ES 格式。
+  worker: { format: "es" },
   build: {
-    target: "esnext",
+    target: "es2022", // 切片流顶层 await 最低目标
     // 拆分 antd / vue 大包，避免单个 chunk 超限告警，页面加载可并行。
     rollupOptions: {
       output: {
@@ -51,7 +59,11 @@ export default defineConfig(({ mode }) => ({
   server: {
     // Project root is crates/web-app; `../..` is the repo root, which also
     // covers crates/web-view/sdk/dist/*.wasm - without this the wasm fetch 403s.
-    fs: { allow: ["../.."] },
+    // `../../../fonts` is the sibling fonts checkout: the file: deps stay
+    // symlinked there, and the rword-fonts dev middleware serves FontWorker
+    // scripts from it - without this they 403 and slices silently fall back
+    // to the main-thread decode path (~15s).
+    fs: { allow: ["../..", "../../../fonts"] },
     // Cross-origin isolation: harmless dev default for WebGPU + wasm apps, and
     // enables SharedArrayBuffer should the wasm adopt threads later.
     headers: {

@@ -10,6 +10,9 @@
   },
   "dependencies": {
     "@ant-design/icons-vue": "^7.0.1",
+    "@office-rs/font-runtime": "file:../../../fonts/packages/font-runtime",
+    "@office-rs/fonts-notosans": "file:../../../fonts/packages/fonts-notosans",
+    "@office-rs/fonts-notosanscjksc": "file:../../../fonts/packages/fonts-notosanscjksc",
     "@office-rs/rofd": "file:../web-view/sdk",
     "ant-design-vue": "^4.2.6",
     "vue": "^3.5.41"
