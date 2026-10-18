@@ -23,14 +23,14 @@ cd D:\code\fonts\packages\<pkg>
 node "C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js" publish
 ```
 
-### 1.2 包清单与状态（2026-10-17）
+### 1.2 包清单与状态（2026-10-18 更新）
 
 | 包 | 体量 | 状态 |
 |---|---|---|
-| `@office-rs/font-runtime` | 10.9 kB | ✅ 1.0.0 已上线 |
-| `@office-rs/fonts-notosans` | 小 | ✅ 1.0.0 已上线 |
-| `@office-rs/fonts-notosanscjksc` | **24.5 MB / 166 files** | ⏳ 网络阻断（见 §2），待发 |
-| `@office-rs/fonts-notoserifcjksc` | 同级 | ⏳ 同上 |
+| `@office-rs/font-runtime` | 10.9 kB | ✅ 1.0.1（1.0.0 是坏的 Node ESM：`"type":"module"` 但 dist 相对导入无 `.js` 扩展，bundler 能吃、Node 直接 import 报 ERR_MODULE_NOT_FOUND；1.0.1 补全扩展名） |
+| `@office-rs/fonts-notosans` | 小 | ✅ 1.0.1 |
+| `@office-rs/fonts-notosanscjksc` | **24.5 MB / 166 files** | ✅ 1.0.1（1.0.0 于 2026-10-17 换网络手动发；1.0.1 于 2026-10-18 bundled npm 直传成功，当天未 RST） |
+| `@office-rs/fonts-notoserifcjksc` | 同级 | ✅ 1.0.1（同上） |
 
 发布前置（fonts 仓库已做完）：`woff2-encoder` 替换 wawoff2、OFL.txt 随资产包进 dist、vite peerDependency、LICENSE、`files` 白名单只含 dist。项目 `.gitignore` 加 `.npmrc`。
 
@@ -39,7 +39,20 @@ node "C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js" publish
 1. rword/rofd 两个 `package.json` 的 `@office-rs/font-runtime` 从 `file:../../../fonts/packages/font-runtime` 切 `^1.0.0`；
 2. **用 bundled npm** 重生成 lockfile 并 install（PATH 上 npm 6 生成的 lockfile CI 会炸）；
 3. 跑门：sdk vitest + web-app `vue-tsc` + e2e；
-4. 提交推送；jsDelivr v1 tag 冷索引验证（大仓库摄取慢，503/502 属自愈型，用 webReader 类工具查，WebFetch 会失败）。
+4. 提交推送；jsDelivr v1 tag 冷索引验证（大仓库摄取慢，503/502 属自愈型，用 webReader 类工具查，WebFetch 会失败；强移 tag 引起的同款 503/502 与隔离诊断法见 §1.4）。
+
+### 1.4 资产重发手册（切片内容更新时，2026-10-18 实操）
+
+1.0.1（CJK common-0 补 ASCII，即迁移纪要 §4.7）的重发序列，通用于任何资产内容更新：
+
+1. fonts 根 `package.json` version bump（子包版本从根取）→ 跑打包脚本（make-packages.mjs）重产 `packages/fonts-*/`；
+2. 逐包 `publish`（§1.1 的 bundled npm 全路径）；大包能否直传看当天网络——2026-10-18 实测 24.5 MB 直传成功未 RST；
+3. jsDelivr tag 指到新提交：`git tag -f v1 <sha> && git push -f origin v1`（强移后 annotated 会变轻量 tag，jsDelivr 只读树、无害；要保持 annotated 用 `-fa`）；
+4. purge：`https://purge.jsdelivr.net/gh/office-rs/fonts@v1/<path>`——本机 curl 到 jsDelivr 各域名全被墙（http_code 000），得在浏览器或可联网环境发；
+5. 消费方已有 lockfile 的要 `npm update @office-rs/fonts-*` 才吃到补丁版本（`^1.0.0` 内 lockfile 不自动跳）。
+
+**强移 tag 的 jsDelivr 重解析窗口**：tag 被强移后 `@v1` 会持续 503 "No healthy backends"（Error 54113）、data API 502，分钟~小时级自愈，**不是发布失败**。隔离诊断：commit 锁定 URL `@<full-sha>/dist/v1/manifest.json` 立即服务新对象——对象层与版本解析层是分开的，前者对了后者只是时间问题。
+**manifest 验证比内容字段，别比整体 sha**：重切若保留 `generated` 时间戳，manifest 整体 sha256 不变；每文件的 sha256/bytes/codepoints 字段才是权威（2026-10-18 即靠它确认 CDN 已是新字节）。
 
 ## 2. CN 网络现实与对策（实测结论）
 
@@ -127,3 +140,10 @@ git remote add origin <url>
 - rofd git 历史：同样含商业字体 → §3 流程走一遍（先 bundle 备份；多路径多轮；分块强推走 §2.1/§2.2）；
 - npm：fonts 资产包与 font-runtime 是**共享包**，rofd 直接消费，不需要再发（除非 rofd 要发自有字体切片包，那也是 fonts 仓库加 workspace，不是 rofd 仓库发包）；
 - CI/部署：rofd 若有 Pages 类公开部署，恢复自动部署前必须先解决"公开部署 = 分发商用字体"问题（rword 的 deploy-pages.yml 至今手动触发，就是这原因）。
+
+## 5. rofd 执行记录（2026-10-18 历史清理实战补充）
+
+1. **双路径的枚举陷阱（逐轮 grep 不是多余步骤的原因）**：`git rev-list --all --objects` 按 **blob hash 去重**——同一批字节在两个历史路径（仓库结构调整的搬家史）只列出其中一个路径。rofd 预检只看到 `crates/web-app/public/fonts`，第一轮 filter 后 `examples/web-app/public/fonts` 才现身，第二轮才清干净。清完后用"只剩 OFL 夹具路径 + size-pack 骤降"双重确认（rofd：67.4 MiB → 7.4 MiB）。
+2. **实测数据点**：重写后全历史 7.4 MiB / 364 提交，§2.1 协议（SSH 443）**86 批 33 分钟 0 失败**（小块 15 提交/批、≥400KB 大块独立推）；rword 的 ~35 分钟量级复现。两段式可行：先正常推 49 个源码提交再重写强推，无额外成本（重写会把新提交一并换 hash，一次强推覆盖）。
+3. **GitHub 侧不可达对象**：强推完成后旧对象（含字体字节）在远端成为不可达对象，等 GitHub GC 回收；合规敏感场景可联系 Support 请求立即 GC——手册原版漏了这条。
+4. **file: 依赖拷贝陷阱（资产刷新链）**：fonts 仓库有两层产物面——`dist/v1/`（CDN，re-cut 直写）与 `packages/fonts-*/dist`（npm 包目录，须跑 `tools/make-packages.mjs` 重生成；rofd 实战踩过 re-cut 后忘跑包生成的坑）。且 rofd/web-app 侧 `file:` 依赖是安装时**拷贝**——fonts 仓库更新后 rofd 的 node_modules 不会自动同步，须删 `node_modules/@office-rs/fonts-*` 再 install 并验证（manifest common-0 含 U+0030-39 即新产物）。

@@ -10,6 +10,8 @@
 
 ## 1. Tauri 桌面读本机字体（零再分发方案）
 
+> **⚠️ 本节已被 [2026-10-18-desktop-pure-system-font-channel.md](./2026-10-18-desktop-pure-system-font-channel.md) 取代**（白名单方案的四问题与 provider 升级见彼文 §1/§2）。rofd 曾按本节落地（commit `649a216`，已随历史重写换 hash）后同日升级为纯系统通道。§2 本地化别名部分不受影响，仍然有效。
+
 ### 1.1 动机与约束
 
 - wasm 内核**不发现系统字体**（`ParleyLayoutEngine::new_wasm()` 跳过 discovery，浏览器沙箱也够不着），字体必须以字节注册。
@@ -164,3 +166,8 @@ collect_font_requirements_canonicalizes_localized_aliases
 2. **通道边界要显式声明所有权**：一族一通道（slices own the family）。桌面整字体通道启用时必须把同族的切片 manifest 从配置里拿掉，而不是指望内核拒注册兜底。
 3. **宿主差异用可选能力探测**（`readSystemFont?`），不用环境判断/构建开关——前端单份源码，浏览器路径字节等价是验收线。
 4. **大字节跨 IPC 用原始 Response**，不走 JSON 数组；白名单收窄文件系统访问面。
+
+## 4. rofd 落地补充（2026-10-18，§2 别名机制的 rofd 形态）
+
+- **别在 rofd 搬运 §2.3 的"锚点包含逻辑"**：那是 rword 显示名锚定链（`slice_chain_after` 按精确 display 匹配、锚点 internal 条件排除）的结构性细节。rofd 的具名解析是内核 `normalize_family_key` 归一键 → `slice_chains[key]` 全链展开——**无锚点概念、全链恒可达**，不存在"别名查询漏锚点切片"的坑面。rofd 只需保证：归一表在**需求收集出口**与**片注册入口**两边界同一（单一事实源在 `crates/render/src/text/family.rs`）。
+- **表内容按"可交付族"同步**（§2.4 原则的 rofd 应用，超出 rword 表的三处）：`新宋体/NSimSun → simsun`（交付的是 simsun.ttc 的 SimSun face，映射到最接近可交付渲染好过落 Noto）；`Microsoft YaHei UI → msyh`（UI face 与常规 face 同 ttc）；`Times New Roman → times`（README 切片键为 times）。英文变体 `FangSong_GB2312/KaiTi_GB2312` 同步入表（公文正文标准字体的 WPS 写法）。

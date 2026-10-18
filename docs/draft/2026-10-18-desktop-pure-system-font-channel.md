@@ -111,6 +111,7 @@ async function satisfySystemFamilies(wasm, flow)   // 顺序 await，不抛错
 5. **ttf-parser 0.25 API**：`fonts_in_data` 不存在，用 `fonts_in_collection().unwrap_or(1)`；`name.name_id` 是裸 `u16`。
 6. **测试夹具**：把 OFL 子集字体 commit 进 `src-tauri/testdata/`（+ 一行 OFL.txt 出处），name 表提取测试可闭包跑；扫描优先级测试用两个临时目录 + 同名文件断言"后扫的目录胜出"。
 7. **同步命令的大字节读会短暂占主线程**（tauri 同步命令在主线程跑）：17MB 字体首次读有一次轻微卡顿；后续优化缝是 `async` + `spawn_blocking`，rword 一期接受（旧急切通道本来就更糟）。
+8. **defaultFamily 锚定竞争（rofd 终审实证，2026-10-18）**：需求收集产出**排序后**的族键（calibri 字母序在 simsun 之前），而补载遍的 Set 迭代序 = 注册序、内核 default 锚定在**首个整字体注册**——若 `wanted` 集合以声明族初始化再把 default 追加尾部，字母序靠前的声明族会在标准启动时序（init 拉清单 ∥ 宿主自动 loadOfd）下抢走宋体锚，默认渲染翻转为拉丁字体。修法：`wanted` 集合**以 defaultFamilyKey 初始化再并声明族**（default 恒排首位），并配排序断言测试（`p.reads[0].fileName === 'simsun.ttc'`）。
 
 ## 7. rofd 升级路径（从 649a216 的白名单通道到本方案）
 
@@ -119,3 +120,10 @@ async function satisfySystemFamilies(wasm, flow)   // 顺序 await，不抛错
 3. **OFD 需求侧**：同旧文——商用字体需求来自 `TextObject/Font` 属性扫描（对应 rFonts 三槽），级联解析的 OFD 等价物（样式继承的字体声明）同样要进需求收集，否则"文档声明了但不自动加载"。
 4. **别忘 AGENTS.md**：桌面字体通道段重写（纯系统通道 + 宋体默认 + provider 接口 + vite 空清单义务）。
 5. **测试门照搬**：`cargo test -p tauri-app`（夹具四测）+ SDK vitest（假 provider 八测：读一次/miss settle/拒绝 settle/清单覆盖不咨询/list 拒绝返 null/watcher tick/合并纯函数）+ 浏览器 e2e 零回归 + 手动 tauri dev 清单（下拉几百本机族、选中即加载、docx 声明楷体自动加载、粘贴 font-family 加载、空白文档默认宋体、Noto 文档替代渲染）。
+
+## 8. rofd 落地注记（2026-10-18 实施完成）
+
+- **§7 全路径落地**（非"最小升级"支线）：font_index.rs 双目录扫描 + State 直共享（无 Mutex——索引建后只读，HashMap Send+Sync）、provider 补载遍三入口、桌面空清单 + 宋体默认、tauri vite `families: []`（安装包 -24MB）。浏览器 e2e 零回归。
+- **三处 rofd 偏差**：`getFontFamilies()` 为 **async**（依赖 `ready()`，与本文 §4.1 的同步设计有别，CHANGELOG 已注明）；**D3 picker 未做**——rofd 无批注字体面板，SDK 预留面先行（`getFontFamilies` + 选择→声明→下 tick 读本机的自愈闭环已在流内）；§6.1 的 snake_case 坑对 rofd 不存在（wasm 面本就 camelCase）。
+- **§6.2 的 rofd 形态**：清单覆盖族集合由 `manifestFamilyKeys`（键 ∪ displayName **双侧经内核 `normalizeFontName` 归一**）构建——rword 靠显示名直配 name 表，rofd 键宇宙需要归一桥（wasm 绑定 `normalizeFontName`，单一事实源在内核归一表）。
+- **验证现状**：Rust 四夹具测 + SDK 假 provider 12 测 + 决策层 4 测 + e2e 3/3 全绿；真机 tauri dev 冒烟待做（无头环境无法驱动原生窗口）。

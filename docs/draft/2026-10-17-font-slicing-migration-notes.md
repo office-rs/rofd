@@ -92,7 +92,7 @@ web-app 六个商用字体（SimSun/SimHei/雅黑/Arial/Times/Calibri）改切�
 
 问题（web 切片通道实证）：段落样式三槽全写中文字族（WPS 级联形态：样式 `w:ascii/hAnsi/eastAsia="宋体"`，run 只带 `w:hint`）时，run 里的 ASCII 数字**也以该族查询**——但 CJK 族的切片**零 ASCII 覆盖**（slice.py 的 `CJK_START = 0x2E80` 地板："拉丁整只不切"契约假设拉丁族另行整只交付）。数字穿过族内 ~100 片全 miss → 全局 SansSerif 兜底 → Noto 的拉丁字形（视觉更粗，"持续约5小时"的 5 与汉字不同粗细）。桌面整字体通道无此问题（整只 cmap 覆盖 ASCII）；整只 manifest 条目（times/arial）的路由本身正确。
 修法（fonts 仓库 `50eb570`）：slice.py 把 cmap 中存在的 ASCII（U+0020–007E，~95 字形）并入 **common-0（preload 片）**——commons 保持 CJK-only（频表保留 CJK_START 地板），ASCII 只经 common-0 合并、恰出现一次；verify.py 覆盖契约改为"切片并集 == cmap CJK 区 ∪ cmap ASCII"。体积代价实测：common-0 +3~14 KB（simsun +13.5 KB / msyh +8.5 KB / simhei +3.2 KB）。
-rofd 要点：OFD 的 TextObject/Font 同样是"中文字族 + 混排数字"的形态。只要 web 走切片通道，**切片必须在资产层带 ASCII，别在内核补**（兜底链跨族竞争修不干净）。测试锚：fonts 仓库 test_slice 的 digit 断言 + rword `whole_entry_display_anchor_serves_ascii_digits`（内核侧 whole 条目路由回归）。
+rofd 要点：OFD 的 TextObject/Font 同样是"中文字族 + 混排数字"的形态。只要 web 走切片通道，**切片必须在资产层带 ASCII，别在内核补**（兜底链跨族竞争修不干净）。测试锚：fonts 仓库 test_slice 的 digit 断言 + rword `whole_entry_display_anchor_serves_ascii_digits`（内核侧 whole 条目路由回归）。商用 .ttc 本地重切：verify/slice 均按 face 0 处理（`TTFont(..., fontNumber=0)`）；当年旧切片与重切可能字节不一致（切割路径差异，码点一致即达标），Noto .otf 重切则逐字节一致。
 
 ## 5. rword 内核/SDK 接线清单（rofd 对应位置）
 
@@ -144,3 +144,22 @@ rofd 与 rword 的差异主要在 dom/io 层（OFD 格式 vs docx）与 render �
 ## 7. 跨缝教训（rword 三次实证）
 
 任务级审查抓不住跨任务契约缺口——rword 的双默认 manifest、相对 URL base、浏览器解码挂起都是各自单测各自假设下全绿、拼起来才炸。唯一可靠防线：**共享契约测试用真实协作方**（real FontRuntime + real browser）。浏览器专属代码路径必须浏览器实证（e2e 不可省）。rofd 迁移时把 4.1-4.3 三个修正的回归测试从 rword 一并搬过去，等于免费拿到三条缝的防线。
+
+## 8. rofd 落地补充（2026-10-18 实施记录）
+
+### 8.1 与本手册的三处形态差异（有意为之）
+
+1. **`takeFontDelta` 未移植**：body 只读，SDK watcher 对两次全量 collect 做差得 delta（需求签名未变早退）；比 editor choke point 累积便宜且够用。
+2. **`register_font_slice` 无 `display_name` 参数**：rofd 的具名解析走内核 `slice_chains` 查表（声明 FontId → 归一键 → 族内内部名链），不经 fontique 显示名锚定——rword 为锚定演化的参数在 rofd 不需要。
+3. **键→displayName 翻译**：rofd 需求收集产出归一规范键（`simsun`），而 font-runtime `selectInitial` 的 families 参数匹配 manifest **displayName**——SDK 在 `ready()` 后建 key→displayName 映射翻译（见纯系统通道 draft §6.2 的 rofd 形态）。
+
+### 8.2 rofd 新踩的坑（rword 未记录）
+
+1. **dev 态 Vite SPA 回退骗过 `res.ok`**：manifest 预检（filterLiveManifests）fetch 缺席的 manifest 时，vite dev 返回 **200 + text/html**（history 回退）而非 404——只查 `res.ok` 会把死清单当活的传给 `ready()`，整条切片通道报错而非静默降级。修法：content-type 非 JSON（含 `+json`）一律剔除。生产构建是真 404 不受影响。
+2. **loadOfd 落在字体流 'init' 窗口永不补拍**：init 异步拉清单期间宿主 `loadOfd`（web-app 自动加载 sample.ofd 的标准时序），状态机 'init' 态既不 kick 也不 retry，纯查看场景文档声明族永不加载。修法：流就绪转 'ready' 后补一拍 kick（runtime 去重使无竞争时空转）。
+3. **defaultFamily 锚定竞争**（见纯系统通道 draft §6.8）：需求收集产出**排序**键，calibri 字母序在 simsun 前——遍历序即注册序时首个声明族抢走内核 default 锚。
+
+### 8.3 实测数字（rofd e2e/性能闸门）
+
+- 典型中文文档（sample.ofd）首载 **7 个切片请求**（common-0..3 + 2 长尾块 + 拉丁整只），预算 ≤20 / <3MB / 无 >1MB 单请求余量充足。
+- 性能闸门（120 片 vs 3 片强制 miss 微基准）：release ratio **1.36–1.64**，未达 <1.10——裁定为夹具伪 worst case（120 只拉丁切片对 CJK 文本全量走完泛型表；绝对开销 +0.07ms/shape-miss；真实路径 glyph_cache 主导零回归）。做了 default 链截断优化（泛型前缀冗余消除）后 1.86→1.64。
