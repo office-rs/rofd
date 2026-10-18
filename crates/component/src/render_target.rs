@@ -11,7 +11,8 @@ pub struct PageSegment<'a> {
     pub scene: &'a Scene,
     /// 该页在视口中的落位（已含缩放；滚动只改它——body 不重建）。
     pub origin: (f64, f64),
-    /// 当前 zoom 下的页栅格尺寸（scene px；消费方按 dpr 放大分配位图）。
+    /// 当前 zoom 下的页栅格尺寸（设备 px：zoom 已含 dpr，消费方不得再按
+    /// dpr 放大分配位图）。
     pub raster_size: (u32, u32),
 }
 

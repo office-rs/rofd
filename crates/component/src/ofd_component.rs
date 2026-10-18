@@ -194,8 +194,8 @@ struct PageSceneEntry {
 struct PageLayer {
     page_id: PageId,
     origin: (f64, f64),
-    /// 当前 zoom 下的页栅格尺寸（scene px，f64；组装 [`PageSegment`] 时取整
-    /// 为 u32）。组件保持 dpr-free，消费方按自身 dpr 放大分配位图。
+    /// 当前 zoom 下的页栅格尺寸（f64；组装 [`PageSegment`] 时取整
+    /// 为 u32）。组件保持 dpr-free：dpr 已由消费方烘进 zoom，产出即设备 px。
     raster_size: (f64, f64),
 }
 
