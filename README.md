@@ -38,6 +38,8 @@ ofd.setClock('rofd', Date.now());
 ofd.loadOfd(bytes);
 ```
 
+When WebGPU is unavailable (e.g. hardware acceleration is disabled), the SDK automatically falls back to CPU soft rendering (vello_cpu + page bitmap cache) — opt out with `cpuFallback: false`.
+
 ### Native (`rofd-xilem-view`)
 
 Run the reference desktop host:
@@ -126,7 +128,7 @@ Go to this repo's [Releases](../../releases) page and grab an installer from the
 | Platform                  | Rendering backend        | Status                                      |
 | ------------------------- | ------------------------ | ------------------------------------------- |
 | Desktop (Windows / Linux) | wgpu (Vulkan/Metal/DX12) | ✅                                          |
-| Web                       | WebGPU                   | ✅ (Chrome/Edge 113+, no Canvas2D fallback) |
+| Web                       | WebGPU (CPU soft-render fallback) | ✅ (Chrome/Edge 113+) |
 
 ---
 

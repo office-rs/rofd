@@ -1,6 +1,6 @@
 # @office-rs/rofd
 
-TypeScript SDK for embedding the [rofd](https://github.com/office-rs/rofd) OFD (GB/T 33190) **view + annotation** editor into any web page. Compiles the Rust editor to WebAssembly and renders via WebGPU.
+TypeScript SDK for embedding the [rofd](https://github.com/office-rs/rofd) OFD (GB/T 33190) **view + annotation** editor into any web page. Compiles the Rust editor to WebAssembly and renders via WebGPU, with automatic CPU soft-render fallback.
 
 ## Live Demo
 [https://office-rs.github.io/rofd/](https://office-rs.github.io/rofd/)
@@ -10,7 +10,7 @@ TypeScript SDK for embedding the [rofd](https://github.com/office-rs/rofd) OFD (
 - **View** OFD body (read-only render).
 - **Annotate** — select body text and apply highlight / underline / strikeout / squiggly via `applyMarkup`, or draw with the freehand / rect / free-text tools.
 - **Surgical save** — re-serializes annotations and preserves untouched body entries byte-for-byte.
-- **WebGPU only** — no Canvas2D fallback. Chrome / Edge 113+ required.
+- **WebGPU 优先，CPU 自动回退** — WebGPU 不可用时自动切换 vello_cpu 软渲染（页位图缓存，滚动流畅）；可通过 `cpuFallback: false` 关闭。
 - **Zero framework** — drop into any HTML page; the SDK owns the canvas, event binding, and render loop.
 - **Persistent scrollbars** — classic vertical/horizontal scrollbars appear only when content overflows; drag the thumb, click the track to page, click the arrow buttons at the bar ends to step, or use the wheel. Scrolling is bounded at the first page top and last page bottom.
 
@@ -23,7 +23,7 @@ npm install @office-rs/rofd
 
 ## Browser support
 
-WebGPU requires Chrome / Edge 113+ (or any browser shipping WebGPU). On unsupported browsers `Ofd.init` throws `WebGPU is not supported in this browser`.
+WebGPU requires Chrome / Edge 113+ (or any browser shipping WebGPU). When WebGPU is unavailable, `Ofd.init` automatically falls back to CPU soft rendering (vello_cpu + page bitmap cache) and logs `[rofd] WebGPU 不可用，已切换 CPU 软渲染`; pass `cpuFallback: false` to opt out — then init throws on WebGPU-unsupported browsers.
 
 ## Quick start
 

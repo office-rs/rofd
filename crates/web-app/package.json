@@ -8,6 +8,7 @@
     "build:sdk": "cd ../web-view && wasm-pack build --target web --out-dir sdk/dist",
     "type-check": "vue-tsc --noEmit",
     "test": "vitest run",
+    "smoke:nogpu": "node scripts/smoke-nogpu.mjs",
     "e2e": "playwright test",
     "e2e:install": "playwright install chromium"
   },

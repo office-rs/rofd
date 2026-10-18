@@ -34,6 +34,8 @@ ofd.setClock('rofd', Date.now());
 ofd.loadOfd(bytes);
 ```
 
+WebGPU 不可用时（如浏览器关闭硬件加速），SDK 自动回退 CPU 软渲染（vello_cpu + 页位图缓存）；可用 `cpuFallback: false` 关闭。
+
 ### Native 端（`rofd-xilem-view`）
 
 运行参考桌面宿主：
@@ -41,6 +43,8 @@ ofd.loadOfd(bytes);
 ```bash
 cargo run -p xilem-app
 ```
+
+> **图形要求：** native 宿主需要硬件 GPU（无 GPU 环境请使用[网页版](#web-端)，WebGPU 不可用时自动切换 CPU 软渲染）。
 
 把 rofd 嵌入 xilem（masonry）应用：
 
@@ -119,7 +123,7 @@ fn main() -> Result<(), xilem::winit::error::EventLoopError> {
 | 平台 | 渲染后端 | 状态 |
 |---|---|---|
 | Desktop（Windows / Linux） | wgpu（Vulkan/Metal/DX12） | ✅ |
-| Web | WebGPU | ✅（Chrome/Edge 113+，无 Canvas2D 回退） |
+| Web | WebGPU（CPU 软渲染自动回退） | ✅（Chrome/Edge 113+） |
 
 ---
 

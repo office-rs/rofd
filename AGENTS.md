@@ -53,6 +53,7 @@ npm install
 npm run build:sdk         # wasm-pack build crates/web-view -> sdk/dist
 npm run dev               # vite 开发服务器
 npm run build             # vite 生产构建
+npm run smoke:nogpu       # 无 GPU 冒烟（headless Chrome --disable-gpu 必须落入 CPU 回退）
 ```
 
 `build:sdk` 等价于 `cd ../web-view && wasm-pack build --target web --out-dir sdk/dist`。
@@ -148,6 +149,7 @@ crates/web-app ─► web-view ─────────────┘       
 ### rofd-web-view
 
 - `WasmOfd`（wasm-bindgen）+ `WebGpuRenderTarget` + JS 事件桥。工厂 `create_wasm_ofd`。wasm-pack --target web。
+- CPU 回退（spec 2026-10-18）：WebGPU 不可用时 SDK 落 `create_wasm_ofd_cpu`（vello_cpu + 页位图缓存）于**同一 canvas**——前提是 `create_wasm_ofd` **先探 adapter（`compatible_surface: None`）后 `create_surface`**（canvas 一旦绑了 webgpu context 就永远拿不到 2d context，回退必挂）；该链路由 `npm run smoke:nogpu` 冒烟守护，勿倒回"先绑 surface 再探 adapter"。
 - SDK 在 `crates/web-view/sdk/`，入口 `Ofd.init(container, config?)`，发布为 npm 包 `@office-rs/rofd`。
 - 渲染调度（spec 2026-10-13 web-render-on-demand）：内核 `needs_frame() -> FrameNeed` 是唯一真值；wasm 融合导出 `renderFrame()` 返回 `0` / `>0`ms / `-1`。SDK 自挂起调度器（`scheduler.ts` `RenderScheduler` + `with-kick.ts` Proxy kick + watchdog）：`0`→rAF 立即重渲、`>0`→唯一 `setTimeout` 唤醒（blink deadline，web 的 WaitUntil）、`-1`→完全挂起；任何 wasm 方法调用经 Proxy kick 恰预约一个 rAF（`renderFrame` 豁免）；`visibilitychange` 隐藏完全静默；`pauseRendering`/`resumeRendering` 为宿主政策层手柄。
 
