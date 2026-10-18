@@ -45,6 +45,15 @@ impl WebGpuRenderTarget {
     ///
     /// This is async because `request_adapter` and `request_device` are
     /// async on wasm32 (they call browser WebGPU Promises).
+    ///
+    /// 排序契约（spec 2026-10-18-no-gpu-support 冒烟抓出的回退缺陷）：
+    /// **先探 adapter，canvas context 保持处子之身直到 WebGPU 确认可用**。
+    /// `create_surface` 会把 canvas 永久绑定为 webgpu context（一个 canvas
+    /// 只容一种 context 类型），若先绑后探、adapter 为 null，SDK 的 CPU
+    /// 回退对**同一 canvas** 的 `getContext('2d')` 必得 null。因此
+    /// `request_adapter` 必须先于 `create_surface` 执行（web 后端只有
+    /// `navigator.gpu` 一个 adapter 源，`compatible_surface: None` 不改变
+    /// 选择结果，只解除时序耦合）。
     pub async fn new(
         canvas: web_sys::HtmlCanvasElement,
         width: u32,
@@ -55,18 +64,21 @@ impl WebGpuRenderTarget {
             ..Default::default()
         });
 
-        let surface = instance
-            .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
-            .map_err(|e| format!("failed to create surface: {e:?}"))?;
-
+        // 1) Adapter first — must not touch the canvas before WebGPU is
+        //    known-good (see the ordering contract above).
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
+                compatible_surface: None,
                 force_fallback_adapter: false,
             })
             .await
             .map_err(|e| format!("no suitable adapter: {e:?}"))?;
+
+        // 2) Only now bind the canvas to a webgpu context (irreversible).
+        let surface = instance
+            .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
+            .map_err(|e| format!("failed to create surface: {e:?}"))?;
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
