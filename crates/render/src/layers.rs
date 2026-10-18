@@ -3,6 +3,8 @@
 //! 所有页 body 之上是 per-page 文本选区高亮 + 批注（保持页序）、
 //! 再选框 handle、再拖拽预览。页互不重叠时跨页顺序变化无视觉差
 //! （spec §7.1 层序不变性注记）。
+//!
+//! 背景不含 desk 灰底——由合流方/呈现层作为最底层绘制（composite 仍自带）。
 
 use imaging::kurbo::Rect;
 use imaging::peniko::Color;
@@ -50,9 +52,10 @@ pub struct OverlayInput<'a> {
 /// 动态覆盖层（视口坐标）：每可见页 [文本选区高亮 + 批注]（页序），
 /// 之后选框/handle、拖拽预览。每次相关状态变化重建——不做缓存。
 ///
-/// 灰色"桌面"背景是本层首个绘制调用（与 composite 同值 0xE0E0E0FF）：
-/// GPU 路径下 vello base_color 已同值，视觉不变；未来 CPU 路径以它清屏，
-/// 不会落到空白底。
+/// 背景不含 desk 灰底——由合流方作为最底层绘制（Task 4 default merge
+/// 先画灰底再合流页；CPU 呈现目标清屏用同值 0xE0E0E0FF；composite 仍
+/// 自带）。overlay 若自带不透明全视口灰底，painter's-algorithm 下会盖掉
+/// 先合流的所有页体。
 pub fn overlay_scene(input: &OverlayInput<'_>) -> Scene {
     let OverlayInput {
         doc,
@@ -64,12 +67,6 @@ pub fn overlay_scene(input: &OverlayInput<'_>) -> Scene {
     } = input;
     let mut scene = Scene::new();
     let mut painter = Painter::new(&mut scene);
-
-    // Gray "desk" background filling the viewport (composite 的第一笔，拆分后
-    // 归 overlay——两侧对拍计数一致)。
-    let gray = Color::from_rgba8(0xE0, 0xE0, 0xE0, 0xFF);
-    let bg = Rect::new(0.0, 0.0, vp.size.0, vp.size.1);
-    painter.fill_rect(bg, gray);
 
     let origins = page_origins(doc, vp);
     for (page, origin) in doc.pages.iter().zip(origins.iter()) {
