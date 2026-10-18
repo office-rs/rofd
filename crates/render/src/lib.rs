@@ -17,6 +17,7 @@ pub mod handles;
 pub mod hit_test;
 pub mod image;
 pub mod layers;
+pub mod page_raster_cache;
 pub mod path;
 pub mod preedit_overlay;
 pub mod scrollbar;
@@ -38,6 +39,7 @@ pub use handles::{annotation_handle_positions, annotation_handles, handle_center
 pub use hit_test::{annotation_local_rect, hit_test, HandlePos, HitTarget};
 pub use image::decode_image;
 pub use layers::{overlay_scene, page_body_scene, OverlayInput};
+pub use page_raster_cache::{PageCacheKey, PageRasterCache};
 pub use path::path_to_bezpath;
 pub use preedit_overlay::paint_preedit_overlay;
 pub use scrollbar::{
