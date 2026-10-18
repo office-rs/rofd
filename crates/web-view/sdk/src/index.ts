@@ -15,10 +15,16 @@ import type { FontSlicesConfig, SystemFontProvider } from './fontFlow';
 export type { FontSlicesConfig, SystemFontEntry, SystemFontProvider } from './fontFlow';
 
 // --- wasm module shape (wasm-pack --target web) ---
-// `default` is the async init; `create_wasm_ofd` is the factory.
+// `default` is the async init; `create_wasm_ofd` is the WebGPU factory,
+// `create_wasm_ofd_cpu` the CPU soft-render fallback factory (Task 8).
 type WasmModule = {
   default(): Promise<void>;
   create_wasm_ofd(canvas: HTMLCanvasElement): Promise<WasmOfd>;
+  create_wasm_ofd_cpu(
+    canvas: HTMLCanvasElement,
+    maxCachedPages: number,
+    maxPagePixels: number,
+  ): Promise<WasmOfd>;
 };
 
 interface WasmOfd {
@@ -36,6 +42,9 @@ interface WasmOfd {
   collectFontRequirements(): { families: string[]; codepoints: number[] };
   /** Register a decoded (OTF/TTF) font slice. `false` = bytes parsed to no family. */
   registerFontSlice(bytes: Uint8Array, familyKey: string, sliceId: string): boolean;
+  /** Whether this instance renders via the CPU fallback path. Read once at
+   * init and frozen onto the `Ofd` instance as `isCpuFallback`. */
+  isCpuFallback(): boolean;
   handleResize(width: number, height: number): void;
   handleKeyDown(
     key: string,
@@ -174,6 +183,13 @@ export interface OfdConfig {
   onTextSelectionChange?: () => void;
   /** Set false to disable the default Ctrl+C -> clipboard wiring. */
   clipboard?: boolean;
+  /** WebGPU 不可用时自动落入 CPU 软渲染（vello_cpu + 页位图缓存）。默认
+   * true；显式 `false` 时 init 直接抛错（要求硬件加速环境）。降级发生时
+   * console.info 提示一次，并经 `onWarning` 告知宿主。 */
+  cpuFallback?: boolean;
+  /** CPU 软渲染的调优参数（仅降级实例生效）：`maxCachedPages` 页位图 LRU
+   * 容量（默认 5），`maxPagePixels` 单页物理像素上限（默认 8_000_000）。 */
+  cpuFallbackTuning?: { maxCachedPages?: number; maxPagePixels?: number };
 }
 
 /**
@@ -231,10 +247,14 @@ export class Ofd {
   private systemFontsCfg?: fontFlow.SystemFontProvider;
   private defaultFontFamilyCfg?: string;
   private wasmFontSurface?: fontFlow.WasmFontSurface;
+  /** 呈现目标是否 CPU 软渲染回退（wire 时从 wasm 表面读一次定格；
+   * 实例生命周期内不变——模式由工厂选择决定）。 */
+  readonly isCpuFallback: boolean;
 
-  private constructor(wasm: WasmOfd, canvas: HTMLCanvasElement) {
+  private constructor(wasm: WasmOfd, canvas: HTMLCanvasElement, isCpuFallback: boolean) {
     this.wasm = wasm;
     this.canvas = canvas;
+    this.isCpuFallback = isCpuFallback;
     this.scheduler = new RenderScheduler(() => this.wasm.renderFrame());
     this.abortController = new AbortController();
   }
@@ -258,10 +278,11 @@ export class Ofd {
 
   /**
    * Initialize a new OFD surface inside `container`: loads the wasm module,
-   * checks WebGPU, creates a canvas, initializes the wasm surface (WebGPU +
-   * warmup), loads fonts (legacy whole fonts awaited here; the slice flow
-   * starts after wire), wires callbacks, binds DOM events, and starts
-   * on-demand rendering. Returns a ready-to-use `Ofd`.
+   * creates a canvas, initializes the wasm surface (WebGPU; CPU soft-render
+   * fallback when WebGPU is unavailable and `cpuFallback` is not disabled),
+   * loads fonts (legacy whole fonts awaited here; the slice flow starts
+   * after wire), wires callbacks, binds DOM events, and starts on-demand
+   * rendering. Returns a ready-to-use `Ofd`.
    */
   static async init(
     container: HTMLElement,
@@ -271,12 +292,7 @@ export class Ofd {
     const wasm = (await import('../dist/rofd_web_view.js')) as unknown as WasmModule;
     await wasm.default();
 
-    // 2. Check WebGPU support.
-    if (!navigator.gpu) {
-      throw new Error('WebGPU is not supported in this browser');
-    }
-
-    // 3. Create canvas inside container.
+    // 2. Create canvas inside container.
     const canvas = document.createElement('canvas');
     canvas.tabIndex = 0;
     canvas.style.width = '100%';
@@ -287,14 +303,42 @@ export class Ofd {
     canvas.style.cursor = 'default';
     container.appendChild(canvas);
 
-    // 4. Create WasmOfd (async: WebGPU init + warmup).
-    const wasmOfd = await wasm.create_wasm_ofd(canvas);
+    // 3. Create WasmOfd: WebGPU first; on unavailability fall back to the CPU
+    //    soft renderer (vello_cpu + page bitmap cache) unless the host opted
+    //    out with `cpuFallback: false`. Both targets share the device-px
+    //    convention, so nothing downstream branches on the mode beyond the
+    //    one-shot notice + `isCpuFallback` (read at wire).
+    let wasmOfd: WasmOfd;
+    try {
+      if (!navigator.gpu) {
+        throw new Error('WebGPU is not supported in this browser');
+      }
+      wasmOfd = await wasm.create_wasm_ofd(canvas);
+    } catch (e) {
+      if (config?.cpuFallback === false) {
+        throw new Error(
+          `rofd 需要 WebGPU：${e instanceof Error ? e.message : String(e)}` +
+            '。请使用支持 WebGPU 的浏览器，或在浏览器设置中开启硬件加速。',
+        );
+      }
+      const tuning = config?.cpuFallbackTuning ?? {};
+      wasmOfd = await wasm.create_wasm_ofd_cpu(
+        canvas,
+        tuning.maxCachedPages ?? 5,
+        tuning.maxPagePixels ?? 8_000_000,
+      );
+      // One-shot notice (also the Task 10 smoke marker) + host notification.
+      console.info('[rofd] WebGPU 不可用，已切换 CPU 软渲染（页位图缓存已启用）');
+      if (config?.onWarning) {
+        deferCb(config.onWarning)(['cpu-fallback: WebGPU unavailable, rendering on CPU']);
+      }
+    }
 
-    // 5. Fonts: legacy whole fonts awaited here (byte-compatible behavior);
+    // 4. Fonts: legacy whole fonts awaited here (byte-compatible behavior);
     //    slice mode starts after wire (progressive, kicks the scheduler).
     await Ofd.dispatchFonts(wasmOfd, config?.fonts);
 
-    // 6. Register callbacks (deferred: handlers run in a microtask so they
+    // 5. Register callbacks (deferred: handlers run in a microtask so they
     // may freely call back into the surface - see deferCb).
     // onChange 双消费者：宿主回调 + 字体 watcher kick（批注文本变更补片）。
     let fontKick: () => void = () => {};
@@ -346,7 +390,7 @@ export class Ofd {
       wasmOfd.setZoomMode(config.zoomMode);
     }
 
-    // 7. Create wrapper (proxy + events + watchdog) via the shared wiring.
+    // 6. Create wrapper (proxy + events + watchdog) via the shared wiring.
     const ofd = Ofd.wire(wasmOfd, canvas);
 
     // Slice font flow (if configured) starts now: the instance holds the
@@ -365,11 +409,11 @@ export class Ofd {
     // Prevent the browser's native context menu on the canvas (right-click).
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
-    // 8. Initial resize (eager direct render) + first frame kick.
+    // 7. Initial resize (eager direct render) + first frame kick.
     ofd.resize();
     ofd.kick();
 
-    // 9. Focus the canvas so keyboard input works immediately.
+    // 8. Focus the canvas so keyboard input works immediately.
     canvas.focus();
 
     return ofd;
@@ -382,7 +426,11 @@ export class Ofd {
   private static wire(wasmOfd: WasmOfd, canvas: HTMLCanvasElement): Ofd {
     let kickLoop: () => void = () => {};
     const proxied = withKick(wasmOfd, () => kickLoop());
-    const ofd = new Ofd(proxied, canvas);
+    // CPU 回退标记读一次定格：真实工厂产物恒有 isCpuFallback（经 proxy
+    // 亦是直通方法调用）；`__testNew` 的合成表面可能缺省该方法 → false。
+    const isCpuFallback =
+      typeof wasmOfd.isCpuFallback === 'function' ? wasmOfd.isCpuFallback() : false;
+    const ofd = new Ofd(proxied, canvas, isCpuFallback);
     ofd.bindEvents();
     kickLoop = () => ofd.kick();
     return ofd;
