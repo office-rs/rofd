@@ -10,10 +10,15 @@
 //! pure Rust and run on native, giving TDD coverage for the JS key-string ->
 //! [`rofd_component::Key`] mapping without needing a browser.
 
+#[cfg(target_arch = "wasm32")]
+pub mod cpu_canvas_render_target;
 pub mod wasm_ofd;
 #[cfg(target_arch = "wasm32")]
 pub mod webgpu_render_target;
+pub mod zoom_gesture;
 
+#[cfg(target_arch = "wasm32")]
+pub use cpu_canvas_render_target::{CpuCanvasRenderTarget, CpuTuning};
 #[cfg(target_arch = "wasm32")]
 pub use wasm_ofd::WasmOfd;
 #[cfg(target_arch = "wasm32")]

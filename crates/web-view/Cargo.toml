@@ -19,6 +19,7 @@ rofd-component = { workspace = true }
 rofd-io = { workspace = true }
 rofd-dom = { workspace = true }
 rofd-editor = { workspace = true }
+rofd-render = { workspace = true }
 vello = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
@@ -26,6 +27,9 @@ js-sys = { workspace = true }
 console_error_panic_hook = { workspace = true }
 imaging = { workspace = true }
 imaging_vello = { workspace = true }
+# CPU 回退呈现（CpuCanvasRenderTarget）：vello_cpu 软栅格 + web_time 单调钟。
+imaging_vello_cpu = { workspace = true }
+web-time = { workspace = true }
 
 [dependencies.wgpu]
 workspace = true

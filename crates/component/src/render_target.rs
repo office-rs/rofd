@@ -1,13 +1,8 @@
 use imaging::kurbo::{Affine, Rect};
-use imaging::peniko::Color;
 use imaging::record::replay;
 use imaging::Painter;
 use rofd_dom::PageId;
-use rofd_render::Scene;
-
-/// Desk 灰底颜色——与 composite 的首个绘制操作一致（页场景与 overlay 都
-/// 不携带背景，合流方以它铺最底层）。
-const DESK_BG: Color = Color::from_rgba8(0xE0, 0xE0, 0xE0, 0xFF);
+use rofd_render::{Scene, DESK_BG};
 
 /// Body 层的一段：组件按页切好的只读向量场景（**页局部坐标**，origin 绝不
 /// 烘入——页缓存按页复用、滚动零重组的前提）。

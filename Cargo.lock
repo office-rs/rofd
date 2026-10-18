@@ -4670,15 +4670,18 @@ dependencies = [
  "console_error_panic_hook",
  "imaging",
  "imaging_vello",
+ "imaging_vello_cpu",
  "js-sys",
  "rofd-component",
  "rofd-dom",
  "rofd-editor",
  "rofd-io",
+ "rofd-render",
  "vello",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "web-time",
  "wgpu",
 ]
 

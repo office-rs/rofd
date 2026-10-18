@@ -23,6 +23,13 @@ use crate::hit_test::annotation_viewport_rect;
 use crate::text::FontStore;
 use crate::viewport::Viewport;
 
+/// Desk 灰底颜色——层序里唯一的背景事实来源：默认合流
+/// （component `merge_scene_layers`）与 CPU 呈现目标（web-view 2d ctx
+/// 清屏）都以它铺最底层；页场景与 overlay 都不携带背景
+/// （painter's-algorithm 裁定）。composite 的 base_color 同值（GPU 路径
+/// 在 vello RenderParams 内联）。
+pub const DESK_BG: Color = Color::from_rgba8(0xE0, 0xE0, 0xE0, 0xFF);
+
 /// 单页 body（含白页底），**页局部坐标**（origin 不烘入——滚动零重组的关键）。
 /// 内容只读（AGENTS §4.2），zoom 不变期间可缓存复用。
 pub fn page_body_scene(page: &Page, res: &Resources, fonts: &FontStore, zoom: f64) -> Scene {

@@ -38,7 +38,7 @@ pub use fit::{fit_zoom, FitTarget};
 pub use handles::{annotation_handle_positions, annotation_handles, handle_center_local};
 pub use hit_test::{annotation_local_rect, hit_test, HandlePos, HitTarget};
 pub use image::decode_image;
-pub use layers::{overlay_scene, page_body_scene, OverlayInput};
+pub use layers::{overlay_scene, page_body_scene, OverlayInput, DESK_BG};
 pub use page_raster_cache::{PageCacheKey, PageRasterCache};
 pub use path::path_to_bezpath;
 pub use preedit_overlay::paint_preedit_overlay;
