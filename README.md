@@ -46,6 +46,8 @@ Run the reference desktop host:
 cargo run -p xilem-app
 ```
 
+> **图形要求：** native 宿主需要硬件 GPU（无 GPU 环境请使用[网页版](#web)，WebGPU 不可用时自动切换 CPU 软渲染）。
+
 Embed rofd in a xilem (masonry) application:
 
 ```toml
