@@ -202,8 +202,8 @@ mod wasm_impl {
     }
 
     impl RenderTargetKind {
-        /// 视口 resize 派发（两变体同名方法，各自语义原样保持：WebGPU 重配
-        /// surface，CPU 同步 canvas 物理尺寸、不失效页位图）。
+        /// 视口 resize 派发（设备 px，两变体同一单位约定——SDK 以 css × dpr
+        /// 喂入：WebGPU 重配 surface，CPU 同步 canvas 物理尺寸、不失效页位图）。
         pub(crate) fn resize(&mut self, width: u32, height: u32) {
             match self {
                 Self::WebGpu(t) => t.resize(width, height),
@@ -213,7 +213,9 @@ mod wasm_impl {
 
         /// 每帧渲染前喂状态（spec §8）：仅 CPU 分支消费——zoom 进手势状态
         /// 机（手势中旧位图拉伸顶着），font_gen/body_revision 进缓存键；
-        /// WebGPU 分支无页位图缓存，恒 no-op。
+        /// WebGPU 分支无页位图缓存，恒 no-op。zoom 喂原始值（设备 px/mm
+        /// 的无量纲比，两路径一致——CPU 路径的设备缩放已烘进 zoom 对应的
+        /// 场景尺寸，无需也不应再乘 dpr）。
         pub(crate) fn note_state(
             &mut self,
             zoom: f64,
@@ -344,8 +346,12 @@ mod wasm_impl {
             self.render_target.is_cpu()
         }
 
-        /// Handle viewport resize (device pixels). Reconfigures the WebGPU
-        /// surface and updates the editor viewport.
+        /// Handle viewport resize (device pixels = CSS size × DPR — the
+        /// unified contract for BOTH render targets: the SDK scales pointer
+        /// coords and zoom anchors the same way, so the editor viewport and
+        /// every scene the targets consume live in device px). Reconfigures
+        /// the WebGPU surface / syncs the CPU canvas backing store and
+        /// updates the editor viewport.
         #[wasm_bindgen(js_name = handleResize)]
         pub fn handle_resize(&mut self, width: f64, height: f64) -> Result<(), JsValue> {
             self.render_target.resize(width as u32, height as u32);

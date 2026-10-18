@@ -5,12 +5,13 @@
 //! wasm 高水位纪律：heap 只留当前栅格工作缓冲（vello_cpu 的 RgbaImage），
 //! 成品像素立即离开 heap 进 OffscreenCanvas（浏览器管理、可回收）。
 //!
-//! dpr 纪律：canvas 物理尺寸 = css × dpr；页场景/overlay 是 dpr-free 的
-//! scene px，栅格时经 `replay_transformed(Affine::scale(dpr))` 放大——
-//! vello_cpu 按 1:1 坐标栅格化，不会自动缩放场景。
+//! 单位纪律（与 WebGpuRenderTarget 同约定，2026-10-18 统一）：SDK 是唯一
+//! 施加 dpr 的层——视口/指针坐标/缩放锚点全以**设备 px**（css × dpr）喂入，
+//! 组件场景即设备 px 空间。本目标 1:1 栅格、1:1 落位，内部不出现 dpr
+//! （再乘即二次放大）；工厂期的初值只是首帧前的占位，SDK 的首个 resize
+//! 即以设备 px 校正。
 
-use imaging::kurbo::Affine;
-use imaging::record::replay_transformed;
+use imaging::record::replay;
 use imaging_vello_cpu::VelloCpuRenderer;
 use rofd_component::render_target::{PageSegment, RenderTarget, SceneLayers};
 use rofd_dom::PageId;
@@ -74,10 +75,7 @@ pub struct CpuCanvasRenderTarget {
     /// 后 insert 必接受，超限页零栅格零上传直接跳过）。
     max_page_pixels: u64,
     overlay: Option<OverlaySurface>,
-    /// 创建时捕获的 devicePixelRatio（与 WebGPU 路径的固定 surface 配置
-    /// 同语义：浏览器缩放变化不重配，直到目标重建）。
-    dpr: f64,
-    /// 视口 css 尺寸（canvas 物理尺寸 = css × dpr）。
+    /// 视口尺寸（设备 px = canvas 物理尺寸；SDK resize 喂 css × dpr）。
     width: u32,
     height: u32,
     /// desk 灰底的 CSS 色串（与 [`DESK_BG`] 同值，见 new）。
@@ -95,17 +93,16 @@ pub struct CpuCanvasRenderTarget {
 }
 
 impl CpuCanvasRenderTarget {
+    /// `width`/`height` 为 canvas 物理像素数（与 WebGpuRenderTarget::new 同
+    /// 契约：工厂期的初值只是占位，SDK 的首个 resize 以设备 px 校正）。
     pub fn new(
         canvas: web_sys::HtmlCanvasElement,
         width: u32,
         height: u32,
         tuning: CpuTuning,
     ) -> Result<Self, String> {
-        let dpr = web_sys::window()
-            .map(|w| w.device_pixel_ratio())
-            .unwrap_or(1.0);
-        canvas.set_width((width as f64 * dpr) as u32);
-        canvas.set_height((height as f64 * dpr) as u32);
+        canvas.set_width(width);
+        canvas.set_height(height);
         let ctx = canvas
             .get_context("2d")
             .map_err(|e| format!("get 2d context: {e:?}"))?
@@ -121,7 +118,6 @@ impl CpuCanvasRenderTarget {
             cache: PageRasterCache::new(tuning.max_cached_pages, tuning.max_page_pixels),
             max_page_pixels: tuning.max_page_pixels,
             overlay: None,
-            dpr,
             width,
             height,
             desk_fill,
@@ -134,13 +130,14 @@ impl CpuCanvasRenderTarget {
         })
     }
 
-    /// 视口 resize（css 尺寸）。同步 canvas 物理尺寸；**不失效页位图**——
-    /// 页栅格尺寸只由 页尺寸×zoom×dpr 决定，与视口无关（spec §7.3）。
+    /// 视口 resize（设备 px，与 WebGPU 路径同约定）。同步 canvas 物理尺寸；
+    /// **不失效页位图**——页栅格尺寸只由 页尺寸×zoom 决定（zoom 已是设备
+    /// px/mm），与视口无关（spec §7.3）。
     pub fn resize(&mut self, width: u32, height: u32) {
         self.width = width;
         self.height = height;
-        self.canvas.set_width((width as f64 * self.dpr) as u32);
-        self.canvas.set_height((height as f64 * self.dpr) as u32);
+        self.canvas.set_width(width);
+        self.canvas.set_height(height);
         // resize 清空 canvas 内容；overlay 面按尺寸惰性重建（见 draw_layers）。
     }
 
@@ -173,56 +170,48 @@ impl CpuCanvasRenderTarget {
         PageCacheKey {
             page_id: id.clone(),
             zoom: self.gesture.settled(),
-            dpr: self.dpr,
+            // 场景已是设备 px（zoom 即设备 px/mm），物理缩放已烘进 zoom 与
+            // raster_size——键的 dpr 维度对本目标恒为常量 1.0。
+            dpr: 1.0,
             font_gen: self.font_gen,
             body_revision: self.body_revision,
         }
     }
 
-    /// 视口物理尺寸（css × dpr）。饱和转换：病态巨视口钳到 u16 上限。
+    /// 视口尺寸的 u16 饱和转换（overlay 面尺寸）：病态巨视口钳到 u16 上限。
     fn phys_size_u16(&self) -> (u16, u16) {
         (
-            (self.width as f64 * self.dpr) as u16,
-            (self.height as f64 * self.dpr) as u16,
+            self.width.min(u32::from(u16::MAX)) as u16,
+            self.height.min(u32::from(u16::MAX)) as u16,
         )
     }
 
-    /// 软栅格一段场景：缓冲 = raster 尺寸 × dpr，场景经 `scale(dpr)`
-    /// 重放（vello_cpu 1:1 栅格化，不自动缩放）。零尺寸/栅格失败 → None。
-    fn raster_scaled(scene: &Scene, w: u16, h: u16, dpr: f64) -> Option<imaging::RgbaImage> {
+    /// 软栅格一段场景：1:1（场景即设备 px；vello_cpu 按坐标原样栅格化，
+    /// 不自动缩放，也无需再乘 dpr——乘了就是二次放大）。零尺寸/栅格失败
+    /// → None。
+    fn raster_scaled(scene: &Scene, w: u16, h: u16) -> Option<imaging::RgbaImage> {
         if w == 0 || h == 0 {
             return None;
         }
         let mut renderer = VelloCpuRenderer::new(w, h);
-        replay_transformed(scene, &mut renderer, Affine::scale(dpr));
+        replay(scene, &mut renderer);
         renderer.finish().ok()
     }
 
-    /// 栅格一段页场景并上传为成品位图（尺寸 = raster_size × dpr）。
-    fn raster_page_bitmap(seg: &PageSegment<'_>, dpr: f64) -> Option<PageBitmap> {
-        let w = (seg.raster_size.0 as f64 * dpr) as u16;
-        let h = (seg.raster_size.1 as f64 * dpr) as u16;
-        let img = Self::raster_scaled(seg.scene, w, h, dpr)?;
+    /// 栅格一段页场景并上传为成品位图（尺寸 = raster_size，u16 饱和）。
+    fn raster_page_bitmap(seg: &PageSegment<'_>) -> Option<PageBitmap> {
+        let w = seg.raster_size.0.min(u32::from(u16::MAX)) as u16;
+        let h = seg.raster_size.1.min(u32::from(u16::MAX)) as u16;
+        let img = Self::raster_scaled(seg.scene, w, h)?;
         Self::upload(&img)
     }
 
-    /// 页段物理位图尺寸（raster_size × dpr）。与 [`Self::raster_page_bitmap`]
-    /// 的 u16 饱和转换不同，此处保持 u32——容量预检须与 insert 内部的
-    /// u64 乘积判定用同一对 w/h，保证预检通过后 insert 必接受。
-    fn phys_page_size(seg: &PageSegment<'_>, dpr: f64) -> (u32, u32) {
-        (
-            (seg.raster_size.0 as f64 * dpr) as u32,
-            (seg.raster_size.1 as f64 * dpr) as u32,
-        )
-    }
-
-    /// 画一个页位图：落位 origin（scene px）× dpr → 物理 px；尺寸 = 位图
-    /// 原样 × scale（手势中缓存命中时 scale = 拉伸比，其余恒 1.0）。
-    /// 关联函数显式收 ctx/dpr——调用方持 cache 借用时按字段拆分借用，
+    /// 画一个页位图：落位 origin（场景 = 设备 px）1:1；尺寸 = 位图原样 ×
+    /// scale（手势中缓存命中时 scale = 拉伸比，其余恒 1.0）。
+    /// 关联函数显式收 ctx——调用方持 cache 借用时按字段拆分借用，
     /// 避免 `&self` 整体借用与 `&mut self.cache` 冲突。
     fn blit_page(
         ctx: &web_sys::CanvasRenderingContext2d,
-        dpr: f64,
         bitmap: &PageBitmap,
         seg: &PageSegment<'_>,
         scale: f64,
@@ -231,8 +220,8 @@ impl CpuCanvasRenderTarget {
         let dh = bitmap.canvas.height() as f64 * scale;
         let _ = ctx.draw_image_with_offscreen_canvas_and_dw_and_dh(
             &bitmap.canvas,
-            seg.origin.0 * dpr,
-            seg.origin.1 * dpr,
+            seg.origin.0,
+            seg.origin.1,
             dw,
             dh,
         );
@@ -267,7 +256,7 @@ impl RenderTarget for CpuCanvasRenderTarget {
 
         // 1) desk 灰底是 CPU 目标自己的第一笔（合流方裁定：页场景与
         //    overlay 都不携带背景）——整幅物理矩形铺满。
-        let (pw, ph) = (self.width as f64 * self.dpr, self.height as f64 * self.dpr);
+        let (pw, ph) = (self.width as f64, self.height as f64);
         self.ctx.set_fill_style_str(&self.desk_fill);
         self.ctx.fill_rect(0.0, 0.0, pw, ph);
 
@@ -283,27 +272,28 @@ impl RenderTarget for CpuCanvasRenderTarget {
                     let Some(bitmap) = self.cache.get(&key) else {
                         continue; // 与 plan 判定间无窗口，纯防御
                     };
-                    Self::blit_page(&self.ctx, self.dpr, bitmap, seg, scale);
+                    Self::blit_page(&self.ctx, bitmap, seg, scale);
                 }
                 PageBlitPlan::OneShotRaw => {
-                    let Some(bitmap) = Self::raster_page_bitmap(seg, self.dpr) else {
+                    let Some(bitmap) = Self::raster_page_bitmap(seg) else {
                         continue; // 零尺寸页/栅格失败：本帧跳过
                     };
-                    Self::blit_page(&self.ctx, self.dpr, &bitmap, seg, 1.0);
+                    Self::blit_page(&self.ctx, &bitmap, seg, 1.0);
                     // bitmap 就地离场（GC 回收），不入缓存。
                 }
                 PageBlitPlan::RasterAndCache => {
-                    // 容量预检（与 insert 内部判定同参）：超限页零栅格
-                    // 零上传，本帧跳过——否则超限页每帧白付一次软栅格。
-                    let (w, h) = Self::phys_page_size(seg, self.dpr);
+                    // 容量预检（与 insert 内部判定同参——同一对
+                    // raster_size，保证预检通过后 insert 必接受）：超限页
+                    // 零栅格零上传，本帧跳过——否则超限页每帧白付一次软栅格。
+                    let (w, h) = seg.raster_size;
                     if u64::from(w) * u64::from(h) > self.max_page_pixels {
                         continue;
                     }
-                    let Some(bitmap) = Self::raster_page_bitmap(seg, self.dpr) else {
+                    let Some(bitmap) = Self::raster_page_bitmap(seg) else {
                         continue;
                     };
                     if let Some(cached) = self.cache.insert(key, w, h, move || bitmap) {
-                        Self::blit_page(&self.ctx, self.dpr, cached, seg, 1.0);
+                        Self::blit_page(&self.ctx, cached, seg, 1.0);
                     }
                 }
             }
@@ -318,7 +308,7 @@ impl RenderTarget for CpuCanvasRenderTarget {
                 self.overlay = OverlaySurface::new(ow, oh);
             }
             if let Some(ov) = &self.overlay {
-                if let Some(img) = Self::raster_scaled(layers.overlay, ow, oh, self.dpr) {
+                if let Some(img) = Self::raster_scaled(layers.overlay, ow, oh) {
                     // SAFETY: 同 upload——view 不跨调用持有，img 不可变借用。
                     let clamped = unsafe { js_sys::Uint8ClampedArray::view(&img.data) };
                     if let Ok(data) = web_sys::ImageData::new_with_js_u8_clamped_array_and_sh(
@@ -345,7 +335,7 @@ impl RenderTarget for CpuCanvasRenderTarget {
         if w == 0 || h == 0 {
             return true;
         }
-        if let Some(img) = Self::raster_scaled(scene, w, h, self.dpr) {
+        if let Some(img) = Self::raster_scaled(scene, w, h) {
             // SAFETY: 同 upload——view 不跨调用持有，img 不可变借用。
             let clamped = unsafe { js_sys::Uint8ClampedArray::view(&img.data) };
             if let Ok(data) = web_sys::ImageData::new_with_js_u8_clamped_array_and_sh(
