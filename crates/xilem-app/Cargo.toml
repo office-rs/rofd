@@ -10,3 +10,5 @@ rofd-dom = { workspace = true }
 rofd-io = { workspace = true }
 xilem = { workspace = true }
 rfd = { workspace = true }
+wgpu = { workspace = true }
+pollster = { workspace = true }

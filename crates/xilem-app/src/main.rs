@@ -9,6 +9,8 @@
 //! is no winit layer, no shared `Arc<Mutex<_>>` editor, no MessageProxy
 //! wake task, and no manual MasonryState/AppDriver.
 
+mod preflight;
+
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -453,6 +455,16 @@ fn app_logic(app: &mut AppState) -> impl WidgetView<AppState> + use<> {
 }
 
 fn main() -> Result<(), xilem::winit::error::EventLoopError> {
+    // GPU 预检（spec 2026-10-15 §6）：无硬件 GPU 时弹原生错误框退出，
+    // 而不是在 vello-on-WARP 上访问违例崩溃。必须在构建任何窗口之前。
+    if let Err(msg) = preflight::preflight_gpu() {
+        rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title("rofd")
+            .set_description(&msg)
+            .show();
+        std::process::exit(1);
+    }
     let mut app_state = AppState::new();
     maybe_load_cli_arg(&mut app_state);
     Xilem::new_simple(
