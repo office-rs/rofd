@@ -29,3 +29,4 @@ crates/web-app/public/fonts-sliced/
 crates/web-app/public/fonts/
 crates/web-app/test-results/
 crates/web-app/playwright-report/
+TODO.md
