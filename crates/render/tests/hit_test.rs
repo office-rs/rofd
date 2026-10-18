@@ -33,6 +33,7 @@ fn doc_with_page_and_anns(phys: Rect, anns: Vec<Annotation>) -> OfdDocument {
         resources: Default::default(),
         annotations: model,
         max_unit_id: 0,
+        body_revision: 0,
     }
 }
 

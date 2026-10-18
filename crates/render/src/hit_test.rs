@@ -447,6 +447,7 @@ mod tests {
             resources: Default::default(),
             annotations: model,
             max_unit_id: 0,
+            body_revision: 0,
         };
         let vp = Viewport {
             scroll: (0.0, 0.0),
@@ -521,6 +522,7 @@ mod tests {
             resources: Default::default(),
             annotations: model,
             max_unit_id: 0,
+            body_revision: 0,
         };
         let vp = Viewport {
             scroll: (0.0, 0.0),
@@ -598,6 +600,7 @@ mod tests {
             resources: Default::default(),
             annotations: model,
             max_unit_id: 0,
+            body_revision: 0,
         };
         let vp = Viewport {
             scroll: (0.0, 0.0),
@@ -706,6 +709,7 @@ mod tests {
             resources: Default::default(),
             annotations: model,
             max_unit_id: 0,
+            body_revision: 0,
         };
         (doc, ann_id)
     }
