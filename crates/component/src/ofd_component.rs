@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use rofd_dom::{
@@ -14,7 +15,7 @@ use crate::callbacks::{Callbacks, ContextTarget, PointerCursor};
 use crate::config::OfdConfig;
 use crate::event::EventOutcome;
 use crate::font_req::{self, FontRequirements};
-use crate::render_target::RenderTarget;
+use crate::render_target::{PageSegment, RenderTarget, SceneLayers};
 use crate::zoom_mode::ZoomMode;
 
 // Monotonic animation clock. `std::time::Instant::now()` is a hard panic on
@@ -177,6 +178,33 @@ pub enum FrameNeed {
     None,
 }
 
+/// 页级 body Scene 缓存条目（spec 2026-10-15 §7.2）：记录构建时的失效键。
+/// zoom / font_gen / body_revision 全同则复用，任一变化重建；换文档整体
+/// 清空（见 `load_document`/`new_document`）。
+struct PageSceneEntry {
+    zoom: f64,
+    font_gen: u32,
+    body_revision: u64,
+    scene: Scene,
+}
+
+/// 一个可见页的层描述：`update_layers` 收集，`render` 组装 [`SceneLayers`]
+/// 时按 `page_id` 借用 `page_scenes`（零 clone 借用锚）。滚动只改 `origin`
+/// ——body Scene 不重建。
+struct PageLayer {
+    page_id: PageId,
+    origin: (f64, f64),
+    /// 当前 zoom 下的页栅格尺寸（scene px，f64；组装 [`PageSegment`] 时取整
+    /// 为 u32）。组件保持 dpr-free，消费方按自身 dpr 放大分配位图。
+    raster_size: (f64, f64),
+}
+
+/// f64 页栅格边长 → u32。Rust 的 float→int `as` 转换饱和（NaN/负数为 0），
+/// 病态文档的非法 physical_box 不会 panic。
+fn raster_u32(v: f64) -> u32 {
+    v.round() as u32
+}
+
 pub struct OfdComponent {
     pub(crate) editor: Editor,
     pub(crate) render: RenderEngine,
@@ -241,6 +269,22 @@ pub struct OfdComponent {
     pub(crate) scene_cache: Scene,
     /// Whether `scene_cache` is stale (the next `update_scene` recomposes).
     pub(crate) scene_dirty: bool,
+    /// 页级 body Scene 缓存（页局部坐标，spec 2026-10-15 §7.2）。失效键 =
+    /// zoom / font_gen / body_revision 任一变化或换文档（§7.3）。
+    page_scenes: HashMap<PageId, PageSceneEntry>,
+    /// 每脏帧重建的覆盖层：render 覆盖层（per-page 文本选区/批注、选框
+    /// handle、拖拽预览）+ 组件自有覆盖物（scrollbars/caret/preedit/
+    /// tooltip，原 compose_scene 尾段原样搬入）。不含 desk 灰底——
+    /// 合流方职责（`merge_scene_layers` 单一事实来源）。
+    overlay_cache: Scene,
+    /// 已收集的可见页层描述（`render` 组装 [`SceneLayers`] 的借用锚）。
+    page_layers: Vec<PageLayer>,
+    /// 字体代数：`register_font_data`/`register_font_slice` 递增，
+    /// `load_document`/`new_document` 清零——页缓存失效键之一。
+    font_gen: u32,
+    /// 页级 body Scene 累计重建计数（滚动零重组测试断言用）。
+    #[cfg(test)]
+    page_gen: u32,
     /// Whether the component currently holds effective keyboard focus
     /// (widget focus AND window focus, combined by the adapter). The caret
     /// paints and blinks only while true. Starts false: a freshly opened
@@ -308,6 +352,12 @@ impl OfdComponent {
             scene_cache: Scene::default(),
             scene_dirty: true,
             scene_needs_paint: true,
+            page_scenes: HashMap::new(),
+            overlay_cache: Scene::default(),
+            page_layers: Vec::new(),
+            font_gen: 0,
+            #[cfg(test)]
+            page_gen: 0,
             focused: false,
             cursor_visible: true,
             blink_deadline: None,
@@ -347,6 +397,8 @@ impl OfdComponent {
             // Will be registered when the FontStore is built.
             true
         };
+        // 字体代数推进：页级 body 缓存按 font_gen 失效（spec 2026-10-15 §7.2）。
+        self.font_gen += 1;
         self.mark_scene_dirty();
         ok
     }
@@ -368,6 +420,8 @@ impl OfdComponent {
         } else {
             true // 重建时重放才见真值（与 register_font_data 一致）
         };
+        // 字体代数推进：页级 body 缓存按 font_gen 失效（spec 2026-10-15 §7.2）。
+        self.font_gen += 1;
         self.mark_scene_dirty();
         ok
     }
@@ -387,6 +441,9 @@ impl OfdComponent {
         self.editor.load_document(doc);
         self.body_font_req = font_req::body_requirements(self.editor.document());
         self.font_store = Some(self.build_font_store());
+        // 换文档：页级缓存整体失效，字体代数归零重新计（spec §7.3）。
+        self.page_scenes.clear();
+        self.font_gen = 0;
         self.modified = false;
         // Reset the visible-page cache: a newly loaded document may have a
         // different page count/layout, so the stale index must not persist
@@ -408,6 +465,9 @@ impl OfdComponent {
         self.editor.load_document(OfdDocument::default());
         self.body_font_req = font_req::body_requirements(self.editor.document());
         self.font_store = Some(self.build_font_store());
+        // 换文档：页级缓存整体失效，字体代数归零重新计（spec §7.3）。
+        self.page_scenes.clear();
+        self.font_gen = 0;
         self.modified = false;
         self.current_page = None;
         self.apply_fit(false);
@@ -926,37 +986,91 @@ impl OfdComponent {
         Some(id)
     }
 
-    /// Build the current editor scene (paper-on-desk) for the host to paint.
+    /// 分层 compose 的可变阶段（原 `compose_scene` 拆分，spec 2026-10-15
+    /// §7.1/7.2）：维护页级 body Scene 缓存 + 重建 overlay。滚动只改
+    /// `page_layers` 的 origin（body Scene 零重建）；zoom / font_gen /
+    /// body_revision 变化或换文档才重建对应页。desk 灰底不在此层——
+    /// 合流方职责（[`crate::render_target::merge_scene_layers`] 是背景/层序
+    /// 的单一事实来源，默认 `draw_layers` 与 `scene_cache` 共用）。
     ///
-    /// The native xilem canvas consumes the returned [`Scene`] via
-    /// `Painter::replay`; the wasm host converts it to a `vello::Scene` via
-    /// `imaging_vello::VelloSceneSink`. The `font_store` is lazily built on
-    /// first call and reused (so a large default CJK font is not re-registered
-    /// every frame).
-    fn compose_scene(&mut self) -> Scene {
+    /// The `font_store` is lazily built on first call and reused (so a large
+    /// default CJK font is not re-registered every frame).
+    fn update_layers(&mut self) {
         if self.font_store.is_none() {
             self.font_store = Some(self.build_font_store());
         }
-        let fonts = self.font_store.as_ref().expect("font_store initialized");
+        // FontStore 内部 Rc 共享，clone 便宜——先取 owned copy，绕开
+        // `&mut self.page_scenes` 与 `&self.font_store` 的字段外借用冲突。
+        let fonts = self
+            .font_store
+            .clone()
+            .expect("font_store initialized above");
+        let doc = self.editor.document();
+        let vp = self.viewport;
         let drag_preview = self
             .drag
             .as_ref()
-            .and_then(|d| drag_to_preview(self.editor.document(), d, &self.viewport));
-        let mut scene = self.render.composite(
-            self.editor.document(),
-            &self.viewport,
-            fonts,
-            self.editor.selection(),
-            self.text_selection.as_ref(),
-            drag_preview.as_ref(),
-        );
-        let layout = rofd_render::scrollbar_layout(self.editor.document(), &self.viewport);
+            .and_then(|d| drag_to_preview(doc, d, &vp));
+
+        // Body 页缓存维护 + 可见页收集。剔除规则与 composite 完全一致
+        // （rofd-render 的 overlay_scene/layers.rs 镜像同一规则）。
+        let origins = rofd_render::page_origins(doc, &vp);
+        let mut pages = Vec::new();
+        for (page, origin) in doc.pages.iter().zip(origins.iter()) {
+            let page_h = page.physical_box.h * vp.zoom;
+            if origin.1 + page_h < 0.0 {
+                continue; // fully above the viewport (scrolled past)
+            }
+            if origin.1 > vp.size.1 {
+                break; // page starts below the viewport
+            }
+            let fresh = self.page_scenes.get(&page.id).is_some_and(|e| {
+                e.zoom == vp.zoom
+                    && e.font_gen == self.font_gen
+                    && e.body_revision == doc.body_revision
+            });
+            if !fresh {
+                let scene = rofd_render::page_body_scene(page, &doc.resources, &fonts, vp.zoom);
+                self.page_scenes.insert(
+                    page.id.clone(),
+                    PageSceneEntry {
+                        zoom: vp.zoom,
+                        font_gen: self.font_gen,
+                        body_revision: doc.body_revision,
+                        scene,
+                    },
+                );
+                #[cfg(test)]
+                {
+                    self.page_gen += 1;
+                }
+            }
+            pages.push(PageLayer {
+                page_id: page.id.clone(),
+                origin: *origin,
+                raster_size: (page.physical_box.w * vp.zoom, page.physical_box.h * vp.zoom),
+            });
+        }
+        self.page_layers = pages;
+
+        // Overlay：render 覆盖层（per-page 文本选区/批注、选框 handle、拖拽
+        // 预览）+ 组件自有覆盖物（原 compose_scene 尾段原样平移，绘制顺序
+        // 不变：scrollbars → caret → preedit → tooltip）。
+        let mut overlay = rofd_render::overlay_scene(&rofd_render::OverlayInput {
+            doc,
+            vp: &vp,
+            fonts: &fonts,
+            selection: self.editor.selection(),
+            text_selection: self.text_selection.as_ref(),
+            drag: drag_preview.as_ref(),
+        });
+        let layout = rofd_render::scrollbar_layout(doc, &vp);
         let active = match &self.drag {
             Some(DragState::ScrollThumb { axis, .. }) => Some(*axis),
             _ => None,
         };
         rofd_render::paint_scrollbars(
-            &mut scene,
+            &mut overlay,
             &layout,
             rofd_render::ScrollbarVisual {
                 hover: self.scrollbar_hover,
@@ -966,24 +1080,20 @@ impl OfdComponent {
         // Text caret: effective focus only, blink-gated.
         if self.focused && self.cursor_visible {
             if let Some(cursor) = self.editor.text_cursor().cloned() {
-                if let Some(rect) = rofd_render::caret_rect(
-                    self.editor.document(),
-                    &self.viewport,
-                    fonts,
-                    &cursor.annotation,
-                    cursor.offset,
-                ) {
-                    rofd_render::paint_caret(&mut scene, &rect);
+                if let Some(rect) =
+                    rofd_render::caret_rect(doc, &vp, &fonts, &cursor.annotation, cursor.offset)
+                {
+                    rofd_render::paint_caret(&mut overlay, &rect);
                 }
             }
         }
         // Preedit overlay: composition text not yet in the dom.
         if let Some(state) = self.preedit.as_ref() {
             rofd_render::paint_preedit_overlay(
-                &mut scene,
-                self.editor.document(),
-                &self.viewport,
-                fonts,
+                &mut overlay,
+                doc,
+                &vp,
+                &fonts,
                 &state.text,
                 &state.annotation,
             );
@@ -992,14 +1102,36 @@ impl OfdComponent {
         // (spec 2026-09-18 §3.3). Skips itself when suppressed/no font.
         if let Some(lines) = self.tooltip_lines() {
             let anchor = self.hover.as_ref().map(|h| h.pos).unwrap_or_default();
-            rofd_render::paint_tooltip(&mut scene, &lines, anchor, self.viewport.size, fonts);
+            rofd_render::paint_tooltip(&mut overlay, &lines, anchor, vp.size, &fonts);
         }
-        scene
+        self.overlay_cache = overlay;
     }
 
     pub fn render(&mut self, target: &mut dyn RenderTarget) {
+        // 可变阶段先行（scene 脏时维护页缓存 + 重建 overlay 并合流
+        // scene_cache）；之后纯不可变借用组装分段，零 clone 交 target。
         self.update_scene();
-        self.scene_needs_paint = !target.draw_scene(&self.scene_cache);
+        let pages: Vec<PageSegment<'_>> = self
+            .page_layers
+            .iter()
+            .map(|l| {
+                let entry = self
+                    .page_scenes
+                    .get(&l.page_id)
+                    .expect("page scene entry built in update_layers");
+                PageSegment {
+                    page_id: l.page_id.clone(),
+                    scene: &entry.scene,
+                    origin: l.origin,
+                    raster_size: (raster_u32(l.raster_size.0), raster_u32(l.raster_size.1)),
+                }
+            })
+            .collect();
+        let layers = SceneLayers {
+            pages,
+            overlay: &self.overlay_cache,
+        };
+        self.scene_needs_paint = !target.draw_layers(layers);
     }
 
     /// Mark the cached scene stale. The next `update_scene` recomposes.
@@ -1062,13 +1194,37 @@ impl OfdComponent {
         if !self.scene_dirty {
             return;
         }
-        self.scene_cache = self.compose_scene();
+        self.update_layers();
+        // 整场景 = desk 灰底 + 页段@origin + overlay（公共契约不变：xilem
+        // 的 `scene()` 消费方走这条）。与默认 `draw_layers` 同一合流函数。
+        let pages: Vec<(&Scene, (f64, f64))> = self
+            .page_layers
+            .iter()
+            .map(|l| {
+                let entry = self
+                    .page_scenes
+                    .get(&l.page_id)
+                    .expect("page scene entry built in update_layers");
+                (&entry.scene, l.origin)
+            })
+            .collect();
+        self.scene_cache = crate::render_target::merge_scene_layers(
+            &pages,
+            &self.overlay_cache,
+            self.viewport.size,
+        );
         self.scene_dirty = false;
     }
 
     /// The most recently composed scene. Call `update_scene` first.
     pub fn scene(&self) -> &Scene {
         &self.scene_cache
+    }
+
+    /// 页级 body Scene 累计重建计数（滚动零重组断言用，仅测试可见）。
+    #[cfg(test)]
+    pub(crate) fn page_scene_generation(&self) -> u32 {
+        self.page_gen
     }
 
     /// Update the viewport (content region) size. Called by the widget layout.
@@ -3073,6 +3229,65 @@ mod tests {
         assert_eq!(rt.drawn, 1);
     }
 
+    /// 页级缓存（spec 2026-10-15 §7.2）：滚动零重组、font_gen 失效重建。
+    #[test]
+    fn scroll_reuses_page_scenes_and_register_font_invalidates() {
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
+        // 高页（200x1200mm）：默认 zoom（PX_PER_MM）下 800x600 视口有真实
+        // 滚动余量，滚动才真正改变 origin（否则测不到"换 origin 不重建"）。
+        let mut doc = OfdDocument::default();
+        doc.pages.push(Page {
+            id: PageId::new("P0"),
+            physical_box: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 1200.0,
+            },
+            layers: vec![Layer::default()],
+            template: None,
+        });
+        c.load_document(doc);
+        c.set_viewport_size(800.0, 600.0);
+        c.update_scene();
+        let gen_after_first = c.page_scene_generation();
+        assert!(
+            gen_after_first >= 1,
+            "first compose builds the page body scene"
+        );
+
+        // 滚动一像素：origin 变、body 不该重建。
+        c.handle_event(&ViewEvent::Scroll { dx: 0.0, dy: 1.0 });
+        assert_eq!(
+            c.viewport.scroll.1, 1.0,
+            "scroll must actually move (test precondition)"
+        );
+        c.update_scene();
+        assert_eq!(
+            c.page_scene_generation(),
+            gen_after_first,
+            "scroll must not rebuild body scenes"
+        );
+
+        // 注册字体：font_gen 变化，body 缓存必须失效重建。
+        c.register_font_data(
+            include_bytes!("../../render/tests/fixtures/fonts/TestFont.ttf").to_vec(),
+        );
+        c.update_scene();
+        assert!(
+            c.page_scene_generation() > gen_after_first,
+            "font_gen bump must invalidate page scenes"
+        );
+    }
+
+    /// 原 `compose_scene` 无条件重组合成语义的测试替身：直接写内部状态
+    /// （如 `c.preedit = ...`）不会自动标脏，先 mark 再 update 才等价。
+    fn recomposed_len(c: &mut OfdComponent) -> usize {
+        c.mark_scene_dirty();
+        c.update_scene();
+        c.scene().commands().len()
+    }
+
     use crate::event::{Key, Modifiers, MouseButton, ScrollDirection, ViewEvent};
     use rofd_dom::{
         AnnotationId, AnnotationKind, AnnotationPayload, AnnotationSelection, Color, FontId, Layer,
@@ -3390,7 +3605,8 @@ mod tests {
         // arrow-glyph fills on top of the desk + page fills.
         use imaging::record::{Command, Draw};
         let mut c = component_with_tall_page();
-        let scene = c.compose_scene();
+        c.update_scene();
+        let scene = c.scene();
         let fills = scene
             .commands()
             .iter()
@@ -7333,7 +7549,9 @@ mod tests {
         c.set_tooltip_formatter(|ann| vec![ann.creator.clone(), ann.created.to_string()]);
         let _ = c.handle_event(&ViewEvent::PointerMove { x: 50.0, y: 50.0 });
 
-        let scene_off = c.compose_scene();
+        c.mark_scene_dirty();
+        c.update_scene();
+        let scene_off = c.scene().clone();
         let draws_off: Vec<&Draw> = scene_off
             .commands()
             .iter()
@@ -7345,7 +7563,9 @@ mod tests {
 
         // 关掉 formatter 再对比基线（同一组件、同一 hover 位置）。
         c.clear_tooltip_formatter();
-        let scene_base = c.compose_scene();
+        c.mark_scene_dirty();
+        c.update_scene();
+        let scene_base = c.scene().clone();
         let draws_base: Vec<&Draw> = scene_base
             .commands()
             .iter()
@@ -7471,12 +7691,12 @@ mod tests {
     #[test]
     fn caret_paints_only_while_focused() {
         let mut c = component_with_textbox();
-        let idle = c.compose_scene().commands().len();
+        let idle = recomposed_len(&mut c);
         c.handle_event(&ViewEvent::FocusGained);
-        let focused = c.compose_scene().commands().len();
+        let focused = recomposed_len(&mut c);
         assert!(focused > idle, "caret adds paint commands on focus");
         c.handle_event(&ViewEvent::FocusLost);
-        let blurred = c.compose_scene().commands().len();
+        let blurred = recomposed_len(&mut c);
         assert_eq!(blurred, idle);
     }
 
@@ -7741,17 +7961,17 @@ mod tests {
     #[test]
     fn preedit_overlay_adds_commands_then_removes_on_commit() {
         let mut c = component_with_textbox();
-        let idle = c.compose_scene().commands().len();
+        let idle = recomposed_len(&mut c);
         c.handle_event(&ViewEvent::ImePreedit {
             text: "你好".into(),
             caret: None,
         });
-        let composing = c.compose_scene().commands().len();
+        let composing = recomposed_len(&mut c);
         assert!(composing > idle, "overlay paints during composition");
         c.handle_event(&ViewEvent::ImeCommit {
             text: "你好".into(),
         });
-        let committed = c.compose_scene().commands().len();
+        let committed = recomposed_len(&mut c);
         // Overlay gone (committed text now draws as a normal annotation:
         // it may add glyph commands, but fewer than overlay+old content).
         assert!(committed < composing);
@@ -7760,7 +7980,7 @@ mod tests {
     #[test]
     fn preedit_overlay_without_target_is_skipped() {
         let mut c = component_with_note();
-        let idle = c.compose_scene().commands().len();
+        let idle = recomposed_len(&mut c);
         // Force a preedit that targets the Note (overlay supports TextBox
         // only): composition must not panic and draws nothing.
         c.preedit = Some(crate::preedit::PreeditState {
@@ -7776,7 +7996,7 @@ mod tests {
                 .clone(),
             offset: 0,
         });
-        assert_eq!(c.compose_scene().commands().len(), idle);
+        assert_eq!(recomposed_len(&mut c), idle);
         c.update_scene();
         assert_eq!(c.scene().commands().len(), idle);
     }

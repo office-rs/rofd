@@ -5,6 +5,10 @@ use imaging::Painter;
 use rofd_dom::PageId;
 use rofd_render::Scene;
 
+/// Desk 灰底颜色——与 composite 的首个绘制操作一致（页场景与 overlay 都
+/// 不携带背景，合流方以它铺最底层）。
+const DESK_BG: Color = Color::from_rgba8(0xE0, 0xE0, 0xE0, 0xFF);
+
 /// Body 层的一段：组件按页切好的只读向量场景（**页局部坐标**，origin 绝不
 /// 烘入——页缓存按页复用、滚动零重组的前提）。
 pub struct PageSegment<'a> {
@@ -21,6 +25,27 @@ pub struct PageSegment<'a> {
 pub struct SceneLayers<'a> {
     pub pages: Vec<PageSegment<'a>>,
     pub overlay: &'a Scene,
+}
+
+/// 页段 + overlay 的统一合流（spec 2026-10-15 §7.1）：desk 灰底最先铺满
+/// `viewport`，各页段按 origin 平移追加（几何保持页局部），overlay 不平移
+/// 追加。默认 [`RenderTarget::draw_layers`] 与组件 `scene_cache` 的构建共用
+/// 此函数——背景色与层序只有这一个事实来源。
+pub(crate) fn merge_scene_layers(
+    pages: &[(&Scene, (f64, f64))],
+    overlay: &Scene,
+    viewport: (f64, f64),
+) -> Scene {
+    let mut merged = Scene::new();
+    {
+        let mut painter = Painter::new(&mut merged);
+        painter.fill_rect(Rect::new(0.0, 0.0, viewport.0, viewport.1), DESK_BG);
+    }
+    for (scene, origin) in pages {
+        merged.append_transformed(scene, Affine::translate(*origin));
+    }
+    replay(overlay, &mut merged);
+    merged
 }
 
 /// Abstract render surface. The host (native xilem canvas, wasm WebGPU) implements
@@ -41,24 +66,17 @@ pub trait RenderTarget {
     /// (feeds the component's `scene_needs_paint`).
     fn draw_scene(&mut self, scene: &Scene) -> bool;
 
-    /// 分段路径（spec 2026-10-15 §7.1）。默认实现先铺 desk 灰底（页场景与
-    /// overlay 都不携带背景；composite 的首个操作即此灰底），再把各页段按
-    /// origin 平移合流、追加 overlay，整体经 `draw_scene` 上屏——GPU 实现
-    /// 不覆写即保持现状行为；需要页级缓存的实现（web CPU 回退）才覆写。
+    /// 分段路径（spec 2026-10-15 §7.1）。默认实现经
+    /// [`merge_scene_layers`] 合流（desk 灰底最先，再各页段按 origin 平移、
+    /// overlay 追加），整体经 `draw_scene` 上屏——GPU 实现不覆写即保持现状
+    /// 行为；需要页级缓存的实现（web CPU 回退）才覆写。
     fn draw_layers(&mut self, layers: SceneLayers<'_>) -> bool {
-        let (viewport_w, viewport_h) = self.size();
-        let mut merged = Scene::new();
-        {
-            let mut painter = Painter::new(&mut merged);
-            painter.fill_rect(
-                Rect::new(0.0, 0.0, viewport_w, viewport_h),
-                Color::from_rgba8(0xE0, 0xE0, 0xE0, 0xFF),
-            );
-        }
-        for seg in &layers.pages {
-            merged.append_transformed(seg.scene, Affine::translate(seg.origin));
-        }
-        replay(layers.overlay, &mut merged);
+        let pages: Vec<(&Scene, (f64, f64))> = layers
+            .pages
+            .iter()
+            .map(|seg| (seg.scene, seg.origin))
+            .collect();
+        let merged = merge_scene_layers(&pages, layers.overlay, self.size());
         self.draw_scene(&merged)
     }
 
