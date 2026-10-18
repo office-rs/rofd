@@ -148,7 +148,7 @@ const PREVIEW_COLOR: Color = Color::from_rgba8(0x00, 0x72, 0xC6, 0x80);
 
 /// Color for body-text selection highlights (semi-transparent selection blue,
 /// rgba(68, 132, 255, 0.3)).
-const TEXT_SELECTION_COLOR: Color = Color::from_rgba8(68, 132, 255, 77);
+pub(crate) const TEXT_SELECTION_COLOR: Color = Color::from_rgba8(68, 132, 255, 77);
 
 /// Stroke width for the selection frame (screen pixels).
 const FRAME_STROKE_WIDTH: f64 = 1.0;
@@ -288,7 +288,7 @@ impl RenderEngine {
 /// what hit_test hits - Markup/Freehand pass an empty list and get a frame
 /// only). Each handle is a `HANDLE_SIZE` x `HANDLE_SIZE` screen-pixel square;
 /// the frame is a 1px stroked rect.
-fn draw_selection_overlay(
+pub(crate) fn draw_selection_overlay(
     painter: &mut Painter<Scene>,
     vr: RofdRect,
     handle_centers: &[(f64, f64)],
@@ -322,7 +322,7 @@ fn draw_selection_overlay(
 /// The page origin is computed via [`page_origin`] (the shared page-stacking
 /// helper), so multi-page docs use the correct stacked Y origin for an
 /// annotation on page 1+.
-fn draw_drag_preview(
+pub(crate) fn draw_drag_preview(
     painter: &mut Painter<Scene>,
     preview: &DragPreview,
     doc: &OfdDocument,
