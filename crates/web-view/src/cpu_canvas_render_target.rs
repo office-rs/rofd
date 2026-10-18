@@ -18,7 +18,7 @@ use rofd_render::{PageCacheKey, PageRasterCache, Scene, DESK_BG};
 use wasm_bindgen::JsCast;
 use web_time::Instant;
 
-use crate::zoom_gesture::ZoomGesture;
+use crate::zoom_gesture::{page_blit_plan, PageBlitPlan, ZoomGesture};
 
 /// CPU 呈现目标的调优参数（Task 8 从宿主配置注入）。
 #[derive(Clone, Copy, Debug)]
@@ -70,6 +70,9 @@ pub struct CpuCanvasRenderTarget {
     canvas: web_sys::HtmlCanvasElement,
     ctx: web_sys::CanvasRenderingContext2d,
     cache: PageRasterCache<PageBitmap>,
+    /// 单页物理像素上限（栅格前预检，镜像 insert 内部判定——预检通过
+    /// 后 insert 必接受，超限页零栅格零上传直接跳过）。
+    max_page_pixels: u64,
     overlay: Option<OverlaySurface>,
     /// 创建时捕获的 devicePixelRatio（与 WebGPU 路径的固定 surface 配置
     /// 同语义：浏览器缩放变化不重配，直到目标重建）。
@@ -116,6 +119,7 @@ impl CpuCanvasRenderTarget {
             canvas,
             ctx,
             cache: PageRasterCache::new(tuning.max_cached_pages, tuning.max_page_pixels),
+            max_page_pixels: tuning.max_page_pixels,
             overlay: None,
             dpr,
             width,
@@ -143,12 +147,20 @@ impl CpuCanvasRenderTarget {
     /// 宿主（WasmOfd）在 zoom/字体/文档变化时喂进来。zoom 变化进
     /// 手势状态机（手势中记录拉伸比，draw_layers 用旧位图按比顶着）；
     /// font_gen/body_revision 变化只影响缓存键（旧条目自然 miss）。
+    ///
+    /// zoom ≤ 0 的喂入一概不采纳（非法值经 raw/settled 会产生 inf/0
+    /// 拉伸比）：首喂时保持未初始化基线等下一帧合法值；运行中则整体
+    /// 忽略该帧的 zoom 分量，手势与缓存代际原样保留。
     pub fn note_state(&mut self, zoom: f64, font_gen: u32, body_revision: u64, now: Instant) {
-        if !self.fed_state {
-            // 首帧：以当前 zoom 立为缓存代际基线（无手势、无拉伸）。
-            self.zoom = zoom;
-            self.gesture = ZoomGesture::new(zoom);
-            self.fed_state = true;
+        if !self.fed_state || self.zoom <= 0.0 || zoom <= 0.0 {
+            if zoom > 0.0 {
+                // 首喂/自非法基线恢复：以当前 zoom 直接立为代际基线
+                // （无手势、无拉伸）。
+                self.zoom = zoom;
+                self.gesture = ZoomGesture::new(zoom);
+                self.pending_scale = None;
+                self.fed_state = true;
+            }
         } else if zoom != self.zoom {
             self.pending_scale = self.gesture.zoom_step(zoom, now);
             self.zoom = zoom;
@@ -186,11 +198,44 @@ impl CpuCanvasRenderTarget {
         renderer.finish().ok()
     }
 
-    /// 栅格一段页场景到位图（尺寸 = raster_size × dpr）。
-    fn raster_page(seg: &PageSegment<'_>, dpr: f64) -> Option<imaging::RgbaImage> {
+    /// 栅格一段页场景并上传为成品位图（尺寸 = raster_size × dpr）。
+    fn raster_page_bitmap(seg: &PageSegment<'_>, dpr: f64) -> Option<PageBitmap> {
         let w = (seg.raster_size.0 as f64 * dpr) as u16;
         let h = (seg.raster_size.1 as f64 * dpr) as u16;
-        Self::raster_scaled(seg.scene, w, h, dpr)
+        let img = Self::raster_scaled(seg.scene, w, h, dpr)?;
+        Self::upload(&img)
+    }
+
+    /// 页段物理位图尺寸（raster_size × dpr）。与 [`Self::raster_page_bitmap`]
+    /// 的 u16 饱和转换不同，此处保持 u32——容量预检须与 insert 内部的
+    /// u64 乘积判定用同一对 w/h，保证预检通过后 insert 必接受。
+    fn phys_page_size(seg: &PageSegment<'_>, dpr: f64) -> (u32, u32) {
+        (
+            (seg.raster_size.0 as f64 * dpr) as u32,
+            (seg.raster_size.1 as f64 * dpr) as u32,
+        )
+    }
+
+    /// 画一个页位图：落位 origin（scene px）× dpr → 物理 px；尺寸 = 位图
+    /// 原样 × scale（手势中缓存命中时 scale = 拉伸比，其余恒 1.0）。
+    /// 关联函数显式收 ctx/dpr——调用方持 cache 借用时按字段拆分借用，
+    /// 避免 `&self` 整体借用与 `&mut self.cache` 冲突。
+    fn blit_page(
+        ctx: &web_sys::CanvasRenderingContext2d,
+        dpr: f64,
+        bitmap: &PageBitmap,
+        seg: &PageSegment<'_>,
+        scale: f64,
+    ) {
+        let dw = bitmap.canvas.width() as f64 * scale;
+        let dh = bitmap.canvas.height() as f64 * scale;
+        let _ = ctx.draw_image_with_offscreen_canvas_and_dw_and_dh(
+            &bitmap.canvas,
+            seg.origin.0 * dpr,
+            seg.origin.1 * dpr,
+            dw,
+            dh,
+        );
     }
 
     /// 把软栅格结果整幅写进一个 OffscreenCanvas 2d context（0,0 起）。
@@ -226,39 +271,42 @@ impl RenderTarget for CpuCanvasRenderTarget {
         self.ctx.set_fill_style_str(&self.desk_fill);
         self.ctx.fill_rect(0.0, 0.0, pw, ph);
 
-        // 2) 页位图：命中即 drawImage；miss 则栅格+上传+入缓存。
+        // 2) 页位图：处置由 page_blit_plan 裁定——拉伸比只作用于已缓存
+        //    的 blit；手势中的 miss 走一次性 raw 位图 1:1（段即 raw 代），
+        //    绝不入缓存（防代际投毒）。
+        let gesturing = self.pending_scale.is_some();
         for seg in &layers.pages {
             let key = self.key(&seg.page_id);
             self.cache.touch_key(&key); // 命中刷新 LRU（按页 id，每帧喂当前键）
-            let bitmap: &PageBitmap = match self.cache.get(&key) {
-                Some(b) => b,
-                None => {
-                    let Some(img) = Self::raster_page(seg, self.dpr) else {
+            match page_blit_plan(self.cache.get(&key).is_some(), gesturing) {
+                PageBlitPlan::StretchCached => {
+                    let Some(bitmap) = self.cache.get(&key) else {
+                        continue; // 与 plan 判定间无窗口，纯防御
+                    };
+                    Self::blit_page(&self.ctx, self.dpr, bitmap, seg, scale);
+                }
+                PageBlitPlan::OneShotRaw => {
+                    let Some(bitmap) = Self::raster_page_bitmap(seg, self.dpr) else {
                         continue; // 零尺寸页/栅格失败：本帧跳过
                     };
-                    let w = (seg.raster_size.0 as f64 * self.dpr) as u32;
-                    let h = (seg.raster_size.1 as f64 * self.dpr) as u32;
-                    let Some(uploaded) = Self::upload(&img) else {
+                    Self::blit_page(&self.ctx, self.dpr, &bitmap, seg, 1.0);
+                    // bitmap 就地离场（GC 回收），不入缓存。
+                }
+                PageBlitPlan::RasterAndCache => {
+                    // 容量预检（与 insert 内部判定同参）：超限页零栅格
+                    // 零上传，本帧跳过——否则超限页每帧白付一次软栅格。
+                    let (w, h) = Self::phys_page_size(seg, self.dpr);
+                    if u64::from(w) * u64::from(h) > self.max_page_pixels {
+                        continue;
+                    }
+                    let Some(bitmap) = Self::raster_page_bitmap(seg, self.dpr) else {
                         continue;
                     };
-                    match self.cache.insert(key, w, h, move || uploaded) {
-                        Some(b) => b,
-                        // 超单页像素上限：不缓存、本帧跳过（防爆内存的降级）。
-                        None => continue,
+                    if let Some(cached) = self.cache.insert(key, w, h, move || bitmap) {
+                        Self::blit_page(&self.ctx, self.dpr, cached, seg, 1.0);
                     }
                 }
-            };
-            // 落位：origin（scene px）× dpr → 物理 px；尺寸 = 位图原样
-            // （或手势中按 scale 拉伸）。
-            let dw = bitmap.canvas.width() as f64 * scale;
-            let dh = bitmap.canvas.height() as f64 * scale;
-            let _ = self.ctx.draw_image_with_offscreen_canvas_and_dw_and_dh(
-                &bitmap.canvas,
-                seg.origin.0 * self.dpr,
-                seg.origin.1 * self.dpr,
-                dw,
-                dh,
-            );
+            }
         }
 
         // 3) overlay：全视口稀疏栅格（批注/caret/滚动条），drawImage

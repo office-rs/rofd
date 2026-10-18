@@ -60,6 +60,32 @@ impl ZoomGesture {
     }
 }
 
+/// 一帧内一个页段的处置方式（由 [`page_blit_plan`] 裁定，
+/// CpuCanvasRenderTarget::draw_layers 消费）。
+#[derive(Debug, PartialEq, Eq)]
+pub enum PageBlitPlan {
+    /// 缓存命中：位图是 settled 代内容，按拉伸比画（手势中 > 1 的比把
+    /// 旧位图顶着用；settled 态比恒为 1.0，同分支原样画）。
+    StretchCached,
+    /// 手势中的 miss：段是 raw 代（origin/raster_size 已按 raw zoom），
+    /// 位图 raw 尺寸 1:1 画，**不入缓存**——缓存键是 settled 代，入缓存
+    /// = 以 settled 键存 raw 内容（代际投毒：手势无停稳捏回原档后键
+    /// 重新命中，页面长期错尺寸）。停稳后下一帧自然走 RasterAndCache。
+    OneShotRaw,
+    /// settled 态 miss：栅格 + 入缓存 + 原样画（键与内容同代）。
+    RasterAndCache,
+}
+
+/// 纯逻辑裁定：`(cache_hit, gesturing)` → 页段处置。
+/// 拉伸比只作用于**已缓存**的 blit——手势中的 miss 永不被拉伸。
+pub fn page_blit_plan(cache_hit: bool, gesturing: bool) -> PageBlitPlan {
+    match (cache_hit, gesturing) {
+        (true, _) => PageBlitPlan::StretchCached,
+        (false, true) => PageBlitPlan::OneShotRaw,
+        (false, false) => PageBlitPlan::RasterAndCache,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,5 +130,31 @@ mod tests {
         assert_eq!(g.zoom_step(1.0, t0 + Duration::from_millis(30)), None);
         assert_eq!(g.maybe_settle(t0 + SETTLE + SETTLE), None);
         assert_eq!(g.settled(), 1.0);
+    }
+
+    #[test]
+    fn mid_gesture_miss_never_enters_cache() {
+        // 代际投毒修复的核心不变量：手势中的 miss 绝不走“栅格入缓存”
+        // ——段是 raw 代（origin/raster_size），缓存键是 settled 代，
+        // 入缓存 = 以 settled 键存 raw 内容；若手势无停稳捏回原档
+        // （return_to_settled 路径），键重新命中被投毒条目，页面长期
+        // 错尺寸。手势中 miss 只能一次性 raw 位图 1:1 画。
+        assert_eq!(
+            page_blit_plan(false, true),
+            PageBlitPlan::OneShotRaw,
+            "gesturing miss must not be cached"
+        );
+    }
+
+    #[test]
+    fn blit_plan_covers_all_states() {
+        use PageBlitPlan::*;
+        // 命中：缓存是 settled 代内容，手势中按拉伸比顶着（settled 态
+        // 拉伸比为 1.0，同一分支）。
+        assert_eq!(page_blit_plan(true, true), StretchCached);
+        assert_eq!(page_blit_plan(true, false), StretchCached);
+        // settled 态 miss：栅格 + 入缓存 + 原样画。
+        assert_eq!(page_blit_plan(false, false), RasterAndCache);
+        // 手势中 miss：见 mid_gesture_miss_never_enters_cache。
     }
 }
