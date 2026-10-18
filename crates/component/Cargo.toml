@@ -7,12 +7,11 @@ edition = "2021"
 rofd-dom = { workspace = true }
 rofd-render = { workspace = true }
 rofd-editor = { workspace = true }
-
-# Test-only: inline scene-structure assertions (AGENTS §6) use imaging's
-# Command/Draw record types, the same idiom as rofd-render's tests. Not part of
-# the library's dependency surface (AGENTS §4.1/§4.9).
-[dev-dependencies]
+# draw_layers 默认合流在库代码里用 Painter/replay/Affine/Color 合并场景。
+# 平台无关（同 rofd-render 的依赖面），不触碰 AGENTS §4.9 平台边界。
 imaging = { workspace = true }
+
+[dev-dependencies]
 # Migrated sample_drag_select parses the real fixture and builds points.
 rofd-io = { workspace = true }
 kurbo = { workspace = true }
