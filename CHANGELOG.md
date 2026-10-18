@@ -8,6 +8,10 @@ follow the git tags published to GitHub Releases (`vX.Y.Z`); the npm SDK
 ## Unreleased
 
 ### SDK 0.2.0
+- **CJK 切片自带 ASCII**（draft §4.7"数字变粗"修正，资产层）：本地
+  `file:` 依赖刷新为 fonts 仓库 ≥`8537ced` 重切产物（common-0 预载片并入
+  U+0020–007E，+3~14 KB）——中文字族声明的混排数字不再落跨族兜底（字形
+  粗细不一致）。商用本机切片须用 ≥`50eb570` 的 slice.py 重切（README）。
 - **桌面纯系统字体通道**（draft 2026-10-18，第四通道）：SDK 新增可选
   `systemFonts`（`SystemFontProvider { list, read }`）与 `defaultFamily`——
   宿主注入本机字体面，SDK 按文档声明族**懒加载**注册（`settled` 永不重

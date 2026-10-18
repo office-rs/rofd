@@ -17,6 +17,10 @@
 
   `--key` 必须用规范键（simsun/simhei/msyh/arial/times/calibri）——SDK 靠内核
   归一表（"宋体"→simsun 等）匹配声明名。
+- **slice.py 必须用 ≥ `50eb570` 的版本**（ASCII 并入 common-0 预载片，draft
+  2026-10-17 §4.7"数字变粗"修正）：中文字族切片若不带 ASCII，混排数字会
+  穿过全族切片落全局兜底，字形粗细不一致。切完可用 fonts 仓库 verify.py
+  验证覆盖契约（切片并集 == cmap CJK 区 ∪ cmap ASCII）。
 - 整字体 `public/fonts/*.ttf|ttc|otf` 已 `git rm --cached`（磁盘保留做
   `?legacyFonts=1` fixture）；新 clone 无此目录时 legacy 缝自动降级（console.warn）。
 - tauri 发布**默认不含**商用切片（安装包分发=网络分发商用子集，需授权）；
