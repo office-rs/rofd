@@ -505,8 +505,11 @@ export class Ofd {
         req.families,
         fontFlow.manifestFamilyKeys(surface, manifest),
       );
-    } catch {
-      // 系统通道永不阻塞渲染路径
+    } catch (e) {
+      // 与另两个入口同途上报（AGENTS §4.6 错误显式分层）；satisfy 自身
+      // 永不抛错，这里是防御层。
+      const err = fontFlow.toFontFlowError(e);
+      this.onWarningCb?.([`fonts: ${err.family ? `${err.family} ` : ''}${err.message}`]);
     }
   }
 

@@ -241,6 +241,11 @@ export async function createSystemFlow(
   } catch {
     // list 失败：空流——所有声明族将在 satisfy 中 miss→settle，替代链兜底。
   }
+  if (!wasm.normalizeFontName) {
+    // 混合 wasm/SDK 版本防御：无归一面则 map 以原始名建键，与归一后的需求
+    // 永不匹配——通道"安静地死"。显式警告使其可诊断。
+    console.warn('[rofd] systemFonts requires wasm.normalizeFontName (rebuild sdk wasm)');
+  }
   return flow;
 }
 
@@ -258,9 +263,11 @@ export async function satisfySystemFamilies(
   if (!wasm.registerFont) {
     return; // 无整字体注册面（异常配置）：系统流静默不作用
   }
-  const wanted = new Set(families);
-  if (flow.defaultFamilyKey) {
-    wanted.add(flow.defaultFamilyKey);
+  // 迭代序即注册序：defaultFamily 恒排首位（D5——内核 default 锚定在首个
+  // 整字体注册，声明族是排序键，字母序靠前者会抢走宋体的锚）。
+  const wanted = new Set<string>(flow.defaultFamilyKey ? [flow.defaultFamilyKey] : []);
+  for (const f of families) {
+    wanted.add(f);
   }
   for (const key of wanted) {
     if (manifestFamilies.has(key) || flow.settled.has(key)) {

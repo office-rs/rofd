@@ -137,6 +137,18 @@ describe('satisfySystemFamilies', () => {
     expect(p.reads[0].fileName).toBe('simsun.ttc');
   });
 
+  it('defaultFamily 恒排注册序首位（字母序靠前的声明族不得抢锚）', async () => {
+    // 回归（终审 Critical）：需求收集产出排序键，calibri 字母序在 simsun
+    // 前——若默认族不在 wanted 集合首位，内核 default 会被 calibri 抢锚。
+    const CALIBRI: SystemFontEntry = { family: 'Calibri', fileName: 'calibri.ttf' };
+    const p = fakeProvider([CALIBRI, SIMSUN_ZH]);
+    const surface = fakeSurface();
+    const flow = await createSystemFlow(surface, p, '宋体');
+    await satisfySystemFamilies(surface, flow, ['calibri'], new Set());
+    expect(p.reads[0].fileName).toBe('simsun.ttc');
+    expect(p.reads.map((e) => e.fileName)).toEqual(['simsun.ttc', 'calibri.ttf']);
+  });
+
   it('surface 无 registerFont（异常配置）→ 静默不作用', async () => {
     const p = fakeProvider([SIMSUN_ZH]);
     const surface = fakeSurface({ registerFont: undefined });

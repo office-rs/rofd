@@ -5,6 +5,8 @@
 // 约定：host 只负责「拿到字节 / 写出字节」，不碰编辑器与 UI 提示——loadOfd、
 // message.success 等留在 App.vue，保证桥保持平台无关且无 antd 依赖。
 
+import type { SystemFontEntry } from '@office-rs/rofd';
+
 /** 平台文件桥。open 取消返回 null；save 写出成功返回 true、取消返回 false。 */
 export interface FileHost {
   /** 让用户选择一个 .ofd 文件，返回其字节；用户取消返回 null。 */
@@ -14,7 +16,7 @@ export interface FileHost {
   save(bytes: Uint8Array, suggestedName: string): Promise<boolean>;
   /** 可选能力：列出本机字体（桌面宿主注入，draft 2026-10-18 §3.2——索引
    * 由 Rust 壳启动扫描一次）。失败/不支持 → 调用方视为无能力分支。 */
-  listSystemFonts?(): Promise<{ family: string; fileName: string }[]>;
+  listSystemFonts?(): Promise<SystemFontEntry[]>;
   /** 可选能力：按已扫描文件名读本机系统字体。文件不存在/读取失败返回
    * null——该族跳过，不报错。 */
   readSystemFont?(fileName: string): Promise<Uint8Array | null>;

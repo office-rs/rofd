@@ -17,7 +17,8 @@ follow the git tags published to GitHub Releases (`vX.Y.Z`); the npm SDK
   单）；桌面 manifest 集为空（D4：Noto 切片不进桌面，安装包 -24MB），默认
   字体宋体（D5）。wasm 面 `normalizeFontName`（内核归一表单一事实源）。
   预留 `getFontFamilies()`（manifest displayName ∪ 系统名，未来批注字体
-  面板数据面）。浏览器路径逐字节不变（e2e 零回归）。
+  面板数据面；**async**——rofd 形态依赖 ready()，与 draft 描述的同步签名
+  有别）。浏览器路径逐字节不变（e2e 零回归）。
 
 ### Breaking
 - **裸 `Ofd.init` 零字体请求**：SDK 不再默认从 jsDelivr 拉 Noto（内置
