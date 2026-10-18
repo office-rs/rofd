@@ -147,20 +147,90 @@ mod wasm_impl {
     use std::cell::RefCell;
     use std::rc::Rc;
 
+    use rofd_component::render_target::SceneLayers;
     use rofd_component::{
         BodyTextSelection, ContextTarget, FrameNeed, Modifiers, MouseButton, OfdComponent,
-        OfdConfig, PointerCursor, ScrollDirection, ViewEvent, ZoomMode,
+        OfdConfig, PointerCursor, RenderTarget, ScrollDirection, ViewEvent, ZoomMode,
     };
     use rofd_dom::{AnnotationId, AnnotationSelection, OfdDocument, OfdWarning};
     use rofd_editor::TextCursor;
     use rofd_io::{parse_ofd, save_ofd, write_ofd, PackageHandle};
+    use rofd_render::Scene;
     use wasm_bindgen::prelude::*;
+    // 单调钟（AGENTS §4.4 动画例外）：wasm = performance.now()，与
+    // cpu_canvas_render_target 内部 `Instant::now()` 同源。
+    use web_time::Instant;
 
+    use crate::cpu_canvas_render_target::CpuCanvasRenderTarget;
     use crate::wasm_ofd::{
         parse_color, parse_key, parse_markup_kind, parse_tool_kind, parse_zoom_mode,
         pointer_cursor_str, zoom_mode_str,
     };
     use crate::webgpu_render_target::WebGpuRenderTarget;
+
+    /// 呈现目标：WebGPU（首选）或 CPU 回退（spec 2026-10-18-no-gpu-support
+    /// §8）。enum 派发而非 Box<dyn>——wasm-bindgen 结构体字段保持具体类型，
+    /// `is_cpu_fallback` 也可静态判别。WebGPU 变体装箱：wgpu 状态 ~1KB vs
+    /// CPU 目标 ~200B，装箱抹平大小 variant 差（clippy large_enum_variant）；
+    /// 每实例仅一份、创建时一次分配。
+    pub(crate) enum RenderTargetKind {
+        WebGpu(Box<WebGpuRenderTarget>),
+        Cpu(CpuCanvasRenderTarget),
+    }
+
+    impl RenderTarget for RenderTargetKind {
+        fn draw_scene(&mut self, scene: &Scene) -> bool {
+            match self {
+                Self::WebGpu(t) => t.draw_scene(scene),
+                Self::Cpu(t) => t.draw_scene(scene),
+            }
+        }
+
+        fn draw_layers(&mut self, layers: SceneLayers<'_>) -> bool {
+            match self {
+                Self::WebGpu(t) => t.draw_layers(layers),
+                Self::Cpu(t) => t.draw_layers(layers),
+            }
+        }
+
+        fn size(&self) -> (f64, f64) {
+            match self {
+                Self::WebGpu(t) => t.size(),
+                Self::Cpu(t) => t.size(),
+            }
+        }
+    }
+
+    impl RenderTargetKind {
+        /// 视口 resize 派发（两变体同名方法，各自语义原样保持：WebGPU 重配
+        /// surface，CPU 同步 canvas 物理尺寸、不失效页位图）。
+        pub(crate) fn resize(&mut self, width: u32, height: u32) {
+            match self {
+                Self::WebGpu(t) => t.resize(width, height),
+                Self::Cpu(t) => t.resize(width, height),
+            }
+        }
+
+        /// 每帧渲染前喂状态（spec §8）：仅 CPU 分支消费——zoom 进手势状态
+        /// 机（手势中旧位图拉伸顶着），font_gen/body_revision 进缓存键；
+        /// WebGPU 分支无页位图缓存，恒 no-op。
+        pub(crate) fn note_state(
+            &mut self,
+            zoom: f64,
+            font_gen: u32,
+            body_revision: u64,
+            now: Instant,
+        ) {
+            if let Self::Cpu(t) = self {
+                t.note_state(zoom, font_gen, body_revision, now);
+            }
+        }
+
+        /// 是否 CPU 回退实例。
+        pub(crate) fn is_cpu(&self) -> bool {
+            matches!(self, Self::Cpu(_))
+        }
+    }
 
     /// JS callback slots. Each is an `Rc<RefCell<Option<Function>>>` so the
     /// Rust bridge closures (registered in [`WasmOfd::setup_bridge_callbacks`])
@@ -186,14 +256,15 @@ mod wasm_impl {
 
     /// wasm-bindgen editor surface for the web.
     ///
-    /// Owns an [`OfdComponent`] (model + render) and a [`WebGpuRenderTarget`]
-    /// (canvas -> WebGPU -> vello). The SDK creates this via
-    /// [`create_wasm_ofd`](crate::create_wasm_ofd), then registers fonts
-    /// and JS callbacks, and feeds DOM events from listeners.
+    /// Owns an [`OfdComponent`] (model + render) and a `RenderTargetKind`
+    /// （WebGPU 首选，CPU 回退）。The SDK creates this via
+    /// [`create_wasm_ofd`](crate::create_wasm_ofd) or
+    /// [`create_wasm_ofd_cpu`](crate::create_wasm_ofd_cpu), then registers
+    /// fonts and JS callbacks, and feeds DOM events from listeners.
     #[wasm_bindgen]
     pub struct WasmOfd {
         component: OfdComponent,
-        render_target: WebGpuRenderTarget,
+        render_target: RenderTargetKind,
         callbacks: JsCallbacks,
         package: Option<PackageHandle>,
     }
@@ -206,6 +277,15 @@ mod wasm_impl {
         #[wasm_bindgen(js_name = renderFrame)]
         pub fn render_frame(&mut self) -> Result<f64, JsValue> {
             self.component.tick_blink();
+            // CPU 回退：渲染前喂状态（zoom/字体/修订 → 手势状态机 + 页位图
+            // 缓存键）；WebGPU 分支 no-op。Instant 与 cpu 模块内部同源
+            // （performance.now()，单调）。
+            self.render_target.note_state(
+                self.component.zoom(),
+                self.component.font_gen(),
+                self.component.body_revision(),
+                Instant::now(),
+            );
             self.component.render(&mut self.render_target);
             Ok(match self.component.needs_frame() {
                 FrameNeed::Now => 0.0,
@@ -253,6 +333,15 @@ mod wasm_impl {
         ) -> bool {
             self.component
                 .register_font_slice(bytes.to_vec(), family_key, slice_id)
+        }
+
+        /// Whether this instance renders via the CPU fallback path (created
+        /// by `createWasmOfdCpu` instead of `createWasmOfd`). The SDK reads
+        /// this once at init (spec 2026-10-18-no-gpu-support §9) and never
+        /// switches modes for the instance's lifetime.
+        #[wasm_bindgen(js_name = isCpuFallback)]
+        pub fn is_cpu_fallback(&self) -> bool {
+            self.render_target.is_cpu()
         }
 
         /// Handle viewport resize (device pixels). Reconfigures the WebGPU
@@ -721,13 +810,13 @@ mod wasm_impl {
     }
 
     impl WasmOfd {
-        /// Internal constructor. Called by `create_wasm_ofd` after WebGPU
-        /// init + warmup. Wires the component's Rust callbacks to the JS
-        /// callback slots.
+        /// Internal constructor. Called by `create_wasm_ofd` (WebGPU init +
+        /// warmup) and `create_wasm_ofd_cpu` (soft-raster target, no warmup).
+        /// Wires the component's Rust callbacks to the JS callback slots.
         pub(crate) fn new_internal(
             width: u32,
             height: u32,
-            render_target: WebGpuRenderTarget,
+            render_target: RenderTargetKind,
         ) -> Result<Self, JsValue> {
             let config = OfdConfig::new(std::sync::Arc::new(vec![]));
             #[cfg(target_arch = "wasm32")]
@@ -944,6 +1033,8 @@ mod wasm_impl {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+pub(crate) use wasm_impl::RenderTargetKind;
 #[cfg(target_arch = "wasm32")]
 pub use wasm_impl::WasmOfd;
 

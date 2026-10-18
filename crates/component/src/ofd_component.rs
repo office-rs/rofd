@@ -2728,6 +2728,24 @@ impl OfdComponent {
         self.zoom_mode
     }
 
+    /// 当前视口 zoom（初始 PX_PER_MM）。CPU 呈现目标按它驱动缩放手势
+    /// 状态机与页位图缓存键（spec 2026-10-18-no-gpu-support §8）。
+    pub fn zoom(&self) -> f64 {
+        self.viewport.zoom
+    }
+
+    /// 字体代数：`register_font_data`/`register_font_slice` 推进、换文档
+    /// 清零（页级缓存失效键之一）。CPU 呈现目标的缓存键消费。
+    pub fn font_gen(&self) -> u32 {
+        self.font_gen
+    }
+
+    /// 当前文档 body 修订号（页级缓存失效键之一；v1 body 只读恒 0，
+    /// 见 `OfdDocument::body_revision`）。CPU 呈现目标的缓存键消费。
+    pub fn body_revision(&self) -> u64 {
+        self.document().body_revision
+    }
+
     /// Set the zoom mode (适应宽度/高度/页面). Same-value calls are no-ops.
     /// Entering a fit mode recomputes the zoom for the current page; when
     /// the viewport is not laid out yet (or the document is empty) the mode
@@ -3741,6 +3759,24 @@ mod tests {
         assert!(outcome.needs_repaint);
         // Default zoom is PX_PER_MM (96 DPI); Zoom multiplies on top.
         assert_eq!(c.viewport.zoom, rofd_render::PX_PER_MM * 2.0);
+    }
+
+    /// CPU 呈现目标消费的三个失效键 getter（spec 2026-10-18-no-gpu-support
+    /// §8）：zoom 跟随视口事件、font_gen 跟随字体注册、body_revision 透传
+    /// 文档字段（v1 body 只读恒 0）。
+    #[test]
+    fn render_state_getters_track_invalidation_keys() {
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
+        assert_eq!(c.zoom(), PX_PER_MM);
+        assert_eq!(c.font_gen(), 0);
+        assert_eq!(c.body_revision(), 0);
+        c.handle_event(&ViewEvent::Zoom { factor: 2.0 });
+        assert_eq!(c.zoom(), PX_PER_MM * 2.0);
+        c.register_font_data(
+            include_bytes!("../../render/tests/fixtures/fonts/TestFont.ttf").to_vec(),
+        );
+        assert_eq!(c.font_gen(), 1);
+        assert_eq!(c.body_revision(), 0);
     }
 
     #[test]
