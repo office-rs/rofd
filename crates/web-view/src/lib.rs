@@ -12,6 +12,7 @@
 
 #[cfg(target_arch = "wasm32")]
 pub mod cpu_canvas_render_target;
+pub mod raster_cap;
 pub mod wasm_ofd;
 #[cfg(target_arch = "wasm32")]
 pub mod webgpu_render_target;

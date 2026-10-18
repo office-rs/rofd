@@ -11,7 +11,10 @@
 //! （再乘即二次放大）；工厂期的初值只是首帧前的占位，SDK 的首个 resize
 //! 即以设备 px 校正。
 
-use imaging::record::replay;
+use std::collections::HashSet;
+
+use imaging::kurbo::Affine;
+use imaging::record::replay_transformed;
 use imaging_vello_cpu::VelloCpuRenderer;
 use rofd_component::render_target::{PageSegment, RenderTarget, SceneLayers};
 use rofd_dom::PageId;
@@ -19,6 +22,7 @@ use rofd_render::{PageCacheKey, PageRasterCache, Scene, DESK_BG};
 use wasm_bindgen::JsCast;
 use web_time::Instant;
 
+use crate::raster_cap::capped_raster_size;
 use crate::zoom_gesture::{page_blit_plan, PageBlitPlan, ZoomGesture};
 
 /// CPU 呈现目标的调优参数（Task 8 从宿主配置注入）。
@@ -26,7 +30,8 @@ use crate::zoom_gesture::{page_blit_plan, PageBlitPlan, ZoomGesture};
 pub struct CpuTuning {
     /// 页位图 LRU 容量（可视 ± 邻页窗口）。
     pub max_cached_pages: usize,
-    /// 单页物理像素上限（防高缩放大页爆内存）。
+    /// 单页物理像素上限（防高缩放大页爆内存）。超限页降采样渲染而非跳过
+    /// （[`capped_raster_size`]）。
     pub max_page_pixels: u64,
 }
 
@@ -71,9 +76,13 @@ pub struct CpuCanvasRenderTarget {
     canvas: web_sys::HtmlCanvasElement,
     ctx: web_sys::CanvasRenderingContext2d,
     cache: PageRasterCache<PageBitmap>,
-    /// 单页物理像素上限（栅格前预检，镜像 insert 内部判定——预检通过
-    /// 后 insert 必接受，超限页零栅格零上传直接跳过）。
+    /// 单页物理像素上限：栅格前经 [`capped_raster_size`] 预检 + 超限降
+    /// 采样，与 insert 内部判定同参镜像——降采样后的尺寸必过 insert 的
+    /// cap 检查；降采样后仍不可能（零尺寸/cap=0）才整页跳过。
     max_page_pixels: u64,
+    /// 已发过降采样告警的页（每页首条 [`warn_capped_once`]；只增不清，
+    /// 上界 = 页数——zoom 代际推进后同页再次降采样不重复刷屏）。
+    warned_capped: HashSet<PageId>,
     overlay: Option<OverlaySurface>,
     /// 视口尺寸（设备 px = canvas 物理尺寸；SDK resize 喂 css × dpr）。
     width: u32,
@@ -117,6 +126,7 @@ impl CpuCanvasRenderTarget {
             ctx,
             cache: PageRasterCache::new(tuning.max_cached_pages, tuning.max_page_pixels),
             max_page_pixels: tuning.max_page_pixels,
+            warned_capped: HashSet::new(),
             overlay: None,
             width,
             height,
@@ -186,38 +196,51 @@ impl CpuCanvasRenderTarget {
         )
     }
 
-    /// 软栅格一段场景：1:1（场景即设备 px；vello_cpu 按坐标原样栅格化，
-    /// 不自动缩放，也无需再乘 dpr——乘了就是二次放大）。零尺寸/栅格失败
-    /// → None。
-    fn raster_scaled(scene: &Scene, w: u16, h: u16) -> Option<imaging::RgbaImage> {
+    /// 软栅格一段场景：视口 `(w, h)` 设备 px；`scale` 为场景坐标 → 视口的
+    /// 等比缩放（1.0 = 1:1）。vello_cpu 按坐标原样栅格化、不自动缩放——
+    /// 小视口上 1:1 replay 只会裁掉右下角，降采样必须经 `replay_transformed`
+    /// 前置 `Affine::scale`；scale == 1.0 时前置恒等阵，与裸 replay 逐位
+    /// 等价（乘单位阵不引入误差）。零尺寸/栅格失败 → None。
+    fn raster_scaled(scene: &Scene, w: u16, h: u16, scale: f64) -> Option<imaging::RgbaImage> {
         if w == 0 || h == 0 {
             return None;
         }
         let mut renderer = VelloCpuRenderer::new(w, h);
-        replay(scene, &mut renderer);
+        replay_transformed(scene, &mut renderer, Affine::scale(scale));
         renderer.finish().ok()
     }
 
-    /// 栅格一段页场景并上传为成品位图（尺寸 = raster_size，u16 饱和）。
-    fn raster_page_bitmap(seg: &PageSegment<'_>) -> Option<PageBitmap> {
-        let w = seg.raster_size.0.min(u32::from(u16::MAX)) as u16;
-        let h = seg.raster_size.1.min(u32::from(u16::MAX)) as u16;
-        let img = Self::raster_scaled(seg.scene, w, h)?;
+    /// 栅格一段页场景并上传为成品位图，目标尺寸 `(w, h)`（u16 饱和）。
+    /// 小于 `seg.raster_size` 时（超限降采样）按 `min(目标/源)` 等比缩放
+    /// 栅格——纵横比由调用方 [`capped_raster_size`] 保证，min 取两侧较小
+    /// 者防 floor ±1px 裁边。
+    fn raster_page_bitmap(seg: &PageSegment<'_>, w: u32, h: u32) -> Option<PageBitmap> {
+        let (sw, sh) = seg.raster_size;
+        if sw == 0 || sh == 0 || w == 0 || h == 0 {
+            return None; // 零尺寸：栅格不可能（预检机器兜底路径）
+        }
+        let vw = w.min(u32::from(u16::MAX)) as u16;
+        let vh = h.min(u32::from(u16::MAX)) as u16;
+        let scale = (f64::from(vw) / f64::from(sw)).min(f64::from(vh) / f64::from(sh));
+        let img = Self::raster_scaled(seg.scene, vw, vh, scale)?;
         Self::upload(&img)
     }
 
-    /// 画一个页位图：落位 origin（场景 = 设备 px）1:1；尺寸 = 位图原样 ×
-    /// scale（手势中缓存命中时 scale = 拉伸比，其余恒 1.0）。
+    /// 画一个页位图：落位 origin（场景 = 设备 px）1:1；**尺寸由
+    /// `seg.raster_size` 派生，不取位图自身尺寸**——手势中段即 raw 代
+    /// （= 本帧应呈现的整页落位），settled 态即整页尺寸。正常（未超限）
+    /// 条目位图 == raster_size，行为不变；超限降采样条目位图更小，由
+    /// drawImage 在此放大回整页（略糊而非灰洞）。旧实现「位图尺寸 ×
+    /// 手势拉伸比」与本式在未超限时数值恒等（raster_size ∝ zoom）。
     /// 关联函数显式收 ctx——调用方持 cache 借用时按字段拆分借用，
     /// 避免 `&self` 整体借用与 `&mut self.cache` 冲突。
     fn blit_page(
         ctx: &web_sys::CanvasRenderingContext2d,
         bitmap: &PageBitmap,
         seg: &PageSegment<'_>,
-        scale: f64,
     ) {
-        let dw = bitmap.canvas.width() as f64 * scale;
-        let dh = bitmap.canvas.height() as f64 * scale;
+        let dw = f64::from(seg.raster_size.0);
+        let dh = f64::from(seg.raster_size.1);
         let _ = ctx.draw_image_with_offscreen_canvas_and_dw_and_dh(
             &bitmap.canvas,
             seg.origin.0,
@@ -225,6 +248,20 @@ impl CpuCanvasRenderTarget {
             dw,
             dh,
         );
+    }
+
+    /// 超限降采样的一次性告知（每页首条）：点名页与上限——「静默把页面
+    /// 变灰洞」正是要修的缺陷，降采样渲染绝不能再静默。
+    fn warn_capped_once(&mut self, page: &PageId) {
+        if self.warned_capped.insert(page.clone()) {
+            web_sys::console::warn_1(
+                &format!(
+                    "[rofd] 页面 {} 超出像素上限 {}，已降采样渲染",
+                    page.0, self.max_page_pixels
+                )
+                .into(),
+            );
+        }
     }
 
     /// 把软栅格结果整幅写进一个 OffscreenCanvas 2d context（0,0 起）。
@@ -252,7 +289,6 @@ impl RenderTarget for CpuCanvasRenderTarget {
         if self.gesture.maybe_settle(Instant::now()).is_some() {
             self.pending_scale = None;
         }
-        let scale = self.pending_scale.unwrap_or(1.0); // 手势中旧位图按比拉伸顶着
 
         // 1) desk 灰底是 CPU 目标自己的第一笔（合流方裁定：页场景与
         //    overlay 都不携带背景）——整幅物理矩形铺满。
@@ -260,9 +296,9 @@ impl RenderTarget for CpuCanvasRenderTarget {
         self.ctx.set_fill_style_str(&self.desk_fill);
         self.ctx.fill_rect(0.0, 0.0, pw, ph);
 
-        // 2) 页位图：处置由 page_blit_plan 裁定——拉伸比只作用于已缓存
-        //    的 blit；手势中的 miss 走一次性 raw 位图 1:1（段即 raw 代），
-        //    绝不入缓存（防代际投毒）。
+        // 2) 页位图：处置由 page_blit_plan 裁定——手势中的旧位图经
+        //    blit_page 的 raster_size 落位隐式拉伸顶着；手势中的 miss 走
+        //    一次性 raw 位图 1:1（段即 raw 代），绝不入缓存（防代际投毒）。
         let gesturing = self.pending_scale.is_some();
         for seg in &layers.pages {
             let key = self.key(&seg.page_id);
@@ -272,28 +308,37 @@ impl RenderTarget for CpuCanvasRenderTarget {
                     let Some(bitmap) = self.cache.get(&key) else {
                         continue; // 与 plan 判定间无窗口，纯防御
                     };
-                    Self::blit_page(&self.ctx, bitmap, seg, scale);
+                    Self::blit_page(&self.ctx, bitmap, seg);
                 }
                 PageBlitPlan::OneShotRaw => {
-                    let Some(bitmap) = Self::raster_page_bitmap(seg) else {
+                    let (w, h) = seg.raster_size;
+                    let Some(bitmap) = Self::raster_page_bitmap(seg, w, h) else {
                         continue; // 零尺寸页/栅格失败：本帧跳过
                     };
-                    Self::blit_page(&self.ctx, &bitmap, seg, 1.0);
+                    Self::blit_page(&self.ctx, &bitmap, seg);
                     // bitmap 就地离场（GC 回收），不入缓存。
                 }
                 PageBlitPlan::RasterAndCache => {
-                    // 容量预检（与 insert 内部判定同参——同一对
-                    // raster_size，保证预检通过后 insert 必接受）：超限页
-                    // 零栅格零上传，本帧跳过——否则超限页每帧白付一次软栅格。
+                    // 像素上限预检 + 超限降采样（spec 2026-10-15 §8 降采样
+                    // 选项）：超限页不再整页跳过（灰洞 + 批注悬空——A4 满
+                    // 档缩放、dpr2 中档缩放即触达），而是按 capped_raster_size
+                    // 等比降采样栅格、以降采样尺寸入缓存（同参必过 insert
+                    // 的 cap 检查）、blit 放大回整页落位，并每页一次性告警。
+                    // 降采样后仍超限（cap=0 病态）或零尺寸 → 预检机器兜底，
+                    // 本帧跳过。
                     let (w, h) = seg.raster_size;
-                    if u64::from(w) * u64::from(h) > self.max_page_pixels {
+                    let (cw, ch) = capped_raster_size(w, h, self.max_page_pixels);
+                    if cw == 0 || ch == 0 || u64::from(cw) * u64::from(ch) > self.max_page_pixels {
                         continue;
                     }
-                    let Some(bitmap) = Self::raster_page_bitmap(seg) else {
+                    if (cw, ch) != (w, h) {
+                        self.warn_capped_once(&seg.page_id);
+                    }
+                    let Some(bitmap) = Self::raster_page_bitmap(seg, cw, ch) else {
                         continue;
                     };
-                    if let Some(cached) = self.cache.insert(key, w, h, move || bitmap) {
-                        Self::blit_page(&self.ctx, cached, seg, 1.0);
+                    if let Some(cached) = self.cache.insert(key, cw, ch, move || bitmap) {
+                        Self::blit_page(&self.ctx, cached, seg);
                     }
                 }
             }
@@ -308,7 +353,7 @@ impl RenderTarget for CpuCanvasRenderTarget {
                 self.overlay = OverlaySurface::new(ow, oh);
             }
             if let Some(ov) = &self.overlay {
-                if let Some(img) = Self::raster_scaled(layers.overlay, ow, oh) {
+                if let Some(img) = Self::raster_scaled(layers.overlay, ow, oh, 1.0) {
                     // SAFETY: 同 upload——view 不跨调用持有，img 不可变借用。
                     let clamped = unsafe { js_sys::Uint8ClampedArray::view(&img.data) };
                     if let Ok(data) = web_sys::ImageData::new_with_js_u8_clamped_array_and_sh(
@@ -335,7 +380,7 @@ impl RenderTarget for CpuCanvasRenderTarget {
         if w == 0 || h == 0 {
             return true;
         }
-        if let Some(img) = Self::raster_scaled(scene, w, h) {
+        if let Some(img) = Self::raster_scaled(scene, w, h, 1.0) {
             // SAFETY: 同 upload——view 不跨调用持有，img 不可变借用。
             let clamped = unsafe { js_sys::Uint8ClampedArray::view(&img.data) };
             if let Ok(data) = web_sys::ImageData::new_with_js_u8_clamped_array_and_sh(
