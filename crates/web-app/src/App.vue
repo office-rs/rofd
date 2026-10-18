@@ -825,8 +825,9 @@ onMounted(async () => {
   try {
     const ofdInst = await Ofd.init(containerRef.value!, {
       // 字体通道：切片按需（?legacyFonts=1 时整字体全量回归）。
-      // 字体通道按宿主能力分流（draft 2026-10-17 §1.2）：浏览器切片 / 桌面
-      // 本机系统字体整字体 + Noto 切片 / ?legacyFonts=1 本地整字体回归缝。
+      // 字体通道按宿主能力分流（draft 2026-10-18 §5）：浏览器切片 /
+      // 桌面纯系统字体通道（空清单 + provider 懒加载 + 宋体默认）/
+      // ?legacyFonts=1 本地整字体回归缝。
       ...(await resolveFontConfig()),
       // 文档变更（含撤销/重做/删除）后刷新工具栏的撤销/恢复可用态。
       onChange: refreshHistoryState,

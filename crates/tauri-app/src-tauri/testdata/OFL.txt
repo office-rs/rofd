@@ -1,0 +1,1 @@
+TestFont.ttf / TestFontCjk.otf: OFL fixtures copied from crates/render/tests/fixtures/fonts (Noto test subsets).

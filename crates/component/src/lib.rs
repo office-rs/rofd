@@ -23,4 +23,4 @@ pub use zoom_mode::ZoomMode;
 // without taking direct rofd-render / rofd-dom / rofd-editor dependencies.
 pub use rofd_dom::{AnnotationId, OfdWarning, Rect};
 pub use rofd_editor::{AnnotationSelection, TextCursor};
-pub use rofd_render::BodyTextSelection;
+pub use rofd_render::{normalize_family_key, BodyTextSelection};

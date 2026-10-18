@@ -7,6 +7,18 @@ follow the git tags published to GitHub Releases (`vX.Y.Z`); the npm SDK
 
 ## Unreleased
 
+### SDK 0.2.0
+- **桌面纯系统字体通道**（draft 2026-10-18，第四通道）：SDK 新增可选
+  `systemFonts`（`SystemFontProvider { list, read }`）与 `defaultFamily`——
+  宿主注入本机字体面，SDK 按文档声明族**懒加载**注册（`settled` 永不重
+  试；manifest 覆盖族永不咨询 provider，一族一通道）。tauri 壳新增
+  `list_system_fonts`/`read_system_font` 双命令（启动扫描 `%WINDIR%\Fonts`+
+  用户字体目录建索引，mmap + name 表全语言提取，读面=已扫描集合，无白名
+  单）；桌面 manifest 集为空（D4：Noto 切片不进桌面，安装包 -24MB），默认
+  字体宋体（D5）。wasm 面 `normalizeFontName`（内核归一表单一事实源）。
+  预留 `getFontFamilies()`（manifest displayName ∪ 系统名，未来批注字体
+  面板数据面）。浏览器路径逐字节不变（e2e 零回归）。
+
 ### Breaking
 - **裸 `Ofd.init` 零字体请求**：SDK 不再默认从 jsDelivr 拉 Noto（内置
   `DEFAULT_FONTS` 已删除）。宿主需显式传 `fontSlices`（切片按需通道）或

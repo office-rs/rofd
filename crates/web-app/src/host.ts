@@ -12,8 +12,11 @@ export interface FileHost {
   /** 把 OFD 字节写出（浏览器下载 / 原生保存对话框）。`suggestedName` 是
    * 默认文件名；写出成功返回 true，用户取消返回 false。 */
   save(bytes: Uint8Array, suggestedName: string): Promise<boolean>;
-  /** 可选能力：按白名单文件名读本机系统字体（桌面宿主注入，draft
-   * 2026-10-17 §1）。文件不存在/读取失败返回 null——该族跳过，不报错。 */
+  /** 可选能力：列出本机字体（桌面宿主注入，draft 2026-10-18 §3.2——索引
+   * 由 Rust 壳启动扫描一次）。失败/不支持 → 调用方视为无能力分支。 */
+  listSystemFonts?(): Promise<{ family: string; fileName: string }[]>;
+  /** 可选能力：按已扫描文件名读本机系统字体。文件不存在/读取失败返回
+   * null——该族跳过，不报错。 */
   readSystemFont?(fileName: string): Promise<Uint8Array | null>;
 }
 
@@ -72,16 +75,21 @@ export function setFileHost(host: FileHost): void {
   current = host;
 }
 
-/** 当前宿主是否具备读系统字体能力（探测注入桥的可选方法，不做环境判断——
- * 浏览器路径与桌面路径由能力有无自然分流，draft 2026-10-17 §3）。 */
+/** 当前宿主是否具备系统字体通道能力（**双能力探测**，draft 2026-10-18 §5：
+ * list + read 缺一不可——只读不列无法建索引）。浏览器两能力皆无 → 字体
+ * 通道字节等价分流；桌面注入齐全 → 纯系统字体通道。 */
 export function canReadSystemFonts(): boolean {
-  return typeof current.readSystemFont === 'function';
+  return (
+    typeof current.listSystemFonts === 'function' &&
+    typeof current.readSystemFont === 'function'
+  );
 }
 
 /** 当前生效的文件桥。App.vue 通过它执行打开 / 保存。 */
 export const fileHost: FileHost = {
   open: () => current.open(),
   save: (bytes, name) => current.save(bytes, name),
+  listSystemFonts: () => current.listSystemFonts?.() ?? Promise.resolve([]),
   // facade 恒为 Promise（能力缺席时 resolve null）——调用方无需判空分支。
   readSystemFont: (fileName) =>
     current.readSystemFont?.(fileName) ?? Promise.resolve(null),

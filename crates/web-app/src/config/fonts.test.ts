@@ -1,28 +1,29 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { setFileHost, type FileHost } from '../host';
 import { manifestUrl } from 'virtual:rword-fonts';
-import {
-  FONT_SLICES,
-  LEGACY_FONTS,
-  SYSTEM_FONT_FILES,
-  resolveFontConfig,
-} from './fonts';
+import { FONT_SLICES, LEGACY_FONTS, resolveFontConfig } from './fonts';
 
-// 能力探测驱动通道分流（draft 2026-10-17 §1.2）：注入桥有无 readSystemFont
-// 决定浏览器/桌面路径，浏览器分支必须与既有配置逐字节等价（e2e 零改动是
+// 能力探测驱动通道分流（draft 2026-10-18 §5）：**双能力**（list + read）才走
+// 桌面纯系统通道；浏览器分支必须与切片改造前逐字节等价（e2e 零改动是
 // 验收线）。
 
 const browserHost: FileHost = { open: async () => null, save: async () => false };
 
-function desktopHost(map: Record<string, Uint8Array | null>): FileHost {
+/** 桌面桥：list 返回清单，read 按 fileName 应答（未知名 → null）。 */
+function desktopHost(entries: { family: string; fileName: string }[]): FileHost {
   return {
     ...browserHost,
-    async readSystemFont(fileName) {
-      if (fileName in map) {
-        return map[fileName];
-      }
-      throw new Error(`unexpected file: ${fileName}`);
-    },
+    listSystemFonts: async () => entries,
+    readSystemFont: async (fileName) =>
+      entries.some((e) => e.fileName === fileName) ? new Uint8Array([1]) : null,
+  };
+}
+
+/** 只有 read 没有 list 的宿主：双能力探测不满足 → 浏览器分支。 */
+function halfHost(): FileHost {
+  return {
+    ...browserHost,
+    readSystemFont: async () => new Uint8Array([1]),
   };
 }
 
@@ -37,52 +38,42 @@ describe('resolveFontConfig', () => {
     expect(cfg).toEqual(FONT_SLICES ? { fontSlices: FONT_SLICES } : { fonts: LEGACY_FONTS });
   });
 
-  it('桌面：白名单逐个读取，读到的进整字体通道，manifest 只留 Noto（一族一通道）', async () => {
-    const simsun = new Uint8Array([1, 2, 3]);
-    const simhei = new Uint8Array([4]);
-    setFileHost(
-      desktopHost({
-        'simsun.ttc': simsun,
-        'simhei.ttf': simhei,
-        'msyh.ttc': null,
-        'arial.ttf': null,
-        'times.ttf': null,
-        'calibri.ttf': null,
-      }),
-    );
+  it('单能力（有 read 无 list）不算桌面：仍走浏览器分支', async () => {
+    setFileHost(halfHost());
     const cfg = await resolveFontConfig();
-    expect(cfg.fonts).toEqual([{ data: simsun }, { data: simhei }]);
-    expect(cfg.fontSlices?.manifests).toEqual([manifestUrl]);
-    expect(cfg.fontSlices?.includeDefaultNoto).toBe(false);
-    expect(cfg.fontSlices?.defaultFamily).toBe('notosanscjksc');
+    expect(cfg).toEqual(FONT_SLICES ? { fontSlices: FONT_SLICES } : { fonts: LEGACY_FONTS });
   });
 
-  it('桌面：全部读取失败 → 空整字体列表 + Noto 切片照常（纯降级）', async () => {
-    setFileHost(desktopHost(Object.fromEntries(SYSTEM_FONT_FILES.map((f) => [f, null]))));
+  it('桌面（双能力）：纯系统通道——空清单 + provider + 宋体默认，无整字体数组', async () => {
+    setFileHost(desktopHost([{ family: '宋体', fileName: 'simsun.ttc' }]));
     const cfg = await resolveFontConfig();
-    expect(cfg.fonts).toEqual([]);
-    expect(cfg.fontSlices?.manifests).toEqual([manifestUrl]);
-  });
-
-  it('桌面：抛异常的文件与缺失同途跳过，不中断后续文件', async () => {
-    setFileHost(
-      desktopHost({
-        'simsun.ttc': new Uint8Array([9]),
-        // 其余文件不在 map → readSystemFont 抛异常 → catch 跳过
-      }),
-    );
-    const cfg = await resolveFontConfig();
-    expect(cfg.fonts).toEqual([{ data: new Uint8Array([9]) }]);
-  });
-
-  it('白名单六文件与 tauri 壳 ALLOWED_FONT_FILES 一一对应', () => {
-    expect([...SYSTEM_FONT_FILES]).toEqual([
-      'simsun.ttc',
-      'simhei.ttf',
-      'msyh.ttc',
-      'arial.ttf',
-      'times.ttf',
-      'calibri.ttf',
+    expect(cfg.fonts).toBeUndefined();
+    expect(cfg.fontSlices).toEqual({ manifests: [], includeDefaultNoto: false });
+    expect(cfg.defaultFontFamily).toBe('宋体');
+    expect(typeof cfg.systemFonts?.list).toBe('function');
+    expect(typeof cfg.systemFonts?.read).toBe('function');
+    // provider 桥接 host：read 按文件名应答，未知名 → null（该族 settle）。
+    expect(await cfg.systemFonts?.read({ family: '宋体', fileName: 'simsun.ttc' })).toBeTruthy();
+    expect(await cfg.systemFonts?.read({ family: 'x', fileName: 'nope.ttf' })).toBeNull();
+    expect(await cfg.systemFonts?.list()).toEqual([
+      { family: '宋体', fileName: 'simsun.ttc' },
     ]);
   });
+
+  it('provider 不在本模块读任何字节（懒加载归 SDK 时机）', async () => {
+    let reads = 0;
+    const host: FileHost = {
+      ...desktopHost([]),
+      readSystemFont: async () => {
+        reads += 1;
+        return new Uint8Array([1]);
+      },
+    };
+    setFileHost(host);
+    await resolveFontConfig();
+    expect(reads).toBe(0);
+  });
 });
+
+// manifestUrl 桩值参与等价断言的传递性（避免桩漂移无人察觉）。
+void manifestUrl;

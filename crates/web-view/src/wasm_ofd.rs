@@ -265,6 +265,15 @@ mod wasm_impl {
             Ok(())
         }
 
+        /// 内核族名归一（spec 2026-10-17 §0.4-1 的同一张表）：SDK 建系统字体
+        /// 索引时用它把 provider 的 name 表族名（"SimSun"/"宋体"）归一到规范
+        /// 键，与需求收集产出可比——键宇宙单一事实源在内核（draft 2026-10-18
+        /// §6.3 的 rofd 形态：rword 靠显示名直配，rofd 需要这一步）。
+        #[wasm_bindgen(js_name = normalizeFontName)]
+        pub fn normalize_font_name(&self, name: &str) -> String {
+            rofd_component::normalize_family_key(name)
+        }
+
         // ─── JS Callback Registration ───────────────────────────────────────
 
         #[wasm_bindgen(js_name = setOnChange)]

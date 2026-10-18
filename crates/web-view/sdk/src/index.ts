@@ -10,9 +10,9 @@ import { FontRuntime } from '@office-rs/font-runtime';
 import { RenderScheduler } from './scheduler';
 import { withKick } from './with-kick';
 import * as fontFlow from './fontFlow';
-import type { FontSlicesConfig } from './fontFlow';
+import type { FontSlicesConfig, SystemFontProvider } from './fontFlow';
 
-export type { FontSlicesConfig } from './fontFlow';
+export type { FontSlicesConfig, SystemFontEntry, SystemFontProvider } from './fontFlow';
 
 // --- wasm module shape (wasm-pack --target web) ---
 // `default` is the async init; `create_wasm_ofd` is the factory.
@@ -29,6 +29,9 @@ interface WasmOfd {
    */
   renderFrame(): number;
   registerFont(bytes: Uint8Array): boolean;
+  /** Kernel family-name normalization (same table as requirements collection) —
+   * the SDK uses it to key the desktop system-font index. */
+  normalizeFontName(name: string): string;
   /** Current font requirements: normalized family keys + sorted deduped codepoints. */
   collectFontRequirements(): { families: string[]; codepoints: number[] };
   /** Register a decoded (OTF/TTF) font slice. `false` = bytes parsed to no family. */
@@ -123,6 +126,14 @@ export interface OfdConfig {
   /** 字体切片按需加载（spec 2026-10-17 §3.1）。设置后启用切片通道；
    * `fonts` 优先级更低（并存合法但建议二选一）。 */
   fontSlices?: FontSlicesConfig;
+  /** 桌面系统字体注入面（draft 2026-10-18 §4.1）：宿主提供本机字体清单与
+   * 字节读取，SDK 按需求懒加载注册（零再分发）。仅与 `fontSlices` 同时
+   * 生效（桌面配置形如 `{ fontSlices: { manifests: [] }, systemFonts }`）。
+   * 浏览器宿主不传——行为完全不变。 */
+  systemFonts?: SystemFontProvider;
+  /** 系统字体流的默认族（桌面 D5：'宋体'——恒入补载遍，首个注册即锚定
+   * 内核 default）。仅在有 `systemFonts` 时生效。 */
+  defaultFontFamily?: string;
   /** Fired when the document changes (signal-only; on-demand rendering repaints). */
   onChange?: () => void;
   onSelectionChange?: () => void;
@@ -215,6 +226,11 @@ export class Ofd {
   private fontWatch?: fontFlow.FontWatch;
   private fontSlicesCfg?: FontSlicesConfig;
   private onWarningCb?: (warnings: string[]) => void;
+  private fontRuntime?: FontRuntime;
+  private systemFlow?: fontFlow.SystemFontFlow;
+  private systemFontsCfg?: fontFlow.SystemFontProvider;
+  private defaultFontFamilyCfg?: string;
+  private wasmFontSurface?: fontFlow.WasmFontSurface;
 
   private constructor(wasm: WasmOfd, canvas: HTMLCanvasElement) {
     this.wasm = wasm;
@@ -337,7 +353,12 @@ export class Ofd {
     // proxied wasm font surface, so every registered slice kicks the
     // scheduler (first slice renders as soon as it lands).
     if (config?.fontSlices) {
-      ofd.startFontFlow(config.fontSlices, config.onWarning);
+      ofd.startFontFlow(
+        config.fontSlices,
+        config.onWarning,
+        config.systemFonts,
+        config.defaultFontFamily,
+      );
     }
     fontKick = () => ofd.fontWatchKick();
 
@@ -393,11 +414,20 @@ export class Ofd {
   }
 
   /** @internal 启动切片字体流（init 的 fontSlices 分支；测试接线直接驱动）。
-   * onWarning 与其它宿主回调一致经 deferCb 延迟——宿主抛错只落在微任务里，
-   * 不会沿 onError→ensureFonts 反向传播楔死 retryFontFlow 的状态机。 */
-  startFontFlow(cfg: FontSlicesConfig, onWarning?: (warnings: string[]) => void): void {
+   * `systemFonts`/`defaultFontFamily` 为桌面第四通道（draft 2026-10-18）：
+   * 仅与 fontSlices 同时生效。onWarning 与其它宿主回调一致经 deferCb 延迟
+   * ——宿主抛错只落在微任务里，不会沿 onError→ensureFonts 反向传播楔死
+   * retryFontFlow 的状态机。 */
+  startFontFlow(
+    cfg: FontSlicesConfig,
+    onWarning?: (warnings: string[]) => void,
+    systemFonts?: fontFlow.SystemFontProvider,
+    defaultFontFamily?: string,
+  ): void {
     this.fontSlicesCfg = cfg;
     this.onWarningCb = onWarning ? deferCb(onWarning) : undefined;
+    this.systemFontsCfg = systemFonts;
+    this.defaultFontFamilyCfg = defaultFontFamily;
     void this.retryFontFlow();
   }
 
@@ -410,7 +440,9 @@ export class Ofd {
     }
     this.fontFlowState = 'init';
     const live = await fontFlow.filterLiveManifests(cfg.manifests);
-    if (live.length === 0) {
+    // 桌面纯系统通道（draft D4）manifests 为空：切片流上膛不拉，系统流仍须
+    // 启动——只有"无活清单且无系统通道"才回 off（浏览器降级不变）。
+    if (live.length === 0 && !this.systemFontsCfg) {
       this.fontFlowState = 'off';
       return;
     }
@@ -421,23 +453,85 @@ export class Ofd {
     const wasmFont: fontFlow.WasmFontSurface = {
       collectFontRequirements: () => this.wasm.collectFontRequirements(),
       registerFontSlice: (b, f, s) => this.wasm.registerFontSlice(b, f, s),
+      registerFont: (b) => this.wasm.registerFont(b),
+      normalizeFontName: (n) => this.wasm.normalizeFontName(n),
     };
+    this.wasmFontSurface = wasmFont;
     const onError = (err: fontFlow.FontFlowError): void => {
       this.onWarningCb?.([`fonts: ${err.family ? `${err.family} ` : ''}${err.message}`]);
     };
+    this.fontRuntime = runtime;
+    if (this.systemFontsCfg) {
+      this.systemFlow = await fontFlow.createSystemFlow(
+        wasmFont,
+        this.systemFontsCfg,
+        this.defaultFontFamilyCfg,
+      );
+    }
     const ok = await fontFlow.ensureFonts(wasmFont, runtime, {
       defaultFamily: cfg.defaultFamily,
       onError,
+      system: this.systemFlow,
     });
     if (!ok) {
       this.fontFlowState = 'off';
       return;
     }
-    this.fontWatch = fontFlow.scheduleFontWatch(wasmFont, runtime, { onError });
+    this.fontWatch = fontFlow.scheduleFontWatch(wasmFont, runtime, {
+      onError,
+      system: this.systemFlow,
+    });
     this.fontFlowState = 'ready';
     // 文档已在 init 窗口期间加载的情形：就绪后立即补一拍，watcher 会收集
     // 加载后的需求并补片——runtime 去重使竞争外的情形为空转。
     this.fontWatch?.kick();
+  }
+
+  /** 补载遍立跑（draft §4.2 入口之三：打开文档不等防抖窗）。settled 集合
+   * 使重复声明为 O(1)，loadOfd 每次直接调用无成本顾虑。 */
+  private async runSystemPass(): Promise<void> {
+    const flow = this.systemFlow;
+    const surface = this.wasmFontSurface;
+    const runtime = this.fontRuntime;
+    if (!flow || !surface || !runtime) {
+      return;
+    }
+    try {
+      const manifest = await runtime.ready();
+      const req = surface.collectFontRequirements();
+      await fontFlow.satisfySystemFamilies(
+        surface,
+        flow,
+        req.families,
+        fontFlow.manifestFamilyKeys(surface, manifest),
+      );
+    } catch {
+      // 系统通道永不阻塞渲染路径
+    }
+  }
+
+  /**
+   * 可选字体族清单（未来批注字体面板的数据面，draft §4.3）：manifest
+   * displayName（保持清单序）∪ 系统字体 name 表原始名（localeCompare 排序
+   * 追加，宋体/SimSun 各自成条）。选择未加载族 → 声明 → 需求变化 → 下个
+   * tick 自动读本机注册的自愈闭环由字体流承担。
+   */
+  async getFontFamilies(): Promise<string[]> {
+    const listed: string[] = [];
+    if (this.fontRuntime) {
+      try {
+        const manifest = await this.fontRuntime.ready();
+        listed.push(
+          ...Object.values(manifest.families).map(
+            (f) => (f as { displayName: string }).displayName,
+          ),
+        );
+      } catch {
+        // ready 失败：只报系统族
+      }
+    }
+    const system = this.systemFlow?.familiesRaw ?? [];
+    return fontFlow.mergeFontFamilyLists(listed, system);
   }
 
   // ─── Internal: event binding ──────────────────────────────────────────────
@@ -648,6 +742,8 @@ export class Ofd {
     // 文档换了需求全变：立即 kick watcher；流此前失败则重试（spec §3.2）。
     if (this.fontFlowState === 'ready') {
       this.fontWatch?.kick();
+      // 系统字体补载遍不等防抖窗（draft 2026-10-18 §4.2 打开文档入口）。
+      void this.runSystemPass();
     } else if (this.fontFlowState === 'off' && this.fontSlicesCfg) {
       void this.retryFontFlow();
     }

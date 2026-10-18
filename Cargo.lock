@@ -5561,10 +5561,13 @@ dependencies = [
 name = "tauri-app"
 version = "0.1.0"
 dependencies = [
+ "memmap2",
+ "serde",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-fs",
+ "ttf-parser",
 ]
 
 [[package]]

@@ -68,7 +68,7 @@ npm run tauri dev         # 开发：起 vite(1420) + 系统 WebView 窗口
 npm run tauri build       # 打包：vite build -> tauri 打成桌面安装包
 ```
 
-tauri-app 前端**复用 web-app 源码**（`main.ts` 从 `../web-app/src` 导入 App.vue）；仅在挂载前用 `setFileHost` 注入原生文件桥（`src/host/tauri.ts`，走 tauri-plugin-dialog + tauri-plugin-fs 的原生打开/保存对话框）。字体与 sample.ofd 从 web-app 的 `public/` 本地加载（vite `publicDir` 指向它），脱离 CDN。**桌面字体通道**（draft 2026-10-17 §1）：tauri 桥提供 `readSystemFont` 能力，经 `src-tauri/src/fonts.rs` 的白名单 IPC 命令读 `%WINDIR%\Fonts` 的已授权商用字体（simsun.ttc 等六文件，零再分发）走 legacy 整字体通道，商用切片 manifest 随之排除（一族一通道），Noto 仍走切片；浏览器路径逐字节不变。`src-tauri` 的 Rust 壳只启动窗口 + 注册插件与该命令，**不依赖任何 rofd crate**（§4.9）。平台支持：Windows（WebView2）开箱即用；macOS/Linux 受 WebKit 的 WebGPU 进度限制。
+tauri-app 前端**复用 web-app 源码**（`main.ts` 从 `../web-app/src` 导入 App.vue）；仅在挂载前用 `setFileHost` 注入原生文件桥（`src/host/tauri.ts`，走 tauri-plugin-dialog + tauri-plugin-fs 的原生打开/保存对话框）。字体与 sample.ofd 从 web-app 的 `public/` 本地加载（vite `publicDir` 指向它），脱离 CDN。**桌面字体通道**（draft 2026-10-18，纯系统通道）：tauri 桥提供 `listSystemFonts`+`readSystemFont` 双能力，Rust 壳启动时扫描 `%WINDIR%\Fonts`+用户字体目录建索引（`src-tauri/src/font_index.rs`，mmap+name 表全语言提取），SDK 按文档声明族**懒加载**本机字节（零再分发、无白名单），桌面 manifest 集为空（Noto 切片不进桌面，vite 插件 `families: []`），默认字体宋体；浏览器路径逐字节不变。`src-tauri` 的 Rust 壳只启动窗口 + 注册插件与双命令，**不依赖任何 rofd crate**（§4.9）。平台支持：Windows（WebView2）开箱即用；macOS/Linux 受 WebKit 的 WebGPU 进度限制。
 
 产物命名统一为 `rofd`（详见 release-tauri.yml）。
 

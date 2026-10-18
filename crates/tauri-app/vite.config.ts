@@ -38,7 +38,10 @@ export default defineConfig({
     vue(),
     corpAllResponses(),
     // Noto 切片通道：build 产出 dist/rword-fonts/，dev 经 /@rword-fonts 中间件。
-    rwordFonts({ families: ["notosans", "notosanscjksc"] }),
+    // 桌面纯系统字体通道（draft 2026-10-18 D4）：本机字体经 provider 懒加载，
+    // Noto 切片不进桌面——插件仍须注册但 families 为空（共享 fonts.ts 无条件
+    // import virtual 模块，空 families 产合法空清单；忘注册 = dev 启动即失败）。
+    rwordFonts({ families: [] }),
   ],
   resolve: {
     alias: { "@office-rs/rofd": sdkEntry },

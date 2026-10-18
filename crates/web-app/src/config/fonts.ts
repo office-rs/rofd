@@ -1,4 +1,4 @@
-import type { FontSource, FontSlicesConfig } from '@office-rs/rofd';
+import type { FontSource, FontSlicesConfig, SystemFontProvider } from '@office-rs/rofd';
 import { manifestUrl } from 'virtual:rword-fonts';
 import { canReadSystemFonts, fileHost } from '../host';
 
@@ -28,54 +28,42 @@ export const LEGACY_FONTS: FontSource[] = [
   { url: `${import.meta.env.BASE_URL}fonts/calibri.ttf` },
 ];
 
-// 桌面白名单：与 tauri-app/src-tauri/src/fonts.rs 的 ALLOWED_FONT_FILES 一一
-// 对应（两侧同步维护，两侧测试各自锚定集合形状）。
-export const SYSTEM_FONT_FILES = [
-  'simsun.ttc',
-  'simhei.ttf',
-  'msyh.ttc',
-  'arial.ttf',
-  'times.ttf',
-  'calibri.ttf',
-] as const;
-
 /** `Ofd.init` 的字体通道配置（resolveFontConfig 的产物）。 */
 export interface FontChannelConfig {
   fontSlices?: FontSlicesConfig;
   fonts?: FontSource[];
+  /** 桌面第四通道（draft 2026-10-18）：宿主注入的本机字体面。 */
+  systemFonts?: SystemFontProvider;
+  /** 系统流默认族（桌面 D5：宋体锚内核 default）。 */
+  defaultFontFamily?: string;
 }
 
+/** 桌面的 systemFonts provider：直接桥接 host 双能力（list 建索引 + read
+ * 按需读字节），SDK 管时机与仲裁。 */
+const systemFontProvider: SystemFontProvider = {
+  list: () => fileHost.listSystemFonts?.() ?? Promise.resolve([]),
+  read: (entry) => fileHost.readSystemFont?.(entry.fileName) ?? Promise.resolve(null),
+};
+
 /**
- * 按宿主能力决定字体通道（draft 2026-10-17 §1.2）：
+ * 按宿主能力决定字体通道（draft 2026-10-18 §5）：
  *
- * - 浏览器（无 readSystemFont 能力）→ 原配置原样返回，**与改造前逐字节
+ * - 浏览器（无 list+read 双能力）→ 原配置原样返回，**与切片改造前逐字节
  *   等价**（e2e 套件零改动是验收线）。
- * - 桌面（有能力）→ 白名单六文件逐个读本机已授权商用字体，读到的进
- *   legacy 整字体通道（零再分发）；**一族一通道**——商用切片 manifest 必须
- *   排除，只留 Noto 切片（按需加载价值在桌面同样成立）。缺文件/读失败
- *   跳过该族，SansSerif 兜底链用 Noto 覆盖，不报错。
+ * - 桌面（双能力齐）→ **纯系统字体通道**（D4）：manifest 集合为空（切片
+ *   引擎上膛不拉），本机字体按需懒加载（D1）——文档声明什么就读什么，
+ *   缺的族 settle 走替代链兜底。默认字体宋体（D5，首个注册锚定）。
+ *   代价：web 版 Noto 文档在无本机 Noto 的桌面走替代渲染（可接受降级）。
  */
 export async function resolveFontConfig(): Promise<FontChannelConfig> {
   if (!canReadSystemFonts()) {
     return FONT_SLICES ? { fontSlices: FONT_SLICES } : { fonts: LEGACY_FONTS };
   }
-  const fonts: FontSource[] = [];
-  for (const fileName of SYSTEM_FONT_FILES) {
-    try {
-      const data = await fileHost.readSystemFont?.(fileName);
-      if (data && data.length > 0) {
-        fonts.push({ data });
-      }
-    } catch {
-      // 读取异常与缺文件同途：该族跳过
-    }
-  }
   return {
-    fontSlices: {
-      manifests: [manifestUrl],
-      includeDefaultNoto: false,
-      defaultFamily: 'notosanscjksc',
-    },
-    fonts,
+    // 空清单而非 undefined：切片模式上膛、什么也不拉（draft §5——共享
+    // fonts.ts 无条件 import virtual 模块，插件空 families 产合法空清单）。
+    fontSlices: { manifests: [], includeDefaultNoto: false },
+    systemFonts: systemFontProvider,
+    defaultFontFamily: '宋体',
   };
 }

@@ -18,6 +18,11 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
+# 字体索引扫描（draft 2026-10-18 §3）：mmap 只换入 name 表触到的页，
+# ttf-parser 提取 family 名（含全部语言记录——别名免 SDK 规范化的根基）。
+memmap2 = "0.9"
+ttf-parser = "0.25"
+serde = { version = "1", features = ["derive"] }
 
 [features]
 # `cargo tauri dev` 默认启用自定义协议；`tauri dev` 走开发服务器时用它区分。
