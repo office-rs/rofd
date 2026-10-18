@@ -27,3 +27,76 @@ jobs:
       run: cargo build --workspace --exclude tauri-app --verbose
     - name: Run tests
       run: cargo test --workspace --exclude tauri-app --verbose
+
+  # 无 GPU 冒烟（spec 2026-10-15 §10）：--disable-gpu 的 headless Chrome 下
+  # 打开 web-app，SDK 必须自动落入 CPU 软渲染回退并完成初始化。这条守卫
+  # 抓住了 no-gpu 分支最严重的缺陷（回退路径静默丢页），必须默认常跑，
+  # 不能只靠手跑。
+  web-nogpu-smoke:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    # web-app 的 @office-rs/font-runtime 等字体依赖是 file:../../../fonts/...
+    # （指向仓库外的 office-rs/fonts 工作区，CI 上不存在——deploy-pages.yml
+    # 同因至今失败）。冒烟只测 CPU 回退初始化、不测字体通道：给 vite 插件
+    # 入口垫一个最小桩（virtual:rword-fonts → 恒 404 的 manifestUrl），应用
+    # 按设计走字体降级路径，smoke 判据（回退标记 + 无 editor init failed）
+    # 不受影响（已本地以同桩验证 PASS）。字体依赖如何整体进 CI 是独立议题。
+    - name: Stub @office-rs/font-runtime (fonts workspace lives outside this repo)
+      run: |
+        stub="${{ github.workspace }}/../fonts/packages/font-runtime"
+        mkdir -p "$stub/dist"
+        printf '{\n  "name": "@office-rs/font-runtime",\n  "version": "0.0.0-ci-stub",\n  "type": "module",\n  "exports": { ".": "./dist/index.js", "./vite": { "types": "./vite.d.ts", "import": "./dist/vite.js" } }\n}\n' > "$stub/package.json"
+        printf 'export const manifestUrl = "/rofd-ci-stub/manifest.json";\n' > "$stub/dist/index.js"
+        printf 'export {};\n' > "$stub/vite.d.ts"
+        cat > "$stub/dist/vite.js" <<'EOF'
+        const VIRTUAL = 'virtual:rword-fonts';
+        const RESOLVED = '\0' + VIRTUAL;
+        export default function rwordFonts() {
+          return {
+            name: 'rword-fonts-stub',
+            resolveId(id) {
+              if (id === VIRTUAL) { return RESOLVED; }
+              return null;
+            },
+            load(id) {
+              if (id !== RESOLVED) { return null; }
+              return `export const manifestUrl = ${JSON.stringify('/rofd-ci-stub/manifest.json')};\n`;
+            },
+          };
+        }
+        EOF
+
+    # rust-toolchain.toml（钉 1.98.1）由 rustup 按目录解析；rustup show 触发
+    # 安装缺失的钉版工具链，target 显式加到该工具链（wasm-pack 调 cargo 时
+    # 才找得到 wasm32 std）。
+    - name: Install pinned toolchain + wasm32 target
+      run: |
+        rustup show
+        rustup target add wasm32-unknown-unknown --toolchain "$(rustup show active-toolchain | cut -d' ' -f1)"
+
+    - name: Install wasm-pack
+      uses: jetli/wasm-pack-action@v0.4.0
+
+    # rofd-web-view 的构建依赖 yeslogic-fontconfig-sys（同 build job）。
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libfontconfig1-dev libfreetype6-dev
+
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+
+    # ubuntu-latest 自带 Google Chrome（/usr/bin/google-chrome）；smoke 脚本
+    # 默认找 Windows 安装位，必须显式指路。
+    - name: Build SDK + no-GPU smoke
+      working-directory: crates/web-app
+      env:
+        CHROME_PATH: /usr/bin/google-chrome
+      run: |
+        npm install --no-audit --no-fund
+        npm run build:sdk
+        npm run smoke:nogpu
