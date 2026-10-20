@@ -141,7 +141,7 @@ describe('filterLiveManifests', () => {
       if (url.endsWith('/gone.json')) { return { ok: false, headers: new Headers() } as Response; }
       throw new TypeError('network down');
     });
-    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const info = vi.spyOn(console, 'debug').mockImplementation(() => {});
     vi.stubGlobal('fetch', fetchMock);
     try {
       const live = await filterLiveManifests([
@@ -170,7 +170,7 @@ describe('filterLiveManifests', () => {
       }
       return { ok: true, headers: new Headers({ 'content-type': 'text/html; charset=utf-8' }) } as Response;
     });
-    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const info = vi.spyOn(console, 'debug').mockImplementation(() => {});
     vi.stubGlobal('fetch', fetchMock);
     try {
       const live = await filterLiveManifests([

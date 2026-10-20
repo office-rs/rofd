@@ -34,19 +34,23 @@ export function toFontFlowError(e: unknown): FontFlowError {
   return { family: '', message: e instanceof Error ? e.message : String(e) };
 }
 
-/** 预检 manifest URL（spec §5）：404/网络失败/HTML 回退的条目静默剔除
- * （console.info，不进 onWarning）——新 clone 无商用切片目录、tauri 发布不带
- * 切片时天然降级。dev 态 Vite SPA fallback 会把缺失路径回退成 index.html
- * （200 text/html，浏览器 fetch 的默认 Accept 头即可命中），故 ok 之外还须
- * content-type 含 json（application/json 或 +json）才算活着。 */
+/** Pre-check manifest URLs (spec §5): silently drop entries that 404, fail to
+ * fetch, or come back as an HTML fallback (console.debug, never onWarning) —
+ * an absent optional local slice directory is the DEFAULT state (fresh clones
+ * have no fonts-sliced/, tauri builds ship none), so an info-level line on
+ * every load would treat an expected condition as noise; debug stays hidden
+ * in the default console view and is greppable with Verbose enabled. In dev,
+ * Vite's SPA fallback serves index.html for missing paths (200 text/html via
+ * the browser's default fetch Accept header), so "ok" alone is not enough —
+ * the content type must contain json (application/json or +json). */
 export async function filterLiveManifests(urls: string[]): Promise<string[]> {
   const live: string[] = [];
   for (const url of urls) {
     try {
       const res = await fetch(url);
       const type = res.headers.get('content-type') ?? '';
-      if (res.ok && type.includes('json')) { live.push(url); } else { console.info(`[rofd] font manifest unavailable (degraded): ${url}`); }
-    } catch { console.info(`[rofd] font manifest unreachable (degraded): ${url}`); }
+      if (res.ok && type.includes('json')) { live.push(url); } else { console.debug(`[rofd] font manifest unavailable (degraded): ${url}`); }
+    } catch { console.debug(`[rofd] font manifest unreachable (degraded): ${url}`); }
   }
   return live;
 }
