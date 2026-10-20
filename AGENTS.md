@@ -241,6 +241,7 @@ superpowers 工作流：spec → plan → TDD → 自审 → 提交，全部 con
 ## 10. 编码规范
 
 - 设计文档可以保留 WPS 字样，但是代码注释、代码变量、代码文件命名不要存留 WPS 字样。
+- **语言约定（2026-10-20 起）**：commit message 与代码注释一律用英文；中文仅用于 spec/plan/draft 等设计文档（`docs/superpowers/`）及面向用户的 UI 文案。
 
 ---
 
