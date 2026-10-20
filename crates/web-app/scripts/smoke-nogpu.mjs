@@ -15,6 +15,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import WebSocket from 'ws';
 
 const PORT = 5199;
 const CHROME_TIMEOUT_MS = 120_000;
@@ -115,6 +116,21 @@ async function main() {
       process.exitCode = 1;
       return;
     }
+
+    // Phase 2 - pixel assertion (2026-10-20 incident: the console markers
+    // alone passed while the canvas rendered only the desk background —
+    // js-sys handed us a Uint8Array where ImageData needs a real
+    // Uint8ClampedArray, and every upload failed silently). The fallback
+    // must actually paint: desk gray + white page + content => >= 3 colors.
+    const pixels = await pixelCheck();
+    console.log(`pixels: distinctColors=${pixels.distinct} ${pixels.samples}`);
+    if (pixels.distinct < 3) {
+      console.error(
+        'smoke:nogpu FAIL：CPU 回退已触发但画布无内容（期望 >=3 色：桌底/白页/正文）。',
+      );
+      process.exitCode = 1;
+      return;
+    }
     console.log('smoke:nogpu PASS');
   } finally {
     await server.close();
@@ -123,6 +139,107 @@ async function main() {
       rmSync(profile, { recursive: true, force: true });
     } catch {
       // 清理失败不影响判定。
+    }
+  }
+}
+
+// Phase-2 helper: headless Chrome + CDP, sample the editor canvas.
+// Retries the sample for up to ~15s (vite cold transform + wasm boot +
+// fonts can be slow); returns { distinct, samples }.
+async function pixelCheck() {
+  const CDP_PORT = 5200;
+  const profile = mkdtempSync(join(tmpdir(), 'rofd-smoke-cdp-'));
+  const proc = spawn(
+    CHROME,
+    [
+      '--headless=new',
+      '--disable-gpu',
+      '--no-first-run',
+      `--remote-debugging-port=${CDP_PORT}`,
+      `--user-data-dir=${profile}`,
+      '--window-size=1200,800',
+      `http://localhost:${PORT}/`,
+    ],
+    { stdio: 'ignore' },
+  );
+  try {
+    let wsUrl;
+    for (let i = 0; i < 30 && !wsUrl; i++) {
+      try {
+        const pages = await (await fetch(`http://localhost:${CDP_PORT}/json/list`)).json();
+        wsUrl = pages.find((p) => p.type === 'page')?.webSocketDebuggerUrl;
+      } catch {
+        // CDP not up yet.
+      }
+      if (!wsUrl) {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+    if (!wsUrl) {
+      return { distinct: 0, samples: '(CDP endpoint never came up)' };
+    }
+    const ws = new WebSocket(wsUrl, { maxPayload: 64 * 1024 * 1024 });
+    await new Promise((res, rej) => {
+      ws.once('open', res);
+      ws.once('error', rej);
+    });
+    let seq = 0;
+    const pending = new Map();
+    ws.on('message', (raw) => {
+      const m = JSON.parse(raw);
+      if (m.id && pending.has(m.id)) {
+        const p = pending.get(m.id);
+        pending.delete(m.id);
+        if (m.error) {
+          p.reject(new Error(JSON.stringify(m.error)));
+        } else {
+          p.resolve(m.result);
+        }
+      }
+    });
+    const send = (method, params = {}) =>
+      new Promise((resolve, reject) => {
+        const id = ++seq;
+        pending.set(id, { resolve, reject });
+        ws.send(JSON.stringify({ id, method, params }));
+      });
+    await send('Runtime.enable');
+    await send('Page.enable');
+
+    const SAMPLER = `(() => {
+      const c = document.querySelector('canvas');
+      if (!c) {
+        return JSON.stringify({ distinct: 0, samples: 'no canvas' });
+      }
+      const s = document.createElement('canvas');
+      s.width = 64; s.height = 64;
+      const sx = s.getContext('2d');
+      sx.drawImage(c, 0, 0, 64, 64);
+      const d = sx.getImageData(0, 0, 64, 64).data;
+      const colors = new Set();
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i + 3] > 0) {
+          colors.add(d[i] + ',' + d[i + 1] + ',' + d[i + 2]);
+        }
+      }
+      return JSON.stringify({ distinct: colors.size, samples: [...colors].slice(0, 4).join(' | ') });
+    })()`;
+    for (let i = 0; i < 6; i++) {
+      await new Promise((r) => setTimeout(r, 2500));
+      const r = await send('Runtime.evaluate', { expression: SAMPLER, returnByValue: true });
+      const parsed = JSON.parse(r.result?.value ?? '{"distinct":0,"samples":"evaluate failed"}');
+      if (parsed.distinct >= 3 || i === 5) {
+        ws.close();
+        return parsed;
+      }
+    }
+    return { distinct: 0, samples: 'unreachable' };
+  } finally {
+    proc.kill();
+    try {
+      rmSync(profile, { recursive: true, force: true });
+    } catch {
+      // Cleanup failure does not affect the verdict.
     }
   }
 }

@@ -264,6 +264,32 @@ impl CpuCanvasRenderTarget {
         }
     }
 
+    /// Build a REAL `Uint8ClampedArray` view over wasm linear memory.
+    ///
+    /// `js_sys::Uint8ClampedArray::view` (js-sys 0.3.103+) is `wbg_cast`-based:
+    /// a `&[u8]` slice crossing the boundary materializes as a plain
+    /// `Uint8Array` (verified in-browser 2026-10-20 — `instanceof
+    /// Uint8ClampedArray === false`), and `new ImageData(data, sw, sh)` only
+    /// accepts a true clamped array, so every page/overlay upload died with
+    /// `TypeError: ... not of type 'ImageDataSettings'` and left a desk-only
+    /// canvas. Constructing the view explicitly over the wasm memory buffer
+    /// (the pre-`wbg_cast` `view` semantics) yields the correct class.
+    ///
+    /// SAFETY: same contract as the old `view` calls — the view aliases wasm
+    /// linear memory; callers must consume it synchronously (no wasm
+    /// allocation may grow the memory while it is live) and never retain it.
+    unsafe fn clamped_view(bytes: &[u8]) -> Option<js_sys::Uint8ClampedArray> {
+        let mem = wasm_bindgen::memory()
+            .dyn_into::<js_sys::WebAssembly::Memory>()
+            .ok()?;
+        let buf = mem.buffer();
+        Some(js_sys::Uint8ClampedArray::new_with_byte_offset_and_length(
+            &buf,
+            bytes.as_ptr() as u32,
+            bytes.len() as u32,
+        ))
+    }
+
     /// 把软栅格结果整幅写进一个 OffscreenCanvas 2d context（0,0 起）。
     fn upload(img: &imaging::RgbaImage) -> Option<PageBitmap> {
         let canvas = web_sys::OffscreenCanvas::new(img.width, img.height).ok()?;
@@ -272,12 +298,29 @@ impl CpuCanvasRenderTarget {
         // SAFETY: view 只在本语句与 put_image_data 之间存活，绝不跨调用
         // 持有；期间 `img` 经 &RgbaImage 不可变借用（Vec 缓冲不迁移、
         // 不扩容）。put 同步拷走像素后 view 即刻离场。
-        let clamped = unsafe { js_sys::Uint8ClampedArray::view(&img.data) };
-        let data = web_sys::ImageData::new_with_js_u8_clamped_array_and_sh(
+        let clamped = unsafe { Self::clamped_view(&img.data)? };
+        let data = match web_sys::ImageData::new_with_js_u8_clamped_array_and_sh(
             &clamped, img.width, img.height,
-        )
-        .ok()?;
-        ctx.put_image_data(&data, 0.0, 0.0).ok()?;
+        ) {
+            Ok(d) => d,
+            Err(e) => {
+                // Upload failures must never be silent (AGENTS §4.6) — the
+                // 2026-10-20 blank-canvas incident died exactly on a silent
+                // `.ok()?`.
+                web_sys::console::error_1(
+                    &format!(
+                        "[rofd] CPU 回退像素上传失败（ImageData 构造 {e:?}，{}x{}）",
+                        img.width, img.height
+                    )
+                    .into(),
+                );
+                return None;
+            }
+        };
+        if let Err(e) = ctx.put_image_data(&data, 0.0, 0.0) {
+            web_sys::console::error_1(&format!("[rofd] putImageData 失败：{e:?}").into());
+            return None;
+        }
         Some(PageBitmap { canvas })
     }
 }
@@ -355,16 +398,21 @@ impl RenderTarget for CpuCanvasRenderTarget {
             if let Some(ov) = &self.overlay {
                 if let Some(img) = Self::raster_scaled(layers.overlay, ow, oh, 1.0) {
                     // SAFETY: 同 upload——view 不跨调用持有，img 不可变借用。
-                    let clamped = unsafe { js_sys::Uint8ClampedArray::view(&img.data) };
-                    if let Ok(data) = web_sys::ImageData::new_with_js_u8_clamped_array_and_sh(
-                        &clamped,
-                        u32::from(ow),
-                        u32::from(oh),
-                    ) {
-                        let _ = ov.ctx.put_image_data(&data, 0.0, 0.0);
-                        let _ = self
-                            .ctx
-                            .draw_image_with_offscreen_canvas(&ov.canvas, 0.0, 0.0);
+                    if let Some(clamped) = unsafe { Self::clamped_view(&img.data) } {
+                        if let Ok(data) = web_sys::ImageData::new_with_js_u8_clamped_array_and_sh(
+                            &clamped,
+                            u32::from(ow),
+                            u32::from(oh),
+                        ) {
+                            let _ = ov.ctx.put_image_data(&data, 0.0, 0.0);
+                            let _ = self
+                                .ctx
+                                .draw_image_with_offscreen_canvas(&ov.canvas, 0.0, 0.0);
+                        } else {
+                            web_sys::console::error_1(
+                                &"[rofd] CPU 回退 overlay 上传失败（ImageData 构造）".into(),
+                            );
+                        }
                     }
                 }
             }
@@ -382,13 +430,14 @@ impl RenderTarget for CpuCanvasRenderTarget {
         }
         if let Some(img) = Self::raster_scaled(scene, w, h, 1.0) {
             // SAFETY: 同 upload——view 不跨调用持有，img 不可变借用。
-            let clamped = unsafe { js_sys::Uint8ClampedArray::view(&img.data) };
-            if let Ok(data) = web_sys::ImageData::new_with_js_u8_clamped_array_and_sh(
-                &clamped,
-                u32::from(w),
-                u32::from(h),
-            ) {
-                let _ = self.ctx.put_image_data(&data, 0.0, 0.0);
+            if let Some(clamped) = unsafe { Self::clamped_view(&img.data) } {
+                if let Ok(data) = web_sys::ImageData::new_with_js_u8_clamped_array_and_sh(
+                    &clamped,
+                    u32::from(w),
+                    u32::from(h),
+                ) {
+                    let _ = self.ctx.put_image_data(&data, 0.0, 0.0);
+                }
             }
         }
         true
