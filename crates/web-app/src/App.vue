@@ -433,6 +433,16 @@
         <a-checkbox v-model:checked="printPanel.seal">图章</a-checkbox>
       </div>
     </a-modal>
+
+    <!-- Desktop (tauri) print dialog: full settings + shell spool via IPC
+         (print spec 2026-10-31 §5.2). Browser hosts keep the flag panel
+         above (spec §5.1). -->
+    <PrintDialog
+      v-if="isTauri"
+      v-model:open="printDialogOpen"
+      :ofd="ofd"
+      :current-page="pageIndex"
+    />
   </div>
 </template>
 
@@ -443,6 +453,7 @@ import type { Component } from 'vue';
 import { Ofd, type MarkupKind, type ZoomMode } from '@office-rs/rofd';
 import { resolveFontConfig } from './config/fonts';
 import { buildPrintOptions } from './print/panelOptions';
+import PrintDialog from './print/PrintDialog.vue';
 import RibbonGroup from './components/RibbonGroup.vue';
 import ToolButton from './components/ToolButton.vue';
 import FileMenu from './components/FileMenu.vue';
@@ -580,6 +591,11 @@ const ctxMenu = reactive({ visible: false, x: 0, y: 0, id: '' });
 /** Print content-flag panel (file menu「打印…」): watermark ✗ / annotations ✗ /
  * seal ✔ by default; `busy` guards the confirm button while print runs. */
 const printPanel = reactive({ open: false, busy: false, watermark: false, annotations: false, seal: true });
+
+/** Tauri desktop host: the「打印…」entry opens the full PrintDialog (IPC
+ * spool) instead of the browser flag panel; browsers keep the panel. */
+const isTauri = '__TAURI_INTERNALS__' in window;
+const printDialogOpen = ref(false);
 
 // ─── 工具栏动作 ─────────────────────────────────────────────────────────────
 
@@ -723,7 +739,11 @@ function onFileMenuExportPdf(): void {
 
 function onFileMenuPrint(): void {
   closeDropdown();
-  printPanel.open = true;
+  if (isTauri) {
+    printDialogOpen.value = true;
+  } else {
+    printPanel.open = true;
+  }
 }
 
 function isMarkupKind(kind: Exclude<DropdownKind, null>): kind is MarkupKind {

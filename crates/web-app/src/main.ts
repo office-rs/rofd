@@ -7,8 +7,18 @@
 // antd 按需注册（只 use 用到的组件），避免全量引入把包体撑到 1.4MB。
 
 import { createApp } from "vue";
-import { Button, Checkbox, Modal, Spin, Tabs, Tooltip } from "ant-design-vue";
+import { Button, Checkbox, InputNumber, Modal, Radio, Select, Spin, Tabs, Tooltip } from "ant-design-vue";
 import App from "./App.vue";
 import "ant-design-vue/dist/reset.css";
 
-createApp(App).use(Button).use(Checkbox).use(Modal).use(Spin).use(Tabs).use(Tooltip).mount("#app");
+createApp(App)
+  .use(Button)
+  .use(Checkbox)
+  .use(InputNumber)
+  .use(Modal)
+  .use(Radio)
+  .use(Select)
+  .use(Spin)
+  .use(Tabs)
+  .use(Tooltip)
+  .mount("#app");

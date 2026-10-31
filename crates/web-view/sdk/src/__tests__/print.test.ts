@@ -28,6 +28,7 @@ type WasmSurface = Parameters<typeof Ofd.__testNew>[0];
 type PrintWasm = WasmSurface & {
   exportPdf: Mock;
   planPrintPages: Mock;
+  firstPagePaper: Mock;
 };
 
 /** Synthetic wasm surface with print spies (the ofd-wiring mock-wasm
@@ -37,11 +38,12 @@ type PrintWasm = WasmSurface & {
 function makeOfd(): {
   ofd: Ofd;
   wasm: PrintWasm;
-  mocks: { exportPdf: Mock; planPrintPages: Mock };
+  mocks: { exportPdf: Mock; planPrintPages: Mock; firstPagePaper: Mock };
 } {
   const mocks = {
     exportPdf: vi.fn((): Uint8Array => new Uint8Array([0x25, 0x50, 0x44, 0x46])),
     planPrintPages: vi.fn((): Uint32Array => new Uint32Array([1, 2, 3])),
+    firstPagePaper: vi.fn((): string[] => ['A5', 'Landscape']),
   };
   const wasm = {
     renderFrame: vi.fn((): number => -1),
@@ -149,6 +151,18 @@ describe('Ofd print surface', () => {
       const pages = await ofd.planPages({ kind: 'Custom', spec: '1-3,5' }, 'Odd', 2);
       expect(mocks.planPrintPages).toHaveBeenCalledWith('Custom', '1-3,5', 'Odd', 2);
       expect(pages).toEqual([1, 2, 3]);
+    } finally {
+      ofd.destroy();
+    }
+  });
+
+  it('firstPagePaper passes the wasm paper/orientation defaults through', () => {
+    const { ofd, mocks } = makeOfd();
+    try {
+      // Sync passthrough (metadata only, no font gate): the print dialog
+      // reads the document's first-page paper + orientation as defaults.
+      expect(ofd.firstPagePaper()).toEqual(['A5', 'Landscape']);
+      expect(mocks.firstPagePaper).toHaveBeenCalledTimes(1);
     } finally {
       ofd.destroy();
     }

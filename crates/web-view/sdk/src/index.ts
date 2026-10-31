@@ -122,6 +122,12 @@ interface WasmOfd {
    * (Custom requires `customSpec`, a "1-3,5" grammar string); `parity` is
    * "All" | "Odd" | "Even". Throws on unknown strings or a bad spec. */
   planPrintPages(rangeKind: string, customSpec: string | undefined, parity: string, currentPage: number): Uint32Array | number[];
+  /** Paper + orientation of the first page as PascalCase wire strings
+   * (`[paper, orientation]`, e.g. `["A4", "Portrait"]`) — the print
+   * dialog's paper/orientation defaults (the document is the paper
+   * authority). An empty document returns the canonical
+   * `["A4", "Portrait"]`. */
+  firstPagePaper(): string[];
 }
 
 // --- public SDK types ---
@@ -856,6 +862,16 @@ export class Ofd {
     return Array.from(
       this.wasm.planPrintPages(range.kind, range.spec, parity, currentPage),
     );
+  }
+
+  /** Paper + orientation of the first page as PascalCase wire strings
+   * (`[paper, orientation]`, e.g. `["A4", "Portrait"]`) — the print
+   * dialog's defaults. The document's page box is the paper authority
+   * (print spec §2.4), so defaults are read from it, never hardcoded in
+   * the host. An empty document yields the canonical `["A4", "Portrait"]`.
+   * Sync passthrough: metadata only, no font gate needed. */
+  firstPagePaper(): string[] {
+    return this.wasm.firstPagePaper();
   }
 
   /** Print via the browser dialog: export the PDF (flushing fonts, same
