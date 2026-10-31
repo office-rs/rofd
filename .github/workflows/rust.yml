@@ -19,7 +19,10 @@ jobs:
     - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libfontconfig1-dev libfreetype6-dev
+        # libcups2-dev: rofd-component depends on office-rs-print, whose
+        # native build links CUPS on Linux (print spec 2026-10-31 §4 hard
+        # constraint — no cargo feature can disable the backend).
+        sudo apt-get install -y libfontconfig1-dev libfreetype6-dev libcups2-dev
     # tauri-app 是 Windows-only 桌面宿主（AGENTS.md §4.9，macOS/Linux 受 WebKit WebGPU 限制），
     # 在 Linux 上会拉入 GTK/glib 系统库导致 glib-sys 构建失败。它不依赖任何 rofd crate，
     # 从 Linux workspace 构建/测试中排除；其构建由 release-tauri.yml 在 Windows runner 验证。
@@ -83,7 +86,9 @@ jobs:
     - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libfontconfig1-dev libfreetype6-dev
+        # libcups2-dev: this job only builds the wasm target (no native CUPS
+        # link), added anyway to stay consistent with the build job.
+        sudo apt-get install -y libfontconfig1-dev libfreetype6-dev libcups2-dev
 
     - name: Setup Node
       uses: actions/setup-node@v4
