@@ -11,6 +11,7 @@
 
 mod font_index;
 mod fonts;
+mod print;
 
 fn main() {
     tauri::Builder::default()
@@ -19,7 +20,11 @@ fn main() {
         .manage(fonts::scan_state())
         .invoke_handler(tauri::generate_handler![
             fonts::list_system_fonts,
-            fonts::read_system_font
+            fonts::read_system_font,
+            print::print_discover,
+            print::print_pdf,
+            print::print_cancel,
+            print::print_join_all
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

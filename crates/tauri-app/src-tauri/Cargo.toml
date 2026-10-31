@@ -23,6 +23,13 @@ tauri-plugin-fs = "2"
 memmap2 = "0.9"
 ttf-parser = "0.25"
 serde = { version = "1", features = ["derive"] }
+# Print IPC bridge (src/print.rs, print spec 2026-10-31 §5.2): native
+# discovery/spool via office-rs-print (external library — the shell still
+# depends on no rofd crate, AGENTS §4.9); base64 carries the PDF payload,
+# serde_json builds the progress event payloads (and the wire-shape test).
+office-rs-print = { workspace = true }
+base64 = "0.22"
+serde_json = "1"
 
 [features]
 # `cargo tauri dev` 默认启用自定义协议；`tauri dev` 走开发服务器时用它区分。
