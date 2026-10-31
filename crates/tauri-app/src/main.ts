@@ -6,7 +6,7 @@
 // 字体与 sample.ofd 从 vite publicDir（指向 web-app/public）本地加载，脱离 CDN。
 
 import { createApp } from 'vue';
-import { Button, Spin, Tabs, Tooltip } from 'ant-design-vue';
+import { Button, Checkbox, Modal, Spin, Tabs, Tooltip } from 'ant-design-vue';
 import App from '../../web-app/src/App.vue';
 import { setFileHost } from '../../web-app/src/host';
 import { tauriFileHost } from './host/tauri';
@@ -15,4 +15,4 @@ import 'ant-design-vue/dist/reset.css';
 // 挂载前注入原生文件桥：App.vue 的打开/保存即走 Tauri 对话框。
 setFileHost(tauriFileHost);
 
-createApp(App).use(Button).use(Spin).use(Tabs).use(Tooltip).mount('#app');
+createApp(App).use(Button).use(Checkbox).use(Modal).use(Spin).use(Tabs).use(Tooltip).mount('#app');

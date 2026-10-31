@@ -4,7 +4,8 @@
        27px 灰度图标 + 15px 文字 + 快捷键；悬停整行 #ECEFF2；
        "导出"行带 ▶ 子菜单箭头，hover 展开右侧子面板（宽 201px、#F3F5F8），
        子项：导出为 PDF / 导出为 TXT / 导出为图片。
-       v1 未实现的功能（关闭/导出/打印/属性/设置/帮助/最近）置灰禁用。 -->
+       v1 未实现的功能（关闭/导出 TXT/导出图片/属性/设置/帮助/最近）置灰禁用。
+       "导出为 PDF" / "打印…" are wired (emitted to App.vue). -->
   <div class="fm">
     <button type="button" class="fm-item" @click="$emit('open')">
       <span class="fm-ic"><MenuOpenIcon /></span>
@@ -20,7 +21,7 @@
 
     <!-- 导出：hover 展开右侧子菜单 -->
     <div class="fm-subwrap" @mouseenter="submenu = true" @mouseleave="submenu = false">
-      <button type="button" class="fm-item" disabled :class="{ 'sub-open': submenu }">
+      <button type="button" class="fm-item" :class="{ 'sub-open': submenu }">
         <span class="fm-ic"><MenuExportIcon /></span>
         <span class="fm-tx">导出</span>
         <span class="fm-key">E</span>
@@ -29,7 +30,7 @@
         </svg>
       </button>
       <div v-if="submenu" class="fm-sub">
-        <button type="button" class="fm-subitem" disabled>
+        <button type="button" class="fm-subitem" @click="$emit('exportPdf')">
           <span class="fm-subic"><PdfIcon /></span>
           <span class="fm-subtx">导出为 PDF</span>
         </button>
@@ -56,9 +57,9 @@
       <span class="fm-key">A</span>
     </button>
 
-    <button type="button" class="fm-item" disabled>
+    <button type="button" class="fm-item" @click="$emit('print')">
       <span class="fm-ic"><MenuPrintIcon /></span>
-      <span class="fm-tx">打印</span>
+      <span class="fm-tx">打印…</span>
     </button>
 
     <button type="button" class="fm-item" disabled>
@@ -112,6 +113,10 @@ defineEmits<{
   save: [];
   /** 另存为（v1 与保存同路径：下载 .ofd）。 */
   saveAs: [];
+  /** Export as PDF (browser download of document.pdf). */
+  exportPdf: [];
+  /** Print (open the content-flag panel, then the system print dialog). */
+  print: [];
 }>();
 </script>
 

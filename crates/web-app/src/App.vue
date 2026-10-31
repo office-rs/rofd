@@ -341,6 +341,8 @@
           @open="onFileMenuOpen"
           @save="onFileMenuSave"
           @save-as="onFileMenuSaveAs"
+          @export-pdf="onFileMenuExportPdf"
+          @print="onFileMenuPrint"
         />
         <HighlightColorPanel
           v-else-if="dropdown.kind === 'highlight'"
@@ -413,6 +415,24 @@
 
     <!-- 隐藏控件：自定义颜色取色器（初值随请求面板的工具设置） -->
     <input ref="colorInputRef" type="color" hidden @change="onCustomColorChange" />
+
+    <!-- Print content-flag panel (file menu「打印…」): three checkboxes,
+         then the system print dialog owns printer/copies/range. -->
+    <a-modal
+      v-model:open="printPanel.open"
+      title="打印"
+      ok-text="打印"
+      cancel-text="取消"
+      :confirm-loading="printPanel.busy"
+      :mask-closable="!printPanel.busy"
+      @ok="confirmPrint"
+    >
+      <div class="print-panel-opts">
+        <a-checkbox v-model:checked="printPanel.watermark">水印</a-checkbox>
+        <a-checkbox v-model:checked="printPanel.annotations">批注</a-checkbox>
+        <a-checkbox v-model:checked="printPanel.seal">图章</a-checkbox>
+      </div>
+    </a-modal>
   </div>
 </template>
 
@@ -422,6 +442,7 @@ import { message } from 'ant-design-vue';
 import type { Component } from 'vue';
 import { Ofd, type MarkupKind, type ZoomMode } from '@office-rs/rofd';
 import { resolveFontConfig } from './config/fonts';
+import { buildPrintOptions } from './print/panelOptions';
 import RibbonGroup from './components/RibbonGroup.vue';
 import ToolButton from './components/ToolButton.vue';
 import FileMenu from './components/FileMenu.vue';
@@ -555,6 +576,10 @@ type DropdownKind = 'file' | MarkupKind | 'shape' | 'zoom' | 'background' | null
 const dropdown = reactive<{ kind: DropdownKind; x: number; y: number }>({ kind: null, x: 0, y: 0 });
 
 const ctxMenu = reactive({ visible: false, x: 0, y: 0, id: '' });
+
+/** Print content-flag panel (file menu「打印…」): watermark ✗ / annotations ✗ /
+ * seal ✔ by default; `busy` guards the confirm button while print runs. */
+const printPanel = reactive({ open: false, busy: false, watermark: false, annotations: false, seal: true });
 
 // ─── 工具栏动作 ─────────────────────────────────────────────────────────────
 
@@ -691,6 +716,16 @@ function onFileMenuSaveAs(): void {
   save(); // v1：另存为与保存同路径（下载 .ofd）
 }
 
+function onFileMenuExportPdf(): void {
+  closeDropdown();
+  void exportPdf();
+}
+
+function onFileMenuPrint(): void {
+  closeDropdown();
+  printPanel.open = true;
+}
+
 function isMarkupKind(kind: Exclude<DropdownKind, null>): kind is MarkupKind {
   return kind === 'highlight' || kind === 'underline' || kind === 'strikeout' || kind === 'squiggly';
 }
@@ -781,6 +816,48 @@ async function save(): Promise<void> {
   if (!ofdInst) return;
   const ok = await fileHost.save(ofdInst.saveOfd(), 'document.ofd');
   if (ok) message.success('已保存 document.ofd');
+}
+
+/** Export as PDF (file menu): default content flags (watermark ✗ /
+ * annotations ✗ / seal ✔), then trigger a browser download. */
+async function exportPdf(): Promise<void> {
+  const ofdInst = ofd.value;
+  if (!ofdInst) return;
+  try {
+    const bytes = await ofdInst.exportPdf(buildPrintOptions(false, false, true));
+    // Same Blob + a[download] idiom as host.ts save().
+    const blob = new Blob([bytes as BlobPart], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'document.pdf';
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    console.error('[rofd] export PDF failed:', e);
+    message.error(`导出 PDF 失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/** Print panel confirm: export with the three flags and hand the bytes to
+ * the system print dialog. The browser route passes NO `pages` — the system
+ * dialog owns the page range (spec §5.1). */
+async function confirmPrint(): Promise<void> {
+  const ofdInst = ofd.value;
+  if (!ofdInst) {
+    printPanel.open = false;
+    return;
+  }
+  printPanel.busy = true;
+  try {
+    await ofdInst.print(buildPrintOptions(printPanel.watermark, printPanel.annotations, printPanel.seal));
+    printPanel.open = false;
+  } catch (e) {
+    console.error('[rofd] print failed:', e);
+    message.error(`打印失败：${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    printPanel.busy = false;
+  }
 }
 
 // ─── 右键批注菜单 ───────────────────────────────────────────────────────────
@@ -1102,6 +1179,16 @@ body,
 
 .ctx-item:hover {
   background: #f5f5f5;
+}
+
+/* ─── Print panel (three content flags inside the antd Modal) ──────── */
+
+.print-panel-opts {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 0 2px;
 }
 
 /* ─── 状态栏 ─────────────────────────────────────────────────────────── */
