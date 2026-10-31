@@ -141,6 +141,7 @@ crates/web-app ─► web-view ─────────────┘       
 - `OfdConfig`：`default_font_bytes`、`page_gap`（默认 20）、`zoom`（初始 PX_PER_MM，`with_zoom` 可覆盖）。
 - 场景脏缓存（终态公共 API）：`update_scene()` 按脏标志重合成、`scene() -> &Scene`、`set_viewport_size(f64,f64)`、`mark_scene_dirty`（pub(crate)）。
 - 文本编辑：`paste_text`、`delete_annotation`、`tick_blink`（两目标统一，wasm 由 `renderFrame` 驱动，见 §4.4）、preedit 状态机（组件自持 `Option<PreeditState>`，简化 caret overlay，不做 ghost-document 回流）。
+- 打印内核缝（spec 2026-10-31）：`begin_print(PrintContent) -> PrintSession`，内容三开关（水印/批注/图章，默认净版+图章）；页场景/纸型/页计划全经 session（`page_scene`/`page_parameters`/`plan`，`1-3,5` 范围语法由 office-rs-print 解析，宿主不重写）。
 
 ### rofd-xilem-view（as-built 九条契约）
 
@@ -214,6 +215,8 @@ If you're tempted to reintroduce a winit-layer bridge、canvas-origin 记账、�
 | `imaging` / `imaging_vello` | crates.io | `0.0.1` |
 | vello / parley | crates.io | `0.8` |
 | wgpu | crates.io | `28` |
+| `office-rs-print` | office-rs/print git | `c2f99d5`（与 rword 同 pin） |
+| `krilla` | crates.io | `0.8`（feature `pdf`，PDF 编码） |
 
 Toolchain：`rust-toolchain.toml` 钉 `1.98.1`；新 pin 的包声明 `rust-version = 1.96`。已无 masonry_winit/winit 直接依赖（masonry_winit 内部使用 winit）。
 

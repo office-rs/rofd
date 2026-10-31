@@ -32,3 +32,26 @@
   桌面）、SDK 按文档声明族懒加载本机字节（零再分发、无白名单——任何已
   安装族自动可用）、默认字体宋体。浏览器路径逐字节不变（决策层单测
   `npm test`）。
+
+## 打印 / 导出 PDF（spec 2026-10-31）
+
+- **浏览器路径**：文件菜单「打印…」→ 内容三开关面板（水印/批注/图章）→
+  确认后 SDK `exportPdf(options?)` 出 PDF 字节（与屏幕同排版引擎、同注册
+  字体，所见即所得；在途字体切片先 flush 再编码），`print()` 便捷入口 =
+  exportPdf → blob URL → 隐藏 iframe `contentWindow.print()`，系统对话框
+  接管打印机/份数/页范围。对话框预检范围用 `planPages(range, parity,
+  currentPage)`——`1-3,5` 语法只在内核 Rust 侧解析一次，JS 宿主永不重写。
+  宿主自接 iframe 打印时的三条硬约束（rword 真金白银换来的坑）：
+  1. `onload` 必须在 `appendChild` **之前**赋值——about:blank 的同步 load
+     在 append 即触发，晚赋值接不到；
+  2. Chromium 对 blob-PDF 不保证发 `load`——必须固定延时兜底（700ms 下限），
+     否则按钮"点了没反应"；
+  3. `print()` 返回后**绝不**立即 remove iframe / revokeObjectURL——打印预览
+     异步从 iframe 文档渲染，立刻拆掉会瞬关预览；源常驻到下一次打印再清理。
+- **tauri 桌面路径**：同一份 `PrintDialog.vue`（纯状态机 + services 注入），
+  确认后 `planPages` → `exportPdf(pages)` → base64 → IPC `print_pdf`
+  （Windows WinRT 光栅 / Linux CUPS 原生；进度经 `print-progress` 事件流）。
+- **手测通道**：`npm run tauri dev` → 文件菜单「打印…」→ 对话框选
+  「Microsoft Print to PDF」打印机 → 目检输出 PDF：中文文本 / 图片 / 图章
+  （内容三开关各开合一遍）、份数、页码范围（`1-2,4` 语法）、奇偶逐份、
+  以及打印中途取消，各走一遍。

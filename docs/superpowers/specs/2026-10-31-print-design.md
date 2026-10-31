@@ -1,7 +1,7 @@
 # rofd 打印模块设计（打印 + PDF 导出）
 
 日期：2026-10-31
-状态：待审阅
+状态：已实施（一期）
 前置：[`2026-07-08-ofd-editor-design.md`](2026-07-08-ofd-editor-design.md)（总体架构与不变量）
 参照：rword 打印全周期（rword `docs/superpowers/specs/2026-10-20-print-design.md` 含 §14 重构修订）、[`docs/draft/2026-10-27-rword-print-implementation-notes.md`](../../draft/2026-10-27-rword-print-implementation-notes.md)（rword 实施全记录与踩坑清单）
 复用库：`office-rs/print`（`office-rs-print = { git = "https://github.com/office-rs/print.git", rev = "c2f99d5" }`，与 rword 同 pin）
