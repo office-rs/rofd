@@ -147,13 +147,15 @@ mod wasm_impl {
     use std::cell::RefCell;
     use std::rc::Rc;
 
+    use office_rs_print::{PageRange, Parity, PrintSettings};
     use rofd_component::render_target::SceneLayers;
     use rofd_component::{
         BodyTextSelection, ContextTarget, FrameNeed, Modifiers, MouseButton, OfdComponent,
-        OfdConfig, PointerCursor, RenderTarget, ScrollDirection, ViewEvent, ZoomMode,
+        OfdConfig, PointerCursor, PrintContent, RenderTarget, ScrollDirection, ViewEvent, ZoomMode,
     };
     use rofd_dom::{AnnotationId, AnnotationSelection, OfdDocument, OfdWarning};
     use rofd_editor::TextCursor;
+    use rofd_export::{pdf_from_page_scenes, PdfPage};
     use rofd_io::{parse_ofd, save_ofd, write_ofd, PackageHandle};
     use rofd_render::Scene;
     use wasm_bindgen::prelude::*;
@@ -812,6 +814,115 @@ mod wasm_impl {
                 self.component.delete_annotation(id);
             }
             count
+        }
+
+        // ─── Print / PDF Export ─────────────────────────────────────────────
+
+        /// Export the document as PDF bytes (print spec 2026-10-31 §5).
+        /// Content flags default to the "clean copy" preset when `None`
+        /// (watermark/annotations off, seal on). `pages` is a 1-based page
+        /// list — `None` exports every page; out-of-range entries are
+        /// dropped and an empty survivor set is an error (the session's
+        /// `validate_pages` contract). Thin shim: page scenes come from a
+        /// fresh `begin_print` session, encoding from `rofd_export`.
+        #[wasm_bindgen(js_name = exportPdf)]
+        pub fn export_pdf(
+            &mut self,
+            watermark: Option<bool>,
+            annotations: Option<bool>,
+            seal: Option<bool>,
+            pages: Option<Vec<u32>>,
+        ) -> Result<Vec<u8>, JsValue> {
+            let content = PrintContent {
+                watermark: watermark.unwrap_or(false),
+                annotations: annotations.unwrap_or(false),
+                seal: seal.unwrap_or(true),
+            };
+            let mut session = self.component.begin_print(content);
+            // validate_pages returns 1-based indices; PdfPage is indexed 0-based.
+            let indices: Vec<usize> = match &pages {
+                Some(list) => session
+                    .validate_pages(list)
+                    .map_err(|e| JsValue::from_str(&format!("export failed: {e}")))?
+                    .into_iter()
+                    .map(|p| p - 1)
+                    .collect(),
+                None => (0..session.page_count()).collect(),
+            };
+            let mut pdf_pages = Vec::with_capacity(indices.len());
+            for i in indices {
+                let (width, height) = session.page_rect(i);
+                pdf_pages.push(PdfPage {
+                    width_px: width as f32,
+                    height_px: height as f32,
+                    scene: session.page_scene(i),
+                });
+            }
+            pdf_from_page_scenes(&pdf_pages)
+                .map_err(|e| JsValue::from_str(&format!("export failed: {e}")))
+        }
+
+        /// Resolve the print dialog's range/parity selection into the
+        /// concrete 1-based page list. `range_kind` is "All" | "Current" |
+        /// "Custom" ("Custom" requires `custom_spec`, a "1-3,5" grammar
+        /// string); `parity` is "All" | "Odd" | "Even". Unknown strings are
+        /// errors (unlike tool/zoom strings, the dialog owns a closed set).
+        /// The range grammar itself is parsed only here in Rust, delegated
+        /// to the session's `plan` (office-rs-print `resolve_page_list`).
+        #[wasm_bindgen(js_name = planPrintPages)]
+        pub fn plan_print_pages(
+            &self,
+            range_kind: String,
+            custom_spec: Option<String>,
+            parity: String,
+            current_page: u32,
+        ) -> Result<Vec<u32>, JsValue> {
+            let range = match range_kind.as_str() {
+                "All" => PageRange::All,
+                "Current" => PageRange::Current,
+                "Custom" => PageRange::Custom {
+                    spec: custom_spec.ok_or_else(|| {
+                        JsValue::from_str("plan failed: Custom range requires a spec")
+                    })?,
+                },
+                other => {
+                    return Err(JsValue::from_str(&format!(
+                        "plan failed: unknown range kind {other:?}"
+                    )))
+                }
+            };
+            let parity = match parity.as_str() {
+                "All" => Parity::All,
+                "Odd" => Parity::Odd,
+                "Even" => Parity::Even,
+                other => {
+                    return Err(JsValue::from_str(&format!(
+                        "plan failed: unknown parity {other:?}"
+                    )))
+                }
+            };
+            let settings = PrintSettings {
+                range,
+                parity,
+                ..PrintSettings::default()
+            };
+            let session = self.component.begin_print(PrintContent::default());
+            session
+                .plan(&settings, current_page as usize)
+                .map(|pages| pages.into_iter().map(|p| p as u32).collect())
+                .map_err(|e| JsValue::from_str(&format!("plan failed: {e}")))
+        }
+
+        /// Paper + orientation of the first page as PascalCase wire strings
+        /// (e.g. `["A4", "Portrait"]`) — the print dialog's paper/orientation
+        /// defaults. The document's page box is the paper authority (spec
+        /// §2.4), so defaults are read from it, never hardcoded in the host.
+        /// Requires a loaded document (indexing page 0).
+        #[wasm_bindgen(js_name = firstPagePaper)]
+        pub fn first_page_paper(&self) -> Vec<String> {
+            let session = self.component.begin_print(PrintContent::default());
+            let (paper, orientation) = session.page_parameters(0);
+            vec![format!("{paper:?}"), format!("{orientation:?}")]
         }
     }
 

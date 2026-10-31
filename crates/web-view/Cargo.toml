@@ -20,6 +20,12 @@ rofd-io = { workspace = true }
 rofd-dom = { workspace = true }
 rofd-editor = { workspace = true }
 rofd-render = { workspace = true }
+# Print / PDF export (spec 2026-10-31): rofd-export encodes page-local
+# scenes to PDF bytes; office-rs-print supplies the PrintSettings type
+# layer that planPrintPages assembles (its native backend is cfg'd out on
+# wasm32 — only the imaging+serde type layer compiles here).
+rofd-export = { workspace = true }
+office-rs-print = { workspace = true }
 vello = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
