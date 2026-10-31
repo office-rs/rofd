@@ -1,0 +1,19 @@
+[package]
+name = "rofd-export"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["ravenq"]
+description = "Scene-to-PDF encoder for the rofd print module — page-local imaging scenes encoded to PDF bytes via krilla."
+repository = "https://github.com/office-rs/rofd"
+homepage = "https://github.com/office-rs/rofd#readme"
+keywords = ["ofd", "pdf", "print", "export"]
+categories = ["graphics"]
+
+[dependencies]
+imaging = { workspace = true }
+krilla = { workspace = true }
+# swash: read font cmaps to build the glyph-id -> char map for ToUnicode.
+swash = { workspace = true }
+# image: decode scene image brushes that are not raw RGBA/BGRA pixels.
+image = { workspace = true }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/dom", "crates/io", "crates/render", "crates/editor", "crates/component", "crates/xilem-view", "crates/web-view", "crates/xilem-app", "crates/tauri-app/src-tauri"]
+members = ["crates/dom", "crates/io", "crates/render", "crates/editor", "crates/component", "crates/xilem-view", "crates/web-view", "crates/export", "crates/xilem-app", "crates/tauri-app/src-tauri"]
 
 [workspace.dependencies]
 # 3 个发布到 crates.io 的 crate：必须带 `version` 字段（cargo publish 拒绝 path-only 依赖）。
@@ -51,3 +51,11 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 # panic on wasm32-unknown-unknown); a std re-export on native. Only the
 # monotonic blink animation clock uses it (AGENTS §4.4).
 web-time = "1"
+# Print module (spec 2026-10-31): rofd-export encodes imaging scenes to PDF
+# via krilla (swash reads cmaps for ToUnicode); office-rs-print is the print
+# backend base for component/hosts (added here for later tasks; unused
+# workspace.dependencies entries are not resolved until a member uses them).
+rofd-export = { path = "crates/export" }
+krilla = { version = "0.8", features = ["pdf"] }
+swash = "0.2"
+office-rs-print = { git = "https://github.com/office-rs/print.git", rev = "c2f99d5" }
