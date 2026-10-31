@@ -13,11 +13,18 @@ mod preflight;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use office_rs_print::{JobHandle, JobState};
 use rfd::FileDialog;
-use rofd_component::{ContextTarget, CreateKind, OfdConfig, Tool, ViewEvent, ZoomMode};
+use rofd_component::{
+    ContextTarget, CreateKind, OfdConfig, PrintContent, Tool, ViewEvent, ZoomMode,
+};
 use rofd_dom::{AnnotationId, AnnotationKind, ShapeKind};
 use rofd_io::PackageHandle;
+use rofd_xilem_view::print_dialog::{print_dialog_view, HasPrintUi, PrintMaterial, PrintUi};
+use rofd_xilem_view::print_dialog_state::{advance, DialogEvent, DiscoverState, PrintServices};
+use rofd_xilem_view::print_services::NativePrintServices;
 use rofd_xilem_view::{command_queue, ofd_with_config, OfdCommandQueue, OfdContextMenu};
 use xilem::kurbo::Vec2;
 use xilem::masonry::layout::{Length, UnitPoint};
@@ -144,6 +151,36 @@ struct AppState {
     zoom: f64,
     /// Active zoom mode (mirror of on_zoom_mode_change; button highlight).
     zoom_mode: ZoomMode,
+    /// Open print Backstage dialog, if any (the overlay renders from it).
+    print: Option<PrintUi>,
+    /// Shared print preview material: filled by the queued materialize
+    /// command (the component is only reachable at drain time), read by
+    /// the dialog's preview canvas and the submit precheck.
+    print_material: Arc<Mutex<PrintMaterial>>,
+    /// Editor current page mirror, 1-based (on_page_change maintains it).
+    /// Print "current page" semantics (range=Current, print_direct) and
+    /// the dialog's opening preview page derive from it — never from the
+    /// preview pager, which is a view control.
+    current_page: usize,
+    /// Document page-count mirror for the print dialog's 0-page guard.
+    /// The component is only reachable at command-drain time, so the
+    /// synchronous guard reads this host-side copy instead; it is exact
+    /// because the host owns the document value at every swap point
+    /// (new = the empty default document, load = the parsed file) and v1
+    /// never changes a page count outside those points (body is
+    /// read-only).
+    doc_pages: usize,
+    /// JobHandle write-back slot for the queued `print_direct` command:
+    /// the command closure cannot reach AppState, so it stores the handle
+    /// here and the next app_logic pass drains it into the dialog's live
+    /// job (same one-pass-later contract as `save_outcome`).
+    print_job_slot: Arc<Mutex<Option<JobHandle>>>,
+}
+
+impl HasPrintUi for AppState {
+    fn print_ui(&mut self) -> Option<&mut PrintUi> {
+        self.print.as_mut()
+    }
 }
 
 impl AppState {
@@ -160,6 +197,11 @@ impl AppState {
             context_menu: None,
             zoom: PX_PER_MM,
             zoom_mode: ZoomMode::Custom,
+            print: None,
+            print_material: Arc::new(Mutex::new(PrintMaterial::default())),
+            current_page: 1,
+            doc_pages: 0,
+            print_job_slot: Arc::new(Mutex::new(None)),
         };
         // Default assembly (AGENTS §4.9): clock + UTC tooltip formatter,
         // zero extra host code. Empty default font: system fallback.
@@ -211,6 +253,11 @@ fn do_new(app: &mut AppState) {
     app.package = None;
     app.modified = false;
     app.context_menu = None;
+    // new_document() resets to the empty default document (0 pages) and
+    // the component's current-page cache to None; no on_page_change fires
+    // for an empty document, so reset the mirrors here.
+    app.doc_pages = 0;
+    app.current_page = 1;
 }
 
 fn do_open(app: &mut AppState) {
@@ -223,6 +270,11 @@ fn do_open(app: &mut AppState) {
     match host::document_io::load_ofd(&path) {
         Ok(loaded) => {
             let document = loaded.document.clone();
+            // Page-count mirror for the print guard (the host owns the
+            // document value here); the current-page mirror resets to 1 —
+            // loads re-fire on_page_change, but 0-page files cannot.
+            app.doc_pages = document.pages.len();
+            app.current_page = 1;
             push(app, move |c| c.load_document(document.clone()));
             app.package = loaded.package;
             app.file = Some(path);
@@ -298,6 +350,193 @@ fn do_export_pdf(app: &mut AppState) {
     });
 }
 
+// --- Print Backstage (spec 2026-10-31 print phase 2 Task 5) ---
+
+/// Poll the dialog's live job for a terminal state and refresh the status
+/// line when one lands: Done → the submitted label ("已发送到打印机"),
+/// Failed/Aborted → the failed label plus a reason. Returns whether the
+/// status changed this poll; terminal states are idempotent (later polls
+/// report no change). Non-terminal states (Spooling/Rendering) and "no
+/// live job" report `false`.
+fn poll_job_terminal(ui: &mut PrintUi) -> bool {
+    let Some(snapshot) = ui.job.as_ref().map(|job| job.snapshot()) else {
+        return false;
+    };
+    let status = match snapshot.state {
+        JobState::Done => Some(ui.labels.submitted.clone()),
+        JobState::Failed => Some(format!(
+            "{}: {}",
+            ui.labels.failed,
+            snapshot.error.as_deref().unwrap_or("unknown error")
+        )),
+        JobState::Aborted => Some(format!("{}: cancelled", ui.labels.failed)),
+        JobState::Spooling | JobState::Rendering => None,
+    };
+    match status {
+        Some(text) if text != ui.status => {
+            ui.status = text;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Materialize the preview pages of the component's current document at
+/// the print baseline: every page's scene, pixel dims (`page_rect` as
+/// f32), and paper/orientation. The shared body of the open-time and the
+/// content-dirty re-materialize commands.
+fn materialize_print_material(
+    c: &rofd_component::OfdComponent,
+    content: PrintContent,
+) -> PrintMaterial {
+    let mut session = c.begin_print(content);
+    let count = session.page_count();
+    let mut material = PrintMaterial::default();
+    for n in 0..count {
+        let (w, h) = session.page_rect(n);
+        material.dims.push((w as f32, h as f32));
+        material.papers.push(session.page_parameters(n));
+        material.scenes.push(session.page_scene(n));
+    }
+    material
+}
+
+/// Submit precheck (pure — the caller applies the side effect): an empty
+/// material blocks the submit ("no printable pages"); otherwise the
+/// settings' range/parity resolve against the material's page count using
+/// the EDITOR's current page (the 1-based mirror), never the preview
+/// pager's page. Returns the resolved 1-based page list; `Ok` is what
+/// lets the caller fill `pending`.
+fn submit_precheck(ui: &PrintUi, editor_page: usize) -> Result<Vec<usize>, String> {
+    let total = ui.page_count();
+    if total == 0 {
+        return Err("no printable pages".to_string());
+    }
+    office_rs_print::resolve_page_list(&ui.settings.range, ui.settings.parity, total, editor_page)
+}
+
+/// Open the print Backstage. The 0-page guard runs synchronously BEFORE
+/// anything else (fresh/new documents never open the dialog); the preview
+/// material is materialized by a queued command (the component is only
+/// reachable at drain time) and the dialog reads it through the shared
+/// Arc, so the first rebuild after the drain fills the preview.
+fn do_print(app: &mut AppState) {
+    if app.doc_pages == 0 {
+        return;
+    }
+    let content = PrintContent::default();
+    let material = app.print_material.clone();
+    push(app, move |c| {
+        let fresh = materialize_print_material(c, content);
+        if let Ok(mut target) = material.lock() {
+            *target = fresh;
+        }
+    });
+    let mut ui = PrintUi::new(app.print_material.clone(), true);
+    // Open on the editor's current page (1-based mirror, clamped into the
+    // document), not page 0.
+    ui.page = (app.current_page - 1).min(app.doc_pages - 1);
+    ui.sync_document_defaults();
+    // Discovery drain: the worker thread races the dialog open, so drain
+    // bounded until the terminal message lands (rword do_print pattern).
+    let rx = PrintServices::discover(&NativePrintServices);
+    while let Ok(update) = rx.recv_timeout(Duration::from_millis(500)) {
+        let terminal = !matches!(update, DiscoverState::Finding);
+        ui.state = advance(
+            &ui.state,
+            &ui.settings,
+            DialogEvent::DiscoveryUpdate(update),
+        );
+        if terminal {
+            break;
+        }
+    }
+    ui.printers = ui.state.printers.clone();
+    // The submit precheck freezes the editor page at open time: the
+    // Backstage overlay covers the editor, so the mirror cannot move
+    // while the dialog is open.
+    let editor_page = app.current_page;
+    ui.on_cancel = Some(Arc::new(|ui| {
+        if let Some(job) = ui.job.as_ref() {
+            job.cancel();
+        }
+        ui.job = None;
+        ui.status.clear();
+        ui.exit = true;
+    }));
+    ui.on_submit = Some(Arc::new(move |ui| match submit_precheck(ui, editor_page) {
+        Ok(_) => {
+            ui.pending = Some((ui.settings.printer.clone(), ui.settings.clone(), ui.content));
+        }
+        Err(message) => ui.status = message,
+    }));
+    app.print = Some(ui);
+}
+
+/// Print-dialog drain at the top of every `app_logic` pass, in a fixed
+/// order: ① poll the live job for a terminal state; ② the exit flag
+/// closes the overlay; ③ a content-flag edit re-materializes the preview;
+/// ④ a confirmed submit becomes a `print_direct` command writing its
+/// JobHandle into the shared slot; ⑤ a handle landed in the slot becomes
+/// the dialog's live job. ④'s command runs at the next rebuild drain;
+/// ⑤ picks the handle up on the HostCommandWake pass that follows
+/// (phase-1 contract 1).
+fn drain_print_dialog(app: &mut AppState) {
+    // ① terminal-state polling.
+    if let Some(ui) = app.print.as_mut() {
+        poll_job_terminal(ui);
+    }
+    // ② exit closes the overlay.
+    if app.print.as_ref().is_some_and(|ui| ui.exit) {
+        app.print = None;
+        // A handle that landed in the slot but was never picked up (exit
+        // raced the wake pass): the user cancelled a just-started job —
+        // cancel it rather than letting it spool untracked.
+        if let Some(handle) = app.print_job_slot.lock().unwrap().take() {
+            handle.cancel();
+        }
+    }
+    if app.print.is_none() {
+        return;
+    }
+    // ③ content-flag edit → re-materialize the preview material.
+    let dirty_content = app.print.as_mut().and_then(|ui| {
+        if ui.content_dirty {
+            ui.content_dirty = false;
+            Some(ui.content)
+        } else {
+            None
+        }
+    });
+    if let Some(content) = dirty_content {
+        let material = app.print_material.clone();
+        push(app, move |c| {
+            let fresh = materialize_print_material(c, content);
+            if let Ok(mut target) = material.lock() {
+                *target = fresh;
+            }
+        });
+    }
+    // ④ confirmed submit → one-call direct print in a command (the only
+    // place the component is reachable); the handle rides the slot.
+    let pending = app.print.as_mut().and_then(|ui| ui.pending.take());
+    if let Some((printer, settings, content)) = pending {
+        let slot = app.print_job_slot.clone();
+        push(app, move |c| {
+            let handle = c.print_direct(printer.as_deref(), &settings, content, "rofd");
+            *slot.lock().unwrap() = Some(handle);
+        });
+    }
+    // ⑤ handle landed in the slot → the dialog's live job.
+    let landed = app.print_job_slot.lock().unwrap().take();
+    if landed.is_some() {
+        if let Some(ui) = app.print.as_mut() {
+            ui.job = landed;
+            ui.status = "已提交打印".to_string();
+        }
+    }
+}
+
 /// Load the command-line path argument if present.
 fn maybe_load_cli_arg(app: &mut AppState) {
     let args: Vec<String> = std::env::args().collect();
@@ -308,6 +547,8 @@ fn maybe_load_cli_arg(app: &mut AppState) {
     match host::document_io::load_ofd(&path) {
         Ok(loaded) => {
             let document = loaded.document.clone();
+            app.doc_pages = document.pages.len();
+            app.current_page = 1;
             push(app, move |c| c.load_document(document.clone()));
             app.package = loaded.package;
             app.file = Some(path);
@@ -332,6 +573,7 @@ fn open_context_menu(app: &mut AppState, event: OfdContextMenu) {
 
 fn app_logic(app: &mut AppState) -> impl WidgetView<AppState> + use<> {
     consume_save_outcome(app);
+    drain_print_dialog(app);
     // --- file row ---
     let btn_new = text_button("新建", |app: &mut AppState| do_new(app))
         .padding(BTN_PAD)
@@ -350,8 +592,12 @@ fn app_logic(app: &mut AppState) -> impl WidgetView<AppState> + use<> {
         .padding(BTN_PAD)
         .border_width(Length::ZERO)
         .corner_radius(Length::const_px(2.0));
-    let file_row =
-        flex_row((btn_new, btn_open, btn_save, btn_export_pdf)).gap(Length::const_px(2.0));
+    let btn_print = text_button("打印", |app: &mut AppState| do_print(app))
+        .padding(BTN_PAD)
+        .border_width(Length::ZERO)
+        .corner_radius(Length::const_px(2.0));
+    let file_row = flex_row((btn_new, btn_open, btn_save, btn_export_pdf, btn_print))
+        .gap(Length::const_px(2.0));
 
     // --- tool row (same grouping as the old host) ---
     let btn_hand = tool_button("手型", Tool::Hand);
@@ -455,6 +701,10 @@ fn app_logic(app: &mut AppState) -> impl WidgetView<AppState> + use<> {
         .on_change(|app: &mut AppState| app.modified = true)
         .on_zoom_change(|app: &mut AppState, z| app.zoom = z)
         .on_zoom_mode_change(|app: &mut AppState, m| app.zoom_mode = m)
+        // 0-based page index from the component -> 1-based mirror. Print
+        // "current page" semantics and the dialog's opening page derive
+        // from this mirror.
+        .on_page_change(|app: &mut AppState, idx| app.current_page = idx + 1)
         .on_text_selection_change(|app, sel| app.has_selection = sel.is_some())
         .on_save_request(do_save)
         // Any cursor movement dismisses the popup. In rofd, right-click does
@@ -497,7 +747,17 @@ fn app_logic(app: &mut AppState) -> impl WidgetView<AppState> + use<> {
 
     let editor_area = zstack((editor, menu_overlay)).alignment(UnitPoint::TOP_LEFT);
 
-    flex_col((menu_bar, editor_area.flex(1.0)))
+    let main_col = flex_col((menu_bar, editor_area.flex(1.0)));
+
+    // --- print Backstage overlay (covers the whole window while open) ---
+    // Same Option-overlay slot pattern as the context menu: the editor
+    // tree stays mounted underneath.
+    let print_overlay = app.print.as_mut().map(|ui| {
+        sized_box(print_dialog_view::<AppState>(ui))
+            .background_color(Color::from_rgb8(240, 240, 240))
+    });
+
+    zstack((main_col, print_overlay)).alignment(UnitPoint::TOP_LEFT)
 }
 
 fn main() -> Result<(), xilem::winit::error::EventLoopError> {
@@ -513,12 +773,17 @@ fn main() -> Result<(), xilem::winit::error::EventLoopError> {
     }
     let mut app_state = AppState::new();
     maybe_load_cli_arg(&mut app_state);
-    Xilem::new_simple(
+    let result = Xilem::new_simple(
         app_state,
         app_logic,
         WindowOptions::new("rofd - OFD Editor"),
     )
-    .run_in(EventLoop::with_user_event())
+    .run_in(EventLoop::with_user_event());
+    // Print lifecycle: join in-flight spool jobs before process exit — a
+    // process death mid-spool kills the spooler helper and the job with
+    // it.
+    office_rs_print::join_all();
+    result
 }
 
 #[cfg(test)]
@@ -617,5 +882,175 @@ mod tests {
             "export must not promote or clear a pending Save-As path"
         );
         assert!(app.modified);
+    }
+
+    // ---- Print Backstage wiring (spec 2026-10-31 print phase 2 Task 5) ----
+
+    use office_rs_print::{job::submit_noop, Orientation, PageRange, Paper};
+
+    /// One A4-portrait page (210x297mm) with an empty body layer.
+    fn a4_page(id: &str) -> rofd_dom::Page {
+        rofd_dom::Page {
+            id: rofd_dom::PageId::new(id),
+            physical_box: rofd_dom::Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 210.0,
+                h: 297.0,
+            },
+            layers: vec![rofd_dom::Layer::default()],
+            template: None,
+        }
+    }
+
+    /// A document of `n` plain A4 pages (no annotations).
+    fn pages_document(n: usize) -> rofd_dom::OfdDocument {
+        let mut doc = rofd_dom::OfdDocument::default();
+        for i in 0..n {
+            doc.pages.push(a4_page(&format!("P{i}")));
+        }
+        doc
+    }
+
+    /// Component with an `n`-page document loaded (empty font config —
+    /// plain pages shape no glyphs).
+    fn component_with_pages(n: usize) -> rofd_component::OfdComponent {
+        let mut c = rofd_component::OfdComponent::new_native(OfdConfig::new(Arc::new(vec![])));
+        c.load_document(pages_document(n));
+        c
+    }
+
+    fn ui_with_material(material: PrintMaterial) -> PrintUi {
+        PrintUi::new(Arc::new(Mutex::new(material)), true)
+    }
+
+    /// Poll until the helper reports a change: the noop job's worker
+    /// thread races this thread, so a single poll may legally see a
+    /// non-terminal state. Bounded so a regression cannot hang the test.
+    fn poll_until_changed(ui: &mut PrintUi) -> bool {
+        for _ in 0..500 {
+            if poll_job_terminal(ui) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        false
+    }
+
+    /// A Done job flips the status line to the submitted label exactly
+    /// once (terminal states are idempotent on later polls).
+    #[test]
+    fn poll_job_done_sets_status() {
+        let mut ui = ui_with_material(PrintMaterial::default());
+        assert!(!poll_job_terminal(&mut ui), "no job yet -> no change");
+        ui.job = Some(submit_noop(1, None, 0));
+        assert!(
+            poll_until_changed(&mut ui),
+            "job reaches Done and the poll reports it"
+        );
+        assert_eq!(ui.status, "已发送到打印机");
+        assert!(!poll_job_terminal(&mut ui), "terminal status is idempotent");
+    }
+
+    /// A Failed job surfaces the worker's error behind the failed label.
+    #[test]
+    fn poll_job_failed_sets_error_status() {
+        let mut ui = ui_with_material(PrintMaterial::default());
+        ui.job = Some(submit_noop(1, Some(1), 0));
+        assert!(poll_until_changed(&mut ui), "job reaches Failed");
+        assert!(
+            ui.status.starts_with("打印失败"),
+            "failed jobs use the failed label: {}",
+            ui.status
+        );
+        assert!(ui.status.contains("page 1"), "error text rides along");
+    }
+
+    /// No live job: the poll is a no-op and never touches the status.
+    #[test]
+    fn poll_job_none_is_noop() {
+        let mut ui = ui_with_material(PrintMaterial::default());
+        ui.status = "已提交打印".to_string();
+        assert!(!poll_job_terminal(&mut ui));
+        assert_eq!(ui.status, "已提交打印");
+    }
+
+    /// Materialization fills all three preview vectors for every page,
+    /// with paper from the page geometry and dims at the print baseline.
+    #[test]
+    fn materialize_fills_dims_papers_scenes() {
+        let c = component_with_pages(2);
+        let m = materialize_print_material(&c, PrintContent::default());
+        assert_eq!(m.scenes.len(), 2);
+        assert_eq!(m.dims.len(), 2);
+        assert_eq!(m.papers.len(), 2);
+        assert!(!m.scenes[0].is_empty(), "page scene recorded");
+        assert_eq!(m.papers[0], (Paper::A4, Orientation::Portrait));
+        let zoom = rofd_component::PRINT_ZOOM as f32;
+        assert!((m.dims[0].0 - 210.0 * zoom).abs() < 0.5);
+        assert!((m.dims[0].1 - 297.0 * zoom).abs() < 0.5);
+    }
+
+    /// An empty material blocks the submit before any range grammar runs.
+    #[test]
+    fn empty_document_precheck_blocks_pending() {
+        let ui = ui_with_material(PrintMaterial::default());
+        assert_eq!(
+            submit_precheck(&ui, 1),
+            Err("no printable pages".to_string())
+        );
+    }
+
+    /// The precheck resolves against the EDITOR's current page, never the
+    /// preview pager's page: pager flipped to page 3 while the editor sits
+    /// on page 1, range=Current must resolve [1]. An out-of-range editor
+    /// page clamps to the last page (library semantics).
+    #[test]
+    fn precheck_uses_editor_page_not_preview_page() {
+        let c = component_with_pages(3);
+        let mut ui = ui_with_material(materialize_print_material(&c, PrintContent::default()));
+        ui.page = 2; // preview pager on the third page
+        ui.settings.range = PageRange::Current;
+        assert_eq!(
+            submit_precheck(&ui, 1),
+            Ok(vec![1]),
+            "editor page wins over the preview pager"
+        );
+        assert_eq!(
+            submit_precheck(&ui, 9),
+            Ok(vec![3]),
+            "out-of-range editor page clamps to the last page"
+        );
+    }
+
+    /// The 0-page guard: a fresh app (empty default document) never opens
+    /// the dialog; a loaded document opens on the editor's current page,
+    /// clamped into the document.
+    #[test]
+    fn do_print_guard_and_opening_page() {
+        let mut app = AppState::new();
+        do_print(&mut app);
+        assert!(
+            app.print.is_none(),
+            "0-page document must not open the dialog"
+        );
+
+        app.doc_pages = 3;
+        app.current_page = 2;
+        do_print(&mut app);
+        let ui = app
+            .print
+            .as_ref()
+            .expect("dialog opens for a non-empty document");
+        assert_eq!(ui.page, 1, "opens on the editor page (1-based 2)");
+        assert!(ui.on_cancel.is_some() && ui.on_submit.is_some());
+
+        app.current_page = 9; // stale mirror beyond the document
+        do_print(&mut app);
+        assert_eq!(
+            app.print.as_ref().unwrap().page,
+            2,
+            "opening page clamps into the document"
+        );
     }
 }
