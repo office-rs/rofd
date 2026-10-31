@@ -9,6 +9,7 @@
 import { FontRuntime } from '@office-rs/font-runtime';
 import { RenderScheduler } from './scheduler';
 import { withKick } from './with-kick';
+import { printViaIframe } from './print';
 import * as fontFlow from './fontFlow';
 import type { FontSlicesConfig, SystemFontProvider } from './fontFlow';
 
@@ -110,6 +111,17 @@ interface WasmOfd {
   setMarkupColor(kind: string, color: string): void;
   deleteAnnotation(id: string): boolean;
   deleteSelected(): number;
+  /** Export the document as PDF bytes (print spec 2026-10-31 §5). Omitted
+   * flags pass through to the wasm defaults (clean-copy preset:
+   * watermark/annotations off, seal on); `pages` is a 1-based list —
+   * omit for every page. Throws on failure (empty page survivor set,
+   * encoder error). */
+  exportPdf(watermark?: boolean, annotations?: boolean, seal?: boolean, pages?: number[]): Uint8Array;
+  /** Resolve a print dialog's range/parity selection into the concrete
+   * 1-based page list. `rangeKind` is "All" | "Current" | "Custom"
+   * (Custom requires `customSpec`, a "1-3,5" grammar string); `parity` is
+   * "All" | "Odd" | "Even". Throws on unknown strings or a bad spec. */
+  planPrintPages(rangeKind: string, customSpec: string | undefined, parity: string, currentPage: number): Uint32Array | number[];
 }
 
 // --- public SDK types ---
@@ -125,6 +137,20 @@ export type MarkupKind = 'highlight' | 'underline' | 'strikeout' | 'squiggly';
 
 /** Viewport zoom mode (适应宽度/高度/页面 state machine). */
 export type ZoomMode = 'custom' | 'fit-width' | 'fit-height' | 'fit-page';
+
+/** Content flags for PDF export / print (print spec 2026-10-31). All
+ * optional — omitted fields pass undefined through to the wasm defaults
+ * (clean-copy preset: watermark/annotations off, seal on, every page). */
+export interface PrintOptions {
+  /** Include the document watermark. Default false. */
+  watermark?: boolean;
+  /** Include annotation layers. Default false. */
+  annotations?: boolean;
+  /** Include electronic seals. Default true. */
+  seal?: boolean;
+  /** 1-based page list; omit to export every page. */
+  pages?: number[];
+}
 
 /** Configuration for `Ofd.init`. */
 export interface OfdConfig {
@@ -803,6 +829,40 @@ export class Ofd {
   /** Serialize the current document to OFD package bytes. */
   saveOfd(): Uint8Array {
     return this.wasm.saveOfd();
+  }
+
+  /** Export the document as PDF bytes (vector, produced by the same layout
+   * engine and registered fonts as the screen — WYSIWYG). Awaits any
+   * in-flight font slice loads first, so a font still arriving cannot bake
+   * fallback glyphs into the exported pages. Throws on failure. */
+  async exportPdf(options?: PrintOptions): Promise<Uint8Array> {
+    await this.fontWatch?.pending();
+    return this.wasm.exportPdf(
+      options?.watermark,
+      options?.annotations,
+      options?.seal,
+      options?.pages,
+    );
+  }
+
+  /** Resolve the print dialog's range/parity selection into the concrete
+   * 1-based page list (`parity` filters the planned range). Metadata only
+   * — no font gate needed (nothing is rendered). */
+  async planPages(
+    range: { kind: 'All' | 'Current' | 'Custom'; spec?: string },
+    parity: 'All' | 'Odd' | 'Even',
+    currentPage: number,
+  ): Promise<number[]> {
+    return Array.from(
+      this.wasm.planPrintPages(range.kind, range.spec, parity, currentPage),
+    );
+  }
+
+  /** Print via the browser dialog: export the PDF (flushing fonts, same
+   * options as `exportPdf`) and hand it to a hidden iframe (print.ts). The
+   * system dialog owns printer/copies/range from there. */
+  async print(options?: PrintOptions): Promise<void> {
+    await printViaIframe(await this.exportPdf(options));
   }
 
   /** Set the annotation clock (author + timestamp ms) for subsequent edits. */

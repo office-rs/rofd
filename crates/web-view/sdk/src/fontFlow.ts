@@ -110,7 +110,16 @@ function defaultFirst(plan: FontSlicePlan, defaultFamily: string): FontSlicePlan
   return { families: [...head, ...rest] };
 }
 
-export interface FontWatch { kick(): void; cancel(): void; }
+export interface FontWatch {
+  kick(): void;
+  cancel(): void;
+  /** Resolves when the in-flight round (debounce window + collect/ensure
+   * chain) settles; `Promise.resolve()` when idle (print spec 2026-10-31:
+   * the export/print path gates on this so pages are laid out with the
+   * same registered fonts as the screen instead of baking fallback glyphs
+   * mid-load). Also settles on cancel — never hangs, never rejects. */
+  pending(): Promise<void>;
+}
 
 /** 批注 watcher（spec §2.1/§3.2）：onChange debounce 300ms → 全量 collect →
  * 与上次 collect 做差得 delta → selectInitial(声明族) ⊕ watchText(delta) →
@@ -126,6 +135,28 @@ export function scheduleFontWatch(
   let cancelled = false;
   let lastKey = '';
   let lastSet = new Set<number>();
+  // In-flight round bookkeeping for pending(): a round is armed by kick()
+  // and stays armed while a debounce timer or tick chain is outstanding
+  // (a kick landing mid-tick extends the same round — its follow-up tick
+  // is part of what the waiter was told to wait for).
+  let roundPromise: Promise<void> | undefined;
+  let roundResolve: (() => void) | undefined;
+  const armRound = (): void => {
+    if (roundPromise === undefined) {
+      roundPromise = new Promise<void>((resolve) => {
+        roundResolve = resolve;
+      });
+    }
+  };
+  const settleRound = (): void => {
+    if (timer !== undefined) {
+      return; // a follow-up kick re-armed the debounce: the round continues
+    }
+    const resolve = roundResolve;
+    roundPromise = undefined;
+    roundResolve = undefined;
+    resolve?.();
+  };
   const tick = async (): Promise<void> => {
     if (cancelled) { return; }
     try {
@@ -164,12 +195,21 @@ export function scheduleFontWatch(
   return {
     kick() {
       if (cancelled) { return; }
+      armRound();
       if (timer !== undefined) { clearTimeout(timer); }
-      timer = setTimeout(() => { timer = undefined; void tick(); }, WATCH_DEBOUNCE_MS);
+      timer = setTimeout(() => {
+        timer = undefined;
+        armRound();
+        void tick().finally(settleRound);
+      }, WATCH_DEBOUNCE_MS);
     },
     cancel() {
       cancelled = true;
       if (timer !== undefined) { clearTimeout(timer); timer = undefined; }
+      settleRound();
+    },
+    pending(): Promise<void> {
+      return roundPromise ?? Promise.resolve();
     },
   };
 }
