@@ -40,6 +40,7 @@ cargo fmt --all -- --check
 ```bash
 cargo run -p xilem-app                           # 空编辑器
 cargo run -p xilem-app -- test/ru-yuan-ji-lu.ofd  # 打开根目录 test/ 下的 .ofd
+cargo run -p xilem-app --example print_to_file -- test/ru-yuan-ji-lu.ofd target/print-probe.out  # 打印手测通道（Pages 载荷经 GDI lpszOutput 落文件）
 ```
 
 命令行路径参数经宿主 `host::document_io::load_ofd` 加载。native 宿主以空字体配置启动（`OfdConfig::new(Arc::new(vec![]))`，见 `crates/xilem-app/src/main.rs`），字形交给系统字体回退；仓库自带的 CJK 字体位于 `crates/web-app/public/fonts/`（git 跟踪，无需下载）。
@@ -142,7 +143,7 @@ crates/web-app ─► web-view ─────────────┘       
 - `OfdConfig`：`default_font_bytes`、`page_gap`（默认 20）、`zoom`（初始 PX_PER_MM，`with_zoom` 可覆盖）。
 - 场景脏缓存（终态公共 API）：`update_scene()` 按脏标志重合成、`scene() -> &Scene`、`set_viewport_size(f64,f64)`、`mark_scene_dirty`（pub(crate)）。
 - 文本编辑：`paste_text`、`delete_annotation`、`tick_blink`（两目标统一，wasm 由 `renderFrame` 驱动，见 §4.4）、preedit 状态机（组件自持 `Option<PreeditState>`，简化 caret overlay，不做 ghost-document 回流）。
-- 打印内核缝（spec 2026-10-31）：`begin_print(PrintContent) -> PrintSession`，内容三开关（水印/批注/图章，默认净版+图章）；页场景/纸型/页计划全经 session（`page_scene`/`page_parameters`/`plan`，`1-3,5` 范围语法由 office-rs-print 解析，宿主不重写）。
+- 打印内核缝（spec 2026-10-31）：`begin_print(PrintContent) -> PrintSession`，内容三开关（水印/批注/图章，默认净版+图章）；页场景/纸型/页计划全经 session（`page_scene`/`page_parameters`/`plan`，`1-3,5` 范围语法由 office-rs-print 解析，宿主不重写）；native 一键直打 `print_direct`（begin_print→plan→payload→`print_pages`）。
 
 ### rofd-xilem-view（as-built 九条契约）
 

@@ -1,7 +1,7 @@
 # rofd 打印二期设计（xilem 原生直打 + 默认打印对话框）
 
 日期：2026-10-31
-状态：待审阅
+状态：已实施
 前置：[`2026-10-31-print-design.md`](2026-10-31-print-design.md)（一期，已实施；本文件是其 §5.3/§9 承诺的二期独立 spec）
 参照：rword xilem 打印面 as-built（`rword/crates/xilem-view/src/{print.rs, print_dialog.rs, print_dialog_state.rs, print_services.rs}` + `rword/crates/xilem-app/src/main.rs` 打印段）；office-rs-print rev `c2f99d5`（钉版同一期）
 
