@@ -3899,6 +3899,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "office-rs-print"
+version = "0.1.0"
+source = "git+https://github.com/office-rs/print.git?rev=c2f99d5#c2f99d58ca31401b9e5562773cf5a643aca8ed03"
+dependencies = [
+ "image",
+ "imaging",
+ "serde",
+ "windows 0.62.2",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4725,10 +4737,12 @@ version = "0.1.0"
 dependencies = [
  "imaging",
  "kurbo",
+ "office-rs-print",
  "rofd-dom",
  "rofd-editor",
  "rofd-io",
  "rofd-render",
+ "serde",
  "web-time",
 ]
 

@@ -10,6 +10,10 @@ rofd-editor = { workspace = true }
 # draw_layers 默认合流在库代码里用 Painter/replay/Affine/Color 合并场景。
 # 平台无关（同 rofd-render 的依赖面），不触碰 AGENTS §4.9 平台边界。
 imaging = { workspace = true }
+# Print module (spec 2026-10-31): PrintContent/Paper live here; serde for
+# the PrintContent wire shape (workspace feature set: derive + rc).
+office-rs-print = { workspace = true }
+serde = { workspace = true }
 
 [dev-dependencies]
 # Migrated sample_drag_select parses the real fixture and builds points.
