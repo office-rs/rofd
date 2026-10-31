@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use rofd_dom::{
@@ -15,6 +16,7 @@ use crate::callbacks::{Callbacks, ContextTarget, PointerCursor};
 use crate::config::OfdConfig;
 use crate::event::EventOutcome;
 use crate::font_req::{self, FontRequirements};
+use crate::print_session::{PrintContent, PrintSession};
 use crate::render_target::{PageSegment, RenderTarget, SceneLayers};
 use crate::zoom_mode::ZoomMode;
 
@@ -306,6 +308,11 @@ pub struct OfdComponent {
     /// 换文档时重算一次；批注/preedit 的动态部分由 [`Self::font_requirements`]
     /// 每次现扫，不入缓存。
     body_font_req: FontRequirements,
+    /// Print staleness generation (spec 2026-10-31 print §2.5): bumped on
+    /// every annotation mutation (the single bump point lives in
+    /// `notify_document_change`); `begin_print` snapshots it so the detached
+    /// `PrintSession` can report `is_stale`.
+    print_gen: Arc<AtomicU64>,
 }
 
 impl OfdComponent {
@@ -363,6 +370,7 @@ impl OfdComponent {
             blink_deadline: None,
             preedit: None,
             body_font_req: FontRequirements::default(),
+            print_gen: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -2409,10 +2417,35 @@ impl OfdComponent {
     // where the body-text selection must survive untouched.
     fn notify_document_change(&mut self) {
         self.modified = true;
+        // Print staleness (spec 2026-10-31 §2.5): every annotation mutation
+        // invalidates detached print sessions — the single bump point.
+        self.print_gen.fetch_add(1, Ordering::Relaxed);
         self.mark_scene_dirty();
         if let Some(cb) = &self.callbacks.on_change {
             cb(self.editor.document());
         }
+    }
+
+    // --- Print (spec 2026-10-31 print design §2.5) ---
+
+    /// Begin a print session: hand the host a detached [`PrintSession`]
+    /// holding a document snapshot (cheap — heavy resources are `Arc`-shared
+    /// with the component), a font-store clone, the content flags and the
+    /// shared print generation. The session never paints screen chrome
+    /// (caret/selection handles/scrollbars) and never writes back into the
+    /// component's screen caches; hosts re-`begin_print` once its `is_stale`
+    /// flips.
+    pub fn begin_print(&self, content: PrintContent) -> PrintSession {
+        let fonts = self
+            .font_store
+            .clone()
+            .unwrap_or_else(|| self.build_font_store());
+        PrintSession::new(
+            self.editor.document().clone(),
+            fonts,
+            content,
+            Arc::clone(&self.print_gen),
+        )
     }
 
     fn fire_selection_change(&self) {
