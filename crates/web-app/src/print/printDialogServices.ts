@@ -36,7 +36,9 @@ function tauriInternals(): TauriInternals | null {
 /** `print-progress` event payload (Task 7's pump: Debug-string job state). */
 export interface PrintProgress {
   jobId: number;
-  /** "Pending" | "Spooling" | "Done" | "Aborted" | "Failed" | ... */
+  /** office-rs-print `JobState` Debug string from the shell pump
+   * (D:/code/print/src/job.rs — the full variant set, no wrapper states):
+   * "Spooling" | "Rendering" | "Done" | "Aborted" | "Failed". */
   state: string;
   pagesDone: number;
   pagesTotal: number;
@@ -128,6 +130,69 @@ export function onPrintProgress(cb: (p: PrintProgress) => void): () => void {
   return () => {
     disposed = true;
     unlisten?.();
+  };
+}
+
+/** A `print-progress` subscription bound to one spool job (final-review
+ * merge gate): the listener must be attached BEFORE `print_pdf` is
+ * invoked — the shell pump (tauri-app print.rs) emits its first snapshot
+ * right after job insertion, before the invoke resolves, and a
+ * fast-failing job's ONLY Failed event lands in exactly that window. A
+ * listener attached after submit would miss it and the dialog would sit
+ * on "正在打印" forever. Events observed before the job id is known are
+ * buffered; `bind(jobId)` replays ours in arrival order and filters live
+ * events to that id (foreign ids drop — the shell numbers jobs
+ * process-wide, another window's job must not feed ours). */
+export interface JobProgressSubscription {
+  /** Adopt the resolved job id: replay buffered events for it, then
+   * filter live events to it. Call right after `print_pdf` resolves AND
+   * the dialog state accepted 'submitting' — the state machine drops
+   * progress events outside that status, so the replay must follow it. */
+  bind(jobId: number): void;
+  /** Detach the underlying listener and drop the buffer (terminal event,
+   * submit rejection, dialog close). Idempotent from the caller's side. */
+  close(): void;
+}
+
+/** Subscribe `onProgress` keyed to one job; see
+ * [`JobProgressSubscription`] for the ordering contract. */
+export function subscribeJobProgress(
+  onProgress: (cb: (p: PrintProgress) => void) => () => void,
+  onJobEvent: (p: PrintProgress) => void,
+): JobProgressSubscription {
+  const buffered: PrintProgress[] = [];
+  let jobId: number | null = null;
+  let closed = false;
+  const deliver = (p: PrintProgress): void => {
+    if (!closed && p.jobId === jobId) {
+      onJobEvent(p);
+    }
+  };
+  const off = onProgress((p) => {
+    if (closed) {
+      return;
+    }
+    if (jobId === null) {
+      buffered.push(p);
+      return;
+    }
+    deliver(p);
+  });
+  return {
+    bind(id: number): void {
+      if (closed) {
+        return;
+      }
+      jobId = id;
+      for (const p of buffered.splice(0)) {
+        deliver(p);
+      }
+    },
+    close(): void {
+      closed = true;
+      buffered.length = 0;
+      off();
+    },
   };
 }
 

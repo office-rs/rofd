@@ -167,8 +167,10 @@ import {
 } from './printDialogState';
 import {
   createPrintDialogServices,
+  subscribeJobProgress,
   toBase64,
   type PrintDialogServices,
+  type PrintProgress,
 } from './printDialogServices';
 
 const props = withDefaults(
@@ -382,6 +384,25 @@ watch(
   },
 );
 
+/** One progress event for OUR job: fold it into the machine; on a
+ * terminal state (Done/Aborted/Failed — everything the pump stops
+ * after) detach the listener. Success closes the dialog; Failed already
+ * landed the machine in its retryable error state via the progress
+ * event, so the dialog stays open for retry. */
+function onJobProgress(p: PrintProgress): void {
+  state.value = advance(state.value, { type: 'progress', ...p });
+  if (p.state !== 'Done' && p.state !== 'Aborted' && p.state !== 'Failed') {
+    return;
+  }
+  progressOff?.();
+  progressOff = null;
+  if (p.state === 'Failed') {
+    return;
+  }
+  state.value = advance(state.value, { type: 'done' });
+  emit('update:open', false);
+}
+
 /** Confirm: planPages → exportPdf(pages) → base64 → IPC print_pdf →
  * progress events → terminal close. Every step's failure lands in the
  * machine's error state (retryable); success closes the dialog. Every
@@ -419,7 +440,25 @@ async function submit(): Promise<void> {
     if (epoch !== session) {
       return; // closed during export: abort before the IPC submit
     }
-    // 3. Spool via the shell; progress flows back as print-progress events.
+    // 3. Subscribe BEFORE submit (final-review merge gate): the shell
+    // pump emits its first snapshot right after job insertion — before
+    // the print_pdf invoke resolves — and a fast-failing job's ONLY
+    // Failed event lands in exactly that window. Events observed before
+    // our job id resolves are buffered and replayed once the id is known
+    // (foreign ids drop); see subscribeJobProgress.
+    progressOff?.();
+    const jobEvents = subscribeJobProgress(
+      (cb) => svc.onProgress(cb),
+      (p) => {
+        if (epoch !== session) {
+          return;
+        }
+        onJobProgress(p);
+      },
+    );
+    progressOff = jobEvents.close;
+    // 4. Spool via the shell; progress flows back as print-progress
+    // events.
     const jobId = await svc.submit(toBase64(pdf), buildSettingsWire(state.value), props.jobTitle);
     if (epoch !== session) {
       // The job was created after the close: kill it, then bail.
@@ -427,23 +466,18 @@ async function submit(): Promise<void> {
       return;
     }
     state.value = advance(state.value, { type: 'submitting', jobId });
-    progressOff?.();
-    progressOff = svc.onProgress((p) => {
-      if (epoch !== session || p.jobId !== jobId) {
-        return;
-      }
-      state.value = advance(state.value, { type: 'progress', ...p });
-      if (p.state === 'Done' || p.state === 'Aborted') {
-        progressOff?.();
-        progressOff = null;
-        state.value = advance(state.value, { type: 'done' });
-        emit('update:open', false);
-      }
-    });
+    // Only now (the machine accepted the job) replay whatever the pump
+    // already emitted — progress events outside 'submitting' are no-ops
+    // in the machine, so replaying earlier would lose a fast Failed.
+    jobEvents.bind(jobId);
   } catch (e) {
     if (epoch !== session) {
       return; // closed: the failure belongs to an aborted attempt
     }
+    // The listener went up before submit; a rejected submit must take it
+    // back down (a stale epoch already had closeDialog do this).
+    progressOff?.();
+    progressOff = null;
     console.error('[rofd] print submit failed:', e);
     state.value = advance(state.value, { type: 'planFailed', error: errText(e) });
   }

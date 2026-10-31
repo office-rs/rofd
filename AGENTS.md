@@ -77,7 +77,7 @@ tauri-app 前端**复用 web-app 源码**（`main.ts` 从 `../web-app/src` 导�
 
 ## 3. 仓库布局与分层
 
-严格 5 层单向依赖，**反向边禁止**。每个 crate 的 `[dependencies]` 是依赖方向的唯一事实来源。**平台边界线画在 component 与适配器之间**：component 及以下五个 crate 平台无关（不依赖 winit/web-sys/wgpu/arboard 等平台 crate），xilem-view / web-view 是仅有的两层平台绑定。
+严格 5 层单向依赖，**反向边禁止**。每个 crate 的 `[dependencies]` 是依赖方向的唯一事实来源。**平台边界线画在 component 与适配器之间**：component 及以下六个 crate（含叶子 rofd-export）平台无关（不依赖 winit/web-sys/wgpu/arboard 等平台 crate），xilem-view / web-view 是仅有的两层平台绑定。
 
 ```
 crates/xilem-app      ─┐
@@ -92,11 +92,12 @@ crates/web-app ─► web-view ─────────────┘       
 | ---------------- | -------------------- | --- | ----------------- |
 | `rofd-dom`       | `crates/dom`         | 纯数据模型 | — |
 | `rofd-io`        | `crates/io`          | `parse_ofd` / `save_ofd`（手术刀）/ `write_ofd`（全量）+ `PackageHandle` | dom |
+| `rofd-export`    | `crates/export`      | Scene→krilla PDF 编码器（打印/导出产物转换，imaging+krilla 叶子 crate） | —（无 rofd 内部依赖） |
 | `rofd-render`    | `crates/render`      | `imaging::record::Scene` 构建 + hit_test/caret_rect | dom |
 | `rofd-editor`    | `crates/editor`      | 批注选区、命令模式、Step/Transaction/History | dom |
-| `rofd-component` | `crates/component`   | **唯一集成入口** `OfdComponent`：ViewEvent、Callbacks、脏缓存 | dom + render + editor（**不依赖 io**） |
+| `rofd-component` | `crates/component`   | **唯一集成入口** `OfdComponent`：ViewEvent、Callbacks、脏缓存 | dom + render + editor + office-rs-print（类型层）（**不依赖 io**） |
 | `rofd-xilem-view`| `crates/xilem-view`  | masonry/xilem 薄适配器：`OfdWidget` + `ofd()`/`ofd_with_config()` | component |
-| `rofd-web-view`  | `crates/web-view`    | WASM 薄适配器：`WasmOfd` + `WebGpuRenderTarget` + TS SDK | component + io + editor + dom + vello + imaging + imaging_vello + wgpu + web-sys |
+| `rofd-web-view`  | `crates/web-view`    | WASM 薄适配器：`WasmOfd` + `WebGpuRenderTarget` + TS SDK | component + io + editor + dom + rofd-export + office-rs-print（类型层） + vello + imaging + imaging_vello + wgpu + web-sys |
 | `xilem-app`      | `crates/xilem-app`   | xilem 宿主应用（文件对话框 + 工具栏 UI 策略） | xilem-view + component + io + dom + xilem + rfd |
 | web-app          | `crates/web-app`     | Vite + TS 宿主应用（非 cargo 成员） | `@office-rs/rofd`（= `crates/web-view/sdk`） |
 | `tauri-app`      | `crates/tauri-app`   | Tauri 桌面宿主应用 | tauri 壳不依赖 rofd crate；前端复用 web-app |

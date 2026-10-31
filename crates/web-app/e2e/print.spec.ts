@@ -1,22 +1,30 @@
-// 打印流 e2e（print spec 2026-10-31 §7）：exportPdf 字节 / planPages 范围
-// 语法 / iframe 打印通道（挂载 + window.print 调用 + 旧帧清理）。
+// Print-flow e2e (print spec 2026-10-31 §7): exportPdf bytes / planPages
+// range grammar / the iframe print channel (mount + window.print call +
+// old-frame cleanup).
 //
-// 启动套路同 fonts.spec.ts（playwright.config 起 dev server，无额外 stub）。
-// 编辑器句柄走 DEV 态测试缝 `window.__ofd`（App.vue，Ofd.init resolve 后挂）；
-// 启动序列随后 fetch public/sample.ofd 并 loadOfd，所以「文档就绪」判据 =
-// planPages('All') 能解出非空页列（page_plan 对 0 页文档报 "document has no
-// pages"），比固定等待可靠。
+// Startup follows fonts.spec.ts (playwright.config boots the dev server,
+// no extra stubs). The editor handle comes from the DEV-only test seam
+// `window.__ofd` (App.vue, attached once Ofd.init resolves); the startup
+// sequence then fetches public/sample.ofd and loadOfd, so the "document
+// ready" predicate = planPages('All') resolving a non-empty page list
+// (page_plan rejects a 0-page document with "document has no pages") —
+// more reliable than a fixed wait.
 //
-// window.print stub 记账：printViaIframe 调的是 **iframe 的 contentWindow**
-// .print()，不是主窗口。addInitScript 会在每个 frame（attach/导航时）执行，
-// 故每个 frame 都装上记录器；about:blank / blob: 子帧与顶层同源，经
-// window.top 把计数落到主窗口。另补一道 contentWindow getter 补丁兜底 plugin
-// document 提交（那种文档不跑 init script）：每次访问 contentWindow 先给子窗
-// 盖上记录器再返回原窗。本 Chromium 实测（探针验证）：blob-PDF 以常规同源
-// 文档提交、init script 已覆盖；getter 补丁仅为该行为变化时的保险。
+// window.print stub accounting: printViaIframe calls the **iframe's
+// contentWindow** .print(), not the main window's. addInitScript runs in
+// every frame (on attach/navigation), so every frame gets the recorder;
+// about:blank / blob: child frames are same-origin with the top, and the
+// count lands on the main window via window.top. A contentWindow getter
+// patch is added as a fallback for plugin-document commits (such
+// documents never run the init script): each contentWindow access stamps
+// the recorder onto the child window before returning it. Verified on
+// this Chromium (probe-tested): the blob-PDF commits as a regular
+// same-origin document already covered by the init script; the getter
+// patch is only insurance against that behavior changing.
 import { expect, test, type Page } from '@playwright/test';
 
-/** SDK Ofd 实例上本 spec 消费的打印面（dev 缝 `window.__ofd`）。 */
+/** The print surface of the SDK Ofd instance this spec consumes (dev
+ * seam `window.__ofd`). */
 interface OfdPrintApi {
   exportPdf(options?: {
     watermark?: boolean;
@@ -37,7 +45,8 @@ interface OfdPrintApi {
   }): Promise<void>;
 }
 
-/** 等编辑器就绪：`__ofd` 挂上且文档已载入（All 页列非空）。 */
+/** Wait for the editor to be ready: `__ofd` attached and the document
+ * loaded (non-empty All page list). */
 async function waitForDocument(page: Page): Promise<void> {
   await expect
     .poll(
@@ -67,7 +76,8 @@ test('exportPdf returns valid PDF bytes', async ({ page }) => {
       throw new Error('__ofd handle missing');
     }
     const bytes = await ofd.exportPdf();
-    // 在页面侧只取前缀 + 长度，避免把整份 PDF 序列化回 Node。
+    // Take only the prefix + length on the page side, avoiding a
+    // whole-PDF serialize back into Node.
     const head = String.fromCharCode(...bytes.subarray(0, 5));
     return { head, length: bytes.length };
   });
@@ -85,8 +95,10 @@ test('planPages resolves range grammar', async ({ page }) => {
     }
     return {
       all: await ofd.planPages({ kind: 'All' }, 'All', 1),
-      // 覆盖语法上限 5000 的 Custom 范围：越界页被静默剔除（Word 行为），
-      // 恰好剩文档实际页 —— 与 All 两条独立代码路径互证页数，不硬编码。
+      // Custom range covering the grammar cap of 5000: out-of-bounds
+      // pages are silently dropped (Word behavior), leaving exactly the
+      // document's real pages — cross-checks the page count against All
+      // via two independent code paths, no hardcoding.
       capped: await ofd.planPages({ kind: 'Custom', spec: '1-5000' }, 'All', 1),
       custom1: await ofd.planPages({ kind: 'Custom', spec: '1' }, 'All', 1),
     };
@@ -108,9 +120,11 @@ test('print mounts iframe and calls print', async ({ page }) => {
       (window as unknown as { __printCalls: number }).__printCalls = 0;
     }
     window.print = record;
-    // 兜底：若 blob-PDF 以 plugin document 提交（不跑 init script），在
-    // contentWindow 访问边界盖章——print.ts 读 contentWindow 时子窗 print
-    // 已被替换。跨源子窗赋值抛错则保持原生 print 不动。
+    // Fallback: if the blob-PDF commits as a plugin document (no init
+    // script), stamp at the contentWindow access boundary — by the time
+    // print.ts reads contentWindow, the child's print is already
+    // replaced. A cross-origin child throws on assignment; keep its
+    // native print untouched.
     try {
       const desc = Object.getOwnPropertyDescriptor(
         HTMLIFrameElement.prototype,
@@ -157,8 +171,9 @@ test('print mounts iframe and calls print', async ({ page }) => {
   const firstFrame = await frames.first().elementHandle();
   expect(await page.evaluate(() => (window as unknown as { __printCalls: number }).__printCalls)).toBe(1);
 
-  // 第二次打印：旧 iframe/URL 对被清理（存活帧恰 1 且 src 是新 blob URL，
-  // 旧帧已脱离文档），print 再调一次。
+  // Second print: the old iframe/URL pair is cleaned up (exactly 1 live
+  // frame with a fresh blob URL src, the old frame detached from the
+  // document), and print fires once more.
   await printViaSdk();
   await expect(frames).toHaveCount(1);
   const secondSrc = await frames.first().getAttribute('src');

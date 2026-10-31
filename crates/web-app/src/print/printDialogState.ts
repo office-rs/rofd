@@ -106,7 +106,9 @@ export type DialogEvent =
   | {
       type: 'progress';
       jobId: number;
-      /** Debug-string job state from the shell pump: "Pending" | "Spooling" | "Done" | "Aborted" | "Failed". */
+      /** office-rs-print `JobState` Debug string from the shell pump
+       * (D:/code/print/src/job.rs): "Spooling" | "Rendering" | "Done" |
+       * "Aborted" | "Failed". */
       state: string;
       pagesDone: number;
       pagesTotal: number;

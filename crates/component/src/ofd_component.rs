@@ -452,6 +452,9 @@ impl OfdComponent {
         // 换文档：页级缓存整体失效，字体代数归零重新计（spec §7.3）。
         self.page_scenes.clear();
         self.font_gen = 0;
+        // TODO(phase-2): bump print_gen here — a PrintSession must not
+        // survive a document swap reporting fresh (spec 2026-10-31 §2.5;
+        // phase-1 hosts fresh-begin per call).
         self.modified = false;
         // Reset the visible-page cache: a newly loaded document may have a
         // different page count/layout, so the stale index must not persist
@@ -476,6 +479,9 @@ impl OfdComponent {
         // 换文档：页级缓存整体失效，字体代数归零重新计（spec §7.3）。
         self.page_scenes.clear();
         self.font_gen = 0;
+        // TODO(phase-2): bump print_gen here — a PrintSession must not
+        // survive a document swap reporting fresh (spec 2026-10-31 §2.5;
+        // phase-1 hosts fresh-begin per call).
         self.modified = false;
         self.current_page = None;
         self.apply_fit(false);
