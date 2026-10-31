@@ -2456,6 +2456,57 @@ impl OfdComponent {
         )
     }
 
+    /// Editor current page, 1-based: the single conversion point for the
+    /// 0-based [`Self::current_page`] mirror. `None` (no page visible / no
+    /// document) maps to page 1 — the print page grammar needs a concrete
+    /// 1-based index. `print_direct` and the host dialog's pre-checks share
+    /// this so "current page" can never disagree between them.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn current_page_1based(&self) -> usize {
+        self.current_page.map(|i| i + 1).unwrap_or(1)
+    }
+
+    /// One-call direct print: [`Self::begin_print`] snapshot -> page plan
+    /// (settings range/parity over the editor's current page) -> page
+    /// payload -> spooler. Adapters and hosts call this instead of
+    /// reimplementing the ~10-line glue (spec 2026-10-31 print phase 2
+    /// §0.3).
+    ///
+    /// Caller-must-validate contract: the settings range is trusted as-is.
+    /// An unresolvable spec (or an empty document) yields an EMPTY job —
+    /// `plan` failure degrades to no pages via `unwrap_or_default` — not an
+    /// error. The print dialog pre-validates the range before submit;
+    /// direct callers must do the same.
+    ///
+    /// `printer` overrides `settings.printer` when `Some` (`None` keeps the
+    /// settings' own choice, falling back to the system default). `title`
+    /// names the spooler job. Returns an async
+    /// [`office_rs_print::JobHandle`] — the component is not blocked.
+    ///
+    /// Native only: office-rs-print's backend exports (`print_pages` et al.)
+    /// are `#[cfg(not(target_arch = "wasm32"))]` at that crate's root, so a
+    /// wasm sibling of this method cannot compile — the web path prints via
+    /// PDF export through the SDK instead.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn print_direct(
+        &mut self,
+        printer: Option<&str>,
+        settings: &office_rs_print::PrintSettings,
+        content: PrintContent,
+        title: &str,
+    ) -> office_rs_print::JobHandle {
+        let mut settings = settings.clone();
+        if let Some(name) = printer {
+            settings.printer = Some(name.to_string());
+        }
+        let mut session = self.begin_print(content);
+        let pages = session
+            .plan(&settings, self.current_page_1based())
+            .unwrap_or_default();
+        let payload = session.payload_for(&pages);
+        office_rs_print::print_pages(payload, &settings, title)
+    }
+
     fn fire_selection_change(&self) {
         if let Some(cb) = &self.callbacks.on_selection_change {
             cb(self.editor.selection());
@@ -8303,5 +8354,45 @@ mod tests {
         let mut c = test_component();
         c.update_scene();
         assert!(!c.register_font_slice(vec![1, 2, 3], "simsun", "s0"));
+    }
+
+    // ---- print_direct (spec 2026-10-31 print phase 2 Task 2) ----
+
+    /// Rword word_component.rs:15984 pattern: submitting a real spooler job
+    /// must return a live handle, not an immediately-failed one. Desktop
+    /// only (needs a printer system).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    #[ignore = "requires a printer system; run with -- --ignored on a desktop"]
+    fn print_direct_returns_job_handle() {
+        let mut c = component_with_two_pages();
+        let settings = office_rs_print::PrintSettings::default();
+        let handle = c.print_direct(None, &settings, PrintContent::default(), "rofd test");
+        let snap = handle.snapshot();
+        assert!(
+            !matches!(snap.state, office_rs_print::JobState::Failed),
+            "print job should not immediately fail: {:?}",
+            snap.state
+        );
+    }
+
+    /// `current_page_1based` is the single 0-based -> 1-based conversion
+    /// point: `None` (no page-change event yet) maps to page 1, and the
+    /// 0-based editor mirror converts by +1.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn current_page_converts_none_and_zero_based() {
+        let mut c = component_with_two_pages();
+        assert_eq!(
+            c.current_page, None,
+            "fixture must start without a current page"
+        );
+        assert_eq!(c.current_page_1based(), 1);
+
+        c.current_page = Some(0);
+        assert_eq!(c.current_page_1based(), 1);
+
+        c.current_page = Some(4);
+        assert_eq!(c.current_page_1based(), 5);
     }
 }
