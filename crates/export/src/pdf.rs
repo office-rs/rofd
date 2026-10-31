@@ -196,6 +196,75 @@ fn image_key(img: &peniko::ImageData) -> usize {
     img.data.as_ref().as_ptr() as usize
 }
 
+/// Sort an sfnt face's table directory into tag order, rewriting the header
+/// search fields to match. `None` when the directory is already sorted (the
+/// common case — return the original bytes), when the data is too short to
+/// carry a directory, or when the collection `index` is out of range (let
+/// krilla produce its own error for malformed input).
+///
+/// Why this exists: OpenType requires directory records to be sorted by tag,
+/// and krilla's subsetter honors that contract with a binary search — an
+/// unsorted font loses its `glyf`/`CFF` lookups entirely and every subset
+/// fails with "unknown font kind". OFD writers in the wild emit unsorted
+/// embedded subset fonts (nothing in the render pipeline sorts; skrifa and
+/// swash scan linearly), so such documents render on screen yet fail every
+/// PDF export. Sorting the 16-byte records never moves table data, so glyph
+/// ids and outlines are untouched.
+fn normalize_sfnt_directory(data: &[u8], index: u32) -> Option<Vec<u8>> {
+    // Directory position: 0 for a single font, the `index`-th face offset of
+    // a `ttcf` collection. Other flavors keep krilla's own error path.
+    let mut dir = 0usize;
+    if data.len() >= 4 && &data[..4] == b"ttcf" {
+        let count = u16::from_be_bytes(data.get(8..10)?.try_into().ok()?) as usize;
+        let face = index as usize;
+        if face >= count {
+            return None;
+        }
+        dir = u32::from_be_bytes(data.get(12 + face * 4..16 + face * 4)?.try_into().ok()?) as usize;
+    }
+    let num_tables = u16::from_be_bytes(data.get(dir + 4..dir + 6)?.try_into().ok()?) as usize;
+    let recs_start = dir + 12;
+    let recs_end = recs_start.checked_add(num_tables.checked_mul(16)?)?;
+    let records: Vec<(u32, u32, u32, u32)> = data
+        .get(recs_start..recs_end)?
+        .as_chunks::<16>()
+        .0
+        .iter()
+        .map(|c| {
+            (
+                u32::from_be_bytes(c[0..4].try_into().unwrap()),
+                u32::from_be_bytes(c[4..8].try_into().unwrap()),
+                u32::from_be_bytes(c[8..12].try_into().unwrap()),
+                u32::from_be_bytes(c[12..16].try_into().unwrap()),
+            )
+        })
+        .collect();
+    if records.is_empty() || records.windows(2).all(|w| w[0].0 <= w[1].0) {
+        return None; // already sorted: hand krilla the original bytes
+    }
+    let mut sorted = records;
+    sorted.sort_by_key(|r| r.0);
+    let mut out = data.to_vec();
+    // Header search fields for the new order (cosmetic for readers, but kept
+    // spec-shaped): searchRange = 16 * 2^floor(log2(numTables)).
+    let entry_selector = (num_tables as f64).log2().floor() as u16;
+    let search_range = 16u16.wrapping_mul(1 << entry_selector);
+    let range_shift = (num_tables as u16)
+        .wrapping_mul(16)
+        .wrapping_sub(search_range);
+    out[dir + 6..dir + 8].copy_from_slice(&search_range.to_be_bytes());
+    out[dir + 8..dir + 10].copy_from_slice(&entry_selector.to_be_bytes());
+    out[dir + 10..dir + 12].copy_from_slice(&range_shift.to_be_bytes());
+    for (i, (tag, checksum, offset, length)) in sorted.iter().enumerate() {
+        let at = recs_start + i * 16;
+        out[at..at + 4].copy_from_slice(&tag.to_be_bytes());
+        out[at + 4..at + 8].copy_from_slice(&checksum.to_be_bytes());
+        out[at + 8..at + 12].copy_from_slice(&offset.to_be_bytes());
+        out[at + 12..at + 16].copy_from_slice(&length.to_be_bytes());
+    }
+    Some(out)
+}
+
 impl SinkContext {
     /// Construct (or fetch the cached) krilla font for a face. `None` when
     /// krilla cannot read the font program.
@@ -205,8 +274,15 @@ impl SinkContext {
             std::collections::hash_map::Entry::Occupied(e) => Some(e.get().clone()),
             std::collections::hash_map::Entry::Vacant(e) => {
                 // Zero-copy: share the blob's Arc-backed buffer with krilla
-                // instead of duplicating a potentially 20 MB CJK font.
-                let (arc, _) = data.data.clone().into_raw_parts();
+                // instead of duplicating a potentially 20 MB CJK font. The one
+                // exception is an unsorted table directory (see
+                // `normalize_sfnt_directory`), which must be rewritten in tag
+                // order or krilla's subsetter cannot find the outlines.
+                let arc: Arc<dyn AsRef<[u8]> + Send + Sync> =
+                    match normalize_sfnt_directory(data.data.as_ref(), data.index) {
+                        Some(normalized) => Arc::new(normalized),
+                        None => data.data.clone().into_raw_parts().0,
+                    };
                 let font = KrillaFont::new(arc.into(), data.index)?;
                 Some(e.insert(font).clone())
             }
@@ -855,5 +931,66 @@ mod tests {
         let warnings = std::mem::take(&mut sink.warnings);
         sink.finish().unwrap();
         assert!(warnings.is_empty(), "glyph run must not warn: {warnings:?}");
+    }
+
+    /// Reverse the table records of an sfnt font (sorted input becomes
+    /// descending). Tables and glyph ids stay byte-identical — only the
+    /// directory order changes, which is exactly what OFD-embedded subset
+    /// fonts in the wild look like (see `normalize_sfnt_directory`).
+    fn unsort_table_directory(bytes: &[u8]) -> Vec<u8> {
+        let mut out = bytes.to_vec();
+        let num_tables = u16::from_be_bytes([out[4], out[5]]) as usize;
+        let recs = 12..12 + num_tables * 16;
+        let mut records: Vec<[u8; 16]> = out[recs.clone()].as_chunks::<16>().0.to_vec();
+        records.reverse();
+        for (i, rec) in records.iter().enumerate() {
+            out[recs.start + i * 16..recs.start + (i + 1) * 16].copy_from_slice(rec);
+        }
+        out
+    }
+
+    /// Regression (print e2e 2026-10-31): krilla's subsetter resolves tables
+    /// with a binary search over the table directory, so a font whose records
+    /// are not sorted by tag loses `glyf`/`CFF` entirely and the subset fails
+    /// with "unknown font kind". OFD writers emit exactly such unsorted
+    /// embedded subset fonts (they are optional-table-stripped and no consumer
+    /// of the render path sorts), so the screen renders fine while every PDF
+    /// export of a real-world document failed. The sink must normalize the
+    /// directory before handing the bytes to krilla.
+    #[test]
+    fn export_survives_unsorted_table_directory() {
+        let raw = unsort_table_directory(FONT);
+        // The shuffled font carries identical tables, so the glyph id mapped
+        // through the original font is valid for it too (swash itself is not
+        // under test here).
+        let font_ref = swash::FontRef::from_index(FONT, 0).expect("TestFont must be readable");
+        let gid = swash::Charmap::from_font(&font_ref).map('D');
+        assert_ne!(gid, 0, "TestFont must map 'D' to a real glyph");
+        let font = imaging::peniko::FontData {
+            data: imaging::peniko::Blob::new(Arc::new(raw)),
+            index: 0,
+        };
+        let mut scene = imaging::record::Scene::new();
+        let mut p = imaging::Painter::new(&mut scene);
+        p.glyphs(
+            &font,
+            imaging::peniko::Color::from_rgba8(0x00, 0x00, 0x00, 0xFF),
+        )
+        .font_size(32.0)
+        .draw(
+            &imaging::peniko::Style::Fill(imaging::peniko::Fill::NonZero),
+            [imaging::record::Glyph {
+                x: 0.0,
+                y: 32.0,
+                id: u32::from(gid),
+            }],
+        );
+        let page = PdfPage {
+            width_px: 200.0,
+            height_px: 100.0,
+            scene,
+        };
+        let bytes = pdf_from_page_scenes(&[page]).expect("unsorted directory must still export");
+        assert!(bytes.starts_with(b"%PDF-"));
     }
 }
