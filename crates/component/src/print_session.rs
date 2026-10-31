@@ -704,6 +704,33 @@ mod tests {
         );
     }
 
+    /// A document swap invalidates detached sessions: after `load_document`
+    /// replaces the document, a session begun on the old one reports stale.
+    #[test]
+    fn doc_swap_flags_session_stale() {
+        let mut c = pages_component(1);
+        let session = c.begin_print(PrintContent::default());
+        assert!(!session.is_stale(), "fresh session is not stale");
+
+        let mut doc = OfdDocument::default();
+        doc.pages.push(a4_page("Q0"));
+        doc.pages.push(a4_page("Q1"));
+        c.load_document(doc);
+        assert!(session.is_stale(), "load_document flags the session stale");
+    }
+
+    /// Same staleness contract for the reset path: `new_document` must also
+    /// flag a session begun on the previous document stale.
+    #[test]
+    fn new_document_flags_session_stale() {
+        let mut c = pages_component(1);
+        let session = c.begin_print(PrintContent::default());
+        assert!(!session.is_stale(), "fresh session is not stale");
+
+        c.new_document();
+        assert!(session.is_stale(), "new_document flags the session stale");
+    }
+
     /// payload_for packs exactly the planned pages with paper from
     /// physical_box and a recorded (non-empty) scene.
     #[test]
