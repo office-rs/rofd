@@ -87,10 +87,18 @@ export interface DialogState {
 /** Events driving the machine. The service layer dispatches everything
  * except `field` (user edits, forwarded by the Vue layer). `planFailed`
  * carries any submit-pipeline failure (plan grammar, PDF export, IPC
- * rejection) — they all land the dialog in the same retryable error state. */
+ * rejection) — they all land the dialog in the same retryable error state;
+ * `discoveryFailed` is the open-time discovery failure (no pipeline runs).
+ *
+ * Pipeline events are staleness-guarded: `planResolved`/`submitting`/
+ * `progress`/`planFailed` are no-ops unless a pipeline/job is actually
+ * active ('planning'/'submitting'). Closing the dialog aborts the pipeline
+ * in the Vue layer, but its awaits keep settling — the late echoes must
+ * not resurrect the reset state into spooling (fix round 1 regression). */
 export type DialogEvent =
   | { type: 'printersLoaded'; printers: PrinterEntry[] }
   | { type: 'field'; patch: Partial<DialogState> }
+  | { type: 'discoveryFailed'; error: string }
   | { type: 'planStarted' }
   | { type: 'planResolved'; pages: number[] }
   | { type: 'planFailed'; error: string }
@@ -176,17 +184,37 @@ export function advance(s: DialogState, e: DialogEvent): DialogState {
         error: wasError ? null : s.error,
       };
     }
+    case 'discoveryFailed':
+      return { ...s, status: 'error', error: e.error };
     case 'planStarted':
       return { ...s, status: 'planning', error: null };
     case 'planResolved':
+      // Staleness guard: only meaningful while a plan is in flight; a late
+      // echo after reset/close (idle) or failure (error) is a no-op.
+      if (s.status !== 'planning') {
+        return s;
+      }
       // Still busy (PDF export + IPC submit follow); the plan is stored so
       // submit reads the latest resolution.
       return { ...s, pages: e.pages, status: 'planning' };
     case 'planFailed':
+      // Staleness guard: pipeline failures only land while the pipeline
+      // runs; after reset they are late echoes of an aborted attempt.
+      if (s.status !== 'planning' && s.status !== 'submitting') {
+        return s;
+      }
       return { ...s, status: 'error', error: e.error, pages: [] };
     case 'submitting':
+      // Staleness guard: the IPC job id only means anything while the
+      // pipeline that created it still owns the dialog.
+      if (s.status !== 'planning') {
+        return s;
+      }
       return { ...s, status: 'submitting', error: null, jobId: e.jobId };
     case 'progress': {
+      if (s.status !== 'submitting') {
+        return s;
+      }
       const failed = e.state === 'Failed';
       return {
         ...s,

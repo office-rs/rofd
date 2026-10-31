@@ -100,4 +100,41 @@ describe('print dialog state machine', () => {
     expect(s.jobId).toBe(7);
     expect(s.error).toBeNull();
   });
+
+  // ⑥ Regression (fix round 1): closing the dialog mid-planning aborts the
+  // pipeline in the Vue layer, but its awaits keep settling — the late
+  // planResolved/submitting/progress/planFailed echoes must be no-ops so a
+  // cancelled dialog can never resurrect into spooling.
+  it('late pipeline events after reset do not resurrect the pipeline', () => {
+    let s = advance(initialDialogState(DOC_A4), { type: 'planStarted' });
+    s = advance(s, { type: 'reset' });
+    s = advance(s, { type: 'planResolved', pages: [1, 2] });
+    s = advance(s, { type: 'submitting', jobId: 9 });
+    s = advance(s, {
+      type: 'progress',
+      jobId: 9,
+      state: 'Spooling',
+      pagesDone: 1,
+      pagesTotal: 2,
+      error: null,
+    });
+    s = advance(s, { type: 'planFailed', error: 'boom' });
+    expect(s.status).toBe('idle');
+    expect(s.pages).toEqual([]);
+    expect(s.jobId).toBeNull();
+    expect(s.jobProgress).toBeNull();
+    expect(s.error).toBeNull();
+  });
+
+  // ⑦ Discovery failures (dialog open, no pipeline running) surface through
+  // their own event — distinct from planFailed, which is pipeline-scoped.
+  it('discovery failures surface as a retryable error', () => {
+    const s = advance(initialDialogState(DOC_A4), {
+      type: 'discoveryFailed',
+      error: 'spooler down',
+    });
+    expect(s.status).toBe('error');
+    expect(s.error).toBe('spooler down');
+    expect(s.printers).toEqual([]);
+  });
 });

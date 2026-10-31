@@ -210,6 +210,12 @@ let services: PrintDialogServices | null = null;
 /** Preview generation epoch: stale async exports are dropped. */
 let previewSeq = 0;
 let progressOff: (() => void) | null = null;
+/** Dialog-session epoch, bumped on close/reset (and re-open). Async
+ * pipelines (discovery, submit) capture it at start and bail at every
+ * checkpoint once the session ended: closing during 'planning' must abort
+ * the pipeline — its awaits keep settling, but no state advance and no
+ * `print_pdf` side effect may follow (fix round 1). */
+let session = 0;
 
 const busy = computed(
   () => state.value.status === 'planning' || state.value.status === 'submitting',
@@ -259,6 +265,7 @@ function errText(e: unknown): string {
 
 /** Fresh state each open: discovery + document paper defaults. */
 async function openDialog(): Promise<void> {
+  const epoch = ++session;
   state.value = initialDialogState({ paper: 'A4', orientation: 'Portrait' });
   const ofd = props.ofd;
   if (!ofd) {
@@ -276,19 +283,29 @@ async function openDialog(): Promise<void> {
   findingPrinters.value = true;
   try {
     const printers = await services.discover();
+    if (epoch !== session) {
+      return; // dialog closed mid-discovery: drop the late result
+    }
     state.value = advance(state.value, { type: 'printersLoaded', printers });
   } catch (e) {
-    state.value = advance(state.value, {
-      type: 'planFailed',
-      error: `打印机发现失败：${errText(e)}`,
-    });
+    if (epoch === session) {
+      state.value = advance(state.value, {
+        type: 'discoveryFailed',
+        error: `打印机发现失败：${errText(e)}`,
+      });
+    }
   } finally {
-    findingPrinters.value = false;
+    if (epoch === session) {
+      findingPrinters.value = false;
+    }
   }
 }
 
 function closeDialog(): void {
-  // A job still in flight when the user closes: cancel it fire-and-forget.
+  // Abort any in-flight pipeline first: session bump makes their next
+  // checkpoint a silent bail (planning-phase close), and a live spool job
+  // is cancelled through the shell (submitting-phase close).
+  session++;
   if (state.value.status === 'submitting' && state.value.jobId !== null) {
     void services?.cancel(state.value.jobId);
   }
@@ -367,12 +384,15 @@ watch(
 
 /** Confirm: planPages → exportPdf(pages) → base64 → IPC print_pdf →
  * progress events → terminal close. Every step's failure lands in the
- * machine's error state (retryable); success closes the dialog. */
+ * machine's error state (retryable); success closes the dialog. Every
+ * checkpoint bails silently if the dialog closed mid-pipeline (session
+ * epoch) — a cancelled dialog must never spool. */
 async function submit(): Promise<void> {
   const svc = services;
   if (!svc || busy.value) {
     return;
   }
+  const epoch = session;
   const s0 = state.value;
   state.value = advance(s0, { type: 'planStarted' });
   try {
@@ -385,6 +405,9 @@ async function submit(): Promise<void> {
       s0.parity,
       props.currentPage + 1,
     );
+    if (epoch !== session) {
+      return; // closed during planning: abort before anything spools
+    }
     state.value = advance(state.value, { type: 'planResolved', pages });
     // 2. Export exactly the planned pages with the content flags.
     const pdf = await svc.exportPdf({
@@ -393,12 +416,20 @@ async function submit(): Promise<void> {
       annotations: s0.annotations,
       seal: s0.seal,
     });
+    if (epoch !== session) {
+      return; // closed during export: abort before the IPC submit
+    }
     // 3. Spool via the shell; progress flows back as print-progress events.
     const jobId = await svc.submit(toBase64(pdf), buildSettingsWire(state.value), props.jobTitle);
+    if (epoch !== session) {
+      // The job was created after the close: kill it, then bail.
+      void svc.cancel(jobId);
+      return;
+    }
     state.value = advance(state.value, { type: 'submitting', jobId });
     progressOff?.();
     progressOff = svc.onProgress((p) => {
-      if (p.jobId !== jobId) {
+      if (epoch !== session || p.jobId !== jobId) {
         return;
       }
       state.value = advance(state.value, { type: 'progress', ...p });
@@ -410,6 +441,9 @@ async function submit(): Promise<void> {
       }
     });
   } catch (e) {
+    if (epoch !== session) {
+      return; // closed: the failure belongs to an aborted attempt
+    }
     console.error('[rofd] print submit failed:', e);
     state.value = advance(state.value, { type: 'planFailed', error: errText(e) });
   }
