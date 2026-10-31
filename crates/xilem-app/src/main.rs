@@ -101,6 +101,18 @@ struct ContextMenuState {
     id: AnnotationId,
 }
 
+/// What a queued host command reports back through `save_outcome`.
+#[derive(Debug)]
+enum HostOutcome {
+    /// A save of the OFD document: success clears `modified` (and promotes
+    /// a pending Save-As path); failure keeps it set.
+    Save(Result<(), String>),
+    /// A PDF export: never touches `modified` in either direction — an
+    /// export does not persist annotations, and its failure must not
+    /// dirty a clean document. Errors are logged like save errors.
+    Export(Result<(), String>),
+}
+
 /// Combined host state — plain data. Every mutation flows through xilem
 /// (button handlers, ofd-view handlers), so no locks guard the state.
 struct AppState {
@@ -114,12 +126,12 @@ struct AppState {
     modified: bool,
     /// Body-text selection mirror; gates the markup buttons.
     has_selection: bool,
-    /// Result of the latest queued save, written by the command closure
-    /// and drained in `app_logic` before the next view build. The
-    /// modified mirror is never cleared until a save reports success, so
-    /// a failed save (disk full / permission / locked path) cannot be
-    /// mistaken for a clean document.
-    save_outcome: Arc<Mutex<Option<Result<(), String>>>>,
+    /// Result of the latest queued file operation, written by the command
+    /// closure and drained in `app_logic` before the next view build.
+    /// `Save` outcomes drive the modified mirror (never cleared until a
+    /// save reports success, so a failed save cannot be mistaken for a
+    /// clean document); `Export` outcomes are logged only.
+    save_outcome: Arc<Mutex<Option<HostOutcome>>>,
     /// Save-As target waiting for its queued save result. Promoted to
     /// `file` only when the save reports success.
     pending_save_as_path: Option<PathBuf>,
@@ -161,24 +173,34 @@ impl AppState {
 
 // --- File operations ---
 
-/// Drain the queued save outcome before building the view. A successful
-/// save clears the modified mirror; a failed one leaves it set (and logs
-/// the error), so the next close/save cannot treat the document as clean.
+/// Drain the queued file-operation outcome before building the view. A
+/// successful save clears the modified mirror; a failed one leaves it set
+/// (and logs the error), so the next close/save cannot treat the document
+/// as clean. An export outcome never touches the mirror: export does not
+/// persist annotations (success) and does not dirty the document
+/// (failure); only its errors are logged.
 fn consume_save_outcome(app: &mut AppState) {
     let Some(outcome) = app.save_outcome.lock().unwrap().take() else {
         return;
     };
     match outcome {
-        Ok(()) => {
-            app.modified = false;
-            if let Some(path) = app.pending_save_as_path.take() {
-                app.file = Some(path);
+        HostOutcome::Save(result) => match result {
+            Ok(()) => {
+                app.modified = false;
+                if let Some(path) = app.pending_save_as_path.take() {
+                    app.file = Some(path);
+                }
             }
-        }
-        Err(e) => {
-            app.modified = true;
-            app.pending_save_as_path = None;
-            eprintln!("[ERROR] save failed: {e}");
+            Err(e) => {
+                app.modified = true;
+                app.pending_save_as_path = None;
+                eprintln!("[ERROR] save failed: {e}");
+            }
+        },
+        HostOutcome::Export(result) => {
+            if let Err(e) = result {
+                eprintln!("[ERROR] export failed: {e}");
+            }
         }
     }
 }
@@ -226,11 +248,11 @@ fn save_to(app: &mut AppState, path: PathBuf) {
     let outcome = app.save_outcome.clone();
     push(app, move |c| {
         let document = c.document().clone();
-        *outcome.lock().unwrap() = Some(host::document_io::save_ofd(
+        *outcome.lock().unwrap() = Some(HostOutcome::Save(host::document_io::save_ofd(
             &document,
             package.as_ref(),
             &path,
-        ));
+        )));
     });
 }
 
@@ -255,6 +277,25 @@ fn do_save_as(app: &mut AppState) {
     // Spec §4.4: Save As does not mint a PackageHandle; saves stay
     // full-write until the file is opened again. The path is promoted to
     // `file` only after the queued save reports success.
+}
+
+/// Export the current document as a PDF. The snapshot runs at command
+/// time against the live component (same rule as `save_to`); the result
+/// rides `save_outcome` as `HostOutcome::Export`, which never touches the
+/// modified mirror — an export does not persist annotations.
+fn do_export_pdf(app: &mut AppState) {
+    let Some(path) = FileDialog::new()
+        .add_filter("PDF 文件", &["pdf"])
+        .set_file_name("document.pdf")
+        .save_file()
+    else {
+        return;
+    };
+    let outcome = app.save_outcome.clone();
+    push(app, move |c| {
+        *outcome.lock().unwrap() =
+            Some(HostOutcome::Export(host::export_pdf::export_pdf(c, &path)));
+    });
 }
 
 /// Load the command-line path argument if present.
@@ -305,7 +346,12 @@ fn app_logic(app: &mut AppState) -> impl WidgetView<AppState> + use<> {
         .padding(BTN_PAD)
         .border_width(Length::ZERO)
         .corner_radius(Length::const_px(2.0));
-    let file_row = flex_row((btn_new, btn_open, btn_save)).gap(Length::const_px(2.0));
+    let btn_export_pdf = text_button("导出 PDF", |app: &mut AppState| do_export_pdf(app))
+        .padding(BTN_PAD)
+        .border_width(Length::ZERO)
+        .corner_radius(Length::const_px(2.0));
+    let file_row =
+        flex_row((btn_new, btn_open, btn_save, btn_export_pdf)).gap(Length::const_px(2.0));
 
     // --- tool row (same grouping as the old host) ---
     let btn_hand = tool_button("手型", Tool::Hand);
@@ -483,7 +529,7 @@ mod tests {
     fn save_success_clears_modified() {
         let mut app = AppState::new();
         app.modified = true;
-        *app.save_outcome.lock().unwrap() = Some(Ok(()));
+        *app.save_outcome.lock().unwrap() = Some(HostOutcome::Save(Ok(())));
         consume_save_outcome(&mut app);
         assert!(!app.modified);
         assert!(app.save_outcome.lock().unwrap().is_none());
@@ -493,7 +539,7 @@ mod tests {
     fn save_failure_keeps_modified_and_logs() {
         let mut app = AppState::new();
         app.modified = true;
-        *app.save_outcome.lock().unwrap() = Some(Err("disk full".to_string()));
+        *app.save_outcome.lock().unwrap() = Some(HostOutcome::Save(Err("disk full".to_string())));
         consume_save_outcome(&mut app);
         assert!(app.modified);
         assert!(app.save_outcome.lock().unwrap().is_none());
@@ -512,7 +558,7 @@ mod tests {
         let mut app = AppState::new();
         app.modified = true;
         app.pending_save_as_path = Some(PathBuf::from("new-copy.ofd"));
-        *app.save_outcome.lock().unwrap() = Some(Ok(()));
+        *app.save_outcome.lock().unwrap() = Some(HostOutcome::Save(Ok(())));
         consume_save_outcome(&mut app);
         assert_eq!(app.file, Some(PathBuf::from("new-copy.ofd")));
         assert!(app.pending_save_as_path.is_none());
@@ -525,10 +571,51 @@ mod tests {
         app.file = Some(PathBuf::from("original.ofd"));
         app.modified = true;
         app.pending_save_as_path = Some(PathBuf::from("new-copy.ofd"));
-        *app.save_outcome.lock().unwrap() = Some(Err("access denied".to_string()));
+        *app.save_outcome.lock().unwrap() =
+            Some(HostOutcome::Save(Err("access denied".to_string())));
         consume_save_outcome(&mut app);
         assert_eq!(app.file, Some(PathBuf::from("original.ofd")));
         assert!(app.pending_save_as_path.is_none());
+        assert!(app.modified);
+    }
+
+    #[test]
+    fn export_success_does_not_clear_modified() {
+        // Export does not persist annotations: a successful export must
+        // leave the unsaved-changes mirror exactly as it was.
+        let mut app = AppState::new();
+        app.modified = true;
+        *app.save_outcome.lock().unwrap() = Some(HostOutcome::Export(Ok(())));
+        consume_save_outcome(&mut app);
+        assert!(app.modified, "export success must not clear modified");
+        assert!(app.save_outcome.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn export_failure_does_not_dirty_clean_document() {
+        // A failed export is not a document change either: a clean
+        // document stays clean (only the error is logged).
+        let mut app = AppState::new();
+        app.modified = false;
+        *app.save_outcome.lock().unwrap() = Some(HostOutcome::Export(Err("disk full".to_string())));
+        consume_save_outcome(&mut app);
+        assert!(!app.modified, "export failure must not set modified");
+    }
+
+    #[test]
+    fn export_outcome_never_promotes_pending_save_as_path() {
+        // An export arriving while a Save-As is pending must not consume
+        // the pending path: only a successful save promotes it.
+        let mut app = AppState::new();
+        app.modified = true;
+        app.pending_save_as_path = Some(PathBuf::from("new-copy.ofd"));
+        *app.save_outcome.lock().unwrap() = Some(HostOutcome::Export(Ok(())));
+        consume_save_outcome(&mut app);
+        assert_eq!(
+            app.pending_save_as_path,
+            Some(PathBuf::from("new-copy.ofd")),
+            "export must not promote or clear a pending Save-As path"
+        );
         assert!(app.modified);
     }
 }

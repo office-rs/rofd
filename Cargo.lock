@@ -8082,6 +8082,7 @@ dependencies = [
  "rfd 0.15.4",
  "rofd-component",
  "rofd-dom",
+ "rofd-export",
  "rofd-io",
  "rofd-xilem-view",
  "wgpu",

@@ -61,10 +61,15 @@ impl Drop for TempFileGuard {
     }
 }
 
-/// Write bytes to a sibling `.ofd.tmp` file, then rename over destination.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let mut tmp: PathBuf = path.to_path_buf();
-    tmp.set_extension("ofd.tmp");
+/// Write bytes to a sibling `<dest>.tmp` file, then rename over the
+/// destination. Shared by OFD save and PDF export; for `.ofd` targets the
+/// temp name is identical to the previous `set_extension("ofd.tmp")`
+/// form, and it now derives from the destination instead of hardcoding
+/// the OFD extension.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let mut tmp = path.as_os_str().to_os_string();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
     let _guard = TempFileGuard(tmp.clone());
     std::fs::write(&tmp, bytes).map_err(|e| format!("write {}: {e}", tmp.display()))?;
     if let Err(e) = std::fs::rename(&tmp, path) {

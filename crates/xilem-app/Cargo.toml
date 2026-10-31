@@ -8,6 +8,7 @@ rofd-xilem-view = { workspace = true }
 rofd-component = { workspace = true }
 rofd-dom = { workspace = true }
 rofd-io = { workspace = true }
+rofd-export = { workspace = true }
 xilem = { workspace = true }
 rfd = { workspace = true }
 wgpu = { workspace = true }
