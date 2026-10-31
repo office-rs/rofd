@@ -7,7 +7,9 @@
 //! — gray desk / white page LO-style paper preview).
 
 use crate::print_dialog_state::{advance, DialogEvent, DialogState, Labels};
-use office_rs_print::{ColorMode, Duplex, Orientation, PageRange, Paper, Parity, PrintSettings};
+use office_rs_print::{
+    ColorMode, Duplex, Orientation, PageRange, Paper, Parity, PrintSettings, SettingsError,
+};
 use rofd_component::PrintContent;
 use std::sync::{Arc, Mutex};
 use xilem::masonry::imaging::kurbo::{Affine, Rect, Size};
@@ -73,6 +75,13 @@ pub struct PrintUi {
     /// [`rofd_component::OfdComponent::print_direct`] in a command (the
     /// dialog's closures cannot reach the component).
     pub pending: Option<(Option<String>, PrintSettings, PrintContent)>,
+    /// Whether [`PrintUi::sync_document_defaults`] already ran against a
+    /// non-empty material for this dialog. The open-time materialize
+    /// command drains one rebuild LATER, so the host re-syncs in its
+    /// dialog drain instead of at open time (papers are content-independent,
+    /// so once per dialog is enough — a `content_dirty` re-materialize
+    /// does not reset this).
+    pub defaults_synced: bool,
 }
 
 /// Host action: mutates the print UI (cancel / submit are host-owned).
@@ -100,6 +109,7 @@ impl PrintUi {
             on_submit: None,
             exit: false,
             pending: None,
+            defaults_synced: false,
         }
     }
 
@@ -137,6 +147,23 @@ impl PrintUi {
 pub(crate) fn page_clamped(ui: &PrintUi) -> usize {
     let total = ui.page_count();
     ui.page.min(total.saturating_sub(1))
+}
+
+/// Validation-error status line: each [`SettingsError`] mapped to a short
+/// zh string (this is the dialog's primary validation feedback surface —
+/// Rust `Debug` output has no place in the zh UI). The match is exhaustive
+/// so a new office-rs-print variant fails the build here, forcing a
+/// mapping instead of silently falling back.
+pub(crate) fn errors_status_line(errors: &[SettingsError], failed_label: &str) -> String {
+    let detail = errors
+        .iter()
+        .map(|e| match e {
+            SettingsError::InvalidRangeSpec { reason } => format!("页码范围无效：{reason}"),
+            SettingsError::RangeSpecTooLong { len } => format!("页码范围过长（{len} 字符）"),
+        })
+        .collect::<Vec<_>>()
+        .join("；");
+    format!("{failed_label}: {detail}")
 }
 
 /// The print screen view. `on_cancel`/`on_submit` are host actions (state
@@ -334,12 +361,17 @@ pub fn print_dialog_view<State: HasPrintUi + 'static>(
     ));
 
     let status_text = if !ui.state.errors.is_empty() {
-        format!("{}: {:?}", l.failed, ui.state.errors)
+        errors_status_line(&ui.state.errors, &l.failed)
     } else if !ui.status.is_empty() {
         ui.status.clone()
     } else {
         String::new()
     };
+    // Submit gating: the state machine's can_submit() (ready phase, no
+    // validation errors, printers discovered) AND no in-flight submission
+    // (pending not yet drained / a live job) — mirrors the host-side
+    // on_submit guard so a double click cannot spool a duplicate job.
+    let can_submit = ui.state.can_submit() && ui.pending.is_none() && ui.job.is_none();
     let actions_row = flex_row((
         text_button(l.cancel.clone(), |state: &mut State| {
             let Some(ui) = state.print_ui() else { return };
@@ -352,7 +384,8 @@ pub fn print_dialog_view<State: HasPrintUi + 'static>(
             if let Some(f) = ui.on_submit.clone() {
                 f(ui);
             }
-        }),
+        })
+        .disabled(!can_submit),
     ));
 
     let settings_col = flex_col((
@@ -527,5 +560,42 @@ mod tests {
         let ui = ui_with_material(PrintMaterial::default());
         assert_eq!(ui.page_count(), 0);
         assert_eq!(page_clamped(&ui), 0);
+    }
+
+    /// A fresh dialog has not yet synced its paper defaults (the host's
+    /// drain re-syncs once the materialize command lands).
+    #[test]
+    fn fresh_dialog_is_defaults_unsynced() {
+        let ui = ui_with_material(PrintMaterial::default());
+        assert!(!ui.defaults_synced);
+    }
+
+    /// Validation errors render as zh strings behind the failed label,
+    /// never as Rust Debug output (Carry B).
+    #[test]
+    fn validation_errors_render_as_chinese_status() {
+        let errors = [
+            SettingsError::InvalidRangeSpec {
+                reason: "invalid page number \"x\"".to_string(),
+            },
+            SettingsError::RangeSpecTooLong { len: 201 },
+        ];
+        let line = errors_status_line(&errors, "打印失败");
+        assert!(
+            line.contains("页码范围无效：invalid page number \"x\""),
+            "invalid spec mapped to zh: {line}"
+        );
+        assert!(
+            line.contains("页码范围过长（201 字符）"),
+            "too-long spec mapped to zh: {line}"
+        );
+        assert!(
+            line.starts_with("打印失败: "),
+            "failed label prefixes: {line}"
+        );
+        assert!(
+            !line.contains("SettingsError"),
+            "no Rust Debug leaks: {line}"
+        );
     }
 }

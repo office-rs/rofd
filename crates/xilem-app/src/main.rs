@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use office_rs_print::{JobHandle, JobState};
+use office_rs_print::{JobHandle, JobState, PageRange};
 use rfd::FileDialog;
 use rofd_component::{
     ContextTarget, CreateKind, OfdConfig, PrintContent, Tool, ViewEvent, ZoomMode,
@@ -367,9 +367,11 @@ fn poll_job_terminal(ui: &mut PrintUi) -> bool {
         JobState::Failed => Some(format!(
             "{}: {}",
             ui.labels.failed,
-            snapshot.error.as_deref().unwrap_or("unknown error")
+            // Worker error text rides along when present; the fallback is
+            // zh, not an English fragment (the status line is zh UI copy).
+            snapshot.error.as_deref().unwrap_or("未知错误")
         )),
-        JobState::Aborted => Some(format!("{}: cancelled", ui.labels.failed)),
+        JobState::Aborted => Some(format!("{}: 已取消", ui.labels.failed)),
         JobState::Spooling | JobState::Rendering => None,
     };
     match status {
@@ -426,6 +428,14 @@ fn do_print(app: &mut AppState) {
     }
     let content = PrintContent::default();
     let material = app.print_material.clone();
+    // Reset the shared material BEFORE queueing the materialize command.
+    // The command drains one rebuild later; until then the material would
+    // still hold the PREVIOUS dialog's pages, and the drain-time defaults
+    // sync (below) must not read those. Empty material = sync no-op; the
+    // fresh pages land with the materialize drain and trigger the sync.
+    if let Ok(mut target) = material.lock() {
+        *target = PrintMaterial::default();
+    }
     push(app, move |c| {
         let fresh = materialize_print_material(c, content);
         if let Ok(mut target) = material.lock() {
@@ -434,9 +444,10 @@ fn do_print(app: &mut AppState) {
     });
     let mut ui = PrintUi::new(app.print_material.clone(), true);
     // Open on the editor's current page (1-based mirror, clamped into the
-    // document), not page 0.
+    // document), not page 0. Paper defaults are NOT synced here — the
+    // material is empty until the materialize command drains; the host's
+    // dialog drain syncs once it lands (drain_print_dialog step ③).
     ui.page = (app.current_page - 1).min(app.doc_pages - 1);
-    ui.sync_document_defaults();
     // Discovery drain: the worker thread races the dialog open, so drain
     // bounded until the terminal message lands (rword do_print pattern).
     let rx = PrintServices::discover(&NativePrintServices);
@@ -452,9 +463,12 @@ fn do_print(app: &mut AppState) {
         }
     }
     ui.printers = ui.state.printers.clone();
-    // The submit precheck freezes the editor page at open time: the
-    // Backstage overlay covers the editor, so the mirror cannot move
-    // while the dialog is open.
+    // The submit precheck resolves "current page" against the open-time
+    // editor page. The Backstage overlay does NOT take keyboard focus, so
+    // the mirror CAN move while the dialog is open (narrow divergence
+    // under keyboard scroll) — the submit closure therefore freezes
+    // PageRange::Current into a Custom spec of the precheck-resolved page,
+    // so the precheck and the spooled job always agree.
     let editor_page = app.current_page;
     ui.on_cancel = Some(Arc::new(|ui| {
         if let Some(job) = ui.job.as_ref() {
@@ -464,23 +478,48 @@ fn do_print(app: &mut AppState) {
         ui.status.clear();
         ui.exit = true;
     }));
-    ui.on_submit = Some(Arc::new(move |ui| match submit_precheck(ui, editor_page) {
-        Ok(_) => {
-            ui.pending = Some((ui.settings.printer.clone(), ui.settings.clone(), ui.content));
+    ui.on_submit = Some(Arc::new(move |ui| {
+        // In-flight guard: no second pending while one awaits its drain or
+        // a job is live — a double submit would spool a duplicate job.
+        if ui.pending.is_some() || ui.job.is_some() {
+            return;
         }
-        Err(message) => ui.status = message,
+        // Zero-printer gate: the discovered list is empty, so the async
+        // default-printer failure path must not be reachable from submit.
+        if ui.printers.is_empty() {
+            ui.status = ui.labels.no_printers.clone();
+            return;
+        }
+        match submit_precheck(ui, editor_page) {
+            Ok(pages) => {
+                // Freeze the settings snapshot: translate Current into a
+                // Custom spec of the precheck-resolved page so
+                // print_direct (which re-resolves Current against the
+                // LIVE editor page) cannot diverge from the precheck.
+                let mut frozen = ui.settings.clone();
+                if frozen.range == PageRange::Current {
+                    let page = pages.last().copied().unwrap_or(editor_page);
+                    frozen.range = PageRange::Custom {
+                        spec: page.to_string(),
+                    };
+                }
+                ui.pending = Some((ui.settings.printer.clone(), frozen, ui.content));
+            }
+            Err(message) => ui.status = message,
+        }
     }));
     app.print = Some(ui);
 }
 
 /// Print-dialog drain at the top of every `app_logic` pass, in a fixed
 /// order: ① poll the live job for a terminal state; ② the exit flag
-/// closes the overlay; ③ a content-flag edit re-materializes the preview;
-/// ④ a confirmed submit becomes a `print_direct` command writing its
-/// JobHandle into the shared slot; ⑤ a handle landed in the slot becomes
-/// the dialog's live job. ④'s command runs at the next rebuild drain;
-/// ⑤ picks the handle up on the HostCommandWake pass that follows
-/// (phase-1 contract 1).
+/// closes the overlay; ③ the first non-empty material syncs the
+/// paper/orientation defaults (once per dialog); ④ a content-flag edit
+/// re-materializes the preview; ⑤ a confirmed submit becomes a
+/// `print_direct` command writing its JobHandle into the shared slot;
+/// ⑥ a handle landed in the slot becomes the dialog's live job. ④/⑤'s
+/// commands run at the next rebuild drain; ⑥ picks the handle up on the
+/// HostCommandWake pass that follows (phase-1 contract 1).
 fn drain_print_dialog(app: &mut AppState) {
     // ① terminal-state polling.
     if let Some(ui) = app.print.as_mut() {
@@ -499,7 +538,20 @@ fn drain_print_dialog(app: &mut AppState) {
     if app.print.is_none() {
         return;
     }
-    // ③ content-flag edit → re-materialize the preview material.
+    // ③ defaults sync (Fix 1): the open-time materialize command drains
+    // one rebuild after do_print, so the paper/orientation default can
+    // only follow the document HERE, against the fresh material — syncing
+    // at open time would read the empty (or previous document's) pages
+    // and the physical job would carry a stale DEVMODE paper. Once per
+    // dialog: papers are content-independent, so a content_dirty
+    // re-materialize does not need another sync.
+    if let Some(ui) = app.print.as_mut() {
+        if !ui.defaults_synced && ui.page_count() > 0 {
+            ui.sync_document_defaults();
+            ui.defaults_synced = true;
+        }
+    }
+    // ④ content-flag edit → re-materialize the preview material.
     let dirty_content = app.print.as_mut().and_then(|ui| {
         if ui.content_dirty {
             ui.content_dirty = false;
@@ -517,7 +569,7 @@ fn drain_print_dialog(app: &mut AppState) {
             }
         });
     }
-    // ④ confirmed submit → one-call direct print in a command (the only
+    // ⑤ confirmed submit → one-call direct print in a command (the only
     // place the component is reachable); the handle rides the slot.
     let pending = app.print.as_mut().and_then(|ui| ui.pending.take());
     if let Some((printer, settings, content)) = pending {
@@ -527,12 +579,12 @@ fn drain_print_dialog(app: &mut AppState) {
             *slot.lock().unwrap() = Some(handle);
         });
     }
-    // ⑤ handle landed in the slot → the dialog's live job.
+    // ⑥ handle landed in the slot → the dialog's live job.
     let landed = app.print_job_slot.lock().unwrap().take();
     if landed.is_some() {
         if let Some(ui) = app.print.as_mut() {
             ui.job = landed;
-            ui.status = "已提交打印".to_string();
+            ui.status = ui.labels.submitted.clone();
         }
     }
 }
@@ -970,9 +1022,9 @@ mod tests {
     #[test]
     fn poll_job_none_is_noop() {
         let mut ui = ui_with_material(PrintMaterial::default());
-        ui.status = "已提交打印".to_string();
+        ui.status = ui.labels.submitted.clone();
         assert!(!poll_job_terminal(&mut ui));
-        assert_eq!(ui.status, "已提交打印");
+        assert_eq!(ui.status, "已发送到打印机");
     }
 
     /// Materialization fills all three preview vectors for every page,
@@ -1052,5 +1104,172 @@ mod tests {
             2,
             "opening page clamps into the document"
         );
+    }
+
+    /// A component whose pages are landscape A4 (297x210mm) — a defaults
+    /// sync against them must surface as `Orientation::Landscape`.
+    fn landscape_component(n: usize) -> rofd_component::OfdComponent {
+        let mut doc = rofd_dom::OfdDocument::default();
+        for i in 0..n {
+            doc.pages.push(rofd_dom::Page {
+                id: rofd_dom::PageId::new(format!("L{i}")),
+                physical_box: rofd_dom::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 297.0,
+                    h: 210.0,
+                },
+                layers: vec![rofd_dom::Layer::default()],
+                template: None,
+            });
+        }
+        let mut c = rofd_component::OfdComponent::new_native(OfdConfig::new(Arc::new(vec![])));
+        c.load_document(doc);
+        c
+    }
+
+    /// Run every queued host command against `c` (what the ofd view's
+    /// rebuild does one pass later).
+    fn drain_commands(app: &mut AppState, c: &mut rofd_component::OfdComponent) {
+        let commands: Vec<_> = app.commands.lock().unwrap().drain(..).collect();
+        for command in commands {
+            command(c);
+        }
+    }
+
+    /// Fix 1: the paper/orientation default follows the FRESH material.
+    /// The open-time materialize command drains one rebuild later, so the
+    /// sync lives in the dialog drain — an empty material no-ops, the
+    /// first non-empty drain syncs once, and later drains never re-sync.
+    #[test]
+    fn drain_syncs_paper_defaults_once_after_materialize() {
+        let mut app = AppState::new();
+        app.doc_pages = 2;
+        app.current_page = 1;
+        do_print(&mut app);
+
+        // The materialize command has not run yet (it drains on the next
+        // rebuild): the material is empty and the first drain must not
+        // sync — the stale A4/Portrait default survives this pass.
+        drain_print_dialog(&mut app);
+        {
+            let ui = app.print.as_ref().unwrap();
+            assert!(!ui.defaults_synced, "empty material -> sync no-ops");
+            assert_eq!(ui.settings.orientation, Orientation::Portrait);
+        }
+
+        // One rebuild later: the queued materialize command runs against
+        // the component (landscape pages, so the sync is visible).
+        let mut c = landscape_component(2);
+        drain_commands(&mut app, &mut c);
+        drain_print_dialog(&mut app);
+        {
+            let ui = app.print.as_ref().unwrap();
+            assert!(ui.defaults_synced, "first non-empty drain syncs");
+            assert_eq!(ui.settings.paper, Paper::A4);
+            assert_eq!(
+                ui.settings.orientation,
+                Orientation::Landscape,
+                "paper default follows the fresh material, not the stale one"
+            );
+        }
+
+        // Second drain never re-syncs: a manual divergence survives.
+        app.print.as_mut().unwrap().settings.orientation = Orientation::Portrait;
+        drain_print_dialog(&mut app);
+        assert_eq!(
+            app.print.as_ref().unwrap().settings.orientation,
+            Orientation::Portrait,
+            "synced-once flag holds across later drains"
+        );
+    }
+
+    /// Fix 2: a zero-printer dialog must NOT set pending — the async
+    /// default-printer failure path is unreachable from an empty
+    /// discovered list; the zh no-printers label lands in the status.
+    #[test]
+    fn submit_zero_printers_blocks_pending() {
+        let mut app = AppState::new();
+        app.doc_pages = 1;
+        do_print(&mut app);
+        let ui = app.print.as_mut().unwrap();
+        ui.printers.clear();
+        ui.status.clear();
+        let submit = ui.on_submit.clone().expect("do_print wires on_submit");
+        submit(ui);
+        assert!(ui.pending.is_none(), "zero printers must not set pending");
+        assert_eq!(ui.status, "未找到打印机");
+    }
+
+    /// Fix 2: an in-flight submission blocks a second one — a pending not
+    /// yet drained (and a live job) must not be replaced or doubled.
+    #[test]
+    fn submit_while_in_flight_blocks_resubmit() {
+        let mut app = AppState::new();
+        app.doc_pages = 3;
+        do_print(&mut app);
+        let c = component_with_pages(3);
+        let ui = app.print.as_mut().unwrap();
+        ui.material = Arc::new(Mutex::new(materialize_print_material(
+            &c,
+            PrintContent::default(),
+        )));
+        ui.printers = vec!["Fake PDF".into()];
+        let submit = ui.on_submit.clone().expect("do_print wires on_submit");
+
+        // Pending in flight: a second submit must not replace it.
+        ui.settings.printer = Some("second".into());
+        ui.pending = Some((
+            Some("first".into()),
+            ui.settings.clone(),
+            PrintContent::default(),
+        ));
+        submit(ui);
+        let (printer, _, _) = ui.pending.as_ref().unwrap().clone();
+        assert_eq!(printer.as_deref(), Some("first"), "pending is not replaced");
+
+        // Live job: submit must not queue a new pending either.
+        ui.pending = None;
+        ui.job = Some(submit_noop(1, None, 0));
+        submit(ui);
+        assert!(ui.pending.is_none(), "live job blocks a new pending");
+    }
+
+    /// Fix 2 happy path + Carry C freeze: with printers discovered and a
+    /// valid material, submit sets pending — freezing `PageRange::Current`
+    /// into a Custom spec of the precheck-resolved editor page so the
+    /// spooled job can never diverge from what the precheck validated.
+    #[test]
+    fn submit_freezes_current_page_into_custom_spec() {
+        let mut app = AppState::new();
+        app.doc_pages = 3;
+        app.current_page = 2;
+        do_print(&mut app);
+        let c = component_with_pages(3);
+        let ui = app.print.as_mut().unwrap();
+        ui.material = Arc::new(Mutex::new(materialize_print_material(
+            &c,
+            PrintContent::default(),
+        )));
+        ui.printers = vec!["Fake PDF".into()];
+        ui.settings.range = PageRange::Current;
+        let submit = ui.on_submit.clone().expect("do_print wires on_submit");
+        submit(ui);
+        let (_, settings, _) = ui.pending.take().expect("valid submit sets pending");
+        assert_eq!(
+            settings.range,
+            PageRange::Custom {
+                spec: "2".to_string()
+            },
+            "Current freezes to the precheck-resolved editor page"
+        );
+        // Non-Current ranges pass through untouched.
+        ui.settings.range = PageRange::All;
+        submit(ui);
+        let (_, settings, _) = ui
+            .pending
+            .take()
+            .expect("submit works again after the drain consumed pending");
+        assert_eq!(settings.range, PageRange::All);
     }
 }
