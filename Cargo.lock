@@ -4828,6 +4828,7 @@ version = "0.1.0"
 dependencies = [
  "dpi",
  "masonry_testing",
+ "office-rs-print",
  "rofd-component",
  "rofd-dom",
  "xilem",

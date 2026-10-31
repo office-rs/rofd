@@ -7,6 +7,7 @@
 pub mod masonry_events;
 pub mod ofd_view;
 pub mod ofd_widget;
+pub mod print_dialog_state;
 
 pub use ofd_view::{ofd, ofd_with_config, OfdContextMenu, OfdView};
 pub use ofd_widget::{command_queue, OfdCommand, OfdCommandQueue, OfdWidget, OfdWidgetAction};

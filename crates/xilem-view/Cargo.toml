@@ -6,6 +6,9 @@ edition = "2021"
 [dependencies]
 rofd-component = { workspace = true }
 xilem = { workspace = true }
+# Print dialog state machine (spec 2026-10-31 phase 2): validate_settings /
+# PrintSettings type layer for the pure advance transitions.
+office-rs-print = { workspace = true }
 
 [dev-dependencies]
 # Constructing ScrollDelta PixelDelta in masonry_events tests (dpi boundary).
