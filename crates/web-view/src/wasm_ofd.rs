@@ -917,10 +917,16 @@ mod wasm_impl {
         /// (e.g. `["A4", "Portrait"]`) — the print dialog's paper/orientation
         /// defaults. The document's page box is the paper authority (spec
         /// §2.4), so defaults are read from it, never hardcoded in the host.
-        /// Requires a loaded document (indexing page 0).
+        /// A zero-page document (no document loaded) returns the library's
+        /// canonical defaults `["A4", "Portrait"]` — the same paper and
+        /// orientation as `PrintSettings::default()` — instead of indexing
+        /// page 0 and panicking across the wasm boundary.
         #[wasm_bindgen(js_name = firstPagePaper)]
         pub fn first_page_paper(&self) -> Vec<String> {
             let session = self.component.begin_print(PrintContent::default());
+            if session.page_count() == 0 {
+                return vec!["A4".to_string(), "Portrait".to_string()];
+            }
             let (paper, orientation) = session.page_parameters(0);
             vec![format!("{paper:?}"), format!("{orientation:?}")]
         }
