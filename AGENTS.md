@@ -50,7 +50,7 @@ cargo run -p xilem-app --example print_to_file -- test/ru-yuan-ji-lu.ofd target/
 ```bash
 cargo run -p gpui-app                            # 空编辑器（多文档会话制）
 cargo run -p gpui-app -- test/ru-yuan-ji-lu.ofd  # 打开根目录 test/ 下的 .ofd
-cargo run -p gpui-app --example print_to_file -- test/ru-yuan-ji-lu.ofd target/print-probe.out  # 打印手测通道（同 xilem-app 先例）
+cargo run -p gpui-app --example gpui_print_to_file -- test/ru-yuan-ji-lu.ofd target/print-probe.out  # 打印手测通道（同 xilem-app 先例）
 ```
 
 gpui 宿主与 xilem/tauri 两线**并存**（spec 2026-10-31 R1，不承担替代责任）。默认字体宋体（`%WINDIR%\Fonts\simsun.ttc`，读取失败退空配置）；文档声明族经 `font_index.rs` 懒扫描系统字体目录（mmap + name 表全语言提取）按需加载本机字节（tauri 桌面通道同型）。文件对话框走 gpui 原生 `prompt_for_paths`（无 rfd）。手测清单见 `docs/superpowers/manual/2026-11-01-gpui-app-windows-checklist.md`，功能对齐审计见 `docs/superpowers/plans/2026-11-01-gpui-parity-audit.md`。

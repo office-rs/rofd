@@ -69,7 +69,7 @@
 ## 7. 打印
 
 ```bash
-cargo run -p gpui-app --example print_to_file -- test/ru-yuan-ji-lu.ofd target/print-probe.out
+cargo run -p gpui-app --example gpui_print_to_file -- test/ru-yuan-ji-lu.ofd target/print-probe.out
 ```
 
 - [ ] 示例通道：退出码 0，输出 `job state: Done` 且 target/print-probe.out 非空（Microsoft Print to PDF 为默认打印机时为 PDF）
