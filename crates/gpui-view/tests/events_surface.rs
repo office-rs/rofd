@@ -6,7 +6,7 @@
 //! The event surface — kernel callbacks -> `OfdGpuiEvent` queue ->
 //! (paint-drain) cx.emit. The routing function is standalone so it is
 //! headless-testable without a window. Events must not be lost or deduped
-//! between drains (rword review focus #1, carried over).
+//! between drains (gpui-line review focus #1).
 
 use std::sync::Arc;
 

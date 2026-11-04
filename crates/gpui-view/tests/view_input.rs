@@ -408,3 +408,68 @@ fn ctrl_c_writes_body_selection_to_clipboard(cx: &mut TestAppContext) {
         "ctrl+c must write the body selection to the clipboard"
     );
 }
+
+#[gpui::test]
+fn ctrl_x_copies_without_deleting(cx: &mut TestAppContext) {
+    // xilem parity (AGENTS Native Widget contract 5): Ctrl+X is
+    // copy-only — a clipboard write, never a delete and never a history
+    // push (the body is read-only and TextCursor has no extent).
+    let (window, mut vcx) = open_editor(cx, |view| {
+        view.component.set_clock("t".into(), 1);
+        view.component.load_document(body_text_doc());
+        // A TextBox placed OFF the drag path keeps the history non-empty,
+        // so "can_undo unchanged" is a strong assertion.
+        view.component.create_annotation(
+            AnnotationKind::TextBox,
+            PageId::new("P0"),
+            AnnotationPayload::TextBox {
+                rect: Rect {
+                    x: 120.0,
+                    y: 10.0,
+                    w: 60.0,
+                    h: 30.0,
+                },
+                content: "Hello".into(),
+                font: FontId::new("F1"),
+                size: 10.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+            },
+        );
+    });
+    focus_editor(&window, &mut vcx);
+
+    // Same drag geometry as the ctrl+c test: page (31, 25) -> (16, 45).
+    let (page_x, page_y) = page_origin(WIN_W as f64);
+    let at = |x: f64, y: f64| point(px((page_x + x) as f32), px((page_y + y) as f32));
+    vcx.simulate_mouse_down(at(31.0, 25.0), MouseButton::Left, Modifiers::default());
+    vcx.simulate_mouse_move(at(16.0, 45.0), MouseButton::Left, Modifiers::default());
+    vcx.simulate_mouse_up(at(16.0, 45.0), MouseButton::Left, Modifiers::default());
+
+    let can_undo_before = window
+        .update(&mut vcx, |view, _, _| view.component.can_undo())
+        .unwrap();
+    assert!(can_undo_before, "precondition: the history is non-empty");
+
+    vcx.simulate_keystrokes("ctrl-x");
+    let text = cx.read_from_clipboard().and_then(|item| item.text());
+    assert_eq!(
+        text.as_deref(),
+        Some("CD\nE"),
+        "ctrl+x must copy the body selection"
+    );
+    let can_undo_after = window
+        .update(&mut vcx, |view, _, _| {
+            assert_eq!(
+                textbox_content(view),
+                "Hello",
+                "ctrl+x must not delete anything"
+            );
+            view.component.can_undo()
+        })
+        .unwrap();
+    assert_eq!(
+        can_undo_after, can_undo_before,
+        "ctrl+x must not push a transaction"
+    );
+}

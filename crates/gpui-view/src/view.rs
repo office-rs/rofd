@@ -1,9 +1,10 @@
 // Ported from rword@4e0b25b6 (crates/gpui-view/src/view.rs) — rofd
 // divergences: no rich clipboard port (gpui's text clipboard only), the
-// shortcut set is rofd's (no cut — the body is read-only; ctrl+s stays
-// kernel-owned), scroll mapping takes the pointer position for the
-// anchored ZoomAt, and out-of-bounds releases synthesize the bare rofd
-// `PointerUp` shape (no modifiers).
+// shortcut set is rofd's (ctrl+x is copy-only like the xilem line — the
+// body is read-only, nothing is ever deleted; ctrl+s stays kernel-owned),
+// scroll mapping takes the pointer position for the anchored ZoomAt, and
+// out-of-bounds releases synthesize the bare rofd `PointerUp` shape (no
+// modifiers).
 
 //! OfdGpuiView: the gpui Element/Entity hosting an [`OfdComponent`].
 //!
@@ -58,8 +59,9 @@ pub struct OfdGpuiView {
     /// Last mouse position in viewport coords (feed for out-of-bounds
     /// synthetic PointerUp).
     pub(crate) last_mouse: std::cell::Cell<(f32, f32)>,
-    /// Previous effective focus / element size — change detection only.
+    /// Previous effective focus — change detection only.
     pub(crate) had_focus: std::cell::Cell<bool>,
+    /// Previous element size — change detection only.
     pub(crate) last_size: std::cell::Cell<(f32, f32)>,
 }
 
@@ -212,10 +214,13 @@ impl Render for OfdGpuiView {
                 }
                 // Adapter-owned shortcuts intercept BEFORE the kernel
                 // forward: the kernel cannot reach the OS clipboard
-                // (ctrl+c/v), and undo/redo are first-class view commands.
-                // ctrl only (the platform key is not ctrl here); ctrl+s
-                // is NOT intercepted — the kernel owns it (SaveRequested
-                // fires from the KeyDown passthrough).
+                // (ctrl+c/x/v), and undo/redo are first-class view
+                // commands. ctrl only (the platform key is not ctrl
+                // here); ctrl+s is NOT intercepted — the kernel owns it
+                // (SaveRequested fires from the KeyDown passthrough).
+                // ctrl+x is copy-only (xilem parity): the body is
+                // read-only and TextCursor has no extent, so there is
+                // nothing to cut — never delete.
                 let ks = &event.keystroke;
                 let ctrl = ks.modifiers.control;
                 if ctrl && !ks.modifiers.shift {
@@ -232,7 +237,8 @@ impl Render for OfdGpuiView {
                             }
                             return;
                         }
-                        "c" => return this.copy_selection(cx),
+                        // Copy-only: identical path for c and x.
+                        "c" | "x" => return this.copy_selection(cx),
                         "v" => return this.paste_from_clipboard(cx),
                         _ => {}
                     }
