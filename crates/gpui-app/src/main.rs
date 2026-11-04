@@ -13,6 +13,7 @@ use gpui::{prelude::*, px, size, Bounds, KeyBinding, WindowBounds, WindowOptions
 use gpui_kit::platform::application;
 use rofd_component::OfdConfig;
 
+mod font_index;
 mod host;
 mod sessions;
 mod shell;

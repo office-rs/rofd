@@ -12,6 +12,10 @@ rofd-io = { workspace = true }
 rofd-export = { workspace = true }
 rofd-component = { workspace = true }
 rofd-dom = { workspace = true }
+# System font channel (font_index): mmap the system font dirs and extract
+# family names from the name table (same pins as the tauri host line).
+memmap2 = "0.9"
+ttf-parser = "0.25"
 # gpui host bootstrap + UI kit ("assets" feature pairs with the
 # gpui-kit-assets dependency for AllAssets).
 gpui-pre = { workspace = true }

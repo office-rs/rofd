@@ -54,8 +54,9 @@ pub struct AppShell {
     pub sessions: SessionManager,
     /// One-line host status (operation outcomes).
     pub status: String,
-    /// Config stamped onto every new session's editor (Task 11 extends
-    /// this with document-registered fonts).
+    /// Config stamped onto every new session's editor (startup default
+    /// font). Document-declared families are fed per session by the
+    /// system font channel (`font_index`), not through this config.
     font_config: OfdConfig,
     /// Controlled open state for the toolbar Popovers.
     file_menu_open: bool,
@@ -296,6 +297,12 @@ impl AppShell {
         let editor = self.create_editor(cx);
         editor.update(cx, |view, cx| {
             view.component.load_document(loaded.document);
+            // System font channel: the document's declared families are
+            // resolved against the lazily-scanned local font index and the
+            // found files' bytes register into the kernel (font gen bumps,
+            // page caches invalidate). Uninstalled families stay on the
+            // startup default font.
+            crate::font_index::register_required_system_fonts(&mut view.component);
             cx.notify();
         });
         let name = path

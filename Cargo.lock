@@ -3078,11 +3078,13 @@ dependencies = [
  "gpui-kit-assets",
  "gpui-pre",
  "gpui-pre-platform",
+ "memmap2",
  "rofd-component",
  "rofd-dom",
  "rofd-export",
  "rofd-gpui-view",
  "rofd-io",
+ "ttf-parser",
 ]
 
 [[package]]
