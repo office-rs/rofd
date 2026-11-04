@@ -77,9 +77,7 @@ impl FontCache {
     /// callers fall back to skipping the run (matching the degraded-
     /// gracefully stance of the other sink paths).
     ///
-    /// NOTE: the headless test platform's TextSystem is a stub — real
-    /// parsing (distinct ids per family/weight) is window-state verified
-    /// (rword finding, spec §5).
+    /// NOTE: headless platform TextSystem is a stub — real parsing verified only in window state.
     pub fn font_id(&mut self, font_data: &FontData, ts: &TextSystem) -> Option<FontId> {
         let bytes = font_data.data.as_ref();
         let key = (bytes.as_ptr() as usize, bytes.len(), font_data.index);
