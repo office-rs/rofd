@@ -1197,6 +1197,18 @@ impl OfdComponent {
         }
     }
 
+    /// Whether the composed scene is stale (the recompose half of
+    /// [`Self::needs_frame`]). Additive for the gpui host's frame gate:
+    /// `scene_needs_paint` (the draw-retry half) starts `true` and only
+    /// `render()` through a `RenderTarget` clears it, so a host that
+    /// replays `scene()` itself and never calls `render()` would read
+    /// `FrameNeed::Now` forever - such hosts gate on this accessor
+    /// instead. Every repaint-worthy mutation (events, load, fonts,
+    /// tooltip, viewport, blink flips) marks the scene dirty.
+    pub fn scene_dirty(&self) -> bool {
+        self.scene_dirty
+    }
+
     /// Whether the component currently holds effective focus.
     pub fn is_focused(&self) -> bool {
         self.focused

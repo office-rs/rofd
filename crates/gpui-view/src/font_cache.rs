@@ -1,6 +1,6 @@
 // Ported from rword@4e0b25b6 (crates/gpui-view/src/font_cache.rs) — kernel-agnostic halves, imaging IR identical.
 
-//! Font bytes -> gpui `FontId` cache (plan Task 1.3).
+//! Font bytes -> gpui `FontId` cache.
 //!
 //! The Scene IR carries raw font bytes (`peniko::FontData`, TTC face index
 //! included) but no family name, while gpui resolves fonts BY family
@@ -17,11 +17,10 @@ use imaging::peniko::FontData;
 
 /// Face identity parsed from the font's own tables: family name (name
 /// id 1) + OS/2 weight + italic flag. Resolving by family ALONE
-/// collapses real bold/italic faces onto the regular FontId (review
-/// C2): the IR carries the BOLD file's bytes and glyph ids, and a
-/// weight-400 query returns the regular face — painting bold glyph ids
-/// through the regular atlas renders wrong glyphs, not merely wrong
-/// weight.
+/// collapses real bold/italic faces onto the regular FontId: the IR
+/// carries the BOLD file's bytes and glyph ids, and a weight-400 query
+/// returns the regular face — painting bold glyph ids through the
+/// regular atlas renders wrong glyphs, not merely wrong weight.
 pub struct FaceInfo {
     pub family: String,
     pub weight: u16,
@@ -37,7 +36,8 @@ pub fn parse_face(bytes: &[u8], index: u32) -> Option<FaceInfo> {
         }
         // First decodable family record wins (fonts put the canonical/
         // English name first in practice; either record resolves through
-        // the text system — spike 0.1 verified both SimSun and 宋体 do).
+        // the text system — verified for both the English and the
+        // localized SimSun records).
         if family.is_none() {
             family = name.to_string();
         }
@@ -90,7 +90,7 @@ impl FontCache {
         ts.add_fonts(vec![std::borrow::Cow::Owned(bytes.to_vec())])
             .ok()?;
         // Resolve with the FACE's own weight/style so a real bold/italic
-        // face does not collapse onto the regular one (review C2).
+        // face does not collapse onto the regular one.
         let query = gpui::Font {
             family: info.family.into(),
             features: Default::default(),
@@ -114,9 +114,10 @@ mod tests {
 
     #[test]
     fn cache_key_is_ptr_identity_not_content() {
-        // Same Arc -> same entry even though we cannot inspect the map
-        // directly; guard the contract at the type level (pointer key)
-        // and exercise behavior through `font_id` in the integration test.
+        // Guard the keying contract at the type level: cloned Arcs of one
+        // allocation key identically, while two allocations of IDENTICAL
+        // content key differently (content is never hashed). Behavioral
+        // use through `font_id` lives in the integration test.
         let bytes: &[u8] = b"whatever";
         let blob = imaging::peniko::Blob::new(std::sync::Arc::new(bytes.to_vec()));
         let a = FontData::new(blob.clone(), 0);
@@ -132,5 +133,19 @@ mod tests {
             b.index,
         );
         assert_eq!(ka, kb, "cloned Arc of one allocation must key identically");
+
+        let other = FontData::new(
+            imaging::peniko::Blob::new(std::sync::Arc::new(bytes.to_vec())),
+            0,
+        );
+        let ko = (
+            other.data.as_ref().as_ptr() as usize,
+            other.data.as_ref().len(),
+            other.index,
+        );
+        assert_ne!(
+            ka, ko,
+            "distinct allocations must key differently even with identical content"
+        );
     }
 }

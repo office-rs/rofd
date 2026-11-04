@@ -104,8 +104,9 @@ pub struct AppShell {
     pub(crate) print_panel: Option<PrintPanelState>,
     /// Shared spec-input state for the print panel's Custom range field
     /// (one entity, reused across dialogs; its Change subscription
-    /// mirrors the value into the open panel's settings).
-    print_spec_input: Entity<InputState>,
+    /// mirrors the value into the open panel's settings, and the range
+    /// chip syncs pre-fills INTO it — `pub(crate)` for the panel glue).
+    pub(crate) print_spec_input: Entity<InputState>,
 }
 
 impl AppShell {
@@ -220,16 +221,23 @@ impl AppShell {
     fn create_editor(&self, cx: &mut Context<Self>) -> Entity<OfdGpuiView> {
         let config = self.font_config.clone();
         let highlight = self.highlight_color;
+        let now_ms = host_now_ms();
         let editor = cx.new(|cx| {
             let mut view = OfdGpuiView::new(config, cx);
-            // Host-injected annotation clock (Task 4 / xilem precedent:
-            // author "rofd", ts 0 — the library never reads a clock).
-            view.component.set_clock("rofd".into(), 0);
+            // Host-injected annotation clock (xilem/web precedent, minus
+            // the epoch-0 placeholder): author "rofd" + real host wall
+            // time in ms — the library never reads a clock itself
+            // (final-review I-2).
+            view.component.set_clock("rofd".into(), now_ms);
             // Keep the kernel's highlight color in step with the toolbar
             // picker (new sessions inherit the picked color).
             view.component.set_highlight_color(highlight);
             view
         });
+        // Default hover tooltip (V2, parked on the epoch-0 clock until
+        // now): titled author + creation time, UTC — the same formatter
+        // the xilem host installs.
+        GpuiOfdHandle::new(editor.clone()).set_tooltip_enabled(true, cx);
         Self::subscribe_editor(&editor, cx);
         editor
     }
@@ -1830,4 +1838,33 @@ fn hsla_to_rgb(color: gpui::Hsla) -> (u8, u8, u8) {
         (rgba.g * 255.0) as u8,
         (rgba.b * 255.0) as u8,
     )
+}
+
+/// Host wall time in ms since the UNIX epoch (the unit the kernel's
+/// annotation clock and tooltip formatter expect). A clock read BEFORE
+/// the epoch degrades to 0 — never panics.
+fn host_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The clock seed must be MILLISECONDS since the epoch — the unit the
+    /// kernel's tooltip formatter expects (1_783_641_600_000 renders as
+    /// 2026-07-10; a seconds seed would land in 1970). Hosts may read the
+    /// wall clock; the library never does.
+    #[test]
+    fn host_now_ms_is_epoch_milliseconds() {
+        let now_ms = host_now_ms();
+        let before = host_now_ms();
+        assert!(
+            now_ms >= 1_790_000_000_000 && before >= now_ms,
+            "millisecond magnitude and monotonic window: {now_ms}..{before}"
+        );
+    }
 }

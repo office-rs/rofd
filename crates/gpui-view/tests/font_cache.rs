@@ -1,6 +1,6 @@
 // Ported from rword@4e0b25b6 (crates/gpui-view/tests/font_cache.rs) — kernel-agnostic halves, imaging IR identical.
 
-//! Task 1.3 TDD: FontData blob -> gpui FontId cache.
+//! FontData blob -> gpui FontId cache integration.
 //!
 //! The Scene IR carries raw font bytes (`peniko::FontData`, TTC index
 //! included) but no family name, while gpui resolves fonts BY family
@@ -53,11 +53,10 @@ fn cache_resolves_via_text_system(cx: &mut TestAppContext) {
         .expect("second resolution succeeds");
     assert_eq!(first, second, "same blob must resolve to one FontId");
 
-    // NOTE (spike corollary): the HEADLESS test platform's text system is
-    // a stub — every family resolves to the same FontId, so a
-    // fallback-inequality assertion is unprovable here. Real resolution
-    // was verified windowed (spike 0.1: SimSun/宋体/bogus = three distinct
-    // ids); this test proves the cache contract itself: stable id, dedup,
-    // and a Some over the parse+register path.
-    assert_eq!(first, second, "same blob must resolve to one FontId");
+    // NOTE: the HEADLESS test platform's text system is a stub — every
+    // family resolves to the same FontId, so a fallback-inequality
+    // assertion is unprovable here. Real resolution was verified
+    // windowed (SimSun vs a bogus family gave distinct ids); this test
+    // proves the cache contract itself: a stable id, dedup, and a Some
+    // over the parse+register path.
 }

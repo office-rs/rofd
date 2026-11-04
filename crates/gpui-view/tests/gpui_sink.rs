@@ -1,20 +1,26 @@
 // Ported from rword@4e0b25b6 (crates/gpui-view/tests/gpui_sink.rs) — kernel-agnostic halves, imaging IR identical.
 
-//! Task 1.4 TDD: GpuiSink recording half — imaging PaintSink -> PaintCmd.
+//! GpuiSink recording half — imaging PaintSink -> PaintCmd.
 //!
 //! The sink splits in two: the RECORDING half (this test's subject)
 //! translates borrowed imaging draws into owned `PaintCmd`s with the clip
 //! stack resolved per command and transforms baked into geometry — pure,
-//! headless, no gpui Window. The replay half paints cmds into a Window
-//! (Phase 2 app exercises it). No faux-bold logic anywhere: the IR already
-//! double-draws (spike 0.1).
+//! headless, no gpui Window. The image decode cache is external to the
+//! sink (view-owned) so it survives the per-paint sink reset. The replay
+//! half paints cmds into a Window (the app exercises it). No faux-bold
+//! logic anywhere: the IR already double-draws.
 
 use std::sync::Arc;
 
 use imaging::kurbo::{Affine, Rect};
 use imaging::peniko::{self, Color};
 use imaging::Painter;
-use rofd_gpui_view::gpui_sink::{GpuiSink, PaintCmd};
+use rofd_gpui_view::gpui_sink::{GpuiSink, ImageDecodeCache, PaintCmd};
+
+/// A fresh sink over the shared cache — what one paint pass constructs.
+fn sink<'a>(cache: &'a mut ImageDecodeCache) -> GpuiSink<'a> {
+    GpuiSink::new(cache)
+}
 
 fn fixture_font() -> peniko::FontData {
     let bytes =
@@ -24,14 +30,15 @@ fn fixture_font() -> peniko::FontData {
 
 #[test]
 fn transform_bakes_into_geometry() {
-    let mut sink = GpuiSink::new();
+    let mut cache = ImageDecodeCache::new();
+    let mut s = sink(&mut cache);
     {
-        let mut p = Painter::new(&mut sink);
+        let mut p = Painter::new(&mut s);
         p.fill(Rect::new(10.0, 20.0, 110.0, 70.0), Color::BLACK)
             .transform(Affine::scale(2.0))
             .draw();
     }
-    let cmds = sink.finish();
+    let cmds = s.finish();
     assert_eq!(cmds.len(), 1);
     match &cmds[0] {
         PaintCmd::Quad { bounds, .. } => {
@@ -46,9 +53,10 @@ fn transform_bakes_into_geometry() {
 
 #[test]
 fn stroke_width_uniform_scale() {
-    let mut sink = GpuiSink::new();
+    let mut cache = ImageDecodeCache::new();
+    let mut s = sink(&mut cache);
     {
-        let mut p = Painter::new(&mut sink);
+        let mut p = Painter::new(&mut s);
         p.stroke(
             Rect::new(0.0, 0.0, 50.0, 50.0),
             &imaging::kurbo::Stroke {
@@ -60,7 +68,7 @@ fn stroke_width_uniform_scale() {
         .transform(Affine::scale(1.75))
         .draw();
     }
-    let cmds = sink.finish();
+    let cmds = s.finish();
     assert_eq!(cmds.len(), 1);
     match &cmds[0] {
         PaintCmd::Path { width, .. } => {
@@ -78,9 +86,10 @@ fn stroke_width_uniform_scale() {
 #[test]
 fn glyph_run_bakes_transform_into_origin_and_size() {
     let font = fixture_font();
-    let mut sink = GpuiSink::new();
+    let mut cache = ImageDecodeCache::new();
+    let mut s = sink(&mut cache);
     {
-        let mut p = Painter::new(&mut sink);
+        let mut p = Painter::new(&mut s);
         p.glyphs(&font, Color::BLACK)
             .font_size(16.0)
             .transform(Affine::new([2.0, 0.0, 0.0, 2.0, 50.0, 100.0]))
@@ -100,7 +109,7 @@ fn glyph_run_bakes_transform_into_origin_and_size() {
                 ],
             );
     }
-    let cmds = sink.finish();
+    let cmds = s.finish();
     assert_eq!(cmds.len(), 2);
     match (&cmds[0], &cmds[1]) {
         (
@@ -132,12 +141,13 @@ fn glyph_run_bakes_transform_into_origin_and_size() {
 
 #[test]
 fn faux_bold_pair_replays_as_two_cmds() {
-    // The IR already double-draws synthetic bold (spike 0.1: run pair with
+    // The IR already double-draws synthetic bold (a run pair with
     // x-smeared glyphs) — the sink must carry BOTH through untouched.
     let font = fixture_font();
-    let mut sink = GpuiSink::new();
+    let mut cache = ImageDecodeCache::new();
+    let mut s = sink(&mut cache);
     {
-        let mut p = Painter::new(&mut sink);
+        let mut p = Painter::new(&mut s);
         let glyphs = || {
             vec![imaging::record::Glyph {
                 id: 7,
@@ -158,7 +168,7 @@ fn faux_bold_pair_replays_as_two_cmds() {
             }],
         );
     }
-    let cmds = sink.finish();
+    let cmds = s.finish();
     assert_eq!(cmds.len(), 2, "faux-bold pair passes through as two cmds");
     match (&cmds[0], &cmds[1]) {
         (PaintCmd::Glyph { origin: a, .. }, PaintCmd::Glyph { origin: b, .. }) => {
@@ -171,9 +181,10 @@ fn faux_bold_pair_replays_as_two_cmds() {
 
 #[test]
 fn clip_stack_intersects_per_command() {
-    let mut sink = GpuiSink::new();
+    let mut cache = ImageDecodeCache::new();
+    let mut s = sink(&mut cache);
     {
-        let mut p = Painter::new(&mut sink);
+        let mut p = Painter::new(&mut s);
         p.push_fill_clip_transformed(Rect::new(0.0, 0.0, 100.0, 100.0), Affine::IDENTITY);
         p.fill_rect(Rect::new(0.0, 0.0, 5.0, 5.0), Color::BLACK);
         p.push_fill_clip_transformed(Rect::new(50.0, 0.0, 150.0, 100.0), Affine::IDENTITY);
@@ -182,7 +193,7 @@ fn clip_stack_intersects_per_command() {
         p.fill_rect(Rect::new(0.0, 0.0, 5.0, 5.0), Color::BLACK);
         p.pop_clip();
     }
-    let cmds = sink.finish();
+    let cmds = s.finish();
     assert_eq!(cmds.len(), 3);
     let masks: Vec<_> = cmds
         .iter()
@@ -202,4 +213,81 @@ fn imaging_gpui_bounds(x0: f64, y0: f64, x1: f64, y1: f64) -> gpui::Bounds<gpui:
         origin: gpui::point(gpui::px(x0 as f32), gpui::px(y0 as f32)),
         size: gpui::size(gpui::px((x1 - x0) as f32), gpui::px((y1 - y0) as f32)),
     }
+}
+
+/// A 2x1 RGBA8 scene image (red | blue) on one shared Blob.
+fn scene_image() -> peniko::ImageData {
+    peniko::ImageData {
+        data: peniko::Blob::new(Arc::new(vec![255, 0, 0, 255, 0, 0, 255, 255])),
+        format: peniko::ImageFormat::Rgba8,
+        alpha_type: peniko::ImageAlphaType::Alpha,
+        width: 2,
+        height: 1,
+    }
+}
+
+/// Record an image-bearing scene through a FRESH sink over `cache` — the
+/// per-paint shape (the view builds a new sink every frame; the kernel's
+/// page-scene cache hands the SAME image blob to every record).
+fn record_image_once(cache: &mut ImageDecodeCache, image: &peniko::ImageData) -> Vec<PaintCmd> {
+    let mut scene = imaging::record::Scene::new();
+    {
+        let mut p = Painter::new(&mut scene);
+        p.draw_image(image, Affine::IDENTITY);
+    }
+    let mut s = GpuiSink::new(cache);
+    imaging::record::replay(&scene, &mut s);
+    s.finish()
+}
+
+/// Final-review I-1: the decode cache lives OUTSIDE the per-paint sink, so
+/// a scene whose images sit on one Arc of pixels decodes exactly once no
+/// matter how many sinks record it, and every record shares the SAME
+/// `RenderImage` (no per-frame re-decode while the view repaints).
+#[test]
+fn image_decode_cache_survives_the_per_paint_sink() {
+    let image = scene_image();
+    let mut cache = ImageDecodeCache::new();
+    let first = record_image_once(&mut cache, &image);
+    let second = record_image_once(&mut cache, &image);
+
+    assert_eq!(first.len(), 1, "the image draw records one cmd");
+    assert_eq!(cache.len(), 1, "one image cached");
+    assert_eq!(cache.decode_count(), 1, "second record hits the cache");
+    let (a, b) = match (&first[0], &second[0]) {
+        (PaintCmd::Image { image: a, .. }, PaintCmd::Image { image: b, .. }) => {
+            (a.clone(), b.clone())
+        }
+        other => panic!("expected image cmds, got {other:?}"),
+    };
+    assert!(
+        Arc::ptr_eq(&a, &b),
+        "records share one cached RenderImage, not re-decoded copies"
+    );
+}
+
+/// Scene images carry RAW pixels (the kernel decodes PNG/JPEG at compose
+/// time and the brush carries RGBA8 with declared dimensions) — a sink
+/// must turn that into an image cmd, never the degrade path.
+#[test]
+fn raw_rgba_scene_image_records_as_image_cmd() {
+    let image = scene_image();
+    let mut cache = ImageDecodeCache::new();
+    let cmds = record_image_once(&mut cache, &image);
+    assert!(matches!(cmds[0], PaintCmd::Image { .. }));
+    assert_eq!(cache.decode_count(), 1);
+
+    // Dimension-contradicting bytes must degrade (None), not panic.
+    let bad = peniko::ImageData {
+        data: peniko::Blob::new(Arc::new(vec![0u8; 7])), // 2x1 needs 8
+        format: peniko::ImageFormat::Rgba8,
+        alpha_type: peniko::ImageAlphaType::Alpha,
+        width: 2,
+        height: 1,
+    };
+    let cmds = record_image_once(&mut cache, &bad);
+    assert!(
+        !cmds.iter().any(|c| matches!(c, PaintCmd::Image { .. })),
+        "invalid pixel data must not produce an image cmd"
+    );
 }

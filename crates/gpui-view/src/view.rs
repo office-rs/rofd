@@ -9,8 +9,12 @@
 //! OfdGpuiView: the gpui Element/Entity hosting an [`OfdComponent`].
 //!
 //! - `OfdElement::paint` pushes the element size into the kernel as the
-//!   viewport (`set_viewport_size`), recomposes the scene, records it
-//!   through [`GpuiSink`], and replays the commands into the window.
+//!   viewport (`set_viewport_size`), advances the blink tick, and then
+//!   FRAME-GATES the record: the kernel's `needs_frame()` is `Now`
+//!   exactly when the scene is dirty, so a clean scene replays the
+//!   cached `PaintCmd`s instead of re-recording every vsync while the
+//!   view holds focus (final-review I-1). Recording runs through
+//!   [`GpuiSink`] over the view-owned [`ImageDecodeCache`].
 //! - Input arrives as div listeners translated by [`crate::events`]:
 //!   mouse positions are translated window -> viewport by the element
 //!   origin (the inverse of the paint offset); ctrl+wheel zooms anchored
@@ -22,7 +26,8 @@
 //!   and drain into `cx.emit(OfdGpuiEvent)` at the top of each paint.
 //! - The blink loop only requests frames while the element holds focus —
 //!   a hidden or unfocused window stops painting entirely (on-demand
-//!   spirit; the kernel's `tick_blink` owns the 500ms timing).
+//!   spirit; the kernel's `tick_blink` owns the 500ms timing and marks
+//!   the scene dirty when the caret flips, so the gate re-records).
 
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -37,7 +42,7 @@ use rofd_component::{OfdComponent, OfdConfig, ViewEvent};
 use crate::events::{self, ScrollOutcome};
 use crate::events_surface::{EventQueue, OfdGpuiEvent};
 use crate::font_cache::FontCache;
-use crate::gpui_sink::{self, GpuiSink};
+use crate::gpui_sink::{self, GpuiSink, ImageDecodeCache, PaintCmd};
 use crate::ime::ImeBridge;
 
 /// The host-facing editor view. Construct via [`OfdGpuiView::new`] inside
@@ -48,6 +53,16 @@ pub struct OfdGpuiView {
     /// Interior-mutability cache: replay needs `(&mut Window, &mut cache)`
     /// at once, which entity-update scoping cannot express.
     pub(crate) fonts: RefCell<FontCache>,
+    /// Cross-frame image decode cache (final-review I-1): keyed by the
+    /// scene blob's Arc identity, owned by the view so the per-paint
+    /// sink cannot reset it every vsync.
+    pub(crate) images: RefCell<ImageDecodeCache>,
+    /// The last recorded `PaintCmd`s. Re-record is frame-gated (see
+    /// `OfdElement::paint`): a clean scene replays these as-is.
+    pub(crate) paint_cmds: RefCell<Option<Vec<PaintCmd>>>,
+    /// How many times the record path ran — the seam the frame-gate
+    /// tests assert on (one per re-record, none per cached replay).
+    pub(crate) record_count: std::cell::Cell<u32>,
     /// Pull->push IME bridge (composition-only shadow store).
     pub(crate) ime: ImeBridge,
     /// Kernel-callback event queue, drained into cx.emit at paint start.
@@ -74,6 +89,9 @@ impl OfdGpuiView {
             component,
             focus_handle: cx.focus_handle(),
             fonts: RefCell::new(FontCache::new()),
+            images: RefCell::new(ImageDecodeCache::new()),
+            paint_cmds: RefCell::new(None),
+            record_count: std::cell::Cell::new(0),
             ime: ImeBridge::new(),
             events,
             element_origin: std::cell::Cell::new((0.0, 0.0)),
@@ -359,13 +377,13 @@ impl Element for OfdElement {
             gpui::ElementInputHandler::new(bounds, self.view.clone()),
             cx,
         );
-        // Record: viewport push + blink tick + kernel scene -> PaintCmds
-        // (no window state needed). gpui Pixels are LOGICAL px — the
+        // Record (frame-gated) + replay. gpui Pixels are LOGICAL px — the
         // kernel's viewport unit — so no scale-factor division happens
         // here.
-        let cmds = self.view.update(cx, |view, _| {
+        self.view.update(cx, |view, _| {
             let size = (f32::from(bounds.size.width), f32::from(bounds.size.height));
-            if view.last_size.get() != size {
+            let size_changed = view.last_size.get() != size;
+            if size_changed {
                 view.last_size.set(size);
                 view.component
                     .set_viewport_size(size.0 as f64, size.1 as f64);
@@ -373,20 +391,242 @@ impl Element for OfdElement {
             if focused {
                 view.component.tick_blink();
             }
-            view.component.update_scene();
-            let mut sink = GpuiSink::new();
-            imaging::record::replay(view.component.scene(), &mut sink);
-            sink.finish()
+            // Frame gate (final-review I-1): re-record only when the
+            // kernel says the scene changed. `scene_dirty()` is the
+            // recompose half of `needs_frame()` (the draw-retry half can
+            // never clear in this host - it replays `scene()` itself and
+            // never draws through a RenderTarget), and every
+            // repaint-worthy kernel mutation couples to it
+            // (`handle_event` maps `needs_repaint` to a dirty mark, and
+            // so do load_document / font registration / tooltip /
+            // viewport changes; `tick_blink` above dirties on a caret
+            // flip). A clean scene replays the cached cmds instead of
+            // re-recording every vsync of the focused rAF loop; the size
+            // term is belt-and-braces (set_viewport_size already
+            // dirties).
+            let scene_dirty = view.component.scene_dirty();
+            if size_changed || view.paint_cmds.borrow().is_none() || scene_dirty {
+                view.component.update_scene();
+                let cmds = {
+                    let mut images = view.images.borrow_mut();
+                    let mut sink = GpuiSink::new(&mut images);
+                    imaging::record::replay(view.component.scene(), &mut sink);
+                    sink.finish()
+                };
+                view.record_count.set(view.record_count.get() + 1);
+                *view.paint_cmds.borrow_mut() = Some(cmds);
+            }
         });
-        // Replay: cmds -> window, resolving fonts through the shared cache.
+        // Replay: cached cmds -> window, resolving fonts through the
+        // shared cache.
         {
-            let mut fonts = self.view.read(cx).fonts.borrow_mut();
-            gpui_sink::replay(window, &cmds, &mut fonts, bounds.origin);
+            let view = self.view.read(cx);
+            let mut fonts = view.fonts.borrow_mut();
+            let cmds = view.paint_cmds.borrow();
+            let cmds = cmds
+                .as_deref()
+                .expect("the gate above records on the first paint");
+            gpui_sink::replay(window, cmds, &mut fonts, bounds.origin);
         }
         // Keep frames coming only while a caret can blink; an unfocused
         // or hidden window quiesces (no rAF loop, no timers).
         if focused {
             window.request_animation_frame();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Frame-gate tests (final-review I-1): a clean scene replays the
+    //! cached PaintCmds instead of re-recording every paint, while a
+    //! dirtying mutation re-records — and the image decode cache survives
+    //! the per-paint sink across both.
+
+    use super::*;
+    use gpui::{px, size, TestAppContext, VisualTestContext};
+    use rofd_dom::{
+        AnnotationKind, AnnotationPayload, Color, ImageId, Layer, LayerType, NoteIcon, ObjectId,
+        OfdDocument, Page, PageId, PageObject,
+    };
+
+    const WIN_W: f32 = 800.0;
+    const WIN_H: f32 = 600.0;
+
+    fn test_config() -> OfdConfig {
+        OfdConfig::new(Arc::new(vec![])).with_zoom(1.0)
+    }
+
+    /// 2x1 PNG (red | blue) — the kernel decodes it into an RGBA8 scene
+    /// image at compose time, exercising the sink's re-pack path.
+    fn png_bytes() -> Arc<Vec<u8>> {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let img = image::RgbImage::from_raw(2, 1, vec![255, 0, 0, 0, 0, 255]).unwrap();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .unwrap();
+        Arc::new(buf.into_inner())
+    }
+
+    /// One 200x200 mm page carrying one image object.
+    fn image_doc() -> OfdDocument {
+        let mut doc = OfdDocument::default();
+        doc.pages.push(Page {
+            id: PageId::new("P0"),
+            physical_box: rofd_dom::Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 200.0,
+            },
+            layers: vec![Layer {
+                layer_type: LayerType::Body,
+                objects: vec![PageObject::Image(rofd_dom::ImageObject {
+                    id: ObjectId::new("i1"),
+                    boundary: rofd_dom::Rect {
+                        x: 10.0,
+                        y: 10.0,
+                        w: 100.0,
+                        h: 50.0,
+                    },
+                    ctm: None,
+                    image: ImageId::new("I1"),
+                })],
+            }],
+            template: None,
+        });
+        doc.resources.images.insert(ImageId::new("I1"), png_bytes());
+        doc
+    }
+
+    /// A window root that renders nothing (the element under test is
+    /// painted explicitly via `vcx.draw`, so background effect flushes
+    /// cannot add uncontrolled record passes).
+    struct EmptyHost;
+
+    impl Render for EmptyHost {
+        fn render(
+            &mut self,
+            _window: &mut gpui::Window,
+            _cx: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            div().size_full()
+        }
+    }
+
+    /// One explicit paint pass through the view's element (bookkeeping,
+    /// frame gate, record, replay all live in `OfdElement::paint`).
+    fn paint_once(entity: &Entity<OfdGpuiView>, vcx: &mut VisualTestContext) {
+        let entity = entity.clone();
+        vcx.draw(
+            gpui::point(px(0.), px(0.)),
+            size(px(WIN_W), px(WIN_H)),
+            move |_window, _cx| OfdElement { view: entity },
+        );
+    }
+
+    fn open_with_image_doc(cx: &mut TestAppContext) -> Entity<OfdGpuiView> {
+        cx.update(|cx| {
+            cx.new(|cx| {
+                let mut view = OfdGpuiView::new(test_config(), cx);
+                view.component.set_clock("t".into(), 1);
+                view.component.load_document(image_doc());
+                view
+            })
+        })
+    }
+
+    #[gpui::test]
+    fn clean_scene_replays_cached_cmds(cx: &mut TestAppContext) {
+        let window = cx.open_window(size(px(WIN_W), px(WIN_H)), |_, _| EmptyHost);
+        let mut vcx = VisualTestContext::from_window(window.into(), cx);
+        let entity = open_with_image_doc(cx);
+
+        // First paint: record + decode the page image once.
+        paint_once(&entity, &mut vcx);
+        let counts = |cx: &TestAppContext| {
+            cx.read(|app| {
+                let view = entity.read(app);
+                let record_count = view.record_count.get();
+                let decode_count = view.images.borrow().decode_count();
+                let image_cmds = view
+                    .paint_cmds
+                    .borrow()
+                    .as_deref()
+                    .map(|cmds| {
+                        cmds.iter()
+                            .filter(|c| matches!(c, PaintCmd::Image { .. }))
+                            .count()
+                    })
+                    .unwrap_or(0);
+                (record_count, decode_count, image_cmds)
+            })
+        };
+        assert_eq!(
+            counts(cx),
+            (1, 1, 1),
+            "first paint: record + decode once, one image cmd"
+        );
+
+        // Second paint, unchanged scene: REPLAY ONLY — no re-record, no
+        // re-decode (the per-paint sink reset cannot cost either).
+        paint_once(&entity, &mut vcx);
+        assert_eq!(
+            counts(cx),
+            (1, 1, 1),
+            "a clean scene must replay the cached cmds — no re-record, no re-decode"
+        );
+
+        // A dirtying mutation re-records — and still reuses the decode.
+        cx.update(|cx| {
+            entity.update(cx, |view, _| {
+                view.component.create_annotation(
+                    AnnotationKind::Note,
+                    PageId::new("P0"),
+                    AnnotationPayload::Note {
+                        rect: rofd_dom::Rect {
+                            x: 20.0,
+                            y: 20.0,
+                            w: 40.0,
+                            h: 30.0,
+                        },
+                        color: Color::Rgb(255, 200, 0),
+                        content: "n".into(),
+                        icon: NoteIcon::Note,
+                    },
+                );
+            })
+        });
+        paint_once(&entity, &mut vcx);
+        assert_eq!(
+            counts(cx),
+            (2, 1, 1),
+            "a dirty scene re-records and still hits the decode cache"
+        );
+    }
+
+    #[gpui::test]
+    fn viewport_change_invalidates_the_cache(cx: &mut TestAppContext) {
+        let window = cx.open_window(size(px(WIN_W), px(WIN_H)), |_, _| EmptyHost);
+        let mut vcx = VisualTestContext::from_window(window.into(), cx);
+        let entity = open_with_image_doc(cx);
+
+        paint_once(&entity, &mut vcx);
+        let records = |cx: &TestAppContext| cx.read(|app| entity.read(app).record_count.get());
+        assert_eq!(records(cx), 1);
+
+        // Same scene, different element size: the viewport push dirties
+        // the kernel scene, so the next paint re-records.
+        let entity_draw = entity.clone();
+        vcx.draw(
+            gpui::point(px(0.), px(0.)),
+            size(px(400.), px(300.)),
+            move |_window, _cx| OfdElement { view: entity_draw },
+        );
+        assert_eq!(
+            records(cx),
+            2,
+            "a size change re-records even when nothing else moved"
+        );
     }
 }

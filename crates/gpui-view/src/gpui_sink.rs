@@ -1,6 +1,6 @@
 // Ported from rword@4e0b25b6 (crates/gpui-view/src/gpui_sink.rs) — kernel-agnostic halves, imaging IR identical.
 
-//! GpuiSink: imaging `PaintSink` -> recorded `PaintCmd`s (plan Task 1.4).
+//! GpuiSink: imaging `PaintSink` -> recorded `PaintCmd`s.
 //!
 //! Split in two halves so the mapping is fully headless-testable:
 //! - RECORDING (`GpuiSink`): translates borrowed imaging draws into owned
@@ -10,17 +10,24 @@
 //! - REPLAY (`replay`): paints cmds into a `Window`, resolving glyph
 //!   fonts through the shared [`FontCache`].
 //!
+//! Cross-frame state deliberately lives OUTSIDE the per-paint sink (the
+//! view constructs a fresh sink every frame): the image decode cache
+//! ([`ImageDecodeCache`]) is view-owned so decoded pixels survive the
+//! vsync loop, and the degrade log is once-per-process so an unchanged
+//! degradation does not re-log every focused frame (both were final-
+//! review I-1 symptoms; fixed here).
+//!
 //! Degradations (spec §5.4): path clips degrade to their bbox;
 //! groups/masks/composites and blurred rects are skipped with a one-time
 //! log; gradient brushes take the first stop's color. Faux bold needs NO
-//! handling — the IR already double-draws synthetic-bold runs (spike 0.1).
+//! handling — the IR double-draws synthetic-bold runs.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use gpui::{fill, px, Bounds, Corners, Hsla, PaintQuad, Path, PathBuilder, Pixels, Point, Window};
 use imaging::kurbo::{Affine, BezPath, Point as KPoint, Rect as KRect, Shape};
-use imaging::peniko::{Brush, Color, FontData};
+use imaging::peniko::{Brush, Color, FontData, ImageData, ImageFormat};
 use imaging::record::{Geometry, Glyph, GlyphRun};
 use imaging::{BlurredRoundedRect, ClipRef, FillRef, GlyphRunRef, GroupRef, StrokeRef};
 use imaging::{GeometryRef, PaintSink};
@@ -70,18 +77,23 @@ impl PaintCmd {
     }
 }
 
-/// Recording half of the gpui replay path.
-#[derive(Default)]
-pub struct GpuiSink {
+/// Recording half of the gpui replay path. Single-shot per frame; the
+/// image cache and the degrade-log state are external (view- and
+/// process-owned respectively) so a fresh sink every paint cannot reset
+/// them.
+pub struct GpuiSink<'a> {
     cmds: Vec<PaintCmd>,
     clip_stack: Vec<Bounds<Pixels>>,
-    images: HashMap<(usize, usize), Arc<gpui::RenderImage>>,
-    degraded_logged: bool,
+    images: &'a mut ImageDecodeCache,
 }
 
-impl GpuiSink {
-    pub fn new() -> Self {
-        Self::default()
+impl<'a> GpuiSink<'a> {
+    pub fn new(images: &'a mut ImageDecodeCache) -> Self {
+        Self {
+            cmds: Vec::new(),
+            clip_stack: Vec::new(),
+            images,
+        }
     }
 
     /// Take the recorded commands (the sink is single-shot).
@@ -92,33 +104,98 @@ impl GpuiSink {
     fn mask(&self) -> Option<Bounds<Pixels>> {
         self.clip_stack.last().copied()
     }
+}
 
-    fn degrade_log(&mut self, what: &str) {
-        if !self.degraded_logged {
-            self.degraded_logged = true;
-            eprintln!("[rofd-gpui-view] degraded rendering: {what} (first occurrence)");
-        }
+/// View-lifetime image decode cache: scene image blobs (keyed by the
+/// blob's Arc identity — resources hand out one shared blob per image, so
+/// no hashing of pixel contents) -> decoded gpui `RenderImage`s. Kept
+/// outside the per-paint sink so a focused view's vsync loop reuses the
+/// decoded pixels instead of re-decoding every frame.
+#[derive(Default)]
+pub struct ImageDecodeCache {
+    map: HashMap<(usize, usize), Arc<gpui::RenderImage>>,
+    decodes: u64,
+}
+
+impl ImageDecodeCache {
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    fn decode_image(&mut self, bytes: &[u8]) -> Option<Arc<gpui::RenderImage>> {
+    /// Number of cached images.
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// How many images were actually decoded (cache misses that produced
+    /// a `RenderImage`). A cache-hitting frame leaves it unchanged — the
+    /// seam the frame-gate tests assert on.
+    pub fn decode_count(&self) -> u64 {
+        self.decodes
+    }
+
+    /// Resolve (decoding on first sight) the gpui image for a scene
+    /// image. `None` when the pixel data contradicts its declared format
+    /// and dimensions — callers degrade (log once + skip).
+    fn get_or_decode(&mut self, image: &ImageData) -> Option<Arc<gpui::RenderImage>> {
+        let bytes = image.data.as_ref();
         let key = (bytes.as_ptr() as usize, bytes.len());
-        if let Some(hit) = self.images.get(&key) {
+        if let Some(hit) = self.map.get(&key) {
             return Some(hit.clone());
         }
-        let decoded = image::load_from_memory(bytes).ok()?;
-        let rgba = decoded.to_rgba8();
-        let (w, h) = (rgba.width(), rgba.height());
-        let mut raw = rgba.into_raw();
+        let render = Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+            image::Frame::new(image_data_to_bgra(image)?)
+        ]));
+        self.map.insert(key, render.clone());
+        self.decodes += 1;
+        Some(render)
+    }
+}
+
+/// Re-pack a scene image's raw pixels into gpui's BGRA `RgbaImage`. Scene
+/// images are ALREADY decoded (the kernel decodes PNG/JPEG at compose
+/// time; the brush carries raw pixels plus format and dimensions), so
+/// this is a channel swap, not an image-codec decode. `None` when the
+/// byte length contradicts the declared dimensions.
+fn image_data_to_bgra(image: &ImageData) -> Option<image::RgbaImage> {
+    let (w, h) = (image.width, image.height);
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let mut raw = image.data.as_ref().to_vec();
+    if raw.len() != w as usize * h as usize * 4 {
+        return None;
+    }
+    if image.format == ImageFormat::Rgba8 {
         for pixel in raw.as_chunks_mut::<4>().0 {
             pixel.swap(0, 2); // RGBA -> BGRA, gpui's own idiom
         }
-        let buffer = image::RgbaImage::from_raw(w, h, raw)?;
-        let render = Arc::new(gpui::RenderImage::new(smallvec::smallvec![
-            image::Frame::new(buffer)
-        ]));
-        self.images.insert(key, render.clone());
-        Some(render)
     }
+    image::RgbaImage::from_raw(w, h, raw)
+}
+
+/// Once-per-process degrade log. The sink is recreated every paint, so a
+/// per-instance flag re-logged the same degradation at every vsync while
+/// the view held focus; the process-level set keeps it to one line.
+fn degrade_log(what: &str) {
+    static LOGGED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let mut logged = LOGGED
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if first_degrade_occurrence(&mut logged, what) {
+        eprintln!("[rofd-gpui-view] degraded rendering: {what} (first occurrence in this process)");
+    }
+}
+
+/// Pure core of [`degrade_log`]: true when `what` logs for the first time.
+fn first_degrade_occurrence(logged: &mut HashSet<String>, what: &str) -> bool {
+    logged.insert(what.to_string())
 }
 
 fn uniform_scale(a: &Affine) -> f64 {
@@ -242,7 +319,7 @@ fn shape_bbox(shape: GeometryRef<'_>, transform: &Affine) -> Bounds<Pixels> {
     bounds_px(bbox.x0, bbox.y0, bbox.x1, bbox.y1)
 }
 
-impl PaintSink for GpuiSink {
+impl PaintSink for GpuiSink<'_> {
     fn push_clip(&mut self, clip: ClipRef<'_>) {
         // Content masks are rectangles only: degrade to the transformed
         // shape's bbox (spec §5.4).
@@ -276,7 +353,7 @@ impl PaintSink for GpuiSink {
     }
 
     fn push_group(&mut self, _group: GroupRef<'_>) {
-        self.degrade_log("isolated group (mask/blend/composite) skipped");
+        degrade_log("isolated group (mask/blend/composite) skipped");
     }
 
     fn pop_group(&mut self) {}
@@ -295,8 +372,7 @@ impl PaintSink for GpuiSink {
         match shape {
             Geometry::Rect(rect) => {
                 if let Brush::Image(image_brush) = &brush {
-                    let bytes: &[u8] = image_brush.image.data.as_ref();
-                    match self.decode_image(bytes) {
+                    match self.images.get_or_decode(&image_brush.image) {
                         Some(image) => {
                             self.cmds.push(PaintCmd::Image {
                                 bounds: quad_from_rect(&rect, &transform),
@@ -305,9 +381,10 @@ impl PaintSink for GpuiSink {
                             });
                             return;
                         }
-                        // Undecodable image bytes: surface it once instead
-                        // of silently dropping the picture (review minor).
-                        None => self.degrade_log("image decode failed — picture skipped"),
+                        // Pixel data contradicting its declared
+                        // dimensions: surface it once instead of silently
+                        // dropping the picture.
+                        None => degrade_log("image pixel data invalid — picture skipped"),
                     }
                 }
                 self.cmds.push(PaintCmd::Quad {
@@ -389,7 +466,7 @@ impl PaintSink for GpuiSink {
     }
 
     fn blurred_rounded_rect(&mut self, _draw: BlurredRoundedRect) {
-        self.degrade_log("blurred rounded rect (shadow) skipped");
+        degrade_log("blurred rounded rect (shadow) skipped");
     }
 }
 
@@ -490,4 +567,40 @@ fn bez_to_path_offset(
         }
     }
     builder.build().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The once-per-process dedup core: first occurrence logs, repeats
+    /// do not, distinct messages stay independent.
+    #[test]
+    fn degrade_log_dedups_per_message() {
+        let mut logged = HashSet::new();
+        assert!(first_degrade_occurrence(&mut logged, "group skipped"));
+        assert!(!first_degrade_occurrence(&mut logged, "group skipped"));
+        assert!(first_degrade_occurrence(&mut logged, "shadow skipped"));
+        assert_eq!(logged.len(), 2);
+    }
+
+    fn raw_image(w: u32, h: u32, bytes: Vec<u8>) -> ImageData {
+        ImageData {
+            data: imaging::peniko::Blob::new(Arc::new(bytes)),
+            format: ImageFormat::Rgba8,
+            alpha_type: imaging::peniko::ImageAlphaType::Alpha,
+            width: w,
+            height: h,
+        }
+    }
+
+    /// The re-pack validates the declared dimensions against the byte
+    /// length and rejects empties — those take the degrade path instead
+    /// of panicking or producing a garbage frame.
+    #[test]
+    fn image_repack_validates_dimensions() {
+        assert!(image_data_to_bgra(&raw_image(2, 1, vec![0u8; 8])).is_some());
+        assert!(image_data_to_bgra(&raw_image(2, 1, vec![0u8; 7])).is_none());
+        assert!(image_data_to_bgra(&raw_image(0, 1, vec![])).is_none());
+    }
 }

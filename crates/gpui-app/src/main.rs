@@ -94,8 +94,11 @@ fn default_font_bytes() -> Vec<u8> {
 /// The command-line document path, when present (xilem host
 /// `maybe_load_cli_arg` precedent: the shell loads it as its first
 /// session; a load failure surfaces on stderr and the status line).
+/// `args_os` — the same non-UTF8-tolerant shape as `var_os` above — never
+/// panics on undecodable paths; the OsString flows into the PathBuf
+/// unconverted.
 fn cli_arg() -> Option<PathBuf> {
-    let mut args = std::env::args();
+    let mut args = std::env::args_os();
     let _ = args.next();
     args.next().map(PathBuf::from)
 }

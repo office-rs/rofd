@@ -167,8 +167,11 @@ impl PrintPanelState {
 
     /// Cycle the range mode All → Current → Custom → All. Landing on
     /// Custom with no spec pre-fills `custom_prefill` (the caller passes
-    /// the editor's current page).
-    pub fn cycle_range(&mut self, custom_prefill: &str) {
+    /// the editor's current page) and RETURNS the landed spec so the
+    /// caller can sync the Custom-range input's display to the backing
+    /// value (final-review M-2: without the sync the field shows whatever
+    /// it held the last time Custom was active).
+    pub fn cycle_range(&mut self, custom_prefill: &str) -> Option<String> {
         let next = match &self.settings.range {
             PageRange::All => PageRange::Current,
             PageRange::Current => PageRange::Custom {
@@ -176,7 +179,12 @@ impl PrintPanelState {
             },
             PageRange::Custom { .. } => PageRange::All,
         };
+        let landed_custom = match &next {
+            PageRange::Custom { spec } => Some(spec.clone()),
+            _ => None,
+        };
         self.edit_settings(|s| s.range = next);
+        landed_custom
     }
 
     /// Edit the content flags. Nothing the panel displays derives from
@@ -314,6 +322,17 @@ impl PrintPanelState {
             },
             _ => String::new(),
         }
+    }
+}
+
+/// Drop guard (final-review M-1): a panel dropped without an explicit
+/// close still cancels its live job instead of letting it spool
+/// untracked. Every explicit close already routed through `request_exit`,
+/// which empties the slots — the drop-side call finds nothing and is a
+/// quiet no-op, so there is no double-cancel noise on those paths.
+impl Drop for PrintPanelState {
+    fn drop(&mut self) {
+        let _ = self.request_exit();
     }
 }
 
@@ -685,14 +704,24 @@ pub fn print_panel_overlay(
         range_label(&range).to_string(),
         {
             let prefill_fallback = current_page.to_string();
-            move |this, _e, _w, cx| {
+            move |this, _e, window, cx| {
                 let prefill = this
                     .sessions
                     .active()
                     .map(|s| s.page.to_string())
                     .unwrap_or_else(|| prefill_fallback.clone());
-                if let Some(panel) = this.print_panel.as_mut() {
-                    panel.cycle_range(&prefill);
+                let landed_custom = this
+                    .print_panel
+                    .as_mut()
+                    .and_then(|panel| panel.cycle_range(&prefill));
+                // Landing on Custom: mirror the just-prefilled spec into
+                // the shared input so the DISPLAYED spec matches the
+                // backing value (final-review M-2). set_value does not
+                // emit Change, so the shell's input->settings mirror
+                // cannot loop back.
+                if let Some(spec) = landed_custom {
+                    this.print_spec_input
+                        .update(cx, |state, cx| state.set_value(spec, window, cx));
                 }
                 cx.notify();
             }
@@ -1051,6 +1080,22 @@ mod tests {
         assert!(witness.is_cancelled(), "active-change close cancels too");
     }
 
+    /// The drop guard: a panel dropped without any explicit close path
+    /// still cancels its live job (defense in depth for future assignment
+    /// paths that forget `request_exit`; the shell's explicit closes are
+    /// unchanged — their earlier `request_exit` leaves the slots empty so
+    /// the drop-side cancel is a no-op there, no double-cancel noise).
+    #[test]
+    fn drop_cancels_live_job_without_explicit_exit() {
+        let mut panel = panel_with_printers(1);
+        let job = submit_noop(50, None, 20);
+        let witness = job.clone();
+        panel.job = Some(job);
+        drop(panel);
+        assert!(witness.is_cancelled(), "drop alone cancels the live job");
+        assert_eq!(wait_terminal(&witness), JobState::Aborted);
+    }
+
     /// Precheck: a 0-page document never reaches submission.
     #[test]
     fn precheck_blocks_empty_document() {
@@ -1163,16 +1208,22 @@ mod tests {
         assert_eq!(empty.settings.printer, None);
     }
 
-    /// Range cycling pre-fills the Custom spec with the caller's page.
+    /// Range cycling pre-fills the Custom spec with the caller's page and
+    /// REPORTS the landed spec so the caller can sync the display input
+    /// (final-review M-2: displayed spec == backing value).
     #[test]
     fn range_cycle_prefills_custom_spec() {
         let mut panel = panel_with_printers(1);
         assert!(matches!(panel.settings.range, PageRange::All));
-        panel.cycle_range("7");
+        assert_eq!(panel.cycle_range("7"), None, "All -> Current");
         assert_eq!(panel.settings.range, PageRange::Current);
-        panel.cycle_range("7");
+        assert_eq!(
+            panel.cycle_range("7"),
+            Some("7".to_string()),
+            "Current -> Custom carries the prefill for input sync"
+        );
         assert_eq!(panel.settings.range, PageRange::Custom { spec: "7".into() });
-        panel.cycle_range("7");
+        assert_eq!(panel.cycle_range("7"), None, "Custom -> All");
         assert_eq!(panel.settings.range, PageRange::All);
     }
 
