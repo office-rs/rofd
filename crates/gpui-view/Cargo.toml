@@ -1,0 +1,30 @@
+[package]
+name = "rofd-gpui-view"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.96"
+license = "Apache-2.0"
+
+[lib]
+name = "rofd_gpui_view"
+path = "src/lib.rs"
+
+[dependencies]
+gpui-pre = { workspace = true }
+gpui-pre-platform = { workspace = true }
+# The kernel facade: ViewEvent/Key/Modifiers types + (later) OfdComponent.
+rofd-component = { path = "../component" }
+# dom types shared with the kernel facade.
+rofd-dom = { path = "../dom" }
+# imaging Scene IR types (GlyphRun/FontData/PaintSink) for the sink.
+imaging = { workspace = true }
+# Name-table parsing for font_cache (FontData carries no family string).
+ttf-parser = "0.25"
+# Sink image path: decode OFD-embedded png/jpeg to BGRA RenderImages
+# (core types only for examples; codecs here for production).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+smallvec = "1"
+
+[dev-dependencies]
+# Headless tests: TestAppContext text system for the font cache.
+gpui-pre = { workspace = true, features = ["test-support"] }
