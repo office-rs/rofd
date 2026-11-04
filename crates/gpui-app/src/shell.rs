@@ -785,9 +785,15 @@ impl AppShell {
         self.auto_page_gen += 1;
         self.pointer_cursor = PointerCursor::default();
         // The print panel is bound to the session active at its open; a
-        // tab switch closes it WITHOUT cancelling — a submitted job is
-        // already in the spooler's hands (join_all flushes the worker at
-        // exit), and switching tabs is not a cancel intent.
+        // tab switch closes it AND cancels its live job (xilem's
+        // every-close-cancels invariant). join_all is NOT a safety net
+        // here: at the pinned office-rs-print rev (c2f99d5) every
+        // register_worker caller passes a handle clone (thread: None), so
+        // the JOBS registry stays empty and join_all drains nothing —
+        // cancel-on-close is the only real guarantee.
+        if let Some(panel) = self.print_panel.as_mut() {
+            panel.request_exit();
+        }
         self.print_panel = None;
         cx.notify();
     }

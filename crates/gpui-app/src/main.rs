@@ -56,8 +56,13 @@ fn main() {
             }
             cx.activate(true);
         });
-    // A process death mid-spool kills the job — flush every in-flight
-    // print worker before exit (xilem/rword main precedent).
+    // Flush in-flight print workers before exit. NOTE: at the pinned
+    // office-rs-print rev (c2f99d5) this is a no-op — every
+    // register_worker caller passes a handle clone (Clone drops the
+    // thread), so the JOBS registry is always empty. Kept for when the
+    // pin advances past the upstream registration bug; until then the
+    // real guarantee is cancel-on-close (shell: every panel close
+    // cancels its live job).
     office_rs_print::join_all();
 }
 

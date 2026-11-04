@@ -1,3 +1,9 @@
+// Panel shape provenance: kit-button-via-bridge + listener-chip pattern
+// ported from rword@4e0b25b6 (crates/gpui-app/src/print_dialog.rs — the
+// modal chip panel and its kit Button routing); the dialog logic is the
+// rofd xilem host's `drain_print_dialog` contract (see below), driving
+// rofd's Task-12 DialogState machine instead of rword's own state.
+
 //! Print panel host glue (Task 13, xilem `drain_print_dialog` contract
 //! ported to the gpui shell): the pure panel state
 //! ([`PrintPanelState`]) wrapping Task 12's `DialogState` machine plus the
@@ -14,7 +20,8 @@
 //!   the open-time materialize command runs one rebuild later).
 //! - Steps ⑤/⑥ (pending → `print_direct` → live job) run synchronously in
 //!   the submit action: there is no job slot, so an "unpicked handle"
-//!   cannot exist — the exit path cancels whatever handle the panel holds.
+//!   cannot exist — the exit path (and every panel close, including the
+//!   tab-switch reset) cancels whatever handle the panel holds.
 
 use std::sync::mpsc;
 
@@ -1012,6 +1019,11 @@ mod tests {
     /// Exit cancels an unpicked/live handle instead of letting it spool
     /// untracked (xilem drain ② contract; in this host `print_direct` runs
     /// synchronously, so the live job IS the "unpicked handle" case).
+    /// Every panel close routes through `request_exit` — the cancel
+    /// button, and the tab-switch reset (`on_active_changed`, whose
+    /// panel-drop calls this same method before dropping the panel:
+    /// join_all is a no-op at the pinned office-rs-print rev, so
+    /// cancel-on-close is the only real guarantee).
     #[test]
     fn exit_with_live_handle_cancels_it() {
         let mut panel = panel_with_printers(1);
@@ -1027,6 +1039,16 @@ mod tests {
         assert!(panel.pending.is_none());
         assert!(panel.job.is_none());
         assert!(panel.exit);
+
+        // The tab-switch close path: request_exit then drop (the shell's
+        // on_active_changed sequence).
+        let mut panel = panel_with_printers(1);
+        let job = submit_noop(50, None, 20);
+        let witness = job.clone();
+        panel.job = Some(job);
+        let _ = panel.request_exit();
+        drop(panel);
+        assert!(witness.is_cancelled(), "active-change close cancels too");
     }
 
     /// Precheck: a 0-page document never reaches submission.
