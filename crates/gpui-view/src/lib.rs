@@ -7,6 +7,7 @@
 pub mod events;
 pub mod font_cache;
 pub mod gpui_sink;
+pub mod ime;
 pub mod view;
 
 pub use view::OfdGpuiView;
