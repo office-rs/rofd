@@ -91,6 +91,15 @@ impl OfdGpuiView {
         (f32::from(pos.x) - ox, f32::from(pos.y) - oy)
     }
 
+    /// The element origin in WINDOW coordinates (updated each paint),
+    /// read-only. Hosts use it to translate viewport-local kernel events
+    /// (e.g. the context-menu point) back into window coordinates for
+    /// overlay anchoring.
+    pub fn element_origin(&self) -> (f64, f64) {
+        let (x, y) = self.element_origin.get();
+        (x as f64, y as f64)
+    }
+
     /// Feed one translated platform event to the kernel and repaint.
     pub(crate) fn handle_view_event(&mut self, event: ViewEvent, cx: &mut Context<Self>) {
         self.component.handle_event(&event);

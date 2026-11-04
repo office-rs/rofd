@@ -18,8 +18,6 @@ pub struct LoadedOfd {
     /// Original package skeleton for surgical save. Always Some for a
     /// successfully parsed file; Option keeps the host's "new document"
     /// state uniform.
-    // Consumed by the save command (wired in a later gpui-line task).
-    #[allow(dead_code)]
     pub package: Option<PackageHandle>,
     /// Degraded-load warnings (templates/JBIG2/font substitution, ...).
     pub warnings: Vec<rofd_dom::OfdWarning>,
@@ -41,9 +39,6 @@ pub fn load_ofd(path: &Path) -> Result<LoadedOfd, String> {
 /// With a package handle: surgical save (untouched entries byte-preserved).
 /// Without: full write for a new document. The write itself is atomic
 /// (sibling temp file + rename).
-// Wired to the save command in a later gpui-line task (first light has
-// no toolbar yet).
-#[allow(dead_code)]
 pub fn save_ofd(
     document: &OfdDocument,
     package: Option<&PackageHandle>,
@@ -58,8 +53,6 @@ pub fn save_ofd(
 }
 
 /// Removes the temp file on drop unless disarmed after a successful rename.
-// Reached through write_atomic (save/export commands, later task).
-#[allow(dead_code)]
 struct TempFileGuard(PathBuf);
 
 impl Drop for TempFileGuard {
@@ -73,8 +66,6 @@ impl Drop for TempFileGuard {
 /// temp name is identical to the previous `set_extension("ofd.tmp")`
 /// form, and it now derives from the destination instead of hardcoding
 /// the OFD extension.
-// Called by save_ofd/export_pdf (save/export commands, later task).
-#[allow(dead_code)]
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut tmp = path.as_os_str().to_os_string();
     tmp.push(".tmp");

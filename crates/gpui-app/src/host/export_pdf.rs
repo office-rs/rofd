@@ -16,9 +16,6 @@ use super::document_io::write_atomic;
 /// every page of a `begin_print` session with the default clean-copy
 /// content preset (watermark/annotations off, seal on), encoded by
 /// `rofd-export` and written atomically (sibling temp file + rename).
-// Wired to the export command in a later gpui-line task (first light has
-// no toolbar yet).
-#[allow(dead_code)]
 pub fn export_pdf(component: &OfdComponent, path: &Path) -> Result<(), String> {
     let mut session = component.begin_print(PrintContent::default());
     let mut pages = Vec::with_capacity(session.page_count());

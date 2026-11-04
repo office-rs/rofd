@@ -18,3 +18,9 @@ gpui-pre = { workspace = true }
 gpui-pre-platform = { workspace = true }
 gpui-kit = { workspace = true, features = ["assets"] }
 gpui-kit-assets = { workspace = true }
+
+[dev-dependencies]
+# Headless session tests (TestAppContext entity construction) — same pattern
+# as crates/gpui-view; not a new external dependency, only the test-support
+# feature on the existing workspace pin.
+gpui-pre = { workspace = true, features = ["test-support"] }
