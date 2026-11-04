@@ -80,6 +80,11 @@ pub struct AppShell {
     /// Pointer-cursor mirror (PointerCursorChanged events of the ACTIVE
     /// session; applied to the editor wrapper's hover cursor).
     pointer_cursor: PointerCursor,
+    /// Editor that should take keyboard focus at the next render. Set from
+    /// paths that have no `&mut Window` (async open/close completion);
+    /// consumed at the top of Render, where a window is available —
+    /// otherwise keyboard focus dies with a closed editor until a click.
+    pending_focus: Option<Entity<OfdGpuiView>>,
 }
 
 impl AppShell {
@@ -135,6 +140,7 @@ impl AppShell {
             auto_paging: false,
             auto_page_gen: 0,
             pointer_cursor: PointerCursor::default(),
+            pending_focus: None,
         };
         if let Some(path) = cli_path {
             match host::document_io::load_ofd(&path) {
@@ -234,7 +240,9 @@ impl AppShell {
                 for warning in warnings {
                     eprintln!("[warning] {warning:?}");
                 }
-                self.sessions.sessions[idx].warnings = warnings.clone();
+                // Discrete batches: append, never replace (runtime warnings
+                // must not erase load warnings).
+                self.sessions.sessions[idx].append_warnings(warnings.clone());
             }
             PointerCursorChanged(cursor) => {
                 if is_active {
@@ -296,11 +304,14 @@ impl AppShell {
             .unwrap_or_else(|| "文档".to_string());
         let idx = self
             .sessions
-            .open_file(name, path.clone(), loaded.package, editor);
+            .open_file(name, path.clone(), loaded.package, editor.clone());
         let session = &mut self.sessions.sessions[idx];
         session.warnings = loaded.warnings;
         session.page = 1;
         self.on_active_changed(cx);
+        // Focus repair: install runs from a windowless async path — the
+        // new editor takes focus at the next render.
+        self.pending_focus = Some(editor);
         self.status = format!("已打开 {}（{pages} 页）", path.display());
         cx.notify();
     }
@@ -430,11 +441,14 @@ impl AppShell {
 
     /// 文件菜单「导出为 PDF」: new-path prompt -> snapshot through the live
     /// component. An export never touches the modified mirror in either
-    /// direction (host/export_pdf contract).
+    /// direction (host/export_pdf contract). The editor is captured BEFORE
+    /// the prompt and resolved by identity after — a tab switch (or close)
+    /// during the dialog must not redirect or resurrect the export.
     fn export_pdf(&mut self, cx: &mut Context<Self>) {
         let Some(session) = self.sessions.active() else {
             return;
         };
+        let editor = session.editor.clone();
         let dir = session
             .path
             .as_ref()
@@ -447,9 +461,11 @@ impl AppShell {
                 return;
             };
             let _ = this.update(cx, |shell, cx| {
-                let Some(editor) = shell.sessions.active_editor() else {
+                let Some(idx) = shell.sessions.index_of(&editor) else {
+                    // Session closed while the prompt was open: abort.
                     return;
                 };
+                let editor = shell.sessions.sessions[idx].editor.clone();
                 match host::export_pdf::export_pdf(&editor.read(cx).component, &path) {
                     Ok(()) => shell.status = format!("已导出 {}", path.display()),
                     Err(e) => {
@@ -518,6 +534,10 @@ impl AppShell {
         }
         if self.sessions.active_editor() != active_before {
             self.on_active_changed(cx);
+            // Focus repair: closing the focused editor leaves focus dead
+            // until a click; hand it to the new active editor at the next
+            // render (this path runs without a Window).
+            self.pending_focus = self.sessions.active_editor();
         } else {
             cx.notify();
         }
@@ -606,8 +626,7 @@ impl AppShell {
     }
 
     /// Consume bridge events pushed by Popover content since the last
-    /// render (rword pattern): actions in push order, then the
-    /// close-popover mutation.
+    /// render: actions in push order, then the close-popover mutation.
     fn on_action(&mut self, action: AppAction, _window: &mut Window, cx: &mut Context<Self>) {
         match action {
             AppAction::OpenFile => self.open_document(cx),
@@ -666,6 +685,15 @@ impl Render for AppShell {
                 BridgeEvent::SetOpen(f) => f(self),
                 BridgeEvent::Action(action) => self.on_action(action, window, cx),
             }
+        }
+
+        // Focus repair AFTER the drain (an OpenFile action installs its
+        // session above): windowless paths queued an editor to focus, and
+        // Render is where a &mut Window is available. window.focus is a
+        // no-op when the handle already holds focus.
+        if let Some(editor) = self.pending_focus.take() {
+            let handle = editor.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
         }
 
         let active = self.sessions.active();
@@ -834,8 +862,8 @@ impl Render for AppShell {
             .size_full()
             .bg(rgb(0xF2F2F2))
             .on_action(cx.listener(|this, _: &ExitFullscreen, window, cx| {
-                // Esc exits fullscreen (kernel Escape handling is
-                // unaffected — the action fires only for unhandled keys).
+                // Esc exits fullscreen (binding dispatch precedes the raw
+                // key's focus-path delivery; see main.rs).
                 if window.is_fullscreen() {
                     this.toggle_fullscreen(window, cx);
                 }

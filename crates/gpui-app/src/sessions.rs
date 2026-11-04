@@ -1,5 +1,7 @@
-//! Multi-document session management (web-app/rword sessionManager parity,
-//! spec 2026-10-31 §7).
+//! Multi-document session management (ported from rword@4e0b25b6
+//! crates/gpui-app/src/sessions.rs — rofd divergences: per-session
+//! `PackageHandle` for surgical save, plus per-session event/tool mirror
+//! rows; spec 2026-10-31 §7).
 //!
 //! One `Entity<OfdGpuiView>` per open document; the shell renders the
 //! ACTIVE entity. Switching tabs swaps which entity fills the editor slot
@@ -70,6 +72,14 @@ impl DocumentSession {
             warnings: Vec::new(),
             tool: Tool::Text,
         }
+    }
+
+    /// Append one runtime warning batch. `fire_warnings` relays DISCRETE
+    /// batches (the component never generates warnings itself), so runtime
+    /// warnings extend the list — they must never erase the load-time
+    /// warnings, nor vice versa.
+    pub fn append_warnings(&mut self, batch: impl IntoIterator<Item = OfdWarning>) {
+        self.warnings.extend(batch);
     }
 }
 
@@ -332,5 +342,31 @@ mod tests {
         mgr.new_blank(editor(cx));
         assert!(!mgr.close(5));
         assert_eq!(mgr.sessions.len(), 1);
+    }
+
+    #[gpui::test]
+    fn runtime_warnings_append_without_erasing_load_warnings(cx: &mut TestAppContext) {
+        use rofd_dom::OfdWarning;
+        let mut mgr = SessionManager::default();
+        mgr.new_blank(editor(cx));
+        // Load-time warnings (install_loaded_session assigns the batch).
+        mgr.sessions[0].warnings = vec![OfdWarning::FontSubstituted {
+            requested: "SimSun".into(),
+            used: "fallback".into(),
+        }];
+        // One runtime batch, then another: both extend the list.
+        mgr.sessions[0].append_warnings(vec![OfdWarning::MissingFeature {
+            feature: "JBIG2".into(),
+            entry: "e.xml".into(),
+        }]);
+        mgr.sessions[0].append_warnings(vec![OfdWarning::SkippedObject {
+            page: rofd_dom::PageId::new("P0"),
+            reason: "unknown element".into(),
+        }]);
+        assert_eq!(mgr.sessions[0].warnings.len(), 3);
+        assert!(matches!(
+            mgr.sessions[0].warnings.first(),
+            Some(OfdWarning::FontSubstituted { .. })
+        ));
     }
 }

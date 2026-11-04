@@ -24,9 +24,11 @@ fn main() {
         .with_assets(gpui_kit_assets::AllAssets)
         .run(|cx| {
             gpui_kit::init(cx);
-            // Esc exits fullscreen (the shell owns the action; the
-            // editor's own Escape handling is unaffected — actions only
-            // fire for keys no focused element consumed).
+            // Esc exits fullscreen. Bindings dispatch first, then the raw
+            // key follows the focus-path snapshot; an open kit popover
+            // captures focus, so the kernel never receives Esc while a
+            // popover is open. The residual dual fire (menu close +
+            // fullscreen exit) matches the web line.
             cx.bind_keys([KeyBinding::new("escape", ExitFullscreen, None)]);
             // Default font: the system SimSun (empty-vec fallback — never
             // crash on a missing/unreadable font file).
