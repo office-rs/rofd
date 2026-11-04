@@ -5,6 +5,7 @@
 //! (docs/superpowers/specs/2026-10-31-gpui-view-gpui-app-design.md).
 
 pub mod events;
+pub mod events_surface;
 pub mod font_cache;
 pub mod gpui_sink;
 pub mod ime;

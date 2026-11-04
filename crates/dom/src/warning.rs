@@ -31,7 +31,7 @@ impl std::fmt::Display for ResourceKind {
 /// A non-fatal issue encountered while parsing an OFD package. Parse continues;
 /// the warning is surfaced to the host via the `on_warning` callback
 /// (AGENTS.md §4.6 - degraded input path, distinct from `OfdError`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum OfdWarning {
     /// An OFD feature not modelled in v1 (e.g. templates, JBIG2). Parse
     /// continues with the feature skipped.
