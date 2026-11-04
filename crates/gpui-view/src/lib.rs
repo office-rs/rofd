@@ -5,3 +5,4 @@
 //! (docs/superpowers/specs/2026-10-31-gpui-view-gpui-app-design.md).
 
 pub mod font_cache;
+pub mod gpui_sink;
