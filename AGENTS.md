@@ -12,7 +12,7 @@
 
 - **v1 范围**：查看 + 批注。主文档（body）**只读渲染**；批注是**唯一可变层**。
 - **库形态**：以 `OfdComponent` 为唯一集成入口（类比 `<textarea>`），宿主控制消息循环并转发事件。库本身不取系统时间、不直接依赖 GUI 框架。
-- **平台边界**：库 = 平台无关核心（dom/io/render/editor/component）+ 两个平台适配器（xilem-view/web-view）；`crates/xilem-app`、`crates/web-app` 与 `crates/tauri-app` 是宿主应用，不是库的交付物（见 §4.9）。
+- **平台边界**：库 = 平台无关核心（dom/io/render/editor/component）+ 三个平台适配器（xilem-view/web-view/gpui-view）；`crates/xilem-app`、`crates/web-app`、`crates/tauri-app` 与 `crates/gpui-app` 是宿主应用，不是库的交付物（见 §4.9）。
 - **非目标**：编辑 body 内容、创建/验签电子签名、全保真渲染（模板继承/JBIG2/瓦片图按需补，v1 桩处理）、实时协同。
 - 为 B（后端生成）/ C（PDF→OFD）/ D（后端读改写）留门，但不实现。
 
@@ -44,6 +44,16 @@ cargo run -p xilem-app --example print_to_file -- test/ru-yuan-ji-lu.ofd target/
 ```
 
 命令行路径参数经宿主 `host::document_io::load_ofd` 加载。native 宿主以空字体配置启动（`OfdConfig::new(Arc::new(vec![]))`，见 `crates/xilem-app/src/main.rs`），字形交给系统字体回退；仓库自带的 CJK 字体位于 `crates/web-app/public/fonts/`（git 跟踪，无需下载）。
+
+### 运行 gpui 桌面宿主
+
+```bash
+cargo run -p gpui-app                            # 空编辑器（多文档会话制）
+cargo run -p gpui-app -- test/ru-yuan-ji-lu.ofd  # 打开根目录 test/ 下的 .ofd
+cargo run -p gpui-app --example print_to_file -- test/ru-yuan-ji-lu.ofd target/print-probe.out  # 打印手测通道（同 xilem-app 先例）
+```
+
+gpui 宿主与 xilem/tauri 两线**并存**（spec 2026-10-31 R1，不承担替代责任）。默认字体宋体（`%WINDIR%\Fonts\simsun.ttc`，读取失败退空配置）；文档声明族经 `font_index.rs` 懒扫描系统字体目录（mmap + name 表全语言提取）按需加载本机字节（tauri 桌面通道同型）。文件对话框走 gpui 原生 `prompt_for_paths`（无 rfd）。手测清单见 `docs/superpowers/manual/2026-11-01-gpui-app-windows-checklist.md`，功能对齐审计见 `docs/superpowers/plans/2026-11-01-gpui-parity-audit.md`。
 
 ### 构建 / 运行 web 宿主
 
@@ -78,15 +88,17 @@ tauri-app 前端**复用 web-app 源码**（`main.ts` 从 `../web-app/src` 导�
 
 ## 3. 仓库布局与分层
 
-严格 5 层单向依赖，**反向边禁止**。每个 crate 的 `[dependencies]` 是依赖方向的唯一事实来源。**平台边界线画在 component 与适配器之间**：component 及以下六个 crate（含叶子 rofd-export）平台无关（不依赖 winit/web-sys/wgpu/arboard 等平台 crate），xilem-view / web-view 是仅有的两层平台绑定。
+严格 5 层单向依赖，**反向边禁止**。每个 crate 的 `[dependencies]` 是依赖方向的唯一事实来源。**平台边界线画在 component 与适配器之间**：component 及以下六个 crate（含叶子 rofd-export）平台无关（不依赖 winit/web-sys/wgpu/arboard 等平台 crate），xilem-view / web-view / gpui-view 是仅有的三层平台绑定。
 
 ```
 crates/xilem-app      ─┐
                        ├─► xilem-view ─┐
-                       │                ├─► component ─┬─► render ──┐
-crates/web-app ─► web-view ─────────────┘              ├─► editor ──┴─► dom
-   (JS + Vite,         (wasm-bindgen     │              │
-    非 cargo 成员)      适配器)           │              └─► io ────────┘
+                       │                ├──► component ─┬─► render ──┐
+crates/web-app ─► web-view ─────────────┤                ├─► editor ──┴─► dom
+   (JS + Vite,         (wasm-bindgen    │                │
+    非 cargo 成员)      适配器)          │                └─► io ────────┘
+                                        │
+crates/gpui-app ─► gpui-view ───────────┘
 ```
 
 | crate            | 路径                 | 职责 | 依赖（rofd 内部） |
@@ -99,13 +111,17 @@ crates/web-app ─► web-view ─────────────┘       
 | `rofd-component` | `crates/component`   | **唯一集成入口** `OfdComponent`：ViewEvent、Callbacks、脏缓存 | dom + render + editor + office-rs-print（类型层）（**不依赖 io**） |
 | `rofd-xilem-view`| `crates/xilem-view`  | masonry/xilem 薄适配器：`OfdWidget` + `ofd()`/`ofd_with_config()` | component |
 | `rofd-web-view`  | `crates/web-view`    | WASM 薄适配器：`WasmOfd` + `WebGpuRenderTarget` + TS SDK | component + io + editor + dom + rofd-export + office-rs-print（类型层） + vello + imaging + imaging_vello + wgpu + web-sys |
+| `rofd-gpui-view` | `crates/gpui-view`   | gpui 适配层 SDK：`OfdGpuiView`（Entity/Element）+ `GpuiOfdHandle` + IME 桥 + 打印对话框状态机/discover-only services | component + dom + imaging + gpui-pre/gpui-pre-platform + office-rs-print（list_printers）+ ttf-parser + image（**不依赖 io**） |
 | `xilem-app`      | `crates/xilem-app`   | xilem 宿主应用（文件对话框 + 工具栏 UI 策略） | xilem-view + component + io + dom + xilem + rfd |
+| `gpui-app`       | `crates/gpui-app`    | gpui 宿主应用（多文档会话 TabBar + 工具栏/文件菜单/打印面板） | gpui-view + io + export + component + dom + office-rs-print + gpui 家族/kit + memmap2/ttf-parser |
 | web-app          | `crates/web-app`     | Vite + TS 宿主应用（非 cargo 成员） | `@office-rs/rofd`（= `crates/web-view/sdk`） |
 | `tauri-app`      | `crates/tauri-app`   | Tauri 桌面宿主应用 | tauri 壳不依赖 rofd crate；前端复用 web-app |
 
 > **两条历史偏离（改造后的 as-built）**：
 > 1. component 保持 io-free——io 依赖从不下沉到组件；
-> 2. native 侧 io 调用已**上移到宿主**（`xilem-app/src/host/document_io.rs`），适配器 rofd-xilem-view 不依赖 io；web-view 侧仍持 io（wasm 宿主自己就是"宿主"）。
+> 2. native 侧 io 调用已**上移到宿主**（`xilem-app/src/host/document_io.rs`），适配器 rofd-xilem-view 不依赖 io；web-view 侧仍持 io（wasm 宿主自己就是"宿主"）；gpui 线同律——rofd-gpui-view 不依赖 io，io 在 `gpui-app/src/host/document_io.rs`。
+>
+> **gpui 线（2026-11-01 起，spec 2026-10-31）**：rofd-gpui-view + gpui-app 与 xilem/tauri 宿主**并存**（R1，不承担替代责任）。适配层七文件照 rword 同型（gpui_sink/font_cache 拷贝改写自 rword@4e0b25b6，打印状态机/services 拷贝自 xilem-view）；功能对齐分母 = web-app，逐 id 审计见 `docs/superpowers/plans/2026-11-01-gpui-parity-audit.md`。
 
 ---
 
@@ -217,8 +233,12 @@ If you're tempted to reintroduce a winit-layer bridge、canvas-origin 记账、�
 | `imaging` / `imaging_vello` | crates.io | `0.0.1` |
 | vello / parley | crates.io | `0.8` |
 | wgpu | crates.io | `28` |
-| `office-rs-print` | office-rs/print git | `c2f99d5`（与 rword 同 pin） |
+| `office-rs-print` | office-rs/print git | `c2f99d5`（与 rword 同 pin；gpui-view 的 list_printers + gpui-app 的 join_all 同源） |
 | `krilla` | crates.io | `0.8`（feature `pdf`，PDF 编码） |
+| `gpui-pre` / `gpui-pre-platform` | crates.io | `=0.3.10`（zed@08cbb88 快照重发布；官方 crates.io gpui 0.2.2 缺 Windows/IME 修复，不可换用） |
+| `gpui-kit` / `gpui-kit-assets` | crates.io | `=0.8.1`（图标走 `with_assets(AllAssets)`） |
+
+gpui 家族（gpui-pre / gpui-pre-platform / gpui-kit / gpui-kit-assets）**整批 bump、不可单动**——kit 0.8.1 钉 gpui-pre `=0.3.10`，升级时四个一起动（workspace `Cargo.toml` 注释即契约）。
 
 Toolchain：`rust-toolchain.toml` 钉 `1.98.1`；新 pin 的包声明 `rust-version = 1.96`。已无 masonry_winit/winit 直接依赖（masonry_winit 内部使用 winit）。
 
