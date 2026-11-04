@@ -15,6 +15,7 @@ use rofd_component::OfdConfig;
 
 mod font_index;
 mod host;
+mod print_dialog;
 mod sessions;
 mod shell;
 
@@ -55,6 +56,9 @@ fn main() {
             }
             cx.activate(true);
         });
+    // A process death mid-spool kills the job — flush every in-flight
+    // print worker before exit (xilem/rword main precedent).
+    office_rs_print::join_all();
 }
 
 /// Read the Windows default CJK font for the component config. Any read

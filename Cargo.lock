@@ -3079,6 +3079,7 @@ dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
  "memmap2",
+ "office-rs-print",
  "rofd-component",
  "rofd-dom",
  "rofd-export",

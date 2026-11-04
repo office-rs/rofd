@@ -17,15 +17,21 @@ use gpui::{
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::{Icon, Sizable};
+use office_rs_print::JobState;
 use rofd_component::{
-    ContextTarget, CreateKind, OfdConfig, PointerCursor, ScrollDirection, Tool, ZoomMode,
+    ContextTarget, CreateKind, OfdConfig, PointerCursor, PrintContent, ScrollDirection, Tool,
+    ZoomMode,
 };
 use rofd_dom::{AnnotationId, AnnotationKind, Color as OfdColor, ShapeKind};
+use rofd_gpui_view::print_dialog_state::{DiscoverState, PrintServices};
+use rofd_gpui_view::print_services::NativePrintServices;
 use rofd_gpui_view::{GpuiOfdHandle, OfdGpuiEvent, OfdGpuiView};
 
 use crate::host;
+use crate::print_dialog::{print_panel_overlay, PrintPanelState, SubmitBlock};
 use crate::sessions::{
     AppAction, AppActionBridge, BridgeEvent, DocumentSession, SessionManager, INITIAL_ZOOM,
 };
@@ -35,6 +41,13 @@ gpui_kit::actions!([ExitFullscreen]);
 
 /// Auto-page interval (web parity: 3 seconds per page).
 const AUTO_PAGE_INTERVAL: Duration = Duration::from_secs(3);
+
+/// Print job terminal-state polling interval (drain step ① driver).
+const PRINT_POLL_INTERVAL: Duration = Duration::from_millis(200);
+
+/// Bounded wait for the discovery terminal message at dialog open (xilem
+/// `do_print` precedent: the worker thread races the open).
+const DISCOVER_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Zoom percent presets (web ZoomMenu parity).
 const ZOOM_PRESETS: &[f64] = &[10., 25., 50., 75., 100., 125., 150., 200., 300., 400., 500.];
@@ -86,6 +99,13 @@ pub struct AppShell {
     /// consumed at the top of Render, where a window is available —
     /// otherwise keyboard focus dies with a closed editor until a click.
     pending_focus: Option<Entity<OfdGpuiView>>,
+    /// Open print panel (Task 13); None = no dialog. Bound to the session
+    /// active at open — a tab switch closes it (modal reset).
+    pub(crate) print_panel: Option<PrintPanelState>,
+    /// Shared spec-input state for the print panel's Custom range field
+    /// (one entity, reused across dialogs; its Change subscription
+    /// mirrors the value into the open panel's settings).
+    print_spec_input: Entity<InputState>,
 }
 
 impl AppShell {
@@ -127,6 +147,36 @@ impl AppShell {
             .detach();
             state
         };
+        let print_spec_input = {
+            let state = cx.new(|cx| InputState::new(window, cx).placeholder("如 1-3,5"));
+            cx.subscribe_in(
+                &state,
+                window,
+                |this, input, event: &InputEvent, _window, cx| {
+                    // Mirror the Custom-range spec edits into the open
+                    // panel's settings (with revalidation through the
+                    // dialog machine).
+                    if matches!(event, InputEvent::Change) {
+                        let value = input.read(cx).value().to_string();
+                        if let Some(panel) = this.print_panel.as_mut() {
+                            if matches!(
+                                panel.settings.range,
+                                office_rs_print::PageRange::Custom { .. }
+                            ) {
+                                panel.edit_settings(|s| {
+                                    s.range = office_rs_print::PageRange::Custom {
+                                        spec: value.clone(),
+                                    }
+                                });
+                                cx.notify();
+                            }
+                        }
+                    }
+                },
+            )
+            .detach();
+            state
+        };
         let mut shell = Self {
             sessions: SessionManager::default(),
             status: "就绪".to_string(),
@@ -142,6 +192,8 @@ impl AppShell {
             auto_page_gen: 0,
             pointer_cursor: PointerCursor::default(),
             pending_focus: None,
+            print_panel: None,
+            print_spec_input,
         };
         if let Some(path) = cli_path {
             match host::document_io::load_ofd(&path) {
@@ -486,6 +538,175 @@ impl AppShell {
         .detach();
     }
 
+    // -- Print panel (Task 13; xilem `drain_print_dialog` contract) --
+
+    /// 文件菜单「打印…」: open the modal panel for the active session.
+    /// The 0-page guard runs synchronously first (fresh/blank documents
+    /// never open the dialog); the paper/orientation defaults sync at open
+    /// time against a FRESH print session — xilem defers this to its
+    /// drain step ③ only because its component sits behind a command
+    /// queue, so an open-time read would see the stale material.
+    fn open_print_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.sessions.active() else {
+            return;
+        };
+        let editor = session.editor.clone();
+        let print_session = editor
+            .read(cx)
+            .component
+            .begin_print(PrintContent::default());
+        let page_count = print_session.page_count();
+        if page_count == 0 {
+            self.status = "无可打印页面".to_string();
+            cx.notify();
+            return;
+        }
+        let (paper, orientation) = print_session.page_parameters(0);
+        drop(print_session);
+        let mut panel = PrintPanelState::new(page_count);
+        panel.open();
+        panel.sync_document_defaults(paper, orientation);
+        // Bounded discovery drain (xilem do_print): the worker races the
+        // dialog open, so drain until the terminal message or the timeout;
+        // a straggler receiver stays for render-tick draining.
+        let receiver = NativePrintServices.discover();
+        while let Ok(update) = receiver.recv_timeout(DISCOVER_TIMEOUT) {
+            let terminal = !matches!(update, DiscoverState::Finding);
+            panel.apply_discovery(update);
+            if terminal {
+                break;
+            }
+        }
+        panel.receiver = Some(receiver);
+        // Fresh spec field per dialog.
+        self.print_spec_input
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.print_panel = Some(panel);
+        cx.notify();
+    }
+
+    /// Confirmed submit (single-track): pure guards + freeze run in
+    /// `try_submit`; the pending triple then executes synchronously —
+    /// steps ⑤/⑥ of the xilem contract collapse here because gpui
+    /// reaches the component directly (no command queue, so no job slot
+    /// and no "unpicked handle" window for the exit path to race).
+    fn submit_print(&mut self, cx: &mut Context<Self>) {
+        // Resolve the editor's CURRENT page (1-based mirror) for the
+        // precheck and the Current→Custom freeze, so the live editor page
+        // cannot diverge from the spooled job.
+        let Some(editor_page) = self.sessions.active().map(|s| s.page) else {
+            return;
+        };
+        let Some(panel) = self.print_panel.as_mut() else {
+            return;
+        };
+        match panel.try_submit(editor_page) {
+            Ok(()) => {}
+            // Silent guard (xilem parity): no duplicate job, no status
+            // churn while one submit already owns the dialog.
+            Err(SubmitBlock::Busy) => return,
+            // try_submit already surfaced the no-printers status.
+            Err(SubmitBlock::NoPrinters) => {
+                cx.notify();
+                return;
+            }
+            Err(SubmitBlock::Invalid(message)) => {
+                panel.status = message;
+                cx.notify();
+                return;
+            }
+        }
+        let Some((printer, settings, content)) =
+            self.print_panel.as_mut().and_then(|p| p.take_pending())
+        else {
+            return;
+        };
+        let Some(editor) = self.sessions.active_editor() else {
+            return;
+        };
+        // ⑤ print_direct inside the entity update.
+        let job = GpuiOfdHandle::new(editor).print_direct(
+            printer.as_deref(),
+            &settings,
+            content,
+            "rofd",
+            cx,
+        );
+        // ⑥ handle → live job + Submitted status.
+        if let Some(panel) = self.print_panel.as_mut() {
+            panel.submit_accepted(job);
+        }
+        Self::spawn_print_poll(cx);
+        cx.notify();
+    }
+
+    /// 取消: close request — cancels a live job (the exit racing a
+    /// just-started job cancels it rather than letting it spool
+    /// untracked) and drops any un-executed pending. The drain closes the
+    /// overlay on the exit flag.
+    fn cancel_print(&mut self, cx: &mut Context<Self>) {
+        if let Some(panel) = self.print_panel.as_mut() {
+            panel.request_exit();
+        }
+        cx.notify();
+    }
+
+    /// Terminal-state polling (drain ① driver): poll the live job every
+    /// 200ms; the first terminal state (or the panel closing) ends the
+    /// loop after exactly one notify.
+    fn spawn_print_poll(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(PRINT_POLL_INTERVAL).await;
+            let mut stop = false;
+            let updated = this.update(cx, |shell, cx| {
+                let Some(panel) = shell.print_panel.as_mut() else {
+                    stop = true;
+                    return;
+                };
+                if panel.poll_job_terminal() {
+                    cx.notify();
+                }
+                let terminal = panel.job.as_ref().is_some_and(|job| {
+                    matches!(
+                        job.snapshot().state,
+                        JobState::Done | JobState::Failed | JobState::Aborted
+                    )
+                });
+                if terminal {
+                    stop = true;
+                }
+            });
+            if updated.is_err() || stop {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    /// Print-dialog drain at the top of every render pass (xilem
+    /// `drain_print_dialog`, adapted):
+    /// ① poll the live job for a terminal state (the spawn loop is the
+    ///    primary driver; this keeps the status honest without it) and
+    ///    drain discovery stragglers;
+    /// ② the exit flag closes the overlay (the cancelled handle was
+    ///    already cancelled by `request_exit` — no unpicked slot exists
+    ///    in this host);
+    /// ③ defaults synced at open (direct component access);
+    /// ④ no content-derived display — the panel shows the page count,
+    ///    which is content-independent, so a content-flag edit needs no
+    ///    re-materialize (justified no-op);
+    /// ⑤⑥ executed synchronously in `submit_print`.
+    fn drain_print_dialog(&mut self) {
+        let Some(panel) = self.print_panel.as_mut() else {
+            return;
+        };
+        panel.poll_job_terminal();
+        panel.drain_discovery();
+        if panel.exit {
+            self.print_panel = None;
+        }
+    }
+
     /// Tab click: switch the active session and focus its editor.
     fn switch_session(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
         if idx >= self.sessions.sessions.len() || idx == self.sessions.active {
@@ -563,6 +784,11 @@ impl AppShell {
         self.auto_paging = false;
         self.auto_page_gen += 1;
         self.pointer_cursor = PointerCursor::default();
+        // The print panel is bound to the session active at its open; a
+        // tab switch closes it WITHOUT cancelling — a submitted job is
+        // already in the spooler's hands (join_all flushes the worker at
+        // exit), and switching tabs is not a cancel intent.
+        self.print_panel = None;
         cx.notify();
     }
 
@@ -634,7 +860,7 @@ impl AppShell {
 
     /// Consume bridge events pushed by Popover content since the last
     /// render: actions in push order, then the close-popover mutation.
-    fn on_action(&mut self, action: AppAction, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_action(&mut self, action: AppAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
             AppAction::OpenFile => self.open_document(cx),
             AppAction::SaveFile => {
@@ -646,6 +872,9 @@ impl AppShell {
                 self.save_session_as(idx, false, cx);
             }
             AppAction::ExportPdf => self.export_pdf(cx),
+            AppAction::Print => self.open_print_dialog(window, cx),
+            AppAction::PrintSubmit => self.submit_print(cx),
+            AppAction::PrintCancel => self.cancel_print(cx),
             AppAction::PickShape(kind) => {
                 self.set_tool(Tool::Create(CreateKind::Shape(kind)), cx);
             }
@@ -703,6 +932,10 @@ impl Render for AppShell {
             window.focus(&handle, cx);
         }
 
+        // Print-dialog drain (①/② of the xilem contract; ③-⑥ live in
+        // open/submit — see drain_print_dialog).
+        self.drain_print_dialog();
+
         let active = self.sessions.active();
         let active_idx = self.sessions.active;
         let session_count = self.sessions.sessions.len();
@@ -721,6 +954,14 @@ impl Render for AppShell {
         let can_redo = self.handle().can_redo(cx);
         let fullscreen = window.is_fullscreen();
         let auto_paging = self.auto_paging;
+        // Print panel overlay (top layer). The spec-input entity handle is
+        // cloned out first: building the overlay mutably borrows the panel
+        // while the input reference borrows the shell.
+        let print_spec_input = self.print_spec_input.clone();
+        let print_overlay = self
+            .print_panel
+            .as_mut()
+            .map(|panel| print_panel_overlay(panel, &print_spec_input, page, cx));
 
         // -- Toolbar groups (built as Vec<AnyElement> + .children(); spec
         // pitfall 1) --
@@ -1008,14 +1249,16 @@ impl Render for AppShell {
             .when(self.confirm_close.is_some(), |this| {
                 this.child(confirm_close_anchor())
             })
+            // == Print panel (Task 13): centered modal overlay.
+            .children(print_overlay)
     }
 }
 
 // -- Popover chrome (bridge-routed; content contexts cannot reach the
 // shell entity) --
 
-/// 文件 chip + Popover: 打开 / 保存 / 另存为 / 导出为 PDF / 打印… (Task 13
-/// wires the print dialog; the entry stays a disabled placeholder).
+/// 文件 chip + Popover: 打开 / 保存 / 另存为 / 导出为 PDF / 打印… (the
+/// print action opens the modal panel, Task 13).
 fn file_menu(open: bool) -> AnyElement {
     Popover::new("file-menu")
         .open(open)
@@ -1043,8 +1286,7 @@ fn file_menu(open: bool) -> AnyElement {
                         AppAction::ExportPdf,
                         close_file_menu(),
                     ),
-                    // Disabled placeholder (print dialog lands with Task 13).
-                    disabled_menu_entry("fm-print", "打印…"),
+                    menu_entry("fm-print", "打印…", AppAction::Print, close_file_menu()),
                 ])
                 .into_any_element()
         })
@@ -1252,18 +1494,6 @@ fn menu_entry(
                 cx,
             );
         })
-        .child(label.to_string())
-        .into_any_element()
-}
-
-/// Disabled menu entry (打印… until Task 13).
-fn disabled_menu_entry(id: &str, label: &str) -> AnyElement {
-    div()
-        .id(ElementId::Name(format!("me-{id}").into()))
-        .px_3()
-        .py_1()
-        .text_size(px(13.))
-        .opacity(0.4)
         .child(label.to_string())
         .into_any_element()
 }

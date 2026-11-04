@@ -178,12 +178,15 @@ impl SessionManager {
 /// and clears the queue on each render pass.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppAction {
-    // File menu (打开 / 保存 / 另存为 / 导出为 PDF; 打印… stays disabled
-    // until Task 13 wires the print dialog).
+    // File menu (打开 / 保存 / 另存为 / 导出为 PDF / 打印…).
     OpenFile,
     SaveFile,
     SaveAsFile,
     ExportPdf,
+    // Print panel (Task 13): open the dialog, submit, cancel.
+    Print,
+    PrintSubmit,
+    PrintCancel,
     // Shape dropdown (图形批注子工具).
     PickShape(ShapeKind),
     // Zoom dropdown (fit modes + percent presets).

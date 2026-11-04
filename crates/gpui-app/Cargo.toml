@@ -12,6 +12,9 @@ rofd-io = { workspace = true }
 rofd-export = { workspace = true }
 rofd-component = { workspace = true }
 rofd-dom = { workspace = true }
+# Print panel types (JobHandle/PrintSettings) — already in the build via
+# rofd-gpui-view/rofd-component; declared directly for the host glue.
+office-rs-print = { workspace = true }
 # System font channel (font_index): mmap the system font dirs and extract
 # family names from the name table (same pins as the tauri host line).
 memmap2 = "0.9"
