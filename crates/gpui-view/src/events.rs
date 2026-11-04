@@ -9,7 +9,7 @@
 //! Pure functions over gpui's plain event structs — no window state, so the
 //! whole table is unit-testable headlessly (`tests/event_mapping.rs`).
 //!
-//! Direction/units facts (rword spike report 2026-10-28, from
+//! Direction/units facts (gpui-line spike report 2026-10-28, from
 //! gpui-pre-windows `events.rs`): the Windows wheel reports `Lines(notches *
 //! OS wheel_scroll_lines)` with POSITIVE y = wheel UP, while the kernel
 //! wants +y = scroll DOWN — so y is negated here, and the OS line
@@ -126,7 +126,7 @@ pub fn mouse_down_at(event: &MouseDownEvent, x: f32, y: f32) -> ViewEvent {
     }
 }
 
-/// rofd's `PointerUp` carries no modifiers (unlike rword's MouseUp).
+/// rofd's `PointerUp` carries no modifiers.
 pub fn mouse_up_at(event: &MouseUpEvent, x: f32, y: f32) -> ViewEvent {
     ViewEvent::PointerUp {
         button: button_from(event.button),

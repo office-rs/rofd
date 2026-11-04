@@ -150,3 +150,18 @@ fn utf16_round_trip() {
     // The marked range is the whole composition.
     assert_eq!(ime.marked_range(), Some(0..4));
 }
+
+#[test]
+fn caret_utf16_sits_at_composition_end() {
+    // The selection anchor the InputHandler reports to the platform:
+    // a zero-width range at the composition's end (UTF-16 units).
+    let mut ime = ImeBridge::new();
+    assert_eq!(ime.caret_utf16(), 0, "empty composition -> caret at 0");
+    ime.replace_and_mark(None, "你a");
+    // 你 is one BMP unit + a = 2 UTF-16 units.
+    assert_eq!(ime.caret_utf16(), 2);
+    ime.replace_and_mark(None, "你好👋");
+    // 2 BMP units + a surrogate pair = 4.
+    assert_eq!(ime.caret_utf16(), 4);
+    assert_eq!(ime.marked_range(), Some(0..4));
+}

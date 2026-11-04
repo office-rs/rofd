@@ -5,7 +5,7 @@
 
 //! gpui event structs -> rofd `ViewEvent` mapping.
 //!
-//! Direction facts (rword spike report / gpui-pre-windows events.rs):
+//! Direction facts (gpui-line spike report / gpui-pre-windows events.rs):
 //! - Windows wheel: `Lines(notches * OS wheel_scroll_lines)`, POSITIVE y =
 //!   wheel UP. The kernel wants +y = scroll DOWN => negate.
 //! - gpui lines carry the OS multiplier (default 3 lines/notch); divide it
@@ -180,7 +180,7 @@ fn mouse_down_at_maps_button_click_count_and_coords() {
 
 #[test]
 fn mouse_up_at_drops_modifiers() {
-    // rofd's PointerUp carries no modifiers (unlike rword's MouseUp).
+    // rofd's PointerUp carries no modifiers.
     let event = MouseUpEvent {
         button: MouseButton::Middle,
         position: Point::new(px(1.0), px(2.0)),
@@ -280,7 +280,7 @@ fn pixel_deltas_negate_and_stay_logical() {
 #[test]
 fn ctrl_wheel_emits_anchored_zoom_at() {
     // Wheel UP zooms IN. rofd's ZoomAt is multiplicative and anchored at
-    // the pointer's viewport position (NOT rword's absolute Zoom).
+    // the pointer's viewport position.
     let out = events::scroll(
         &scroll_event(ScrollDelta::Lines(Point::new(0.0, 3.0)), true),
         1.0,

@@ -1334,8 +1334,9 @@ impl OfdComponent {
 
     /// Force-commit the active preedit (focus loss / click elsewhere /
     /// navigation): insert its text at the composition origin and clear it.
-    /// Returns true when something was committed.
-    fn force_commit_preedit(&mut self) -> bool {
+    /// Returns true when something was committed. Also the adapter entry
+    /// for the platform IME's confirm-as-is commit (`unmark_text`).
+    pub fn force_commit_preedit(&mut self) -> bool {
         let Some(state) = self.preedit.take() else {
             return false;
         };
