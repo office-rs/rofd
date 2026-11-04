@@ -23,6 +23,9 @@ ttf-parser = "0.25"
 # Sink image path: decode OFD-embedded png/jpeg to BGRA RenderImages
 # (core types only for examples; codecs here for production).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# Print job types for the handle verbs + dialog state machine
+# (print phase 2, spec 2026-10-31; same pin as component/xilem-view).
+office-rs-print = { workspace = true }
 smallvec = "1"
 
 [dev-dependencies]

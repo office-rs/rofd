@@ -1243,6 +1243,12 @@ impl OfdComponent {
         self.page_gen
     }
 
+    /// The current viewport (content region) size in px (e.g. hosts derive
+    /// the viewport-center anchor for `ViewEvent::ZoomAt`).
+    pub fn viewport_size(&self) -> (f64, f64) {
+        self.viewport.size
+    }
+
     /// Update the viewport (content region) size. Called by the widget layout.
     pub fn set_viewport_size(&mut self, width: f64, height: f64) {
         // Defensive: NaN/non-positive sizes must never enter the viewport.

@@ -10,8 +10,10 @@ pub mod events;
 pub mod events_surface;
 pub mod font_cache;
 pub mod gpui_sink;
+pub mod handle;
 pub mod ime;
 pub mod view;
 
 pub use events_surface::OfdGpuiEvent;
+pub use handle::GpuiOfdHandle;
 pub use view::OfdGpuiView;

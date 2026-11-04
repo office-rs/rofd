@@ -7694,6 +7694,7 @@ dependencies = [
  "gpui-pre-platform",
  "image",
  "imaging",
+ "office-rs-print",
  "rofd-component",
  "rofd-dom",
  "smallvec",
