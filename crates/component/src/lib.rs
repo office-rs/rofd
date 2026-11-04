@@ -26,3 +26,5 @@ pub use zoom_mode::ZoomMode;
 pub use rofd_dom::{AnnotationId, OfdWarning, Rect};
 pub use rofd_editor::{AnnotationSelection, TextCursor};
 pub use rofd_render::{normalize_family_key, BodyTextSelection};
+// Re-exported for adapters — the kernel ZoomAt clamps with these.
+pub use rofd_render::{FIT_MIN_ZOOM, MAX_ZOOM, MIN_ZOOM};
