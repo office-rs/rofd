@@ -6,3 +6,6 @@
 
 pub mod font_cache;
 pub mod gpui_sink;
+pub mod view;
+
+pub use view::OfdGpuiView;

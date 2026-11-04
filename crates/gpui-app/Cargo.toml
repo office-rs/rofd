@@ -1,0 +1,20 @@
+[package]
+name = "gpui-app"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.96"
+license = "Apache-2.0"
+
+[dependencies]
+rofd-gpui-view = { path = "../gpui-view" }
+# Host-side file I/O (host/document_io) + PDF export (host/export_pdf).
+rofd-io = { workspace = true }
+rofd-export = { workspace = true }
+rofd-component = { workspace = true }
+rofd-dom = { workspace = true }
+# gpui host bootstrap + UI kit ("assets" feature pairs with the
+# gpui-kit-assets dependency for AllAssets).
+gpui-pre = { workspace = true }
+gpui-pre-platform = { workspace = true }
+gpui-kit = { workspace = true, features = ["assets"] }
+gpui-kit-assets = { workspace = true }
