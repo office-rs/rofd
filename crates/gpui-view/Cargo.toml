@@ -27,6 +27,8 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 # (print phase 2, spec 2026-10-31; same pin as component/xilem-view).
 office-rs-print = { workspace = true }
 smallvec = "1"
+write-fonts = "0.55.0"
+read-fonts = "0.46.0"
 
 [dev-dependencies]
 # Headless tests: TestAppContext text system for the font cache.

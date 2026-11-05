@@ -53,6 +53,66 @@ pub fn parse_face(bytes: &[u8], index: u32) -> Option<FaceInfo> {
     })
 }
 
+/// Bytes to register + the face info to resolve by, ensuring the font
+/// carries a decodable family name.
+///
+/// OFD embedded fonts are frequently shipped as stripped subsets with the
+/// WHOLE `name` table removed (e.g. test/sample-content.ofd's four faces).
+/// The kernel shapes them fine (fontique keys on bytes, not names), but a
+/// gpui `TextSystem` resolves strictly by family string and silently
+/// drops nameless fonts — `add_fonts` reports Ok while `all_font_names`
+/// never grows (verified against DirectWrite). Nameless faces therefore
+/// get a synthetic unique family injected via write-fonts before
+/// registration, so their glyph ids resolve back to their own outlines.
+///
+/// `None` only when the bytes are unparsable, or the face is nameless
+/// inside a collection (v1 scope: single-face surgery only — nameless TTC
+/// faces have not been seen in the wild).
+pub fn named_font_bytes(
+    bytes: &[u8],
+    index: u32,
+) -> Option<(std::borrow::Cow<'_, [u8]>, FaceInfo)> {
+    if let Some(info) = parse_face(bytes, index) {
+        return Some((std::borrow::Cow::Borrowed(bytes), info));
+    }
+    if index != 0 || ttf_parser::fonts_in_collection(bytes).unwrap_or(1) > 1 {
+        return None;
+    }
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    let family = format!("__rofd_font_{:016x}", hasher.finish());
+
+    let font_ref = read_fonts::FontRef::new(bytes).ok()?;
+    let mut builder = write_fonts::FontBuilder::new();
+    builder.add_table(&synthetic_name_table(&family)).ok()?;
+    builder.copy_missing_tables(font_ref.clone());
+    let rebuilt = builder.build();
+    let info = parse_face(&rebuilt, 0)?;
+    Some((std::borrow::Cow::Owned(rebuilt), info))
+}
+
+/// Minimal Windows-Unicode name table carrying the family (ids 1 + 16)
+/// and a matching PostScript name (id 6): enough for every text system
+/// to enumerate and resolve the family. Records must stay sorted or
+/// write-fonts refuses to dump the table.
+fn synthetic_name_table(family: &str) -> write_fonts::tables::name::Name {
+    use write_fonts::tables::name::NameRecord;
+
+    let record = |id: u16| NameRecord {
+        platform_id: 3, // Windows
+        encoding_id: 1, // Unicode BMP (UTF-16BE)
+        language_id: 0x0409,
+        name_id: write_fonts::types::NameId::new(id),
+        string: family.to_string().into(),
+    };
+    // 1 = family, 16 = typographic family, 6 = PostScript name.
+    write_fonts::tables::name::Name {
+        name_record: vec![record(1), record(6), record(16)],
+        ..Default::default()
+    }
+}
+
 /// Back-compat thin wrapper.
 pub fn parse_family(bytes: &[u8], index: u32) -> Option<String> {
     parse_face(bytes, index).map(|f| f.family)
@@ -84,10 +144,13 @@ impl FontCache {
         if let Some(id) = self.map.get(&key) {
             return Some(*id);
         }
-        let info = parse_face(bytes, font_data.index)?;
+        // Nameless subset fonts (see `named_font_bytes`) get a synthetic
+        // family injected before registration; the cache key stays the
+        // ORIGINAL blob identity (the layout shares one Arc per font).
+        let (register, info) = named_font_bytes(bytes, font_data.index)?;
         // add_fonts takes owning Cow bytes: one Vec copy per distinct font
         // per process (18 MB worst case for a CJK face) — paid once.
-        ts.add_fonts(vec![std::borrow::Cow::Owned(bytes.to_vec())])
+        ts.add_fonts(vec![std::borrow::Cow::Owned(register.to_vec())])
             .ok()?;
         // Resolve with the FACE's own weight/style so a real bold/italic
         // face does not collapse onto the regular one.
@@ -111,6 +174,70 @@ impl FontCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The render suite's tracked TrueType fixture, used as a base for
+    /// building a nameless-font case (the real-world trigger: OFD embedded
+    /// subset fonts ship with the whole `name` table stripped).
+    const TEST_FONT: &[u8] = include_bytes!("../../render/tests/fixtures/fonts/TestFont.ttf");
+
+    /// Strip the fixture's name table via write-fonts, producing the
+    /// same shape the failing documents embed.
+    fn strip_name_table() -> Vec<u8> {
+        let font_ref = read_fonts::FontRef::new(TEST_FONT).expect("fixture parses");
+        let mut builder = write_fonts::FontBuilder::new();
+        for record in font_ref.table_directory().table_records() {
+            let tag = record.tag();
+            if tag == read_fonts::types::Tag::new(b"name") {
+                continue;
+            }
+            let data = font_ref.table_data(tag).expect("directory record has data");
+            builder.add_raw(tag, data);
+        }
+        builder.build()
+    }
+
+    #[test]
+    fn named_font_bytes_passthrough_when_family_exists() {
+        let (cow, info) = named_font_bytes(TEST_FONT, 0).expect("named font resolves");
+        assert!(matches!(cow, std::borrow::Cow::Borrowed(_)));
+        assert!(!info.family.is_empty());
+    }
+
+    #[test]
+    fn named_font_bytes_synthesizes_family_for_nameless_font() {
+        let nameless = strip_name_table();
+        // Fixture sanity: the stripped blob really has no name table.
+        let face = ttf_parser::Face::parse(&nameless, 0).expect("stripped font still parses");
+        assert!(face.names().into_iter().count() == 0);
+
+        let (cow, info) =
+            named_font_bytes(&nameless, 0).expect("nameless font gets a synthetic name");
+        assert!(matches!(cow, std::borrow::Cow::Owned(_)));
+
+        // The synthetic family is unique-stable and parse_face finds it.
+        assert!(info.family.starts_with("__rofd_font_"), "{}", info.family);
+        let reparsed = parse_face(&cow, 0).expect("synthetic font reparses");
+        assert_eq!(reparsed.family, info.family);
+
+        // Deterministic: same bytes -> same synthetic name.
+        let (_, info2) = named_font_bytes(&nameless, 0).unwrap();
+        assert_eq!(info.family, info2.family);
+
+        // Glyph data survives the rewrite intact.
+        let before = ttf_parser::Face::parse(TEST_FONT, 0)
+            .unwrap()
+            .number_of_glyphs();
+        let after = ttf_parser::Face::parse(&cow, 0).unwrap().number_of_glyphs();
+        assert_eq!(
+            before, after,
+            "glyph count preserved through name injection"
+        );
+    }
+
+    #[test]
+    fn named_font_bytes_rejects_garbage() {
+        assert!(named_font_bytes(b"not a font", 0).is_none());
+    }
 
     #[test]
     fn cache_key_is_ptr_identity_not_content() {
