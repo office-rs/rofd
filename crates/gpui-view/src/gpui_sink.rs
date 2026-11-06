@@ -470,6 +470,22 @@ impl PaintSink for GpuiSink<'_> {
     }
 }
 
+/// Minimum visible stroke width at replay (logical px).
+///
+/// The gpui path rasterizer discards strokes whose width rounds below
+/// one device pixel (verified on 0.64px table borders: pure white, not
+/// faint - while vello on the web line renders the same IR hairlines
+/// fine). OFD table borders are commonly 0.17mm ≈ 0.64 logical px, so
+/// clamping to 1px restores parity; which sub-px lines survive without
+/// the clamp depends on the user's DPI scale and subpixel phase.
+pub const MIN_STROKE_PX: f32 = 1.0;
+
+/// Replay-side stroke width policy: hairlines are clamped up to the
+/// minimum visible width; fills (`None`) and thicker strokes pass through.
+fn stroke_width_px(width: Option<Pixels>) -> Option<Pixels> {
+    width.map(f32::from).map(|w| w.max(MIN_STROKE_PX)).map(px)
+}
+
 /// Replay half: paint the recorded commands into a window, offset by the
 /// element's bounds origin (the kernel records in viewport coordinates
 /// starting at 0,0; the element may sit anywhere in the window).
@@ -508,9 +524,11 @@ pub fn replay(
             PaintCmd::Path {
                 bez, width, color, ..
             } => {
-                // Convert kurbo path → gpui Path with the offset baked in.
-                let stroke_width = width.map(f32::from);
-                if let Some(path) = bez_to_path_offset(bez, stroke_width, origin) {
+                // Convert kurbo path → gpui Path with the offset baked in;
+                // hairlines are clamped up to MIN_STROKE_PX (see above).
+                if let Some(path) =
+                    bez_to_path_offset(bez, stroke_width_px(*width).map(f32::from), origin)
+                {
                     window.paint_path(path, *color);
                 }
             }
@@ -602,5 +620,20 @@ mod tests {
         assert!(image_data_to_bgra(&raw_image(2, 1, vec![0u8; 8])).is_some());
         assert!(image_data_to_bgra(&raw_image(2, 1, vec![0u8; 7])).is_none());
         assert!(image_data_to_bgra(&raw_image(0, 1, vec![])).is_none());
+    }
+}
+
+#[cfg(test)]
+mod stroke_policy_tests {
+    use super::*;
+
+    #[test]
+    fn hairline_clamped_to_minimum_visible_width() {
+        let thin = stroke_width_px(Some(px(0.64)));
+        assert_eq!(f32::from(thin.unwrap()), MIN_STROKE_PX);
+
+        // Thicker strokes and fills pass through unchanged.
+        assert_eq!(f32::from(stroke_width_px(Some(px(2.5))).unwrap()), 2.5);
+        assert!(stroke_width_px(None).is_none());
     }
 }
