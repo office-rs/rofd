@@ -38,7 +38,13 @@ enum AppearanceObject {
         font: String,
         size: f64,
         fill: Option<Color>,
-        content: String,
+        /// `Italic="true"` on the TextObject (synthetic italic at render).
+        italic: bool,
+        /// `Weight` on the TextObject; >= 600 reads as bold.
+        weight: Option<u32>,
+        /// One entry per TextCode element (one per line, GB/T 33190):
+        /// (text, X, Y) with the code's own pen origin.
+        codes: Vec<(String, f64, f64)>,
     },
     Image {
         boundary: Rect,
@@ -67,6 +73,8 @@ struct PendingAnnot {
     in_abbrev: bool,
     in_text_code: bool,
     text_body: String,
+    /// Pen origin (X, Y) of the TextCode currently being read.
+    code_origin: (f64, f64),
 }
 
 impl PendingAnnot {
@@ -89,6 +97,7 @@ impl PendingAnnot {
             in_abbrev: false,
             in_text_code: false,
             text_body: String::new(),
+            code_origin: (0.0, 0.0),
         }
     }
 
@@ -219,11 +228,13 @@ fn handle_event(p: &mut PendingAnnot, ev: &Result<Event, quick_xml::Error>) {
             }
             b"AbbreviatedData" => p.in_abbrev = false,
             b"TextCode" => {
-                // Transfer accumulated text body into the Text object's content
-                // when TextCode closes (not when TextObject closes, because
-                // in_text_code is cleared here).
-                if let Some(AppearanceObject::Text { content, .. }) = p.cur_obj.as_mut() {
-                    *content = std::mem::take(&mut p.text_body);
+                // Transfer accumulated text body into the Text object's code
+                // list when TextCode closes (not when TextObject closes,
+                // because in_text_code is cleared here). PUSH, never assign:
+                // one TextObject may carry several TextCodes (one per line)
+                // and an overwrite would drop all but the last.
+                if let Some(AppearanceObject::Text { codes, .. }) = p.cur_obj.as_mut() {
+                    codes.push((std::mem::take(&mut p.text_body), p.code_origin.0, p.code_origin.1));
                 }
                 p.in_text_code = false;
             }
@@ -259,7 +270,9 @@ fn handle_element_start(p: &mut PendingAnnot, e: &BytesStart) {
                 font: attr(e, "Font").unwrap_or_default(),
                 size: attr(e, "Size").and_then(|s| s.parse().ok()).unwrap_or(0.0),
                 fill: None,
-                content: String::new(),
+                italic: attr(e, "Italic").map(|s| s == "true").unwrap_or(false),
+                weight: attr(e, "Weight").and_then(|s| s.parse().ok()),
+                codes: Vec::new(),
             });
         }
         b"ImageObject" if p.in_appearance => {
@@ -279,9 +292,47 @@ fn handle_element_start(p: &mut PendingAnnot, e: &BytesStart) {
             }
         }
         b"AbbreviatedData" => p.in_abbrev = true,
-        b"TextCode" if p.in_appearance => p.in_text_code = true,
+        b"TextCode" if p.in_appearance => {
+            p.in_text_code = true;
+            // The code's own pen origin (object-local mm), applied on close.
+            p.code_origin = (
+                attr(e, "X").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                attr(e, "Y").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+            );
+        }
         _ => {}
     }
+}
+
+/// Flatten styled runs into the plain editable content: order by
+/// (baseline, x); a baseline jump beyond 30% of the smaller run size starts
+/// a new line (`\n`), same-line fragments concatenate directly. This keeps
+/// per-line splits (WPS: one TextObject per line) AND same-line styled
+/// fragments (Suwell: one TextObject per fragment) readable as one flow.
+fn flat_content_from_runs(runs: &[rofd_dom::TextRun]) -> String {
+    let mut sorted: Vec<&rofd_dom::TextRun> = runs.iter().collect();
+    sorted.sort_by(|a, b| {
+        a.baseline
+            .partial_cmp(&b.baseline)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(
+                a.x.partial_cmp(&b.x)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+    });
+    let mut content = String::new();
+    let mut prev: Option<&rofd_dom::TextRun> = None;
+    for run in sorted {
+        if let Some(p) = prev {
+            let threshold = 0.3 * p.size.min(run.size);
+            if (run.baseline - p.baseline).abs() > threshold {
+                content.push('\n');
+            }
+        }
+        content.push_str(&run.text);
+        prev = Some(run);
+    }
+    content
 }
 
 /// Map GB/T 33190 Annot Type+Subtype to [`AnnotationKind`]. Unknown combos
@@ -427,42 +478,72 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
         }
         AnnotationKind::TextBox => {
             // FreeText: content/font/size/color come from the Appearance
-            // TextObject(s). Multi-line FreeText annotations may carry one
-            // TextObject per line; concatenate ALL of their contents (joined
-            // by newlines) so no line is dropped. Font/size/color come from
-            // the first TextObject (producers use the same style across
-            // lines in a single annotation). When no TextObject is present,
-            // fall back to the Remark text (some producers put the text only
-            // in <Remark>).
-            let mut content = String::new();
-            let mut font = String::new();
-            let mut size = 0.0;
-            let mut color = None;
+            // TextObject(s). Producers split text two ways: one TextObject
+            // per LINE (all sharing one style) or one TextObject per styled
+            // FRAGMENT on a shared line (per-fragment Font/Size/Italic/
+            // Weight/FillColor). Both flatten into `content` (same-line
+            // fragments concatenated, different baselines newline-joined)
+            // while the styled fragments survive in `runs` with appearance-
+            // local pen positions for faithful rendering. Flat fallback
+            // style = first TextObject's (producers keep one style per
+            // annotation unless they fragment). When no TextObject is
+            // present, fall back to the Remark text.
+            let mut runs: Vec<rofd_dom::TextRun> = Vec::new();
+            let mut flat_font = String::new();
+            let mut flat_size = 0.0;
+            let mut flat_color = None;
             let mut first = true;
             for o in &p.objects {
                 if let AppearanceObject::Text {
-                    content: c,
-                    font: fnt,
-                    size: sz,
+                    boundary,
+                    font,
+                    size,
                     fill,
-                    ..
+                    italic,
+                    weight,
+                    codes,
                 } = o
                 {
                     if first {
-                        font = fnt.clone();
-                        size = *sz;
-                        color = *fill;
+                        flat_font = font.clone();
+                        flat_size = *size;
+                        flat_color = *fill;
                         first = false;
-                    } else if !content.is_empty() {
-                        // Join lines with a newline separator.
-                        content.push('\n');
                     }
-                    content.push_str(c);
+                    for (text, cx, cy) in codes {
+                        runs.push(rofd_dom::TextRun {
+                            text: text.clone(),
+                            font: rofd_dom::FontId::new(font.clone()),
+                            size: *size,
+                            color: *fill,
+                            bold: weight.is_some_and(|w| w >= 600),
+                            italic: *italic,
+                            // Appearance-local pen position: the object's
+                            // boundary origin plus the code's own origin.
+                            x: boundary.x + cx,
+                            baseline: boundary.y + cy,
+                        });
+                    }
                 }
             }
+            let mut content = flat_content_from_runs(&runs);
             if first {
                 // No TextObject found: fall back to Remark.
                 content = p.remark.clone();
+            }
+            // Runs are the RICH-fidelity carrier only: keep them when the
+            // appearance actually fragments styling (a bold/italic flag, or
+            // adjacent runs differing in font/size/color). Uniform layouts
+            // (one style per line - what rofd itself serializes) stay
+            // runs-empty so flat boxes round-trip unchanged.
+            let rich = runs.iter().any(|r| r.bold || r.italic)
+                || runs.windows(2).any(|w| {
+                    w[0].font != w[1].font
+                        || (w[0].size - w[1].size).abs() > 1e-9
+                        || w[0].color != w[1].color
+                });
+            if !rich {
+                runs.clear();
             }
             // A bordered text box (文本框) carries a stroke-only border
             // PathObject ahead of the text; keep its color or the frame
@@ -474,11 +555,11 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
             AnnotationPayload::TextBox {
                 rect: boundary,
                 content,
-                font: FontId::new(font),
-                size,
-                color: color.unwrap_or_default(),
+                font: FontId::new(flat_font),
+                size: flat_size,
+                color: flat_color.unwrap_or_default(),
                 border,
-                runs: Vec::new(),
+                runs,
             }
         }
         AnnotationKind::Stamp => {
@@ -503,12 +584,21 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
                 .iter()
                 .find_map(|o| match o {
                     AppearanceObject::Text {
-                        content,
                         font,
                         size,
                         fill,
+                        codes,
                         ..
-                    } => Some((content.clone(), font.clone(), *size, *fill)),
+                    } => Some((
+                        codes
+                            .iter()
+                            .map(|(t, _, _)| t.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                        font.clone(),
+                        *size,
+                        *fill,
+                    )),
                     _ => None,
                 })
                 .unwrap_or_default();
@@ -729,12 +819,95 @@ mod tests {
                 content,
                 font,
                 size,
+                runs,
                 ..
             } => {
                 // Both lines must be present, joined by a newline.
                 assert_eq!(content, "first line\nsecond line");
                 assert_eq!(font.0, "F1");
                 assert!((size - 12.0).abs() < 1e-10);
+                // Uniform one-style-per-line layout: NOT rich -> no runs
+                // (flat boxes round-trip unchanged; runs are the rich
+                // fidelity carrier only).
+                assert!(runs.is_empty(), "uniform layout stays runs-empty");
+            }
+            other => panic!("expected TextBox, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn freetext_runs_capture_per_fragment_style_and_position() {
+        // Real-world producer (Suwell-style): ONE line split into four styled
+        // fragments, one TextObject each, with per-fragment Font/Size and
+        // Italic/Weight attributes plus a FillColor only on the last run.
+        // Verbatim from the reported mis-rendering file (Annot ID=149).
+        let xml = r#"<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Annot Type="FreeText" ID="149" Creator="h" Subtype="FreeText"><ofd:Remark>发的古典风格</ofd:Remark><ofd:Appearance Boundary="128.7308 67.8954 46.3903 10.0492"><ofd:PathObject ID="163" Name="TextBorder" Boundary="0 0 46.3903 10.0492" LineWidth="0.1764" Fill="true"><ofd:StrokeColor Value="255 0 0"/><ofd:FillColor Value="255 255 255"/><ofd:AbbreviatedData>M 0.0882 0.0882 L 46.3021 0.0882 L 46.3021 9.961 L 0.0882 9.961 C </ofd:AbbreviatedData></ofd:PathObject><ofd:TextObject BlendMode="Normal" ID="159" Boundary="1.1764 1.1764 12.6999 6.4283" Font="118" Size="4.2333"><ofd:TextCode X="0" Y="5.4546" DeltaX="4.2333 4.2333">发的古</ofd:TextCode></ofd:TextObject><ofd:TextObject BlendMode="Normal" ID="160" Boundary="13.8763 1.1764 6.35 6.4706" Font="154" Size="6.35"><ofd:TextCode X="0" Y="5.4546">典</ofd:TextCode></ofd:TextObject><ofd:TextObject BlendMode="Normal" ID="161" Boundary="20.2263 1.1764 5.9859 6.4283" Font="118" Size="4.2333" Italic="true"><ofd:TextCode X="0" Y="5.4546">风</ofd:TextCode></ofd:TextObject><ofd:TextObject BlendMode="Normal" ID="162" Boundary="24.4596 1.1764 4.2333 6.4283" Font="157" Size="4.2333" Weight="700"><ofd:FillColor Value="75 172 198"/><ofd:TextCode X="0" Y="5.4546">格</ofd:TextCode></ofd:TextObject></ofd:Appearance></ofd:Annot></ofd:PageAnnot>"#;
+        let anns = parse_page_annot(xml, &PageId::new("1")).unwrap();
+        match &anns[0].payload {
+            AnnotationPayload::TextBox {
+                content,
+                border,
+                runs,
+                ..
+            } => {
+                // All four fragments sit on ONE line (same baseline) - the
+                // flat content must NOT contain newlines (the vertical
+                // stacking bug joined them with '\n').
+                assert_eq!(content, "发的古典风格");
+                assert_eq!(border, &Some(Color::Rgb(255, 0, 0)));
+                assert_eq!(runs.len(), 4, "one run per TextObject");
+                let r0 = &runs[0];
+                assert_eq!(r0.text, "发的古");
+                assert_eq!(r0.font.0, "118");
+                assert!((r0.size - 4.2333).abs() < 1e-9);
+                assert_eq!(r0.color, None);
+                assert!(!r0.bold && !r0.italic);
+                assert!((r0.x - 1.1764).abs() < 1e-9, "x = boundary.x + code.X");
+                assert!(
+                    (r0.baseline - (1.1764 + 5.4546)).abs() < 1e-9,
+                    "baseline = boundary.y + code.Y"
+                );
+                let r1 = &runs[1];
+                assert_eq!(r1.text, "典");
+                assert_eq!(r1.font.0, "154");
+                assert!((r1.size - 6.35).abs() < 1e-9, "per-run size");
+                assert!((r1.x - 13.8763).abs() < 1e-9);
+                let r2 = &runs[2];
+                assert_eq!(r2.text, "风");
+                assert!(r2.italic, "Italic=\"true\" -> run.italic");
+                assert!(!r2.bold);
+                let r3 = &runs[3];
+                assert_eq!(r3.text, "格");
+                assert_eq!(r3.font.0, "157");
+                assert!(r3.bold, "Weight=\"700\" -> run.bold");
+                assert_eq!(r3.color, Some(Color::Rgb(75, 172, 198)));
+                assert!((r3.x - 24.4596).abs() < 1e-9);
+            }
+            other => panic!("expected TextBox, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn freetext_multi_textcode_in_one_textobject_keeps_all_codes() {
+        // GB/T 33190 allows multiple TextCode elements in one TextObject
+        // (one per line, each with its own X/Y). The old parse OVERWROTE the
+        // content on every TextCode close, keeping only the last one.
+        let xml = r#"<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Annot Type="FreeText" ID="12" Subtype="FreeText">
+    <ofd:Appearance Boundary="0 0 100 60">
+      <ofd:TextObject ID="t0" Boundary="0 0 100 60" Font="F1" Size="12">
+        <ofd:TextCode X="0" Y="10">first</ofd:TextCode>
+        <ofd:TextCode X="0" Y="25">second</ofd:TextCode>
+      </ofd:TextObject>
+    </ofd:Appearance>
+  </ofd:Annot>
+</ofd:PageAnnot>"#;
+        let anns = parse_page_annot(xml, &PageId::new("1")).unwrap();
+        match &anns[0].payload {
+            AnnotationPayload::TextBox { content, runs, .. } => {
+                assert_eq!(content, "first\nsecond", "both codes kept, lines split");
+                // Uniform style across codes: not rich -> runs stay empty.
+                assert!(runs.is_empty());
             }
             other => panic!("expected TextBox, got {other:?}"),
         }
