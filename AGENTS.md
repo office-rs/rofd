@@ -104,11 +104,14 @@ py -3.1 -m maturin build --release -m crates/convert-py/Cargo.toml -o target/whe
 py -3.1 -m pip install --force-reinstall target/wheels/rofd_convert-*.whl
 py -3.1 crates/convert-py/demo/run.py          # 验收：ThreadPoolExecutor 池 == CLI 字节
 # ^ maturin ≥1.16 且须显式 -i：PATH 裸 python 是 3.7，读不动 3.14 元数据
+# wasm 绑定（rofd-convert-wasm，npm 包 @office-rs/rofd-convert-wasm）
+node crates/convert-wasm/sdk/build.mjs          # wasm-pack --target web -> sdk/dist/wasm
+node crates/convert-wasm/demo/run.mjs           # 验收：浏览器 main+Worker == CLI 字节（需 Playwright：web-app npm install）
 ```
 
 带文字的真实样例**建议给 `--font`**：空字体注册表下系统回退字体可能不被 krilla 子集化支持——②期 Task 1 起不再整体失败，该字体面**降级**（一行 warning + 跳过其字素、退出码 0，`encode_with_degradation`），但文字会缺，`--font` 保证文字完整（spec 2026-11-06 §8 边界的现行形态）。③期 Task 1 起降级 warning 经 `ConvertWarning` 透出到全部四端（CLI stderr/Java takeWarnings/Node·Py warnings）；③期 Task 2 起解析警告按种类聚合（真实样例 739 行 → 3 行，`(×N)` 计数）。
 
-发布锁步清单（`rofd-convert-v*` tag 时）：`crates/convert{,-cli,-java,-node,-py}/Cargo.toml` + `crates/convert-java/pom.xml` + `crates/convert-node/package.json` + `crates/convert-py/pyproject.toml`（版本须一致）；`cargo deny check licenses` 应绿（`deny.toml`）。
+发布锁步清单（`rofd-convert-v*` tag 时）：`crates/convert{,-cli,-java,-node,-py,-wasm}/Cargo.toml` + `crates/convert-java/pom.xml` + `crates/convert-node/package.json` + `crates/convert-py/pyproject.toml` + `crates/convert-wasm/sdk/package.json`（版本须一致）；`cargo deny check licenses` 应绿（`deny.toml`）。
 
 ---
 
@@ -146,6 +149,7 @@ converter hosts（CLI/未来绑定）只碰 rofd-convert，与"编辑器宿主�
 | `rofd-convert-java` | `crates/convert-java` | JNI cdylib `rofdconvert` + Java L1/L2（`io.github.officers`），Maven `io.github.office-rs:rofd-convert` thin/fat jar | rofd-convert + jni 0.21 |
 | `rofd-convert-node` | `crates/convert-node` | napi cdylib `rofd_convert_node`（每方法 catch_unwind）+ JS L2（worker_threads 池/cli.js），npm `@office-rs/rofd-convert` 骨架 | rofd-convert + napi 2 |
 | `rofd-convert-py` | `crates/convert-py` | PyO3 扩展 `rofd_convert.rofd_convert_native`（lease 实例 + GIL 释放 convert），PyPI `rofd-convert`（abi3-py39 wheel） | rofd-convert + pyo3 0.30 |
+| `rofd-convert-wasm` | `crates/convert-wasm` | wasm-bindgen `--target web` 纯 CPU（暖实例 + registerFont 失效语义），npm `@office-rs/rofd-convert-wasm` 骨架 | rofd-convert + wasm-bindgen/js-sys |
 | `rofd-xilem-view`| `crates/xilem-view`  | masonry/xilem 薄适配器：`OfdWidget` + `ofd()`/`ofd_with_config()` | component |
 | `rofd-web-view`  | `crates/web-view`    | WASM 薄适配器：`WasmOfd` + `WebGpuRenderTarget` + TS SDK | component + io + editor + dom + rofd-export + office-rs-print（类型层） + vello + imaging + imaging_vello + wgpu + web-sys + rofd-convert（共享页组装） |
 | `rofd-gpui-view` | `crates/gpui-view`   | gpui 适配层 SDK：`OfdGpuiView`（Entity/Element）+ `GpuiOfdHandle` + IME 桥 + 打印对话框状态机/discover-only services | component + dom + imaging + gpui-pre/gpui-pre-platform + office-rs-print（list_printers）+ ttf-parser + image（**不依赖 io**） |
@@ -215,7 +219,8 @@ converter hosts（CLI/未来绑定）只碰 rofd-convert，与"编辑器宿主�
 
 - convert-node（napi cdylib `rofd_convert_node`）：`convertToPdf`（唯一可 panic 的内核调用）经 `catch_unwind`——napi 边界 panic 会 abort Node；注册函数为纯登记不 panic；`Converter.convertToPdf(ofd, options?)` + 注册五件套；JS L2 `index.js`/`pool.js`（worker_threads 每 worker 一实例、崩溃 reject+respawn）；`cli.js` 为 npm bin `rofd-convert`（@office-rs/rofd-convert，平台包 optionalDependencies 槽位）。
 - convert-py（PyO3 `rofd_convert.rofd_convert_native`，abi3-py39 wheel）：`#[pyclass] Converter` 内部 `Mutex<Option<…>>` lease（与 JNI 句柄表同力学）——GIL 释放期（`py.detach`）同实例并发第二调用抛 `ConvertError("converter in use")`；`convert(ofd, *, watermark=…, max_pages=…)` kwargs；吞吐用 `threading.local` 每线程一实例。构建须 maturin ≥1.16 + 显式 `-i` 3.14 解释器（PATH 裸 python=3.7）。
-- 三绑定 demo 验收统一：**池化转换 == CLI 字节**（同机同字体状态；③期实测三运行时同 sha256 `82c3b352…`）。
+- convert-wasm（wasm-bindgen `--target web`，纯 CPU 无 WebGPU）：暖实例跨调用复用，注册成功使暖实例失效（下轮重建快照——比 native D9 略宽，浏览器单 realm 无 lease）；浏览器字体只经 `registerFont(bytes)`（无系统发现）；`panic = abort` 姿态（catch_panics 编译为无害守卫）；`wasm-opt = false` 元数据门同 web-view（多表 wasm 兼容）。
+- 四绑定 demo 验收统一：**池化转换 == CLI 字节**（同机同字体状态；③④期实测五运行时同 sha256 `82c3b352…`：Rust/JVM×16/Node×8/Py×8/wasm 浏览器 main+Worker）。
 
 ### rofd-convert-java（JNI 绑定，②期）
 
