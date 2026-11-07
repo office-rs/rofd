@@ -122,7 +122,7 @@ pub fn draw_annotations(
                 size,
                 color,
                 border,
-                ..
+                runs,
             } => {
                 // Bordered text box (文本框): stroke the frame around the text.
                 // Inset by LineWidth/2 to mirror the serialized border path
@@ -137,13 +137,19 @@ pub fn draw_annotations(
                         .transform(base)
                         .draw();
                 }
-                let text = TextParams {
-                    content,
-                    font,
-                    size: *size,
-                    color: *color,
-                };
-                draw_text_in_rect(painter, &text, rect, fonts, base);
+                if runs.is_empty() {
+                    let text = TextParams {
+                        content,
+                        font,
+                        size: *size,
+                        color: *color,
+                    };
+                    draw_text_in_rect(painter, &text, rect, fonts, base);
+                } else {
+                    // Rich appearance: draw each styled fragment at its own
+                    // parsed pen position (foreign-file fidelity).
+                    draw_text_runs(painter, rect, runs, fonts, base);
+                }
             }
             AnnotationPayload::Stamp { rect, image } => {
                 draw_stamp(painter, rect, image, res, base);
@@ -553,6 +559,60 @@ fn draw_text_in_rect(
         to_peniko(text.color),
         text.size,
     );
+}
+
+/// Italic slant for rich runs: x' = x - 0.25*y (glyph space, baseline at
+/// y = 0, glyphs above have y < 0 -> tops lean right, ~14 degrees).
+const ITALIC_SKEW: f64 = 0.25;
+
+/// Synthetic bold amount as a fraction of the run's font size, applied via
+/// `GlyphRun::font_embolden` (outlines fattened in X).
+const BOLD_EMBOLDEN_RATIO: f64 = 0.022;
+
+/// Rich-run TextBox drawing: each [`TextRun`] shapes with its own font/size
+/// and draws at its own appearance-local pen position
+/// (`rect.x + run.x`, `rect.y + run.baseline`), with synthetic bold
+/// (`font_embolden`) and italic (skew) where the run asks for them.
+///
+/// Skips a run silently when its font can't be resolved or shaping yields
+/// no glyphs (same degradation contract as the flat path).
+pub(crate) fn draw_text_runs(
+    painter: &mut Painter<Scene>,
+    rect: &Rect,
+    runs: &[rofd_dom::TextRun],
+    fonts: &FontStore,
+    base: Affine,
+) {
+    for run in runs {
+        let (font, glyphs) = shape_positioned(&run.text, &run.font, run.size, fonts);
+        let Some(font) = font else {
+            continue;
+        };
+        let Some(first) = glyphs.first() else {
+            continue;
+        };
+        // The shaper's y is the line-top -> baseline distance (ascent for the
+        // first line); subtracting it lands the baseline exactly at
+        // rect.y + run.baseline.
+        let ascent = first.y as f64;
+        let mut affine =
+            base * Affine::translate((rect.x + run.x, rect.y + run.baseline - ascent));
+        if run.italic {
+            affine = affine * Affine::new([1.0, 0.0, -ITALIC_SKEW, 1.0, 0.0, 0.0]);
+        }
+        let brush = to_peniko(run.color.unwrap_or(Color::Rgb(0, 0, 0)));
+        let mut builder = painter
+            .glyphs(&font, brush)
+            .font_size(run.size as f32)
+            .transform(affine);
+        if run.bold {
+            builder = builder.font_embolden(imaging::kurbo::Vec2::new(
+                run.size * BOLD_EMBOLDEN_RATIO,
+                0.0,
+            ));
+        }
+        builder.draw(&Style::Fill(Fill::NonZero), &glyphs);
+    }
 }
 
 /// Watermark text: shaped, drawn translucent (`opacity`) and rotated by `angle`
@@ -1107,6 +1167,99 @@ mod tests {
             AnnotationKind::TextBox,
         );
         let _ = build(&[ann]);
+    }
+
+    /// Collect the scene's glyph runs (transform + embolden + brush + glyph
+    /// count per run) for the rich-runs assertions.
+    fn scene_glyph_runs(scene: &Scene) -> Vec<imaging::record::GlyphRun> {
+        let mut out = Vec::new();
+        for cmd in scene.commands() {
+            if let imaging::record::Command::Draw(id) = cmd {
+                if let imaging::record::Draw::GlyphRun(gr) = scene.draw_op(*id) {
+                    out.push(gr.clone());
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn textbox_runs_draw_each_fragment_with_style_and_position() {
+        // Three fragments on one baseline: plain, italic, bold+colored. Each
+        // draws at its own pen x (rect.x + run.x); italic carries the skew
+        // coefficient; bold sets font_embolden; color lands on the brush.
+        let rect = Rect {
+            x: 10.0,
+            y: 20.0,
+            w: 46.0,
+            h: 10.0,
+        };
+        let run = |text: &str, italic: bool, bold: bool, x: f64, color: Option<Color>| {
+            rofd_dom::TextRun {
+                text: text.into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color,
+                bold,
+                italic,
+                x,
+                baseline: 6.0,
+            }
+        };
+        let ann = ann(
+            AnnotationPayload::TextBox {
+                rect,
+                content: "abcd".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                runs: vec![
+                    run("a", false, false, 1.0, None),
+                    run("b", true, false, 10.0, None),
+                    run("c", false, true, 20.0, Some(Color::Rgb(75, 172, 198))),
+                ],
+            },
+            AnnotationKind::TextBox,
+        );
+        let scene = build(&[ann]);
+        let runs = scene_glyph_runs(&scene);
+        assert!(runs.len() >= 3, "at least 3 glyph runs, got {}", runs.len());
+        // Every pen x from the runs must appear as a run-transform e
+        // coefficient (rect.x + run.x): 11, 20, 30.
+        let txs: Vec<f64> = runs.iter().map(|g| g.transform.as_coeffs()[4]).collect();
+        for expected in [11.0, 20.0, 30.0] {
+            assert!(
+                txs.iter().any(|t| (*t - expected).abs() < 1e-6),
+                "pen x {expected} missing from run transforms: {txs:?}"
+            );
+        }
+        // Italic: skew coefficient c == -0.25 exactly on ONE run.
+        let skewed = runs
+            .iter()
+            .filter(|g| (g.transform.as_coeffs()[2] + 0.25).abs() < 1e-9)
+            .count();
+        assert_eq!(skewed, 1, "exactly one skewed (italic) run");
+        // Bold: exactly one run with a nonzero embolden amount.
+        let emboldened = runs
+            .iter()
+            .filter(|g| g.font_embolden.x.abs() > 1e-9)
+            .count();
+        assert_eq!(emboldened, 1, "exactly one emboldened (bold) run");
+        // Colored run: the teal brush is present.
+        let teal = runs.iter().any(|g| {
+            matches!(
+                &g.brush,
+                peniko::Brush::Solid(c) if c.to_rgba8().to_u8_array() == [75, 172, 198, 255]
+            )
+        });
+        assert!(teal, "teal brush for the colored run");
+        // Same baseline + same font -> all run transforms share one ty.
+        let tys: Vec<f64> = runs.iter().map(|g| g.transform.as_coeffs()[5]).collect();
+        assert!(
+            tys.iter().all(|t| (t - tys[0]).abs() < 1e-6),
+            "same baseline -> same ty: {tys:?}"
+        );
     }
 
     /// Collect every glyph baseline (viewport y = run transform ty + glyph y)
