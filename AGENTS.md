@@ -92,9 +92,15 @@ cargo run -p rofd-convert --example convert_bench --release  # 3 场景基线
 cargo test -p rofd-convert --test soak -- --ignored          # Linux RSS soak
 cd crates/convert/fuzz && cargo +nightly fuzz run convert_ofd -- -runs=20000
 # ^ Windows：MSVC ASan DLL 目录须在 PATH 上
+# Java 绑定（rofd-convert-java）
+cargo build --release -p rofd-convert-java     # JNI cdylib rofdconvert(.dll)
+cd crates/convert-java && mvn -DskipTests package   # thin jar（fat：-Dnative.dir=<staged> -Dskip.natives.check=true）
+bash crates/convert-java/demo/run.sh           # 两幕验收：JVM 池化转换 == CLI 字节（需 %WINDIR%/Fonts/simsun.ttc）
 ```
 
-带文字的真实样例在空字体注册表下**必须给 `--font`**：系统回退字体可能不被 krilla 子集化支持，未注册即转换会以退出码 3 失败（spec 2026-11-06 §8 边界）。
+带文字的真实样例**建议给 `--font`**：空字体注册表下系统回退字体可能不被 krilla 子集化支持——②期 Task 1 起不再整体失败，该字体面**降级**（一行 warning + 跳过其字素、退出码 0，`encode_with_degradation`），但文字会缺，`--font` 保证文字完整（spec 2026-11-06 §8 边界的现行形态）。
+
+发布锁步清单（`rofd-convert-v*` tag 时）：`crates/convert{,-cli,-java}/Cargo.toml` + `crates/convert-java/pom.xml`（版本须一致）。
 
 ---
 
@@ -103,7 +109,9 @@ cd crates/convert/fuzz && cargo +nightly fuzz run convert_ofd -- -runs=20000
 严格 5 层单向依赖，**反向边禁止**。每个 crate 的 `[dependencies]` 是依赖方向的唯一事实来源。**平台边界线画在 component 与适配器之间**：component 及以下六个 crate（含叶子 rofd-export）平台无关（不依赖 winit/web-sys/wgpu/arboard 等平台 crate），xilem-view / web-view / gpui-view 是仅有的三层平台绑定；rofd-convert（转换会话层）同属平台无关核心，是 component/io/render/export 的上邻。
 
 ```
-crates/convert-cli ─► rofd-convert ─────┐
+crates/convert-cli  ─┐
+                     ├─► rofd-convert ──┐
+crates/convert-java ─┘                  │
                                         │
 crates/xilem-app      ─┐                │
                        ├─► xilem-view ─┤
@@ -127,11 +135,12 @@ converter hosts（CLI/未来绑定）只碰 rofd-convert，与"编辑器宿主�
 | `rofd-component` | `crates/component`   | **唯一集成入口** `OfdComponent`：ViewEvent、Callbacks、脏缓存 | dom + render + editor + office-rs-print（类型层）（**不依赖 io**） |
 | `rofd-convert`   | `crates/convert`     | 转换会话层 facade：`Converter`/进程级字体注册表/预算/`catch_unwind`；converter hosts 只 import 此 crate | component + io + render + export + dom |
 | `rofd-convert-cli` | `crates/convert-cli` | bin `rofd-convert`：零依赖 argv 解析/退出码 0-2-3/字体注册 warn-and-continue | rofd-convert |
+| `rofd-convert-java` | `crates/convert-java` | JNI cdylib `rofdconvert` + Java L1/L2（`io.github.officers`：NativeLink/NativeLoader 三级加载/OfdConverter(+Pool)），thin/fat jar（Maven `io.github.office-rs:rofd-convert`） | rofd-convert + jni 0.21 |
 | `rofd-xilem-view`| `crates/xilem-view`  | masonry/xilem 薄适配器：`OfdWidget` + `ofd()`/`ofd_with_config()` | component |
-| `rofd-web-view`  | `crates/web-view`    | WASM 薄适配器：`WasmOfd` + `WebGpuRenderTarget` + TS SDK | component + io + editor + dom + rofd-export + office-rs-print（类型层） + vello + imaging + imaging_vello + wgpu + web-sys |
+| `rofd-web-view`  | `crates/web-view`    | WASM 薄适配器：`WasmOfd` + `WebGpuRenderTarget` + TS SDK | component + io + editor + dom + rofd-export + office-rs-print（类型层） + vello + imaging + imaging_vello + wgpu + web-sys + rofd-convert（共享页组装） |
 | `rofd-gpui-view` | `crates/gpui-view`   | gpui 适配层 SDK：`OfdGpuiView`（Entity/Element）+ `GpuiOfdHandle` + IME 桥 + 打印对话框状态机/discover-only services | component + dom + imaging + gpui-pre/gpui-pre-platform + office-rs-print（list_printers）+ ttf-parser + image（**不依赖 io**） |
-| `xilem-app`      | `crates/xilem-app`   | xilem 宿主应用（文件对话框 + 工具栏 UI 策略） | xilem-view + component + io + dom + xilem + rfd |
-| `gpui-app`       | `crates/gpui-app`    | gpui 宿主应用（多文档会话 TabBar + 工具栏/文件菜单/打印面板） | gpui-view + io + export + component + dom + office-rs-print + gpui 家族/kit + memmap2/ttf-parser |
+| `xilem-app`      | `crates/xilem-app`   | xilem 宿主应用（文件对话框 + 工具栏 UI 策略） | xilem-view + component + io + dom + xilem + rfd + rofd-convert（共享页组装） |
+| `gpui-app`       | `crates/gpui-app`    | gpui 宿主应用（多文档会话 TabBar + 工具栏/文件菜单/打印面板） | gpui-view + io + export + component + dom + office-rs-print + gpui 家族/kit + memmap2/ttf-parser + rofd-convert（共享页组装） |
 | web-app          | `crates/web-app`     | Vite + TS 宿主应用（非 cargo 成员） | `@office-rs/rofd`（= `crates/web-view/sdk`） |
 | `tauri-app`      | `crates/tauri-app`   | Tauri 桌面宿主应用 | tauri 壳不依赖 rofd crate；前端复用 web-app |
 
@@ -186,9 +195,18 @@ converter hosts（CLI/未来绑定）只碰 rofd-convert，与"编辑器宿主�
 - 会话层 facade：converter hosts（CLI/未来 java/node/py/wasm 绑定）只 import 此 crate，够不到 component/io/render/export。长期 `Converter` 实例 + 单调用 `convert(format, ofd_bytes, opts)` 字节进字节出（无 open/edit/close 三段式）；`catch_unwind` 边界（panic → `ConvertError::Internal`，`catch_panics` pub 供绑定共用 FFI 纪律）。
 - 进程级字体注册表（D9/D19）：`register_font`/`register_font_file`/`registered_families`/`has_default_font`/`register_default_font`（显式默认字体锚点，**后注册者生效**）；**注册必须先于 `Converter::new()`**——实例持注册表快照（Arc 共享零拷贝），之后的注册要换新实例才可见。append-only 无注销；同字节幂等 no-op。字体注入只此一门，无 per-call 口。
 - 预算旋钮：`ConvertOptions{content, max_pages, max_media_bytes}`，默认 `DEFAULT_MAX_PAGES`=10000 / `DEFAULT_MAX_MEDIA_BYTES`=1GiB，超限 `BudgetExceeded` fail-fast（核查在 parse 之后，zip 解压内存峰值先于预算——D21 已知边界）。
-- parity 原则（D18）：convert 经 `PrintSession::headless` 复用编辑器导出同一条场景组装（`page_body_scene` + `draw_annotations` + `PRINT_ZOOM`），与编辑器"导出 PDF"**字节级一致**（`crates/convert/tests/parity.rs` 钉死）。
+- parity 原则（D18）：convert 与三宿主（xilem-app/gpui-app/web-view）②期 Task 2 起同经共享页组装 `pdf_pages`/`pdf_pages_at`（单一组装循环，落在本 crate），与编辑器"导出 PDF"**字节级一致**（`crates/convert/tests/parity.rs` 钉死）。
+- 字体面选择跨进程确定（②期 Task 2b）：TTC 多个 family 名按**最低面索引**锚定规范名（`render/text/shape.rs`，fontique 的 HashMap 迭代序逐进程随机，不锚定则同一转换两次跑出不同字节）。
 - FontStore 逐调用重建：无跨调用温排形缓存（实例长寿买到的是注册表共享，不是温缓存）；`Converter` 当前为 `Send`（D15 修订 2026-11-07，测试钉住现状非承诺），L2 仍按"实例绑线程"建议实现。
 - CLI（`rofd-convert-cli`，bin `rofd-convert`）：零依赖 argv 解析；退出码 0 成功 / 2 用法错误 / 3 转换失败；`--font`/`--fonts-dir`/`--default-font` 注册失败 warn-and-continue；`--no-watermark`/`--no-annotations`/`--no-seal`（默认全开 D17，只提供关闭项）。
+
+### rofd-convert-java（JNI 绑定，②期）
+
+- JNI 面 10 入口（NativeLink 的 `nNewConverter`…`nTakeWarnings`）全经 `catch_panics`——Rust panic 绝不跨 FFI，统一抛 `io.github.officers.OfdConvertException`。
+- 租约句柄表：每次 JNI 调用 `take` 借出 Converter、调用结束 `put` 归还；`InUse`（并发占用）/`Stale`（已关/未知 id）为稳定异常前缀，id 单调递增无 ABA。
+- L2（Java）：`OfdConverter`(+Options) AutoCloseable，线程契约为**一次一线程**（D15，共享请走池）；PhantomReference cleaner 线程兜底回收漏 close 的句柄（Java 8 无 Cleaner API）；`OfdConverterPool` 固定槽位池（`borrow()` 阻塞直至空闲）。
+- NativeLoader 三级零配置加载：`rofd.native.path`/`ROFD_NATIVE_PATH`（显式覆盖）→ classpath `natives/<platform>/<libfile>`（fat jar 内嵌）→ `System.loadLibrary` 兜底；Java 8 字节码（major 52）。
+- Maven `io.github.office-rs:rofd-convert`（thin/fat 双 jar，fat 需四平台 natives 齐全）；两幕 demo 验收 = 池化 JVM 转换与 CLI **字节一致**（`demo/run.sh`）。
 
 ### rofd-xilem-view（as-built 九条契约）
 
@@ -264,6 +282,7 @@ If you're tempted to reintroduce a winit-layer bridge、canvas-origin 记账、�
 | wgpu | crates.io | `28` |
 | `office-rs-print` | office-rs/print git | `c2f99d5`（与 rword 同 pin；gpui-view 的 list_printers + gpui-app 的 join_all 同源） |
 | `krilla` | crates.io | `0.8`（feature `pdf`，PDF 编码） |
+| `jni` | crates.io | `0.21`（与 rword convert-java 同 pin；rofd-convert-java 的唯一外部依赖） |
 | `gpui-pre` / `gpui-pre-platform` | crates.io | `=0.3.10`（zed@08cbb88 快照重发布；官方 crates.io gpui 0.2.2 缺 Windows/IME 修复，不可换用） |
 | `gpui-kit` / `gpui-kit-assets` | crates.io | `=0.8.1`（图标走 `with_assets(AllAssets)`） |
 
