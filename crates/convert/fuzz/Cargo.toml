@@ -1,0 +1,27 @@
+[package]
+name = "rofd-convert-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.rofd-convert]
+path = ".."
+
+# Isolate from the parent workspace (cargo-fuzz convention): an empty
+# workspace table makes this its own root, so the sanitizer flags of the
+# fuzz build never leak into normal workspace builds.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "convert_ofd"
+path = "fuzz_targets/convert_ofd.rs"
+test = false
+doc = false
+bench = false

@@ -30,3 +30,7 @@ crates/web-app/public/fonts/
 crates/web-app/test-results/
 crates/web-app/playwright-report/
 TODO.md
+
+# cargo-fuzz build artifacts (crates/convert/fuzz is its own workspace,
+# never a member of the root workspace)
+crates/convert/fuzz/target/
