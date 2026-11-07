@@ -4,7 +4,7 @@
 
 **Goal:** 交付 `rofd-convert-java`（JNI cdylib `rofdconvert` + Java 8 L1/L2 + thin/fat jar 双形态 + 两幕验收 demo），并先清偿 ① 期终审判定的三条②期入口标准（krilla 优雅降级、共享页场景组装抽取、fuzz 满额补跑）。
 
-**Architecture:** JNI 边界三层——Rust `handles.rs`（进程级 take/put 租约句柄表，Converter 已 `Send`（D15 修订，测试钉住），rword 同型可照抄）+ Rust `lib.rs`（每个 `#[no_mangle]` 入口经 `catch_panics`，错误→`RofdConvertException`）+ Java `io.github.officers`（`NativeLink` L1 / `NativeLoader` 三级零配置加载链 / `OfdConverter` AutoCloseable+PhantomReference / `OfdConverterPool` 槽池 / `OfdConvertException`）。Maven `io.github.office-rs:rofd-convert`。
+**Architecture:** JNI 边界三层——Rust `handles.rs`（进程级 take/put 租约句柄表，Converter 已 `Send`（D15 修订，测试钉住），rword 同型可照抄）+ Rust `lib.rs`（每个 `#[no_mangle]` 入口经 `catch_panics`，错误→`OfdConvertException`）+ Java `io.github.officers`（`NativeLink` L1 / `NativeLoader` 三级零配置加载链 / `OfdConverter` AutoCloseable+PhantomReference / `OfdConverterPool` 槽池 / `OfdConvertException`）。Maven `io.github.office-rs:rofd-convert`。
 
 **Tech Stack:** Rust（jni 0.21——rword 同 pin，唯一新外部依赖）；Java 8 字节码（javac `--release 8`，本机 JDK 11）；Maven 3.6（本机 3.6.0）；bash demo。
 
