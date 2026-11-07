@@ -588,9 +588,9 @@ const dropdown = reactive<{ kind: DropdownKind; x: number; y: number }>({ kind: 
 
 const ctxMenu = reactive({ visible: false, x: 0, y: 0, id: '' });
 
-/** Print content-flag panel (file menu「打印…」): watermark ✗ / annotations ✗ /
- * seal ✔ by default; `busy` guards the confirm button while print runs. */
-const printPanel = reactive({ open: false, busy: false, watermark: false, annotations: false, seal: true });
+/** Print content-flag panel (file menu「打印…」): all three layers ✔ on by
+ * default (convert spec D17); `busy` guards the confirm button while print runs. */
+const printPanel = reactive({ open: false, busy: false, watermark: true, annotations: true, seal: true });
 
 /** Tauri desktop host: the「打印…」entry opens the full PrintDialog (IPC
  * spool) instead of the browser flag panel; browsers keep the panel. */
@@ -838,13 +838,13 @@ async function save(): Promise<void> {
   if (ok) message.success('已保存 document.ofd');
 }
 
-/** Export as PDF (file menu): default content flags (watermark ✗ /
- * annotations ✗ / seal ✔), then trigger a browser download. */
+/** Export as PDF (file menu): all content layers on (convert spec D17),
+ * then trigger a browser download. */
 async function exportPdf(): Promise<void> {
   const ofdInst = ofd.value;
   if (!ofdInst) return;
   try {
-    const bytes = await ofdInst.exportPdf(buildPrintOptions(false, false, true));
+    const bytes = await ofdInst.exportPdf(buildPrintOptions(true, true, true));
     // Same Blob + a[download] idiom as host.ts save().
     const blob = new Blob([bytes as BlobPart], { type: 'application/pdf' });
     const url = URL.createObjectURL(blob);

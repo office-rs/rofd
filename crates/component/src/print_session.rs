@@ -13,7 +13,7 @@ use rofd_dom::{Annotation, AnnotationKind, OfdDocument};
 use rofd_render::FontStore;
 
 /// Print content flags (spec §2.1). Each layer is independent; defaults
-/// are the "clean copy" preset (watermark/annotations off, seal on).
+/// are the all-on preset (watermark/annotations/seal on — convert spec D17).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PrintContent {
     /// `AnnotationKind::Watermark` layer.
@@ -27,8 +27,8 @@ pub struct PrintContent {
 impl Default for PrintContent {
     fn default() -> Self {
         Self {
-            watermark: false,
-            annotations: false,
+            watermark: true,
+            annotations: true,
             seal: true,
         }
     }
@@ -433,9 +433,12 @@ mod tests {
     }
 
     #[test]
-    fn print_content_default_is_clean_copy_with_seal() {
-        let d = PrintContent::default();
-        assert!(!d.watermark && !d.annotations && d.seal);
+    fn print_content_default_is_all_layers_on() {
+        let c = PrintContent::default();
+        assert!(
+            c.watermark && c.annotations && c.seal,
+            "D17: all layers on by default"
+        );
     }
 
     #[test]
@@ -596,7 +599,11 @@ mod tests {
             "watermark on -> glyph run drawn"
         );
 
-        let mut off = c.begin_print(PrintContent::default());
+        let watermark_off = PrintContent {
+            watermark: false,
+            ..PrintContent::default()
+        };
+        let mut off = c.begin_print(watermark_off);
         assert!(
             !has_glyph_run(&off.page_scene(0)),
             "watermark off -> no glyph run"

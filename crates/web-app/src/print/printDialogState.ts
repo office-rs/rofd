@@ -71,7 +71,7 @@ export interface DialogState {
   /** "1-3,5" grammar string; only read when rangeKind = Custom. */
   customSpec: string;
   parity: ParityWire;
-  /** Content flags — clean-copy preset: watermark ✗ / annotations ✗ / seal ✔. */
+  /** Content flags — all-on preset: watermark ✔ / annotations ✔ / seal ✔ (convert spec D17). */
   watermark: boolean;
   annotations: boolean;
   seal: boolean;
@@ -147,8 +147,8 @@ export function initialDialogState(doc: {
     rangeKind: 'All',
     customSpec: '',
     parity: 'All',
-    watermark: false,
-    annotations: false,
+    watermark: true,
+    annotations: true,
     seal: true,
     status: 'idle',
     error: null,

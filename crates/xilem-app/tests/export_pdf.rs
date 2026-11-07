@@ -105,8 +105,8 @@ fn export_pdf_writes_one_page_pdf() {
 
 #[test]
 fn highlight_page_and_blank_page_each_get_one_mediabox() {
-    // Annotations are excluded by default, but every document page still
-    // exports: P0 (carries the Highlight) and the blank P1 each contribute
+    // Every document page exports regardless of the all-on default
+    // preset: P0 (carries the Highlight) and the blank P1 each contribute
     // exactly one /MediaBox.
     let c = component_with_pages(2);
     let path = temp_pdf("two");
@@ -117,7 +117,7 @@ fn highlight_page_and_blank_page_each_get_one_mediabox() {
 }
 
 #[test]
-fn default_export_is_clean_copy_preset() {
+fn default_export_is_all_layers_preset() {
     let c = component_with_pages(1);
     let path = temp_pdf("preset");
     export_pdf(&c, &path).expect("export succeeds");
@@ -126,22 +126,22 @@ fn default_export_is_clean_copy_preset() {
 
     // The host must run PrintContent::default() over all pages: identical
     // input encodes byte-identically, so the exported file equals the
-    // manual clean-copy pipeline.
+    // manual all-on-preset pipeline.
     assert!(
         exported == manual_encode(&c, PrintContent::default()),
         "export must equal the default-preset manual pipeline"
     );
 
     // The equality is only meaningful because the flag changes the bytes:
-    // with annotations on, the Highlight quad adds a fill and the encode
-    // differs — proving the default export really excluded it.
-    let with_annotations = PrintContent {
-        annotations: true,
+    // with annotations off, the Highlight quad loses its fill and the
+    // encode differs — proving the default export really included it.
+    let without_annotations = PrintContent {
+        annotations: false,
         ..PrintContent::default()
     };
     assert_ne!(
         exported,
-        manual_encode(&c, with_annotations),
-        "annotations-on encode must differ (the Highlight was really excluded by default)"
+        manual_encode(&c, without_annotations),
+        "annotations-off encode must differ (the Highlight was really included by default)"
     );
 }

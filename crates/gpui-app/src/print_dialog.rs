@@ -60,8 +60,8 @@ pub struct PrintPanelState {
     pub dialog: DialogState,
     /// The settings the panel edits (host-owned per the machine contract).
     pub settings: PrintSettings,
-    /// Content flags (clean-copy defaults: watermark/annotations off,
-    /// seal on).
+    /// Content flags (all-on defaults: watermark/annotations/seal on,
+    /// convert spec D17).
     pub content: PrintContent,
     /// Discovery receiver kept after the open-time bounded drain; drained
     /// on render ticks until its terminal message lands.
@@ -1246,14 +1246,17 @@ mod tests {
     fn submit_snapshot_carries_content_triple() {
         let mut panel = panel_with_printers(1);
         panel.cycle_printer();
-        panel.edit_content(|c| c.annotations = true);
+        panel.edit_content(|c| c.watermark = false);
         assert_eq!(panel.try_submit(2), Ok(()));
         let (printer, settings, content) = panel.take_pending().unwrap();
         assert_eq!(printer.as_deref(), Some("printer-0"));
         assert_eq!(settings, panel.settings);
-        assert!(content.annotations, "content flags travel with the job");
-        assert!(content.seal, "clean-copy seal default preserved");
-        assert!(!content.watermark);
+        assert!(!content.watermark, "the edited flag travels with the job");
+        assert!(
+            content.annotations,
+            "untouched flags travel at the all-on default"
+        );
+        assert!(content.seal, "untouched flags travel at the all-on default");
     }
 
     /// Accepted submit: the handle becomes the live job, the phase moves

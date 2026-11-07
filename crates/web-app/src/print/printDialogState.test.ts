@@ -5,8 +5,8 @@
 //     Rust serde JSON in crates/tauri-app print.rs),
 //   ② custom-range plan errors surfacing while keeping the input text,
 //   ③ copies clamping (print crate MAX_COPIES = 999),
-//   ④ content defaults off/off/on + paper/orientation from the document
-//     (services inject firstPagePaper; the document is the paper authority),
+//   ④ content defaults on/on/on (convert spec D17) + paper/orientation from
+//     the document (services inject firstPagePaper; the document is the paper authority),
 //   ⑤ submit reading the LATEST resolved plan (staleness re-validation is
 //     the service layer's job, the machine only guarantees recency).
 
@@ -76,13 +76,13 @@ describe('print dialog state machine', () => {
     expect(clampCopies(42)).toBe(42);
   });
 
-  // ④ Content defaults are the clean-copy preset (watermark ✗ / annotations
-  // ✗ / seal ✔); paper + orientation defaults come from the document's
-  // first page (page_parameters), never hardcoded.
-  it('content defaults are off/off/on', () => {
+  // ④ Content defaults are the all-on preset (watermark ✔ / annotations ✔ /
+  // seal ✔, convert spec D17); paper + orientation defaults come from the
+  // document's first page (page_parameters), never hardcoded.
+  it('content defaults are on/on/on', () => {
     const s = initialDialogState({ paper: 'A5', orientation: 'Landscape' });
-    expect(s.watermark).toBe(false);
-    expect(s.annotations).toBe(false);
+    expect(s.watermark).toBe(true);
+    expect(s.annotations).toBe(true);
     expect(s.seal).toBe(true);
     expect(s.paper).toBe('A5');
     expect(s.orientation).toBe('Landscape');
