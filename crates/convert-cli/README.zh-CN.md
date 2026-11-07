@@ -31,7 +31,7 @@ Options:
 - 退出码：`0` 成功 · `2` 用法错误 · `3` 转换失败（含输入不可读 / 输出不可写）
 - warning（非致命解析降级）逐行走 stderr；文档照样转出
 - `--stdout` 二进制安全（不追加换行）
-- 非 UTF-8 参数会被拒绝（退出 2）
+- 文本参数（flag、位置参数、数值）要求合法 UTF-8（否则退出 2）；路径值（`--font`、`--fonts-dir`、`--default-font`）原样传给操作系统，非 UTF-8 字体路径可用
 
 单次转换：
 
@@ -49,13 +49,15 @@ rofd-convert scanned.ofd clean.pdf --no-watermark --no-seal   # 净内容：正�
 
 ## 确定性
 
-CLI 天生单发：一个进程转一个文档。相同输入字节 + 相同进程字体状态，任何进程里产出都逐字节一致：
+CLI 天生单发：一个进程转一个文档。同一台机器上，相同输入字节 + 相同进程字体状态，任何进程里产出都逐字节一致：
 
 ```bash
 rofd-convert a.ofd a.pdf --default-font fonts/simsun.ttc
 rofd-convert a.ofd b.pdf --default-font fonts/simsun.ttc
 cmp a.pdf b.pdf && echo identical   # 永远一致
 ```
+
+原生侧注意事项（spec D19/§8）：系统字体回退依赖本机字体环境。一个字体都没注册时，文本整形会退到机器上发现的字体，而各机器字体不同——跨机器逐字节可复现要求显式注册所有承载文字的字体（`--font` / `--fonts-dir` / `--default-font`）。
 
 需要进程内并发（长期实例、上千文档、线程池）？用 [Rust crate](../convert)——它的 API 才是为此准备的。
 

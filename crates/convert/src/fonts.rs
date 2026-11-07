@@ -154,8 +154,10 @@ pub fn registered_families() -> Vec<String> {
     lock_registry().families.clone()
 }
 
-/// Whether a default font is anchored (CLI feedback for "no default font
-/// registered — output may fall back to system fonts").
+/// Whether a default font is anchored. CLI feedback: `rofd-convert`
+/// consults this after font registration and prints a one-line stderr
+/// hint when false — text without embedded/registered fonts then falls
+/// back to machine-dependent system fonts and may fail to encode.
 pub fn has_default_font() -> bool {
     lock_registry().default_font.is_some()
 }

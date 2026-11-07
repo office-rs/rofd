@@ -53,6 +53,15 @@ pub(crate) fn dispatch(argv: &[OsString]) -> i32 {
 pub(crate) fn run(args: Args) -> i32 {
     register_fonts(&args);
 
+    // One hint per invocation when no default font is anchored (kernel
+    // `has_default_font`): text without embedded/registered fonts then
+    // falls back to system discovery (native) and may fail to encode.
+    if !rofd_convert::has_default_font() {
+        eprintln!(
+            "warning: no default font anchored; text without embedded/registered fonts falls back to system fonts and may fail to encode"
+        );
+    }
+
     let ofd = match std::fs::read(&args.input) {
         Ok(bytes) => bytes,
         Err(e) => {
@@ -82,7 +91,9 @@ pub(crate) fn run(args: Args) -> i32 {
         }
     };
     for warning in &out.warnings {
-        eprintln!("warning: {warning:?}");
+        // One human-readable line per warning (rofd-dom's Display impl),
+        // not the Rust-y Debug format.
+        eprintln!("warning: {warning}");
     }
     if let Err(e) = write_output(&args.output, &out.bytes) {
         let target = match &args.output {

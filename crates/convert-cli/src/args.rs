@@ -98,8 +98,11 @@ fn parse_number<T: std::str::FromStr>(
         .map_err(|_| format!("{flag} {s:?}: expected a non-negative integer"))
 }
 
-/// Parse `argv` (WITHOUT the program name). Non-UTF-8 arguments are
-/// rejected (the kernel surface is string-typed end to end).
+/// Parse `argv` (WITHOUT the program name). Arguments that must be text
+/// (flag tokens, positionals, numeric flag values) are validated as
+/// UTF-8; path values (`--font` / `--fonts-dir` / `--default-font`) are
+/// kept as `OsString`s and passed to the OS as-is, so non-UTF-8 font
+/// paths work.
 pub fn parse(argv: &[OsString]) -> Result<Args, String> {
     let mut positionals: Vec<PathBuf> = Vec::new();
     let mut stdout_flag = false;

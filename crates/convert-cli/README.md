@@ -31,7 +31,7 @@ Options:
 - Exit codes: `0` success · `2` usage error · `3` conversion failure (including unreadable input or unwritable output)
 - Warnings (non-fatal parse degradations) go to stderr, one `warning:` line each; the document still converts
 - `--stdout` is binary-safe (no appended newline)
-- Non-UTF-8 arguments are rejected (exit 2)
+- Text arguments (flag tokens, positionals, numeric values) must be valid UTF-8 (exit 2 otherwise); path values (`--font`, `--fonts-dir`, `--default-font`) are passed to the OS as-is, so non-UTF-8 font paths work
 
 Single conversion:
 
@@ -49,13 +49,15 @@ For text-bearing documents, register at least one font. With an empty registry, 
 
 ## Determinism
 
-The CLI is single-shot: one process converts one document. The same input bytes and the same process font state produce byte-identical PDFs in every process:
+The CLI is single-shot: one process converts one document. On one machine, the same input bytes and the same process font state produce byte-identical PDFs in every process:
 
 ```bash
 rofd-convert a.ofd a.pdf --default-font fonts/simsun.ttc
 rofd-convert a.ofd b.pdf --default-font fonts/simsun.ttc
 cmp a.pdf b.pdf && echo identical   # always identical
 ```
+
+Native caveat (spec D19/§8): system-font fallback is machine-dependent. With no fonts registered, text shaping falls back to fonts discovered on the machine, and those differ across installs — byte-reproducibility across machines requires every text-bearing font to be explicitly registered (`--font` / `--fonts-dir` / `--default-font`).
 
 Need in-process concurrency (long-lived instances, thousands of documents, thread pools)? Use the [Rust crate](../convert) instead — that is what its API is for.
 
