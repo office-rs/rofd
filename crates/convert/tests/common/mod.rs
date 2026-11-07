@@ -199,3 +199,63 @@ pub fn repack_with_resources(ofd: &[u8], extra: &[(String, Vec<u8>)]) -> Vec<u8>
 pub fn mediabox_count(bytes: &[u8]) -> usize {
     bytes.windows(9).filter(|w| w == b"/MediaBox").count()
 }
+
+/// The editor export path (convert spec D18's reference pipeline): parse
+/// the same bytes, load them into a real component (empty default font),
+/// begin a print session, and encode the per-page scenes exactly the way
+/// the hosts' export flows do.
+///
+/// Registry-free by construction — the component builds its own
+/// `FontStore` from the document resources and the config's empty default,
+/// never consulting the process font registry — so this is also the
+/// byte-exact stand-in for "convert output on an empty registry" wherever
+/// the calling binary has already anchored the registry.
+pub fn editor_path_pdf(bytes: &[u8], content: PrintContent) -> Vec<u8> {
+    let doc = rofd_io::parse_ofd(bytes).expect("fixture parses").document;
+    let mut component =
+        rofd_component::OfdComponent::new_native(rofd_component::OfdConfig::new(Arc::new(vec![])));
+    component.load_document(doc);
+    let mut session = component.begin_print(content);
+    let mut pages = Vec::with_capacity(session.page_count());
+    for i in 0..session.page_count() {
+        let (width, height) = session.page_rect(i);
+        pages.push(rofd_export::PdfPage {
+            width_px: width as f32,
+            height_px: height as f32,
+            scene: session.page_scene(i),
+        });
+    }
+    rofd_export::pdf_from_page_scenes(&pages).expect("editor path encodes")
+}
+
+/// A minimal `DocumentRes.xml` declaring one font whose `FontFile` entry is
+/// absent from the package (same pinned shape family as
+/// [`document_res_xml`]; the `ofd:Font`/`ofd:FontFile` nesting follows what
+/// `resource::parse_res` pins in its own unit tests). Parsing it emits
+/// `OfdWarning::FontSubstituted` at the io warning site.
+pub fn document_res_xml_missing_font(font_id: &str, family: &str, file: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <ofd:Res xmlns:ofd=\"http://www.ofdspec.org/2016\" BaseLoc=\"\">\
+         <ofd:Fonts>\
+         <ofd:Font ID=\"{font_id}\" FontName=\"{family}\">\
+         <ofd:FontFile>{file}</ofd:FontFile>\
+         </ofd:Font>\
+         </ofd:Fonts>\
+         </ofd:Res>"
+    )
+}
+
+/// `fixture_bytes()` repacked with a font declaration whose file is absent:
+/// a package whose `parse_ofd` report carries a REAL (non-empty) warning.
+/// The fixture behind the warnings-passthrough test — an empty-vs-empty
+/// comparison would prove nothing.
+pub fn missing_font_fixture() -> Vec<u8> {
+    repack_with_resources(
+        &fixture_bytes(),
+        &[(
+            "Doc_0/Res/DocumentRes.xml".to_string(),
+            document_res_xml_missing_font("F-gone", "GoneFont", "gone.ttf").into_bytes(),
+        )],
+    )
+}

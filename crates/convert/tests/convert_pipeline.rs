@@ -8,7 +8,7 @@ mod common;
 
 use rofd_component::PrintContent;
 
-use common::{annotated_fixture, convert_with, TEST_FONT};
+use common::{annotated_fixture, convert_with, editor_path_pdf, TEST_FONT};
 
 #[test]
 fn content_flags_independently_change_output() {
@@ -51,4 +51,29 @@ fn content_flags_independently_change_output() {
             assert_ne!(a, b, "every content-flag preset must encode distinctly");
         }
     }
+}
+
+#[test]
+fn registered_font_observably_reaches_shaping() {
+    // A NON-default registration must observably reach shaping: the
+    // watermark text encodes differently once the test font is in the
+    // registry (spec D9 — registration is the only font door, so if the
+    // bytes did not change, the door would be decorative).
+    //
+    // "Before" baseline: this binary's flags test may concurrently anchor
+    // the SAME font as the process default (tests run in parallel and the
+    // registry is append-only), so a pre-registration convert snapshot is
+    // not reliably taken from an empty registry. The editor export path
+    // is registry-blind by construction and — by the D18 parity property —
+    // byte-equal to convert-on-an-empty-registry, so it is a correct
+    // stand-in for the pre-registration output under every interleaving.
+    let bytes = annotated_fixture();
+    let content = PrintContent::default();
+    let baseline = editor_path_pdf(&bytes, content);
+    rofd_convert::register_font(TEST_FONT.to_vec()).unwrap();
+    let with_font = convert_with(&bytes, content);
+    assert_ne!(
+        with_font, baseline,
+        "a registered font must change the shaped watermark bytes"
+    );
 }

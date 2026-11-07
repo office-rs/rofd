@@ -175,9 +175,26 @@ fn media_bytes_budget_exceeded() {
 
 #[test]
 fn warnings_passthrough_equals_parse_report() {
-    let (a, b) = (
-        convert_default(&fixture_bytes()).warnings,
-        rofd_io::parse_ofd(&fixture_bytes()).unwrap().warnings,
+    // De-vacuoused: the fixture declares a font whose FontFile entry is
+    // absent from the package, so the parse report carries a real
+    // FontSubstituted warning. The equality then proves convert passes
+    // the parse report's warnings through unchanged (spec D20) — not that
+    // two empty vecs happen to be equal.
+    let bytes = common::missing_font_fixture();
+    let parse_warnings = rofd_io::parse_ofd(&bytes).unwrap().warnings;
+    assert!(
+        !parse_warnings.is_empty(),
+        "fixture must trigger at least one parse warning"
     );
-    assert_eq!(a, b, "convert warnings must equal the parse report's");
+    assert!(
+        parse_warnings
+            .iter()
+            .any(|w| matches!(w, rofd_dom::OfdWarning::FontSubstituted { .. })),
+        "fixture triggers the font-substitution warning site"
+    );
+    assert_eq!(
+        convert_default(&bytes).warnings,
+        parse_warnings,
+        "convert warnings must equal the parse report's"
+    );
 }
