@@ -1,6 +1,6 @@
 //! rofd-convert-py: PyO3 surface over the rofd-convert session kernel
 //! (convert spec §6.6, D3/D15). The cdylib is the
-//! `rword_convert.rword_convert_native` extension (built by maturin;
+//! `rofd_convert.rofd_convert_native` extension (built by maturin;
 //! PyPI wheel `rofd-convert`, abi3-py39, no sdist — D5).
 //!
 //! FFI discipline (spec §6.1) applies here too: kernel calls run under
@@ -74,6 +74,20 @@ fn warnings_to_strings(warnings: Vec<rofd_convert::ConvertWarning>) -> Vec<Strin
     warnings.iter().map(|w| w.to_string()).collect()
 }
 
+/// Registry-result mapping shared by every register entry (same contract
+/// as the Node binding and the CLI): Ok -> true, unparsable font ->
+/// false (no raise), I/O failure -> the message for a raised
+/// ConvertError.
+fn font_reg_result(
+    r: std::result::Result<(), rofd_convert::FontRegisterError>,
+) -> Result<bool, String> {
+    match r {
+        Ok(()) => Ok(true),
+        Err(rofd_convert::FontRegisterError::InvalidFont) => Ok(false),
+        Err(e) => Err(format!("cannot read font file: {e}")),
+    }
+}
+
 /// Register font bytes into the process-level registry (append-only,
 /// process-wide, idempotent on identical bytes).
 #[pyfunction]
@@ -83,12 +97,10 @@ fn register_font(bytes: Vec<u8>) -> bool {
 
 /// Register a font file into the process-level registry. I/O failure
 /// raises ConvertError; an unparsable font returns False (kernel
-/// contract).
+/// contract, same as the Node binding).
 #[pyfunction]
 fn register_font_file(path: &str) -> PyResult<bool> {
-    rofd_convert::register_font_file(path)
-        .map(|_| true)
-        .map_err(|e| ConvertError::new_err(format!("cannot read font file: {e}")))
+    font_reg_result(rofd_convert::register_font_file(path)).map_err(ConvertError::new_err)
 }
 
 /// Anchor the process default font (kernel D19); a later anchor wins.
@@ -118,8 +130,33 @@ fn registered_families() -> Vec<String> {
 #[pyclass]
 struct Converter {
     /// Lease slot: Some(instance) when idle; taken for the duration of a
-    /// call. Same mechanics as the JNI handle table (phase 2).
+    /// call. Same mechanics as the JNI handle table (phase 2): the guard
+    /// is dropped BETWEEN take and put — holding it across the GIL
+    /// release would deadlock the interpreter (a second thread would
+    /// block on the mutex while holding the GIL the first thread needs
+    /// to re-enter after its kernel call).
     lease: Mutex<Option<rofd_convert::Converter>>,
+}
+
+/// Take the instance out of the lease (guard dropped on return). Err =
+/// the stable "in use" message a concurrent caller reports.
+fn take_leased(
+    lease: &Mutex<Option<rofd_convert::Converter>>,
+) -> Result<rofd_convert::Converter, &'static str> {
+    let mut slot = lease
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    slot.take()
+        .ok_or("converter in use: one call at a time per instance")
+}
+
+/// Put the instance back (fresh guard; no-op if the slot was closed —
+/// same no-resurrection semantics as the JNI table's put).
+fn put_leased(lease: &Mutex<Option<rofd_convert::Converter>>, inner: rofd_convert::Converter) {
+    let mut slot = lease
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *slot = Some(inner);
 }
 
 #[pymethods]
@@ -149,23 +186,20 @@ impl Converter {
         max_media_bytes: Option<i64>,
         py: Python<'_>,
     ) -> PyResult<(Vec<u8>, Vec<String>)> {
-        let mut slot = self
-            .lease
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut inner = slot.take().ok_or_else(|| {
-            ConvertError::new_err("converter in use: one call at a time per instance")
-        })?;
+        let mut inner = take_leased(&self.lease).map_err(ConvertError::new_err)?;
         let opts = kernel_options(watermark, annotations, seal, max_pages, max_media_bytes);
         // pyo3 0.30's `Python::detach` is the former `allow_threads`: the
         // GIL is released for the closure (must be Send — Converter and
         // the byte buffers are), overlapping Python threads is the point.
+        // The lease guard is NOT held here (see take_leased) — a second
+        // caller gets the documented "in use" error instead of blocking
+        // with the GIL held.
         let r = py
             .detach(|| rofd_convert::catch_panics(|| inner.convert(OutputFormat::Pdf, &ofd, &opts)))
             .map_err(to_py);
         // The instance goes back on every path (a lease lost to a
         // poisoned/crashed call is unrecoverable — treat as closed).
-        *slot = Some(inner);
+        put_leased(&self.lease, inner);
         r.map(|out| (out.bytes, warnings_to_strings(out.warnings)))
     }
 }
@@ -214,6 +248,48 @@ mod tests {
         assert_eq!(opt_budget_u32(Some(3)), Some(3));
         assert_eq!(opt_budget_u32(Some(i64::from(u32::MAX) + 1)), None);
         assert_eq!(opt_budget_usize(Some(4096)), Some(4096));
+    }
+
+    /// Registry-result mapping (same contract as the Node binding and the
+    /// CLI): Ok -> true, unparsable font -> False WITHOUT raising, I/O
+    /// failure -> error string for the raised ConvertError.
+    #[test]
+    fn font_reg_result_false_on_invalid_not_raise() {
+        assert_eq!(font_reg_result(Ok(())), Ok(true));
+        assert_eq!(
+            font_reg_result(Err(rofd_convert::FontRegisterError::InvalidFont)),
+            Ok(false)
+        );
+        assert!(font_reg_result(Err(rofd_convert::FontRegisterError::Io(
+            std::io::Error::other("gone")
+        )))
+        .is_err());
+    }
+
+    /// Lease semantics: a take without a put makes the NEXT take report
+    /// the stable "in use" error; putting back restores the slot. This is
+    /// the mechanical guarantee the convert method relies on while the
+    /// GIL is released (guards dropped between take and put — holding one
+    /// across the release would deadlock the interpreter).
+    #[test]
+    fn lease_take_put_reports_in_use_between_take_and_put() {
+        let lease = Mutex::new(Some(rofd_convert::Converter::new()));
+        let taken = take_leased(&lease).expect("idle lease must yield the instance");
+        let second = take_leased(&lease);
+        assert_eq!(
+            second.err(),
+            Some("converter in use: one call at a time per instance"),
+            "concurrent caller sees the documented error, never a block"
+        );
+        put_leased(&lease, taken);
+        assert!(
+            take_leased(&lease)
+                .map(|c| {
+                    put_leased(&lease, c);
+                })
+                .is_ok(),
+            "put back makes the lease reusable"
+        );
     }
 
     /// Warnings surface as Display strings (parse + encode vocabulary).

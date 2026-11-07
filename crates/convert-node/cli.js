@@ -108,7 +108,7 @@ function main() {
   if (defaultFont !== null) {
     if (!fs.existsSync(defaultFont)) {
       console.error('warning: default font file not found: ' + defaultFont);
-    } else if (!lib.registerFontFile(defaultFont)) {
+    } else if (!lib.registerDefaultFont(fs.readFileSync(defaultFont))) {
       console.error('warning: not a parsable default font: ' + defaultFont);
     }
   }

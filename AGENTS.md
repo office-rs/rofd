@@ -213,7 +213,7 @@ converter hosts（CLI/未来绑定）只碰 rofd-convert，与"编辑器宿主�
 
 ### rofd-convert-node / rofd-convert-py（Node·Python 绑定，③期）
 
-- convert-node（napi cdylib `rofd_convert_node`）：每方法 `catch_unwind`（napi 边界 panic 会 abort Node）；`Converter.convertToPdf(ofd, options?)` + 注册五件套；JS L2 `index.js`/`pool.js`（worker_threads 每 worker 一实例、崩溃 reject+respawn）；`cli.js` 为 npm bin `rofd-convert`（@office-rs/rofd-convert，平台包 optionalDependencies 槽位）。
+- convert-node（napi cdylib `rofd_convert_node`）：`convertToPdf`（唯一可 panic 的内核调用）经 `catch_unwind`——napi 边界 panic 会 abort Node；注册函数为纯登记不 panic；`Converter.convertToPdf(ofd, options?)` + 注册五件套；JS L2 `index.js`/`pool.js`（worker_threads 每 worker 一实例、崩溃 reject+respawn）；`cli.js` 为 npm bin `rofd-convert`（@office-rs/rofd-convert，平台包 optionalDependencies 槽位）。
 - convert-py（PyO3 `rofd_convert.rofd_convert_native`，abi3-py39 wheel）：`#[pyclass] Converter` 内部 `Mutex<Option<…>>` lease（与 JNI 句柄表同力学）——GIL 释放期（`py.detach`）同实例并发第二调用抛 `ConvertError("converter in use")`；`convert(ofd, *, watermark=…, max_pages=…)` kwargs；吞吐用 `threading.local` 每线程一实例。构建须 maturin ≥1.16 + 显式 `-i` 3.14 解释器（PATH 裸 python=3.7）。
 - 三绑定 demo 验收统一：**池化转换 == CLI 字节**（同机同字体状态；③期实测三运行时同 sha256 `82c3b352…`）。
 

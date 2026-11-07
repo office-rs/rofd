@@ -6,9 +6,11 @@
 //! single-threaded per instance by construction: each worker_threads worker
 //! (the D11 pool shape) builds its own Converter in its own realm, and the
 //! main thread's instance is only touched from the event loop. The panic
-//! boundary still applies: a panic inside a napi export would abort the
-//! Node process, so every kernel call runs under `catch_panics` and
-//! surfaces as a JS exception instead.
+//! boundary applies to the kernel call — a panic inside `convertToPdf`
+//! would abort the Node process, so it runs under `catch_panics` and
+//! surfaces as a JS exception instead (the registry functions are
+//! panic-free by construction: pure registry bookkeeping over validated
+//! bytes).
 
 use napi::bindgen_prelude::*;
 use napi::{Env, Error, Status};
