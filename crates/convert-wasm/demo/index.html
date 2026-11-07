@@ -1,0 +1,24 @@
+<!doctype html>
+<!-- Phase-4 acceptance demo page (convert spec §9 ④): headless conversion
+     in the browser, main thread AND Web Worker. Human-readable status
+     below; the machine gate is window.__demo (set by main.js), driven by
+     demo/run.mjs (Playwright). -->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>rofd-convert-wasm demo</title>
+  <style>
+    body { font: 14px/1.6 system-ui, sans-serif; margin: 2rem; }
+    #status { white-space: pre-wrap; font-family: ui-monospace, monospace; }
+    .ok { color: #0a7d24; } .bad { color: #b3261e; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>rofd-convert-wasm — browser demo</h1>
+  <p>Loads the wasm module, registers the staged font, converts the staged
+     .ofd twice (determinism), then does the same inside a Web Worker and
+     compares the outputs byte-for-byte.</p>
+  <div id="status">running…</div>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>
