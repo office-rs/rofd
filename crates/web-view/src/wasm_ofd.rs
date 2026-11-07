@@ -542,6 +542,40 @@ mod wasm_impl {
             Ok(())
         }
 
+        /// IME composition update: the composition text shows inline (preedit
+        /// overlay) at the text cursor until the IME commits or cancels. An
+        /// empty `text` cancels the composition. The component owns the
+        /// preedit state machine; the browser's CompositionEvent carries no
+        /// caret range, so the preedit caret is always `None`.
+        #[wasm_bindgen(js_name = handleImePreedit)]
+        pub fn handle_ime_preedit(&mut self, text: &str) {
+            self.component.handle_event(&ViewEvent::ImePreedit {
+                text: text.to_string(),
+                caret: None,
+            });
+        }
+
+        /// IME composition commit: insert `text` at the text cursor. An
+        /// active preedit is the source of truth and commits instead (same
+        /// contract as the native adapters).
+        #[wasm_bindgen(js_name = handleImeCommit)]
+        pub fn handle_ime_commit(&mut self, text: &str) {
+            self.component.handle_event(&ViewEvent::ImeCommit {
+                text: text.to_string(),
+            });
+        }
+
+        /// Viewport-space caret rect `[x, y, w, h]` for the current text
+        /// cursor (device px, the web viewport convention), or `null` when
+        /// no cursor is set. The SDK positions its hidden IME input here so
+        /// the OS candidate window anchors at the caret.
+        #[wasm_bindgen(js_name = caretRect)]
+        pub fn caret_rect_js(&mut self) -> Option<Vec<f64>> {
+            self.component
+                .caret_rect()
+                .map(|r| vec![r.x, r.y, r.w, r.h])
+        }
+
         // The arg count mirrors the DOM MouseEvent surface the JS bridge
         // forwards (button + position + 4 modifier keys + detail); grouping
         // them would just shift the unpacking into JS.
