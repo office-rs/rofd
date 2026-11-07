@@ -571,8 +571,12 @@ const BOLD_EMBOLDEN_RATIO: f64 = 0.022;
 
 /// Rich-run TextBox drawing: each [`TextRun`] shapes with its own font/size
 /// and draws at its own appearance-local pen position
-/// (`rect.x + run.x`, `rect.y + run.baseline`), with synthetic bold
-/// (`font_embolden`) and italic (skew) where the run asks for them.
+/// (`rect.x + run.x`, `rect.y + run.baseline`), with synthetic bold and
+/// italic (skew) where the run asks for them. Synthetic bold is a SECOND
+/// glyph draw offset by [`BOLD_EMBOLDEN_RATIO`] em: `GlyphRun::font_embolden`
+/// exists on the record but no downstream sink (vello GPU/CPU, the PDF
+/// encoder, gpui) applies it, while an ordinary second draw renders bold
+/// on every target.
 ///
 /// Skips a run silently when its font can't be resolved or shaping yields
 /// no glyphs (same degradation contract as the flat path).
@@ -595,22 +599,27 @@ pub(crate) fn draw_text_runs(
         // first line); subtracting it lands the baseline exactly at
         // rect.y + run.baseline.
         let ascent = first.y as f64;
-        let mut affine = base * Affine::translate((rect.x + run.x, rect.y + run.baseline - ascent));
+        let pen = (rect.x + run.x, rect.y + run.baseline - ascent);
+        let mut affine = base * Affine::translate(pen);
         if run.italic {
             affine *= Affine::new([1.0, 0.0, -ITALIC_SKEW, 1.0, 0.0, 0.0]);
         }
         let brush = to_peniko(run.color.unwrap_or(Color::Rgb(0, 0, 0)));
-        let mut builder = painter
+        painter
             .glyphs(&font, brush)
             .font_size(run.size as f32)
-            .transform(affine);
+            .transform(affine)
+            .draw(&Style::Fill(Fill::NonZero), &glyphs);
         if run.bold {
-            builder = builder.font_embolden(imaging::kurbo::Vec2::new(
-                run.size * BOLD_EMBOLDEN_RATIO,
-                0.0,
-            ));
+            // Second pass, shifted along x by the embolden ratio: the two
+            // overlapping fills fatten the stems.
+            let bold = affine * Affine::translate((run.size * BOLD_EMBOLDEN_RATIO, 0.0));
+            painter
+                .glyphs(&font, brush)
+                .font_size(run.size as f32)
+                .transform(bold)
+                .draw(&Style::Fill(Fill::NonZero), &glyphs);
         }
-        builder.draw(&Style::Fill(Fill::NonZero), &glyphs);
     }
 }
 
@@ -1239,12 +1248,35 @@ mod tests {
             .filter(|g| (g.transform.as_coeffs()[2] + 0.25).abs() < 1e-9)
             .count();
         assert_eq!(skewed, 1, "exactly one skewed (italic) run");
-        // Bold: exactly one run with a nonzero embolden amount.
-        let emboldened = runs
+        // Bold = DOUBLE-DRAW: the bold run's glyphs must be drawn twice
+        // (the second pass offset by 0.022 em along x). GlyphRun::
+        // font_embolden is NOT used: no downstream sink (vello GPU/CPU,
+        // PDF encoder, gpui) applies that field, while a second ordinary
+        // glyph draw renders everywhere.
+        let bold_pen_x = 10.0 + 20.0; // rect.x + bold run's x
+        let bold_draws = runs
             .iter()
-            .filter(|g| g.font_embolden.x.abs() > 1e-9)
+            .filter(|g| {
+                let tx = g.transform.as_coeffs()[4];
+                (tx - bold_pen_x).abs() < 0.5 || (tx - (bold_pen_x + 0.022 * 12.0)).abs() < 0.5
+            })
             .count();
-        assert_eq!(emboldened, 1, "exactly one emboldened (bold) run");
+        assert_eq!(
+            bold_draws, 2,
+            "bold run drawn twice (base + 0.022em offset), got {bold_draws}"
+        );
+        // Non-bold runs draw exactly once at their pens.
+        for pen in [11.0, 20.0] {
+            let count = runs
+                .iter()
+                .filter(|g| (g.transform.as_coeffs()[4] - pen).abs() < 0.2)
+                .count();
+            assert_eq!(count, 1, "pen {pen} drawn exactly once, got {count}");
+        }
+        assert!(
+            runs.iter().all(|g| g.font_embolden.x.abs() < 1e-12),
+            "font_embolden must stay unused (no sink applies it)"
+        );
         // Colored run: the teal brush is present.
         let teal = runs.iter().any(|g| {
             matches!(

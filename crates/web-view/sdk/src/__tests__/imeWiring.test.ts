@@ -135,4 +135,50 @@ describe("IME composition wiring", () => {
     expect(document.querySelector("input[data-rofd-ime]")).toBeNull();
     expect(input.isConnected).toBe(false);
   });
+
+  it("cursor-change re-anchoring defers past the wasm borrow", async () => {
+    // On the REAL surface the cursor-change callback fires synchronously
+    // inside the &mut wasm export that moved the caret; calling caretRect()
+    // (another &mut export) right there throws WasmRefCell's BORROW_ERROR.
+    // The internal subscription must defer the read to a microtask.
+    let captured: (() => void) | undefined;
+    const wasm = {
+      renderFrame: vi.fn(() => -1),
+      handleImeCommit: vi.fn(() => {}),
+      handleImePreedit: vi.fn(() => {}),
+      caretRect: vi.fn(() => [5, 5, 2, 16]),
+      setOnCursorChange: vi.fn((cb: () => void) => {
+        captured = cb;
+      }),
+    } as unknown as WasmSurface;
+    const canvas = document.createElement("canvas");
+    document.body.appendChild(canvas);
+    const ofd = Ofd.__testNew(wasm, canvas);
+    try {
+      const input = document.querySelector(
+        "input[data-rofd-ime]",
+      ) as HTMLInputElement;
+      expect(captured).toBeTypeOf("function");
+      input.focus();
+      // The wasm bridge fires the callback synchronously (mid-borrow).
+      (captured as () => void)();
+      expect(wasm.caretRect).not.toHaveBeenCalled();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(wasm.caretRect).toHaveBeenCalled();
+    } finally {
+      ofd.destroy();
+    }
+  });
+
+  it("hidden input is keyboard reachable (tab order)", () => {
+    const { ofd, input } = makeOfd();
+    try {
+      // The pre-migration canvas was tabIndex=0; the hidden input replaces
+      // it in the tab order (a11y: keyboard-only users can re-enter).
+      expect(input.tabIndex).toBe(0);
+    } finally {
+      ofd.destroy();
+    }
+  });
 });

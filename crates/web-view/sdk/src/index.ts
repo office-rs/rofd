@@ -762,7 +762,10 @@ export class Ofd {
     input.autocapitalize = "off";
     input.autocomplete = "off";
     input.spellcheck = false;
-    input.tabIndex = -1;
+    // Tab-reachable (the canvas used to be tabIndex=0 before the focus
+    // migration): keyboard-only users must be able to re-enter the editor
+    // after clicking a ribbon control.
+    input.tabIndex = 0;
     input.style.position = "absolute";
     input.style.opacity = "0";
     input.style.border = "none";
@@ -839,10 +842,16 @@ export class Ofd {
     // Internal onCursorChange: re-anchor the IME input at the caret, then
     // run the user hook. Synthetic test surfaces may lack the setter - the
     // capability check keeps __testNew wiring working.
+    // The re-anchor MUST be deferred: the wasm bridge fires JS callbacks
+    // synchronously INSIDE the &mut export that moved the cursor, and
+    // caretRect() is itself a &mut export - calling it re-entrantly throws
+    // WasmRefCell's BORROW_ERROR on the real surface. A microtask runs
+    // after the wasm call returns and the borrow is released (the same
+    // pattern as the host-callback deferCb).
     const surface = this.wasm as unknown as Record<string, unknown>;
     if (typeof surface.setOnCursorChange === "function") {
       (surface.setOnCursorChange as (cb: () => void) => void)(() => {
-        this.positionImeAtCaret();
+        queueMicrotask(() => this.positionImeAtCaret());
         this.userCursorCb?.();
       });
     }

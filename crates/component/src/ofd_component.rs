@@ -1813,7 +1813,13 @@ impl OfdComponent {
                             let dist = ((current.0 - start.0).powi(2)
                                 + (current.1 - start.1).powi(2))
                             .sqrt();
-                            let typewriter = matches!(kind, CreateKind::Typewriter);
+                            // The exemption only holds when the release
+                            // lands INSIDE a page: PointerDown starts a
+                            // Create drag anywhere, and a desk release
+                            // would fall back to page 1 and mint an
+                            // off-page box.
+                            let typewriter = matches!(kind, CreateKind::Typewriter)
+                                && point_on_page(self.editor.document(), &self.viewport, current);
                             if dist < MIN_CREATE_DRAG_PX && !typewriter {
                                 // Suppressed: no annotation, no history, no
                                 // selection change, no focus/interact
@@ -3317,6 +3323,23 @@ fn current_page_id(doc: &OfdDocument, vp: &Viewport, point: (f64, f64)) -> PageI
     doc.pages.first().map(|p| p.id.clone()).unwrap_or_default()
 }
 
+/// Whether a viewport point lands INSIDE some page (no first-page fallback,
+/// unlike [`current_page_id`]). Create tools use this to refuse desk clicks.
+fn point_on_page(doc: &OfdDocument, vp: &Viewport, point: (f64, f64)) -> bool {
+    let origins = rofd_render::page_origins(doc, vp);
+    doc.pages.iter().enumerate().any(|(i, page)| {
+        let Some(&(origin_x, origin_y)) = origins.get(i) else {
+            return false;
+        };
+        let page_w = page.physical_box.w * vp.zoom;
+        let page_h = page.physical_box.h * vp.zoom;
+        point.0 >= origin_x
+            && point.0 <= origin_x + page_w
+            && point.1 >= origin_y
+            && point.1 <= origin_y + page_h
+    })
+}
+
 /// Convert a viewport-space point to page-local coordinates for a specific page.
 /// Returns `None` if the page is not found. Uses [`rofd_render::page_origin`]
 /// (the shared page-stacking helper) for the viewport geometry.
@@ -4435,7 +4458,61 @@ mod tests {
     }
 
     #[test]
-    fn typewriter_tool_click_places_editable_borderless_textbox() {
+    fn typewriter_click_on_desk_creates_nothing() {
+        // The typewriter exemption from the degenerate-drag guard must not
+        // mint boxes on the desk background: PointerDown starts a Create
+        // drag anywhere, and a desk release would fall back to page 1 and
+        // place an off-page box. Only releases INSIDE a page place.
+        let mut c = component_with_page();
+        c.viewport.size = (800.0, 600.0);
+        c.set_tool(Tool::Create(CreateKind::Typewriter));
+        // Page spans x [300, 500] at zoom 1 (viewport 800 wide); (100, 100)
+        // is desk.
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 100.0,
+            y: 100.0,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 100.0,
+            y: 100.0,
+        });
+        assert!(
+            c.document()
+                .annotations
+                .by_page
+                .values()
+                .all(|v| v.is_empty()),
+            "desk click creates nothing"
+        );
+        assert!(!c.can_undo(), "no history entry for the desk click");
+        // The same gesture inside the page still places (regression guard).
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 350.0,
+            y: 100.0,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 350.0,
+            y: 100.0,
+        });
+        assert!(
+            !c.document()
+                .annotations
+                .for_page(&PageId::new("P0"))
+                .is_empty(),
+            "in-page click still places"
+        );
+    }
+
+    #[test]
+    fn typewriter_click_places_editable_borderless_textbox() {
         // 文字批注 (TypeWriter semantics): a plain CLICK on the page places a
         // borderless, empty TextBox sized to one text line and drops the
         // caret at offset 0 - typing starts immediately.
