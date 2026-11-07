@@ -39,7 +39,7 @@ use std::sync::Arc;
 
 use rofd_component::PrintSession;
 use rofd_dom::OfdDocument;
-use rofd_export::{pdf_from_page_scenes, PdfPage};
+use rofd_export::{pdf_from_page_scenes_detailed, PdfPage};
 use rofd_render::FontStore;
 
 /// Default page budget (spec §6.1): 10_000 pages.
@@ -117,13 +117,46 @@ pub struct ConvertOptions {
     pub max_media_bytes: Option<usize>,
 }
 
-/// A successful conversion: output bytes plus non-fatal warnings (v1
-/// collects the io-side [`OfdWarning`](rofd_dom::OfdWarning) variants —
-/// missing features, font substitutions, missing resources; spec D20).
+/// Unified non-fatal warning vocabulary (spec D20, phase-3 Task 1):
+/// parse-side warnings keep their structured
+/// [`OfdWarning`](rofd_dom::OfdWarning) payload, encoder degradations
+/// (e.g. font subsetting skipped for an unembeddable face) arrive as
+/// one-line strings. `Display` renders both human-readable; bindings
+/// surface the rendered lines.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum ConvertWarning {
+    Parse(rofd_dom::OfdWarning),
+    Encode(String),
+}
+
+impl std::fmt::Display for ConvertWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConvertWarning::Parse(w) => write!(f, "{w}"),
+            ConvertWarning::Encode(line) => write!(f, "{line}"),
+        }
+    }
+}
+
+/// Stable merge order for a conversion's warning stream: all parse
+/// warnings first (parse-report order), then encoder degradations.
+fn merged_warnings(parse: Vec<rofd_dom::OfdWarning>, encode: Vec<String>) -> Vec<ConvertWarning> {
+    parse
+        .into_iter()
+        .map(ConvertWarning::Parse)
+        .chain(encode.into_iter().map(ConvertWarning::Encode))
+        .collect()
+}
+
+/// A successful conversion: output bytes plus non-fatal warnings (spec
+/// D20): the parse report's [`OfdWarning`](rofd_dom::OfdWarning) entries
+/// as [`ConvertWarning::Parse`] plus encoder degradation lines as
+/// [`ConvertWarning::Encode`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConvertOutput {
     pub bytes: Vec<u8>,
-    pub warnings: Vec<rofd_dom::OfdWarning>,
+    pub warnings: Vec<ConvertWarning>,
 }
 
 /// Failure modes of a conversion call. Stable shape for the FFI boundary:
@@ -326,11 +359,11 @@ impl Converter {
         //    loop every host export path calls too (spec §8/D18).
         let mut session = PrintSession::headless(doc, fonts, opts.content);
         let pages = pdf_pages(&mut session);
-        let bytes =
-            pdf_from_page_scenes(&pages).map_err(|e| ConvertError::Encode(e.to_string()))?;
+        let encoded = pdf_from_page_scenes_detailed(&pages)
+            .map_err(|e| ConvertError::Encode(e.to_string()))?;
         Ok(ConvertOutput {
-            bytes,
-            warnings: report.warnings,
+            bytes: encoded.bytes,
+            warnings: merged_warnings(report.warnings, encoded.warnings),
         })
     }
 }
@@ -344,6 +377,41 @@ impl Default for Converter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D20 (phase-3 Task 1): the unified warning vocabulary — parse
+    /// warnings keep their OfdWarning Display, encode warnings pass their
+    /// line through, and the merge order is stable (parse first).
+    #[test]
+    fn convert_warning_display_and_merge_order() {
+        use rofd_dom::OfdWarning;
+        let parse = ConvertWarning::Parse(OfdWarning::MissingFeature {
+            feature: "Template".into(),
+            entry: "Doc_0/Document.xml".into(),
+        });
+        assert!(
+            parse.to_string().contains("missing feature"),
+            "Parse Display delegates to OfdWarning: {parse}"
+        );
+        let encode = ConvertWarning::Encode(
+            "skipped font subsetting for 'SimSun': malformed font".to_string(),
+        );
+        assert_eq!(
+            encode.to_string(),
+            "skipped font subsetting for 'SimSun': malformed font"
+        );
+        let merged = merged_warnings(
+            vec![OfdWarning::MissingFeature {
+                feature: "Template".into(),
+                entry: "e".into(),
+            }],
+            vec!["skipped font subsetting".to_string()],
+        );
+        assert!(matches!(&merged[0], ConvertWarning::Parse(_)), "{merged:?}");
+        assert!(
+            matches!(&merged[1], ConvertWarning::Encode(_)),
+            "{merged:?}"
+        );
+    }
 
     #[test]
     fn defaults_match_spec() {

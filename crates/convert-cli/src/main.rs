@@ -93,7 +93,8 @@ pub(crate) fn run(args: Args) -> i32 {
         }
     };
     for warning in &out.warnings {
-        // One human-readable line per warning (rofd-dom's Display impl),
+        // One human-readable line per warning (ConvertWarning's Display:
+        // parse-side OfdWarning lines plus encoder degradation lines, D20),
         // not the Rust-y Debug format.
         eprintln!("warning: {warning}");
     }

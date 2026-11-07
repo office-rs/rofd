@@ -154,13 +154,13 @@ fn build_options(
 
 /// Kernel `OfdWarning`s → one display line each (the strings Java's
 /// `takeWarnings` returns).
-fn warnings_to_strings(warnings: Vec<rofd_convert::OfdWarning>) -> Vec<String> {
+fn warnings_to_strings(warnings: Vec<rofd_convert::ConvertWarning>) -> Vec<String> {
     warnings.iter().map(|w| w.to_string()).collect()
 }
 
 /// Park a call's warnings under its handle id (overwrites any previous
 /// parked set — `takeWarnings` documents last-call-wins semantics).
-fn park_warnings(id: u64, warnings: Vec<rofd_convert::OfdWarning>) {
+fn park_warnings(id: u64, warnings: Vec<rofd_convert::ConvertWarning>) {
     LAST_WARNINGS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -565,10 +565,10 @@ mod tests {
             used: "default".into(),
         };
         assert_eq!(
-            warnings_to_strings(vec![w.clone()]),
+            warnings_to_strings(vec![rofd_convert::ConvertWarning::Parse(w.clone())]),
             vec!["font 'SimSun' not found; substituted with 'default'"]
         );
-        park_warnings(WARN_ID_A, vec![w]);
+        park_warnings(WARN_ID_A, vec![rofd_convert::ConvertWarning::Parse(w)]);
         assert_eq!(
             take_warnings(WARN_ID_A),
             vec!["font 'SimSun' not found; substituted with 'default'"]
@@ -592,7 +592,7 @@ mod tests {
             feature: "JBIG2".into(),
             entry: "Doc_0/Res/Img_0.xml".into(),
         };
-        park_warnings(WARN_ID_A + 10, vec![w]);
+        park_warnings(WARN_ID_A + 10, vec![rofd_convert::ConvertWarning::Parse(w)]);
         assert_eq!(
             take_warnings(WARN_ID_A + 11),
             Vec::<String>::new(),
@@ -615,7 +615,7 @@ mod tests {
             requested: "SimSun".into(),
             used: "default".into(),
         };
-        park_warnings(WARN_ID_C, vec![old]);
+        park_warnings(WARN_ID_C, vec![rofd_convert::ConvertWarning::Parse(old)]);
         clear_warnings(WARN_ID_C); // start of the next attempt (it fails)
         assert_eq!(
             take_warnings(WARN_ID_C),
@@ -626,7 +626,7 @@ mod tests {
             feature: "JBIG2".into(),
             entry: "Doc_0/Res/Img_0.xml".into(),
         };
-        park_warnings(WARN_ID_C, vec![fresh]); // a later success parks
+        park_warnings(WARN_ID_C, vec![rofd_convert::ConvertWarning::Parse(fresh)]); // a later success parks
         assert_eq!(
             take_warnings(WARN_ID_C).len(),
             1,

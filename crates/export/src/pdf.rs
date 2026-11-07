@@ -91,6 +91,25 @@ pub fn pdf_from_page_scenes(pages: &[PdfPage]) -> Result<Vec<u8>, ExportError> {
     encode_with_degradation(pages, krilla::Document::finish).map(|(bytes, _)| bytes)
 }
 
+/// Detailed encode result (convert spec D20, phase-3 Task 1): the bytes of
+/// [`pdf_from_page_scenes`] plus the sink's non-fatal warning lines (e.g.
+/// font-embed degradation: "skipped font subsetting for '<family>': …").
+/// Healthy input yields an empty list; the plain entry keeps discarding.
+pub struct PdfEncodeOutput {
+    pub bytes: Vec<u8>,
+    pub warnings: Vec<String>,
+}
+
+/// Byte-identical to [`pdf_from_page_scenes`] on every input, but carries
+/// the encoder's warning channel out of the crate (D20 surface).
+pub fn pdf_from_page_scenes_detailed(pages: &[PdfPage]) -> Result<PdfEncodeOutput, ExportError> {
+    if pages.is_empty() {
+        return Err(ExportError::EmptyPages);
+    }
+    encode_with_degradation(pages, krilla::Document::finish)
+        .map(|(bytes, warnings)| PdfEncodeOutput { bytes, warnings })
+}
+
 /// Encode `pages` under the font-embed degradation policy (convert spec
 /// §8, 2026-11-07 phase-2 Task 1). krilla defers subsetting to
 /// `Document::finish`, so a face that read fine at draw time (system
@@ -1156,6 +1175,23 @@ mod tests {
             warnings[0].contains("skipped font subsetting for '")
                 && warnings[0].contains("malformed font"),
             "warning must name the face and reason: {warnings:?}"
+        );
+    }
+
+    /// D20 (phase-3 Task 1): the detailed entry returns the same bytes as
+    /// the plain one and carries the sink's warning channel out of the
+    /// crate — healthy input has none; the degradation lines pinned above
+    /// at the seam surface through here instead of being discarded.
+    #[test]
+    fn detailed_entry_carries_plain_bytes_and_warning_channel() {
+        let pages = [glyph_page()];
+        let plain = pdf_from_page_scenes(&pages).expect("healthy pages must encode");
+        let detailed = pdf_from_page_scenes_detailed(&pages).expect("healthy pages must encode");
+        assert_eq!(detailed.bytes, plain, "identical bytes on the healthy path");
+        assert!(
+            detailed.warnings.is_empty(),
+            "healthy input must not warn: {:?}",
+            detailed.warnings
         );
     }
 

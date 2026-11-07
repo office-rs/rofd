@@ -9,4 +9,6 @@
 
 mod pdf;
 
-pub use pdf::{pdf_from_page_scenes, ExportError, PdfPage};
+pub use pdf::{
+    pdf_from_page_scenes, pdf_from_page_scenes_detailed, ExportError, PdfEncodeOutput, PdfPage,
+};

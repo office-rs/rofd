@@ -192,9 +192,19 @@ fn warnings_passthrough_equals_parse_report() {
             .any(|w| matches!(w, rofd_dom::OfdWarning::FontSubstituted { .. })),
         "fixture triggers the font-substitution warning site"
     );
+    let out = convert_default(&bytes);
+    // D20 (phase-3 Task 1): warnings are the unified ConvertWarning stream
+    // — the parse report's entries as Parse, in order, and no Encode
+    // entries (this fixture's fonts all subset fine).
     assert_eq!(
-        convert_default(&bytes).warnings,
-        parse_warnings,
-        "convert warnings must equal the parse report's"
+        out.warnings.len(),
+        parse_warnings.len(),
+        "healthy fixture: parse warnings pass through one-for-one"
     );
+    for (w, p) in out.warnings.iter().zip(&parse_warnings) {
+        assert!(
+            matches!(w, rofd_convert::ConvertWarning::Parse(parsed) if parsed == p),
+            "warning must be the parse entry unchanged: {w:?} vs {p:?}"
+        );
+    }
 }
