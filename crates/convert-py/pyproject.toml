@@ -1,0 +1,35 @@
+[build-system]
+requires = ["maturin>=1.5"]
+build-backend = "maturin"
+
+[project]
+name = "rofd-convert"
+version = "0.1.0"
+description = "Headless OFD to PDF conversion (PyO3 bindings over the rofd kernel)"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Office Suites",
+]
+keywords = ["ofd", "pdf", "converter", "office", "gbt-33190"]
+
+[project.urls]
+Repository = "https://github.com/office-rs/rofd"
+
+[tool.maturin]
+# abi3-py39 wheel only — no sdist (convert spec D5).
+# Mixed layout: the native extension lands INSIDE the pure-python
+# package as rofd_convert.rofd_convert_native; users import
+# rofd_convert (see python/rofd_convert/__init__.py).
+python-source = "python"
+module-name = "rofd_convert.rofd_convert_native"

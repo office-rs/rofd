@@ -1,0 +1,17 @@
+[package]
+name = "rofd-convert-py"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+# NOT `rofd_convert` — that name is the user-facing python package's
+# import identity. The native module ships inside the `rofd_convert`
+# python package (python-source layout); the import name users see stays
+# rofd_convert.
+name = "rofd_convert_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rofd-convert = { workspace = true }
+pyo3 = { workspace = true }
