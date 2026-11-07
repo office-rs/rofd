@@ -130,6 +130,16 @@ impl PrintSession {
         }
     }
 
+    /// Build a session with no backing [`crate::ofd_component::OfdComponent`]
+    /// (headless conversion facade, rofd convert phase 1): page scenes are
+    /// built straight from a caller-owned document snapshot. Headless
+    /// conversion has no concurrent mutation source, so the session owns a
+    /// fresh generation counter that stays at 0 forever and [`PrintSession::is_stale`]
+    /// is always false.
+    pub fn headless(doc: OfdDocument, fonts: FontStore, content: PrintContent) -> Self {
+        Self::new(doc, fonts, content, Arc::new(AtomicU64::new(0)))
+    }
+
     /// Number of pages in the snapshotted document.
     pub fn page_count(&self) -> usize {
         self.doc.pages.len()
@@ -265,14 +275,14 @@ impl PrintSession {
 
 #[cfg(test)]
 mod tests {
-    use super::{paper_from_size_mm, PrintContent, PRINT_ZOOM};
+    use super::{paper_from_size_mm, PrintContent, PrintSession, PRINT_ZOOM};
     use crate::config::OfdConfig;
     use crate::ofd_component::OfdComponent;
     use imaging::record::{Command, Draw};
     use rofd_dom::{
         Annotation, AnnotationId, AnnotationKind, AnnotationPayload, Color, FontId, ImageId, Layer,
         LayerType, NoteIcon, ObjectId, OfdDocument, Page, PageId, PageObject, Point, Rect,
-        ShapeKind, TextCode, TextObject,
+        Resources, ShapeKind, TextCode, TextObject,
     };
     use rofd_render::FontStore;
     use std::sync::Arc;
@@ -417,6 +427,15 @@ mod tests {
             doc.pages.push(a4_page(&format!("P{i}")));
         }
         component_with(doc)
+    }
+
+    /// Two plain A4 pages, no annotations — the document fixture for the
+    /// headless constructor (same setup as `pages_component`, no component).
+    fn two_page_doc() -> OfdDocument {
+        let mut doc = OfdDocument::default();
+        doc.pages.push(a4_page("P0"));
+        doc.pages.push(a4_page("P1"));
+        doc
     }
 
     /// The scene's draw ops in command order (the tooltip tests' Command::Draw
@@ -757,5 +776,17 @@ mod tests {
             }
             _ => panic!("wrong payload variant"),
         }
+    }
+
+    /// The headless constructor (convert facade): builds page scenes with no
+    /// backing `OfdComponent`, and with no component able to bump the shared
+    /// generation the session never goes stale.
+    #[test]
+    fn headless_session_renders_pages_and_never_stale() {
+        let fonts = FontStore::from_resources(&Resources::default(), Arc::new(vec![]));
+        let mut session = PrintSession::headless(two_page_doc(), fonts, PrintContent::default());
+        assert_eq!(session.page_count(), 2);
+        let _ = session.page_scene(0); // building must not panic
+        assert!(!session.is_stale(), "no component can bump the generation");
     }
 }
