@@ -13,6 +13,7 @@ use std::sync::Arc;
 use imaging::kurbo::{self, Affine, BezPath, Cap, Join, PathEl, Shape, Stroke as KurboStroke};
 use imaging::peniko;
 use krilla::color::rgb;
+use krilla::error::KrillaError;
 use krilla::geom::{Path, Point, Size, Transform};
 use krilla::image::Image as KrillaImage;
 use krilla::num::NormalizedF32;
@@ -78,23 +79,101 @@ struct PageMeta {
 /// [`PdfPage`], sized from the scene's own pixel dims. No offset culling —
 /// each scene is already page-local. The font/image caches live on one sink
 /// across pages, so a repeated face costs one subset.
+///
+/// A font krilla cannot embed (subset) degrades instead of failing: the
+/// face's glyph runs are skipped with one warning and the document is
+/// re-encoded without them (see [`encode_with_degradation`]); every other
+/// input takes the single-attempt path, byte-for-byte as before.
 pub fn pdf_from_page_scenes(pages: &[PdfPage]) -> Result<Vec<u8>, ExportError> {
     if pages.is_empty() {
         return Err(ExportError::EmptyPages);
     }
-    let mut sink = PdfSink::new();
-    for (i, p) in pages.iter().enumerate() {
-        // Page-local placement: origin (0,0), the page's own pixel size.
-        let meta = PageMeta {
-            index: i,
-            x: 0.0,
-            y: 0.0,
-            w: p.width_px,
-            h: p.height_px,
-        };
-        sink.page_from_scene(&p.scene, &meta)?;
+    encode_with_degradation(pages, krilla::Document::finish).map(|(bytes, _)| bytes)
+}
+
+/// Encode `pages` under the font-embed degradation policy (convert spec
+/// §8, 2026-11-07 phase-2 Task 1). krilla defers subsetting to
+/// `Document::finish`, so a face that read fine at draw time (system
+/// fallback fonts are the observed case) can still fail to embed there —
+/// previously a fatal `ExportError::Encode`. Now the failed face is
+/// dropped (one warning line, its glyph runs skipped on retry) and the
+/// encode continues.
+///
+/// `embed` runs one attempt's deferred embedding; it is the seam the
+/// degradation tests inject a failure into (a real unsubsettable font
+/// fixture is impractical to fabricate). Healthy fonts never leave the
+/// first attempt — one `Document::finish`, byte-identical to the
+/// pre-degradation output.
+///
+/// The loop is bounded: every degraded attempt poisons at least one face
+/// key that was not poisoned before, and the number of distinct faces is
+/// finite.
+fn encode_with_degradation(
+    pages: &[PdfPage],
+    mut embed: impl FnMut(krilla::Document) -> Result<Vec<u8>, KrillaError>,
+) -> Result<(Vec<u8>, Vec<String>), ExportError> {
+    // Faces whose embedding already failed (key -> family): their glyph
+    // runs are skipped on every later attempt. Strictly growing, which is
+    // what bounds the loop.
+    let mut poisoned: HashMap<FaceKey, String> = HashMap::new();
+    let mut warnings: Vec<String> = Vec::new();
+    loop {
+        let mut sink = PdfSink::new();
+        sink.ctx.poisoned = poisoned.clone();
+        for (i, p) in pages.iter().enumerate() {
+            // Page-local placement: origin (0,0), the page's own pixel size.
+            let meta = PageMeta {
+                index: i,
+                x: 0.0,
+                y: 0.0,
+                w: p.width_px,
+                h: p.height_px,
+            };
+            sink.page_from_scene(&p.scene, &meta)?;
+        }
+        match sink.finish_with(&mut embed) {
+            FinishOutcome::Bytes(bytes, attempt_warnings) => {
+                // Attempt-local warnings (skipped images, construct
+                // failures, ...) come from the final attempt only, so a
+                // degraded retry never duplicates them; the poison lines
+                // below are already in `warnings`.
+                warnings.extend(attempt_warnings);
+                return Ok((bytes, warnings));
+            }
+            FinishOutcome::FontFailure {
+                keys,
+                family,
+                reason,
+            } => {
+                let fresh: Vec<FaceKey> = keys
+                    .iter()
+                    .copied()
+                    .filter(|k| !poisoned.contains_key(k))
+                    .collect();
+                if keys.is_empty() {
+                    // krilla failed a face this sink never drew — not a
+                    // degradation we know how to perform.
+                    return Err(ExportError::Encode(format!(
+                        "krilla finish: failed to embed font '{family}': {reason}"
+                    )));
+                }
+                if fresh.is_empty() {
+                    // The face was skipped and still failed: no progress
+                    // is possible, stay fatal instead of looping.
+                    return Err(ExportError::Encode(format!(
+                        "krilla finish: repeated embed failure for already-skipped font '{family}': {reason}"
+                    )));
+                }
+                for k in fresh {
+                    poisoned.insert(k, family.clone());
+                }
+                warnings.push(format!(
+                    "skipped font subsetting for '{family}': {reason}; its glyph runs were dropped"
+                ));
+            }
+            FinishOutcome::Fatal(e) => return Err(e),
+        }
     }
-    sink.finish()
 }
 
 /// A krilla document fed one page at a time: `new` creates the document,
@@ -156,16 +235,82 @@ impl PdfSink {
         Ok(())
     }
 
-    /// Serialize the document. Non-fatal degradations collected along the
-    /// way (skipped filters/masks/unsupported brushes) stay internal: the
-    /// v1 public surface returns bytes only — fatal failures are the
-    /// `ExportError` cases (print spec §6).
-    fn finish(self) -> Result<Vec<u8>, ExportError> {
-        match self.doc.finish() {
-            Ok(bytes) => Ok(bytes),
-            Err(e) => Err(ExportError::Encode(format!("krilla finish: {e:?}"))),
+    /// Serialize the document through an injectable embed step. Production
+    /// passes krilla's `Document::finish` (via
+    /// [`encode_with_degradation`]); the degradation tests inject a font
+    /// failure here to pin the policy without a real unsubsettable font.
+    fn finish_with(
+        self,
+        embed: impl FnOnce(krilla::Document) -> Result<Vec<u8>, KrillaError>,
+    ) -> FinishOutcome {
+        let PdfSink { doc, ctx, warnings } = self;
+        match embed(doc) {
+            Ok(bytes) => FinishOutcome::Bytes(bytes, warnings),
+            Err(KrillaError::Font(font, reason)) => {
+                // krilla names the face it failed to embed by the very
+                // handle we drew with, so match it back to the cache keys
+                // (equality is krilla's own content hash — two blobs with
+                // identical bytes are one face and poison together).
+                let matched: Vec<FaceKey> = ctx
+                    .fonts
+                    .iter()
+                    .filter(|(_, face)| face.font == font)
+                    .map(|(k, _)| *k)
+                    .collect();
+                let family = matched
+                    .first()
+                    .and_then(|k| ctx.fonts.get(k))
+                    .map_or_else(|| "<unknown>".to_string(), |f| f.family.clone());
+                FinishOutcome::FontFailure {
+                    keys: matched,
+                    family,
+                    reason,
+                }
+            }
+            Err(e) => FinishOutcome::Fatal(ExportError::Encode(format!("krilla finish: {e:?}"))),
         }
     }
+
+    /// Serialize without degradation — kept for direct sink drives in unit
+    /// tests; production encodes through [`encode_with_degradation`].
+    #[cfg(test)]
+    fn finish(self) -> Result<Vec<u8>, ExportError> {
+        match self.finish_with(krilla::Document::finish) {
+            FinishOutcome::Bytes(bytes, _) => Ok(bytes),
+            FinishOutcome::FontFailure { family, reason, .. } => Err(ExportError::Encode(format!(
+                "krilla finish: failed to embed font '{family}': {reason}"
+            ))),
+            FinishOutcome::Fatal(e) => Err(e),
+        }
+    }
+}
+
+/// One attempt's deferred font-embedding outcome (the injectable seam the
+/// phase-2 degradation is pinned through).
+enum FinishOutcome {
+    /// Serialized PDF bytes, plus the attempt's sink warnings.
+    Bytes(Vec<u8>, Vec<String>),
+    /// krilla failed to embed (subset) a face. `keys` locates every cache
+    /// entry for that face — empty when the failure names a face this sink
+    /// never drew, which cannot be degraded.
+    FontFailure {
+        keys: Vec<FaceKey>,
+        family: String,
+        reason: String,
+    },
+    /// Any other serialization failure stays fatal.
+    Fatal(ExportError),
+}
+
+/// Cache key for a face: the identity of its byte buffer plus the
+/// collection index.
+type FaceKey = (usize, u32);
+
+/// One distinct face in the font cache: the krilla handle glyphs draw with
+/// and the family name for degradation warnings.
+struct CachedFace {
+    font: KrillaFont,
+    family: String,
 }
 
 /// Cross-page caches shared by all page sinks: krilla fonts, reverse cmaps
@@ -173,27 +318,50 @@ impl PdfSink {
 /// every blob for the whole encode, so pointers do not move).
 #[derive(Default)]
 struct SinkContext {
-    /// One krilla font per distinct face. Fonts are cheap to clone (Arc
+    /// One entry per distinct face. Fonts are cheap to clone (Arc
     /// internals); subsetting happens at `Document::finish`.
-    fonts: HashMap<(usize, u32), KrillaFont>,
+    fonts: HashMap<FaceKey, CachedFace>,
+    /// Faces whose deferred embedding failed on an earlier attempt (key ->
+    /// family). Their glyph runs are skipped silently on every later
+    /// attempt — the one warning line was recorded when the failure was
+    /// diagnosed (see [`encode_with_degradation`]).
+    poisoned: HashMap<FaceKey, String>,
     /// Glyph id → char per face, built once from the font's own cmap — the
     /// source for ToUnicode text. Arc'd so per-run lookups avoid deep
     /// copies (CJK cmaps hold tens of thousands of entries).
-    reverse_cmaps: HashMap<(usize, u32), Arc<HashMap<u32, char>>>,
+    reverse_cmaps: HashMap<FaceKey, Arc<HashMap<u32, char>>>,
     /// Krilla images by source-blob pointer. `None` memoizes a failed
     /// decode so the failure warns once per image, not per draw.
     images: HashMap<usize, Option<KrillaImage>>,
 }
 
-/// Cache key for a face: the identity of its byte buffer plus the
+/// [`FaceKey`] for a face: the identity of its byte buffer plus the
 /// collection index.
-fn font_key(data: &imaging::peniko::FontData) -> (usize, u32) {
+fn font_key(data: &imaging::peniko::FontData) -> FaceKey {
     (data.data.as_ref().as_ptr() as usize, data.index)
 }
 
 /// Cache key for an image: the identity of its pixel buffer.
 fn image_key(img: &peniko::ImageData) -> usize {
     img.data.as_ref().as_ptr() as usize
+}
+
+/// Best-effort family name for a face (name table, id 1) — used only in
+/// degradation warnings, so an unreadable name degrades to "<unknown>"
+/// instead of failing anything.
+fn family_name(data: &imaging::peniko::FontData) -> String {
+    if let Some(font_ref) = swash::FontRef::from_index(data.data.as_ref(), data.index as usize) {
+        if let Some(name) = font_ref
+            .localized_strings()
+            .find_by_id(swash::StringId::Family, None)
+        {
+            let family: String = name.chars().collect();
+            if !family.is_empty() {
+                return family;
+            }
+        }
+    }
+    "<unknown>".to_string()
 }
 
 /// Sort an sfnt face's table directory into tag order, rewriting the header
@@ -267,11 +435,16 @@ fn normalize_sfnt_directory(data: &[u8], index: u32) -> Option<Vec<u8>> {
 
 impl SinkContext {
     /// Construct (or fetch the cached) krilla font for a face. `None` when
-    /// krilla cannot read the font program.
+    /// krilla cannot read the font program, or when the face is poisoned
+    /// (its embedding failed on an earlier attempt; the caller stays
+    /// silent about that case — the failure already warned once).
     fn font(&mut self, data: &imaging::peniko::FontData) -> Option<KrillaFont> {
         let key = font_key(data);
+        if self.poisoned.contains_key(&key) {
+            return None;
+        }
         match self.fonts.entry(key) {
-            std::collections::hash_map::Entry::Occupied(e) => Some(e.get().clone()),
+            std::collections::hash_map::Entry::Occupied(e) => Some(e.get().font.clone()),
             std::collections::hash_map::Entry::Vacant(e) => {
                 // Zero-copy: share the blob's Arc-backed buffer with krilla
                 // instead of duplicating a potentially 20 MB CJK font. The one
@@ -284,7 +457,11 @@ impl SinkContext {
                         None => data.data.clone().into_raw_parts().0,
                     };
                 let font = KrillaFont::new(arc.into(), data.index)?;
-                Some(e.insert(font).clone())
+                e.insert(CachedFace {
+                    font: font.clone(),
+                    family: family_name(data),
+                });
+                Some(font)
             }
         }
     }
@@ -655,8 +832,14 @@ impl imaging::PaintSink for PdfPageSink<'_, '_> {
             return;
         }
         let Some(font) = self.ctx.font(draw.font) else {
-            self.warnings
-                .push("font construct failed; glyph run dropped".into());
+            // A poisoned face (embedding failed on an earlier attempt)
+            // already produced its one degradation warning when the failure
+            // was diagnosed; only a genuinely unreadable font program
+            // warns here.
+            if !self.ctx.poisoned.contains_key(&font_key(draw.font)) {
+                self.warnings
+                    .push("font construct failed; glyph run dropped".into());
+            }
             return;
         };
         let rc = self.ctx.reverse_cmap(draw.font);
@@ -931,6 +1114,75 @@ mod tests {
         let warnings = std::mem::take(&mut sink.warnings);
         sink.finish().unwrap();
         assert!(warnings.is_empty(), "glyph run must not warn: {warnings:?}");
+    }
+
+    /// The face `glyph_page()` draws, as a krilla handle. krilla identifies
+    /// fonts by content (metrics/checksum hash), so a font built from the
+    /// same bytes equals the sink's cached face — exactly how a finish-time
+    /// embed failure names the face to degrade.
+    fn test_face() -> KrillaFont {
+        let arc: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::new(FONT.to_vec());
+        KrillaFont::new(arc.into(), 0).expect("TestFont must be readable by krilla")
+    }
+
+    /// Phase-2 Task 1 seam: krilla defers font subsetting to
+    /// `Document::finish`, so a face it read fine at draw time can still
+    /// fail to embed there (subsetter "malformed font", observed with
+    /// system-fallback faces on an empty font registry). The embed step is
+    /// injectable: failing it for the drawn face on the first attempt must
+    /// degrade — one warning line naming the family and reason, that
+    /// face's glyph runs skipped — and still produce PDF bytes instead of
+    /// `ExportError::Encode`. A real unsubsettable font fixture is
+    /// impractical to fabricate; the seam pins the semantics (the real
+    /// specimen is covered by the CLI manual probe).
+    #[test]
+    fn font_embed_failure_degrades_to_warning_and_skip() {
+        let page = glyph_page();
+        let face = test_face();
+        let mut injected = true;
+        let (bytes, warnings) = encode_with_degradation(&[page], move |doc| {
+            if injected {
+                injected = false;
+                return Err(KrillaError::Font(
+                    face.clone(),
+                    "failed to subset font: malformed font".to_string(),
+                ));
+            }
+            doc.finish()
+        })
+        .expect("degraded encode must still produce a PDF");
+        assert!(
+            bytes.starts_with(b"%PDF-"),
+            "output must remain a valid PDF"
+        );
+        assert_eq!(
+            warnings.len(),
+            1,
+            "exactly one degradation line: {warnings:?}"
+        );
+        assert!(
+            warnings[0].contains("skipped font subsetting for '")
+                && warnings[0].contains("malformed font"),
+            "warning must name the face and reason: {warnings:?}"
+        );
+    }
+
+    /// Termination guard for the degradation retry: a face that keeps
+    /// failing to embed after it was already skipped cannot degrade
+    /// further — the encode must fail as a bounded outcome, not loop
+    /// forever.
+    #[test]
+    fn repeated_embed_failure_for_skipped_face_is_fatal() {
+        let page = glyph_page();
+        let face = test_face();
+        let err = encode_with_degradation(&[page], move |_| {
+            Err(KrillaError::Font(
+                face.clone(),
+                "failed to subset font: malformed font".to_string(),
+            ))
+        })
+        .unwrap_err();
+        assert!(matches!(err, ExportError::Encode(_)), "got: {err:?}");
     }
 
     /// Reverse the table records of an sfnt font (sorted input becomes

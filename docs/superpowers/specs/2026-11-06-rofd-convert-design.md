@@ -184,7 +184,7 @@ pub struct ConvertOutput { pub bytes: Vec<u8>, pub warnings: Vec<ConvertWarning>
 - **预算**：max_pages / max_media_bytes 触发 `BudgetExceeded` 的单元测试。
 - **覆盖率** 80%（仓规）。
 - **渲染保真边界沿用 v1 现状**：模板继承/JBIG2/瓦片图等桩处理经 warnings 透出，不在 convert 范围内解决。
-- **系统回退字体 × krilla 子集化**（2026-11-07 Task 8 手测发现，宿主 Windows + ru-yuan-ji-lu.ofd）：native 构建的 fontique 系统回退字体可能不被 krilla 子集化支持——真实文本文档在空注册表下可能编码失败，CLI 以退出码 3 干净报告；要求跨机器可复现的部署按 D19 显式注册足够字体。
+- **系统回退字体 × krilla 子集化**（2026-11-07 Task 8 手测发现，宿主 Windows + ru-yuan-ji-lu.ofd；**同日 ②期 Task 1 已降级**）：native 构建的 fontique 系统回退字体可能不被 krilla 子集化支持（krilla 在 `Document::finish` 才做子集化，报 `failed to subset font: malformed font`）。export 层现将其降级为**警告 + 跳过**：失败字体面（face）记一行 warning（`skipped font subsetting for '<family>': <reason>`，暂存 sink 内部 warnings 通道，公开透出面由 D20 决定）并丢弃该字体的 glyph run，编码继续，CLI 裸跑以退出码 0 产出 PDF；健康字体路径字节零变化（降级只接管原本硬失败的分支）。跨机器可复现的部署仍应按 D19 显式注册足够字体——跳过即缺字，降级救的是"不崩"，不是"不缺"。
 
 ## 9. 发布工程
 

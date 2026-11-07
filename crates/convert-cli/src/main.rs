@@ -55,10 +55,12 @@ pub(crate) fn run(args: Args) -> i32 {
 
     // One hint per invocation when no default font is anchored (kernel
     // `has_default_font`): text without embedded/registered fonts then
-    // falls back to system discovery (native) and may fail to encode.
+    // falls back to system discovery (native), and a fallback font krilla
+    // cannot embed costs its glyph runs — skipped with a warning, not a
+    // conversion failure.
     if !rofd_convert::has_default_font() {
         eprintln!(
-            "warning: no default font anchored; text without embedded/registered fonts falls back to system fonts and may fail to encode"
+            "warning: no default font anchored; text without embedded/registered fonts falls back to system fonts and is skipped from the PDF when a font cannot be embedded"
         );
     }
 
