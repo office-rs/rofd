@@ -68,6 +68,23 @@
 - [ ] **Step 4: 全量绿**——workspace 测试 + `cd crates/web-app && npx vitest run src/print`。
 - [ ] **Step 5: Commit** `refactor(convert): single shared page-assembly helper for all PDF export paths`
 
+### Task 2b: TTC 字体面选择跨进程确定性（Task 1 发现，Task 7 前置）
+
+**Files:**
+- Modify: `crates/convert/src/lib.rs`（FontStore 组装路径）或 `crates/render/src/text/font.rs`（面选择序）
+- Test: `crates/convert/tests/`（跨"进程"模拟：双 FontStore 独立构建同注册集）
+
+**背景**：phase-2 Task 1 实测发现——`simsun.ttc`（TTC 集合，含 SimSun/NSimSun 两面）在不同进程的 CLI 运行间面选择翻转，破坏跨进程字节稳定（spec §8：同机器字体环境应可复现）。rword 同型问题当年由两幕 demo 抓出、在其字体层修复（fontique HashMap 迭代序）。Task 7 的 JVM-vs-CLI 字节比对是跨进程的，必须先修。
+
+**Interfaces:**
+- Produces: 同一字体字节注册进两个独立构建的 FontStore，面选择（及后续字形排布）确定一致；TTC 多面时选择序固定（如恒取 collection 中可用的首个/按面索引稳定序）。
+
+- [ ] **Step 1: RED**——测试：同一 TTC 字节（fixture 用 `C:/Windows/Fonts/simsun.ttc` 若存在，否则仓库 TestFont 单面退化跳过并注明）注册进两个独立 FontStore，断言 shaping 选择的 family/face 一致（或直接断言两 store 各自 convert 的输出字节相等）。
+- [ ] **Step 2: 定位与修复**——面选择非确定源（fontique/fontique HashMap 迭代序、TTC 面枚举序），在 convert 的组装路径或 FontStore 内加稳定序。
+- [ ] **Step 3: GREEN + 全量**——workspace 测试绿；parity 不受影响（同进程）。
+- [ ] **Step 4: 跨进程实测**——CLI 连跑两次（带 `--font simsun.ttc`），sha256 相等；记入提交信息。
+- [ ] **Step 5: Commit** `fix(convert): deterministic TTC face selection for cross-process byte stability`
+
 ### Task 3: ②期入口(b)——fuzz 满额补跑（WSL 尝试）
 
 **Files:**
