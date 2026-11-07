@@ -29,6 +29,12 @@ pub use fonts::{
     has_default_font, register_default_font, register_font, register_font_file, registered_families,
 };
 
+// Facade rule (spec §5): converter hosts import ONLY this crate. The
+// public surface names two foreign types, so they are re-exported at
+// the root — hosts never need rofd-component/rofd-dom as deps.
+pub use rofd_component::PrintContent;
+pub use rofd_dom::OfdWarning;
+
 use std::sync::Arc;
 
 use rofd_component::PrintSession;
@@ -89,7 +95,11 @@ pub struct ConvertOutput {
 
 /// Failure modes of a conversion call. Stable shape for the FFI boundary:
 /// a discriminant plus message strings — never a Rust panic.
+/// `#[non_exhaustive]`: new arms may join in a minor version, so matches
+/// in OTHER crates need a wildcard arm (the ② bindings surface a
+/// discriminant, not the Rust enum, and stay unaffected).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ConvertError {
     Decode(String),
     Encode(String),
@@ -127,8 +137,10 @@ impl std::error::Error for ConvertError {}
 /// Failure modes of the process-level font registry (Task 4's
 /// `register_font` / `register_font_file` / `register_default_font`).
 /// Not `Clone`/`PartialEq`: [`Io`](FontRegisterError::Io) wraps a
-/// `std::io::Error`, which is neither.
+/// `std::io::Error`, which is neither. `#[non_exhaustive]` for the same
+/// forward-compat reason as [`ConvertError`].
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum FontRegisterError {
     Io(std::io::Error),
     InvalidFont,
