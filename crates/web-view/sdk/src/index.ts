@@ -112,9 +112,9 @@ interface WasmOfd {
   deleteAnnotation(id: string): boolean;
   deleteSelected(): number;
   /** Export the document as PDF bytes (print spec 2026-10-31 §5). Omitted
-   * flags pass through to the wasm defaults (clean-copy preset:
-   * watermark/annotations off, seal on); `pages` is a 1-based list —
-   * omit for every page. Throws on failure (empty page survivor set,
+   * flags pass through to the wasm defaults (all-on preset:
+   * watermark/annotations/seal on, convert spec D17); `pages` is a 1-based
+   * list — omit for every page. Throws on failure (empty page survivor set,
    * encoder error). */
   exportPdf(watermark?: boolean, annotations?: boolean, seal?: boolean, pages?: number[]): Uint8Array;
   /** Resolve a print dialog's range/parity selection into the concrete
@@ -146,11 +146,12 @@ export type ZoomMode = 'custom' | 'fit-width' | 'fit-height' | 'fit-page';
 
 /** Content flags for PDF export / print (print spec 2026-10-31). All
  * optional — omitted fields pass undefined through to the wasm defaults
- * (clean-copy preset: watermark/annotations off, seal on, every page). */
+ * (all-on preset: watermark/annotations/seal on, every page — convert
+ * spec D17). */
 export interface PrintOptions {
-  /** Include the document watermark. Default false. */
+  /** Include the document watermark. Default true. */
   watermark?: boolean;
-  /** Include annotation layers. Default false. */
+  /** Include annotation layers. Default true. */
   annotations?: boolean;
   /** Include electronic seals. Default true. */
   seal?: boolean;

@@ -132,8 +132,8 @@ describe('Ofd print surface', () => {
     const { ofd, mocks } = makeOfd();
     try {
       // No options: every flag passes undefined so the wasm defaults apply
-      // (clean-copy preset). No font watch configured either — export goes
-      // straight through with no gate.
+      // (all-on preset, convert spec D17). No font watch configured either —
+      // export goes straight through with no gate.
       await ofd.exportPdf();
       expect(mocks.exportPdf).toHaveBeenCalledWith(undefined, undefined, undefined, undefined);
 

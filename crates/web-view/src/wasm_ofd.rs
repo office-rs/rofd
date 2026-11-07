@@ -819,12 +819,13 @@ mod wasm_impl {
         // ─── Print / PDF Export ─────────────────────────────────────────────
 
         /// Export the document as PDF bytes (print spec 2026-10-31 §5).
-        /// Content flags default to the "clean copy" preset when `None`
-        /// (watermark/annotations off, seal on). `pages` is a 1-based page
-        /// list — `None` exports every page; out-of-range entries are
-        /// dropped and an empty survivor set is an error (the session's
-        /// `validate_pages` contract). Thin shim: page scenes come from a
-        /// fresh `begin_print` session, encoding from `rofd_export`.
+        /// Content flags default to the all-on preset when `None`
+        /// (watermark/annotations/seal on, convert spec D17). `pages` is a
+        /// 1-based page list — `None` exports every page; out-of-range
+        /// entries are dropped and an empty survivor set is an error (the
+        /// session's `validate_pages` contract). Thin shim: page scenes
+        /// come from a fresh `begin_print` session, encoding from
+        /// `rofd_export`.
         #[wasm_bindgen(js_name = exportPdf)]
         pub fn export_pdf(
             &mut self,
@@ -834,8 +835,8 @@ mod wasm_impl {
             pages: Option<Vec<u32>>,
         ) -> Result<Vec<u8>, JsValue> {
             let content = PrintContent {
-                watermark: watermark.unwrap_or(false),
-                annotations: annotations.unwrap_or(false),
+                watermark: watermark.unwrap_or(true),
+                annotations: annotations.unwrap_or(true),
                 seal: seal.unwrap_or(true),
             };
             let mut session = self.component.begin_print(content);
