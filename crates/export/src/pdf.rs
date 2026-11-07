@@ -105,9 +105,10 @@ pub fn pdf_from_page_scenes(pages: &[PdfPage]) -> Result<Vec<u8>, ExportError> {
 /// first attempt — one `Document::finish`, byte-identical to the
 /// pre-degradation output.
 ///
-/// The loop is bounded: every degraded attempt poisons at least one face
-/// key that was not poisoned before, and the number of distinct faces is
-/// finite.
+/// The loop is bounded: a poisoned face is never drawn again (its glyph
+/// runs are skipped), so every `FontFailure` names only faces freshly
+/// drawn in that attempt — poisoning them always makes progress, and the
+/// number of distinct faces is finite.
 fn encode_with_degradation(
     pages: &[PdfPage],
     mut embed: impl FnMut(krilla::Document) -> Result<Vec<u8>, KrillaError>,
@@ -145,26 +146,17 @@ fn encode_with_degradation(
                 family,
                 reason,
             } => {
-                let fresh: Vec<FaceKey> = keys
-                    .iter()
-                    .copied()
-                    .filter(|k| !poisoned.contains_key(k))
-                    .collect();
+                // Poisoned faces are skipped at draw time, so every key
+                // krilla names here was freshly drawn in this attempt —
+                // `keys` doubles as the fresh set (empty = the failure
+                // names a face this sink never drew, which cannot be
+                // degraded).
                 if keys.is_empty() {
-                    // krilla failed a face this sink never drew — not a
-                    // degradation we know how to perform.
                     return Err(ExportError::Encode(format!(
                         "krilla finish: failed to embed font '{family}': {reason}"
                     )));
                 }
-                if fresh.is_empty() {
-                    // The face was skipped and still failed: no progress
-                    // is possible, stay fatal instead of looping.
-                    return Err(ExportError::Encode(format!(
-                        "krilla finish: repeated embed failure for already-skipped font '{family}': {reason}"
-                    )));
-                }
-                for k in fresh {
+                for k in keys {
                     poisoned.insert(k, family.clone());
                 }
                 warnings.push(format!(
@@ -1167,12 +1159,13 @@ mod tests {
         );
     }
 
-    /// Termination guard for the degradation retry: a face that keeps
-    /// failing to embed after it was already skipped cannot degrade
-    /// further — the encode must fail as a bounded outcome, not loop
-    /// forever.
+    /// Termination guard for the degradation retry: with every drawn face
+    /// poisoned, the retry encodes a document with no glyph runs left —
+    /// a finish that still fails then names a face the sink never drew
+    /// (`keys` empty), the cannot-degrade branch, and the encode must
+    /// fail as a bounded outcome instead of looping forever.
     #[test]
-    fn repeated_embed_failure_for_skipped_face_is_fatal() {
+    fn finish_failure_after_all_faces_degraded_is_fatal() {
         let page = glyph_page();
         let face = test_face();
         let err = encode_with_degradation(&[page], move |_| {
