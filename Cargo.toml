@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/dom", "crates/io", "crates/render", "crates/editor", "crates/component", "crates/xilem-view", "crates/gpui-view", "crates/web-view", "crates/export", "crates/convert", "crates/convert-cli", "crates/xilem-app", "crates/gpui-app", "crates/tauri-app/src-tauri"]
+members = ["crates/dom", "crates/io", "crates/render", "crates/editor", "crates/component", "crates/xilem-view", "crates/gpui-view", "crates/web-view", "crates/export", "crates/convert", "crates/convert-cli", "crates/convert-java", "crates/xilem-app", "crates/gpui-app", "crates/tauri-app/src-tauri"]
 
 [workspace.dependencies]
 # 发布到 crates.io 的 crate 必须带 `version` 字段（cargo publish 拒绝
@@ -78,3 +78,6 @@ gpui-pre-platform = "=0.3.10"
 gpui-kit = "=0.8.1"
 # Icon assets shipped alongside gpui-kit. Same batch-bump contract.
 gpui-kit-assets = "=0.8.1"
+# JNI bridge for the Java binding crate (convert spec §6.4, phase 2 Task 4).
+# Same pin as rword convert-java; MIT/Apache-2.0 dual license (spec §9).
+jni = "0.21"

@@ -1,0 +1,23 @@
+[package]
+name = "rofd-convert-java"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["ravenq"]
+description = "JNI surface over the rofd-convert kernel for the rofd convert module — one cdylib (rofdconvert) loaded by the JVM as io.github.officers.NativeLink."
+
+[lib]
+# cdylib = the JVM-loaded rofdconvert.{dll,so,dylib}; rlib = lets cargo
+# unit/integration tests link this crate (a cdylib-only crate cannot be
+# imported from tests/).
+name = "rofdconvert"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rofd-convert = { workspace = true }
+# The only third-party dependency of this crate: JNIEnv bridge.
+jni = { workspace = true }
+
+[dev-dependencies]
+# Integration tests construct kernel Converters for the handle table.
+rofd-convert = { workspace = true }

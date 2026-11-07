@@ -7709,6 +7709,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rofd-convert-java"
+version = "0.1.0"
+dependencies = [
+ "jni 0.21.1",
+ "rofd-convert",
+]
+
+[[package]]
 name = "rofd-dom"
 version = "0.1.0"
 dependencies = [
