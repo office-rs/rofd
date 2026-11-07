@@ -18,14 +18,18 @@ use rofd_convert::{ConvertOptions, Converter, OutputFormat};
 
 use common::annotated_fixture;
 
-/// simsun.ttc fixture candidates: the repo's web-app fonts dir first
-/// (gitignored - dev machines only), then the Windows system font dir
-/// (the phase-2 Task 1 observation source). Absent everywhere -> skip: a
-/// single-face fixture cannot reproduce a face flip, and no TTC fixture
-/// ships in git.
-fn locate_simsun_ttc() -> Option<Vec<u8>> {
+/// Two-family TTC fixture candidates: the committed minimal fixture
+/// first (render's `TwoFamily.ttc` — two identical DejaVu Sans subset
+/// faces whose name tables carry distinct families "DejaVu Sans" /
+/// "DejaVu Sans Two"; present on every checkout, so this determinism
+/// test runs on any machine), then the real-world specimens simsun.ttc
+/// (the repo's web-app fonts dir — gitignored, dev machines only — and
+/// the Windows system font dir, the phase-2 Task 1 observation source).
+/// Absent everywhere -> skip.
+fn locate_two_family_ttc() -> Option<Vec<u8>> {
     for path in [
-        "../../web-app/public/fonts/simsun.ttc",
+        "../render/tests/fixtures/fonts/TwoFamily.ttc",
+        "../web-app/public/fonts/simsun.ttc",
         "C:/Windows/Fonts/simsun.ttc",
     ] {
         if let Ok(bytes) = std::fs::read(path) {
@@ -37,19 +41,23 @@ fn locate_simsun_ttc() -> Option<Vec<u8>> {
 
 #[test]
 fn registered_ttc_converts_byte_identically_across_fresh_stores() {
-    // A TTC whose faces carry distinct family names (simsun.ttc: face 0
-    // "SimSun" + face 1 "NSimSun") registered through the process
-    // registry: every fresh per-call FontStore must resolve the same face
-    // for the same text, or identical conversions flip faces across
-    // processes (JVM-vs-CLI byte comparison, phase-2 Task 7, breaks). The
-    // watermark in `annotated_fixture` has no document font bytes, so its
-    // shaping rides the registry-anchored default family - the exact path
-    // the flip was observed on.
-    let Some(ttc) = locate_simsun_ttc() else {
-        eprintln!("skipping: no simsun.ttc fixture (repo fonts dir or C:/Windows/Fonts)");
+    // A TTC whose faces carry distinct family names (TwoFamily.ttc:
+    // "DejaVu Sans" + "DejaVu Sans Two"; the simsun.ttc fallback: "SimSun"
+    // + "NSimSun") registered through the process registry: every fresh
+    // per-call FontStore must resolve the same face for the same text, or
+    // identical conversions flip faces across processes (JVM-vs-CLI byte
+    // comparison, phase-2 Task 7, breaks). The two-distinct-families
+    // precondition itself is pinned on the same fixture by the render
+    // crate's `ttc_registration_is_deterministic_across_fresh_contexts`
+    // (the registry records only the canonical family). The watermark in
+    // `annotated_fixture` has no document font bytes, so its shaping
+    // rides the registry-anchored default family - the exact path the
+    // flip was observed on.
+    let Some(ttc) = locate_two_family_ttc() else {
+        eprintln!("skipping: no two-family TTC fixture (TwoFamily.ttc / simsun.ttc)");
         return;
     };
-    rofd_convert::register_font(ttc).expect("simsun.ttc registers");
+    rofd_convert::register_font(ttc).expect("two-family TTC registers");
 
     let bytes = annotated_fixture();
     let opts = ConvertOptions::default();

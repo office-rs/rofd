@@ -216,13 +216,19 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    /// simsun.ttc fixture candidates: the repo's web-app fonts dir first
-    /// (gitignored - dev machines only), then the Windows system font dir
-    /// (the phase-2 Task 1 observation source). Absent everywhere -> None:
-    /// a single-face fixture cannot reproduce a face flip.
-    fn locate_simsun_ttc() -> Option<Vec<u8>> {
+    /// Two-family TTC fixture candidates: the committed minimal fixture
+    /// first (`tests/fixtures/fonts/TwoFamily.ttc` — two identical DejaVu
+    /// Sans subset faces whose name tables carry distinct families
+    /// "DejaVu Sans" / "DejaVu Sans Two"; present on every checkout, so
+    /// the face-selection tests run on any machine), then the real-world
+    /// specimens simsun.ttc (the repo's web-app fonts dir — gitignored,
+    /// dev machines only — and the Windows system font dir, the phase-2
+    /// Task 1 observation source). Absent everywhere -> None: a
+    /// single-family fixture cannot reproduce a face flip.
+    fn locate_two_family_ttc() -> Option<Vec<u8>> {
         for path in [
-            "../../web-app/public/fonts/simsun.ttc",
+            "tests/fixtures/fonts/TwoFamily.ttc",
+            "../web-app/public/fonts/simsun.ttc",
             "C:/Windows/Fonts/simsun.ttc",
         ] {
             if let Ok(bytes) = std::fs::read(path) {
@@ -265,15 +271,17 @@ mod tests {
         // fontique's `register_fonts` returns the registration's families
         // by iterating an internal HashMap, so both the list order and the
         // old `families.first()` pick are RANDOM PER PROCESS. A TTC whose
-        // faces carry distinct family names (simsun.ttc: face 0 "SimSun" +
-        // face 1 "NSimSun") must not let that order decide the canonical
-        // family, or two CLI runs of the same conversion shape different
-        // faces -> different bytes (observed live: two sha256 values
-        // across 6 processes, phase-2 Task 1). 32 fresh FontContexts model
-        // 32 fresh font states: pre-fix the coin flips disagree (P(all
-        // agree) ~ 2^-31); post-fix the signature is pinned.
-        let Some(ttc) = locate_simsun_ttc() else {
-            eprintln!("skipping: no simsun.ttc fixture (repo fonts dir or C:/Windows/Fonts)");
+        // faces carry distinct family names (TwoFamily.ttc: face 0
+        // "DejaVu Sans" + face 1 "DejaVu Sans Two"; the simsun.ttc
+        // fallback: face 0 "SimSun" + face 1 "NSimSun") must not let that
+        // order decide the canonical family, or two CLI runs of the same
+        // conversion shape different faces -> different bytes (observed
+        // live: two sha256 values across 6 processes, phase-2 Task 1).
+        // 32 fresh FontContexts model 32 fresh font states: pre-fix the
+        // coin flips disagree (P(all agree) ~ 2^-31); post-fix the
+        // signature is pinned.
+        let Some(ttc) = locate_two_family_ttc() else {
+            eprintln!("skipping: no two-family TTC fixture (TwoFamily.ttc / simsun.ttc)");
             return;
         };
         let font = FontData::new(peniko::Blob::new(Arc::new(ttc)), 0);
@@ -283,6 +291,14 @@ mod tests {
             let mut fcx = FontContext::new();
             let got = registration_signature(&mut fcx, &font);
             assert!(!got.1.is_empty(), "TTC registers at least one family");
+            // Two DISTINCT families are the precondition of this test:
+            // the flip under guard is between named families, and a
+            // single-family registration cannot represent it.
+            assert!(
+                got.1.len() >= 2 && got.1.windows(2).all(|w| w[0].0 != w[1].0),
+                "fixture must present two distinct family names, got {:?}",
+                got.1
+            );
             assert_eq!(
                 got.0.as_deref(),
                 Some(got.1[0].0.as_str()),
