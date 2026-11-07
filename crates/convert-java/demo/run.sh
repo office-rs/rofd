@@ -70,15 +70,25 @@ JAR=""
 if [ "$HAVE_MVN" = "1" ]; then
   rm -rf "$CRATE/target/classes/natives"
   ( cd "$CRATE" && mvn -q -DskipTests package )
-  JAR="$CRATE/target/rofd-convert-0.1.0.jar"
-  [ -f "$JAR" ] || { echo "FAIL: thin jar not produced: $JAR"; exit 1; }
+  # Discover the produced jar instead of hardcoding its name — the pom
+  # version moves with the release lockstep. Exactly one match is
+  # required: zero = the build produced no jar, more than one = stale
+  # jars of other versions; both fail fast instead of racing the pick.
+  JAR_CANDIDATES=( "$CRATE"/target/rofd-convert-*.jar )
+  if [ ! -f "${JAR_CANDIDATES[0]}" ] || [ "${#JAR_CANDIDATES[@]}" -ne 1 ]; then
+    echo "FAIL: expected exactly one target/rofd-convert-*.jar under $CRATE/target, found: ${JAR_CANDIDATES[*]}"
+    exit 1
+  fi
+  JAR="${JAR_CANDIDATES[0]}"
   # javac defaults to the platform encoding (GBK on zh-CN Windows) and the
   # source is UTF-8 — the flag is mandatory on that class of machines.
   javac --release 8 -encoding UTF-8 -cp "$JAR" -d "$DEMO_CLASSES" "$DEMO_SRC/InteropMain.java"
 else
   echo "NOTE: mvn absent — compiling L1/L2 sources with the demo (no thin jar)"
-  javac --release 8 -encoding UTF-8 -d "$DEMO_CLASSES" \
-    $(find "$CRATE/java" "$DEMO_SRC" -name '*.java')
+  # mapfile keeps every hit a single argument; quoting a bare
+  # $(find ...) would glue all paths into one newline-joined word.
+  mapfile -t DEMO_SOURCES < <(find "$CRATE/java" "$DEMO_SRC" -name '*.java')
+  javac --release 8 -encoding UTF-8 -d "$DEMO_CLASSES" "${DEMO_SOURCES[@]}"
 fi
 
 # git-bash hands POSIX-style ';'-separated classpath lists to java.exe
@@ -93,13 +103,21 @@ classpath_of() {
 }
 
 # --- ACT 1: library-path tier ------------------------------------------
+# Ambient-override guard (both acts): the java child runs with
+# ROFD_NATIVE_PATH unset (env -u), and rofd.native.path is passed
+# EXPLICITLY EMPTY — the loader counts blank as unset, and a command-line
+# -D beats one injected via JAVA_TOOL_OPTIONS — so NativeLoader's tier 1
+# can never be satisfied from the environment and each act exercises
+# exactly its own tier.
 echo "=== ACT 1: thin jar + -Djava.library.path=target/release ==="
 if [ -n "$JAR" ]; then
-  java -Djava.library.path="$ROOT/target/release" \
+  env -u ROFD_NATIVE_PATH java -Drofd.native.path= \
+    -Djava.library.path="$ROOT/target/release" \
     -cp "$(classpath_of "$JAR" "$DEMO_CLASSES")" \
     io.github.officers.demo.InteropMain "$FIXTURE" "$FONT" "$REF" "ACT 1"
 else
-  java -Djava.library.path="$ROOT/target/release" \
+  env -u ROFD_NATIVE_PATH java -Drofd.native.path= \
+    -Djava.library.path="$ROOT/target/release" \
     -cp "$DEMO_CLASSES" \
     io.github.officers.demo.InteropMain "$FIXTURE" "$FONT" "$REF" "ACT 1"
 fi
@@ -119,7 +137,9 @@ cp "$ROOT/target/release/$DLL" "$STAGE/$PLATFORM/"
     -Dnative.dir="$STAGE" -Dskip.natives.check=true )
 # Same jar path as act 1 — the fat packaging above overwrote the thin jar
 # (classes + the embedded natives/ tree). NO -Djava.library.path, NO
-# rofd.native.path: the embedded native must load via the resource tier.
-java -cp "$(classpath_of "$JAR" "$DEMO_CLASSES")" \
+# rofd.native.path (same ambient-override guard as act 1): the embedded
+# native must load via the resource tier.
+env -u ROFD_NATIVE_PATH java -Drofd.native.path= \
+  -cp "$(classpath_of "$JAR" "$DEMO_CLASSES")" \
   io.github.officers.demo.InteropMain "$FIXTURE" "$FONT" "$REF" "ACT 2"
 echo "=== ACT 2 OK — PHASE-2 DEMO PASS ==="
