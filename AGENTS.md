@@ -96,11 +96,19 @@ cd crates/convert/fuzz && cargo +nightly fuzz run convert_ofd -- -runs=20000
 cargo build --release -p rofd-convert-java     # JNI cdylib rofdconvert(.dll)
 cd crates/convert-java && mvn -DskipTests package   # thin jar（fat：-Dnative.dir=<staged> -Dskip.natives.check=true）
 bash crates/convert-java/demo/run.sh           # 两幕验收：JVM 池化转换 == CLI 字节（需 %WINDIR%/Fonts/simsun.ttc）
+# Node 绑定（rofd-convert-node，npm 包 @office-rs/rofd-convert 骨架）
+cargo build --release -p rofd-convert-node     # cdylib → demo 自动改名为 rofd_convert_node.node
+node crates/convert-node/demo/run.js           # 验收：worker_threads 池 == CLI 字节
+# Python 绑定（rofd-convert-py，PyPI 包 rofd-convert）
+py -3.1 -m maturin build --release -m crates/convert-py/Cargo.toml -o target/wheels -i "C:/Users/flw/AppData/Local/Python/pythoncore-3.14-64/python.exe"
+py -3.1 -m pip install --force-reinstall target/wheels/rofd_convert-*.whl
+py -3.1 crates/convert-py/demo/run.py          # 验收：ThreadPoolExecutor 池 == CLI 字节
+# ^ maturin ≥1.16 且须显式 -i：PATH 裸 python 是 3.7，读不动 3.14 元数据
 ```
 
-带文字的真实样例**建议给 `--font`**：空字体注册表下系统回退字体可能不被 krilla 子集化支持——②期 Task 1 起不再整体失败，该字体面**降级**（一行 warning + 跳过其字素、退出码 0，`encode_with_degradation`），但文字会缺，`--font` 保证文字完整（spec 2026-11-06 §8 边界的现行形态）。
+带文字的真实样例**建议给 `--font`**：空字体注册表下系统回退字体可能不被 krilla 子集化支持——②期 Task 1 起不再整体失败，该字体面**降级**（一行 warning + 跳过其字素、退出码 0，`encode_with_degradation`），但文字会缺，`--font` 保证文字完整（spec 2026-11-06 §8 边界的现行形态）。③期 Task 1 起降级 warning 经 `ConvertWarning` 透出到全部四端（CLI stderr/Java takeWarnings/Node·Py warnings）；③期 Task 2 起解析警告按种类聚合（真实样例 739 行 → 3 行，`(×N)` 计数）。
 
-发布锁步清单（`rofd-convert-v*` tag 时）：`crates/convert{,-cli,-java}/Cargo.toml` + `crates/convert-java/pom.xml`（版本须一致）。
+发布锁步清单（`rofd-convert-v*` tag 时）：`crates/convert{,-cli,-java,-node,-py}/Cargo.toml` + `crates/convert-java/pom.xml` + `crates/convert-node/package.json` + `crates/convert-py/pyproject.toml`（版本须一致）；`cargo deny check licenses` 应绿（`deny.toml`）。
 
 ---
 
@@ -135,7 +143,9 @@ converter hosts（CLI/未来绑定）只碰 rofd-convert，与"编辑器宿主�
 | `rofd-component` | `crates/component`   | **唯一集成入口** `OfdComponent`：ViewEvent、Callbacks、脏缓存 | dom + render + editor + office-rs-print（类型层）（**不依赖 io**） |
 | `rofd-convert`   | `crates/convert`     | 转换会话层 facade：`Converter`/进程级字体注册表/预算/`catch_unwind`；converter hosts 只 import 此 crate | component + io + render + export + dom |
 | `rofd-convert-cli` | `crates/convert-cli` | bin `rofd-convert`：零依赖 argv 解析/退出码 0-2-3/字体注册 warn-and-continue | rofd-convert |
-| `rofd-convert-java` | `crates/convert-java` | JNI cdylib `rofdconvert` + Java L1/L2（`io.github.officers`：NativeLink/NativeLoader 三级加载/OfdConverter(+Pool)），thin/fat jar（Maven `io.github.office-rs:rofd-convert`） | rofd-convert + jni 0.21 |
+| `rofd-convert-java` | `crates/convert-java` | JNI cdylib `rofdconvert` + Java L1/L2（`io.github.officers`），Maven `io.github.office-rs:rofd-convert` thin/fat jar | rofd-convert + jni 0.21 |
+| `rofd-convert-node` | `crates/convert-node` | napi cdylib `rofd_convert_node`（每方法 catch_unwind）+ JS L2（worker_threads 池/cli.js），npm `@office-rs/rofd-convert` 骨架 | rofd-convert + napi 2 |
+| `rofd-convert-py` | `crates/convert-py` | PyO3 扩展 `rofd_convert.rofd_convert_native`（lease 实例 + GIL 释放 convert），PyPI `rofd-convert`（abi3-py39 wheel） | rofd-convert + pyo3 0.30 |
 | `rofd-xilem-view`| `crates/xilem-view`  | masonry/xilem 薄适配器：`OfdWidget` + `ofd()`/`ofd_with_config()` | component |
 | `rofd-web-view`  | `crates/web-view`    | WASM 薄适配器：`WasmOfd` + `WebGpuRenderTarget` + TS SDK | component + io + editor + dom + rofd-export + office-rs-print（类型层） + vello + imaging + imaging_vello + wgpu + web-sys + rofd-convert（共享页组装） |
 | `rofd-gpui-view` | `crates/gpui-view`   | gpui 适配层 SDK：`OfdGpuiView`（Entity/Element）+ `GpuiOfdHandle` + IME 桥 + 打印对话框状态机/discover-only services | component + dom + imaging + gpui-pre/gpui-pre-platform + office-rs-print（list_printers）+ ttf-parser + image（**不依赖 io**） |
@@ -199,6 +209,13 @@ converter hosts（CLI/未来绑定）只碰 rofd-convert，与"编辑器宿主�
 - 字体面选择跨进程确定（②期 Task 2b）：TTC 多个 family 名按**最低面索引**锚定规范名（`render/text/shape.rs`，fontique 的 HashMap 迭代序逐进程随机，不锚定则同一转换两次跑出不同字节）。
 - FontStore 逐调用重建：无跨调用温排形缓存（实例长寿买到的是注册表共享，不是温缓存）；`Converter` 当前为 `Send`（D15 修订 2026-11-07，测试钉住现状非承诺），L2 仍按"实例绑线程"建议实现。
 - CLI（`rofd-convert-cli`，bin `rofd-convert`）：零依赖 argv 解析；退出码 0 成功 / 2 用法错误 / 3 转换失败；`--font`/`--fonts-dir`/`--default-font` 注册失败 warn-and-continue；`--no-watermark`/`--no-annotations`/`--no-seal`（默认全开 D17，只提供关闭项）。
+- 警告流（③期 D20 收口）：`ConvertOutput.warnings: Vec<ConvertWarning>`（`non_exhaustive`：`Parse(OfdWarning)` / `ParseRepeats{representative,count}` / `Encode(String)`）——io 解析警告按种类聚合（`(×N)` 计数，真实样例 739 行 → 3 行）+ export 降级行，`Display` 一行一条；四端一致：CLI stderr、Java `takeWarnings`、Node/Py `warnings` 字符串数组。
+
+### rofd-convert-node / rofd-convert-py（Node·Python 绑定，③期）
+
+- convert-node（napi cdylib `rofd_convert_node`）：每方法 `catch_unwind`（napi 边界 panic 会 abort Node）；`Converter.convertToPdf(ofd, options?)` + 注册五件套；JS L2 `index.js`/`pool.js`（worker_threads 每 worker 一实例、崩溃 reject+respawn）；`cli.js` 为 npm bin `rofd-convert`（@office-rs/rofd-convert，平台包 optionalDependencies 槽位）。
+- convert-py（PyO3 `rofd_convert.rofd_convert_native`，abi3-py39 wheel）：`#[pyclass] Converter` 内部 `Mutex<Option<…>>` lease（与 JNI 句柄表同力学）——GIL 释放期（`py.detach`）同实例并发第二调用抛 `ConvertError("converter in use")`；`convert(ofd, *, watermark=…, max_pages=…)` kwargs；吞吐用 `threading.local` 每线程一实例。构建须 maturin ≥1.16 + 显式 `-i` 3.14 解释器（PATH 裸 python=3.7）。
+- 三绑定 demo 验收统一：**池化转换 == CLI 字节**（同机同字体状态；③期实测三运行时同 sha256 `82c3b352…`）。
 
 ### rofd-convert-java（JNI 绑定，②期）
 
@@ -281,6 +298,9 @@ If you're tempted to reintroduce a winit-layer bridge、canvas-origin 记账、�
 | vello / parley | crates.io | `0.8` |
 | wgpu | crates.io | `28` |
 | `office-rs-print` | office-rs/print git | `c2f99d5`（与 rword 同 pin；gpui-view 的 list_printers + gpui-app 的 join_all 同源） |
+| `jni` | crates.io | `0.21`（convert-java；rword 同 pin） |
+| `napi` / `napi-derive` / `napi-build` | crates.io | `2`（convert-node；rword 同 pin） |
+| `pyo3` | crates.io | `0.30`（convert-py，abi3-py39；rword 同 pin） |
 | `krilla` | crates.io | `0.8`（feature `pdf`，PDF 编码） |
 | `jni` | crates.io | `0.21`（与 rword convert-java 同 pin；rofd-convert-java 的唯一外部依赖） |
 | `gpui-pre` / `gpui-pre-platform` | crates.io | `=0.3.10`（zed@08cbb88 快照重发布；官方 crates.io gpui 0.2.2 缺 Windows/IME 修复，不可换用） |
