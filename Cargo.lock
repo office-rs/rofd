@@ -7699,6 +7699,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rofd-convert-cli"
+version = "0.1.0"
+dependencies = [
+ "rofd-convert",
+ "rofd-dom",
+ "rofd-io",
+]
+
+[[package]]
 name = "rofd-dom"
 version = "0.1.0"
 dependencies = [

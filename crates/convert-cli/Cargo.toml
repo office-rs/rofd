@@ -1,0 +1,23 @@
+[package]
+name = "rofd-convert-cli"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["ravenq"]
+description = "The rofd-convert command line tool: one-call OFD-to-PDF conversion over the rofd-convert kernel, one process per invocation."
+repository = "https://github.com/office-rs/rofd"
+homepage = "https://github.com/office-rs/rofd#readme"
+publish = false
+
+[[bin]]
+name = "rofd-convert"
+path = "src/main.rs"
+
+[dependencies]
+rofd-convert = { workspace = true }
+
+[dev-dependencies]
+# Fixture building: two-page documents serialized through the real
+# rofd-io full writer (same posture as rofd-convert's integration tests).
+rofd-io = { workspace = true }
+rofd-dom = { workspace = true }
