@@ -7687,6 +7687,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rofd-convert"
+version = "0.1.0"
+dependencies = [
+ "rofd-component",
+ "rofd-dom",
+ "rofd-export",
+ "rofd-io",
+ "rofd-render",
+]
+
+[[package]]
 name = "rofd-dom"
 version = "0.1.0"
 dependencies = [

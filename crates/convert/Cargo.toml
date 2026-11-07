@@ -1,0 +1,18 @@
+[package]
+name = "rofd-convert"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["ravenq"]
+description = "Headless OFD-to-PDF conversion facade for the rofd convert module — one-call bytes-in/bytes-out over the io/render/export stack."
+repository = "https://github.com/office-rs/rofd"
+homepage = "https://github.com/office-rs/rofd#readme"
+keywords = ["ofd", "pdf", "convert", "export"]
+categories = ["graphics"]
+
+[dependencies]
+rofd-component = { workspace = true }
+rofd-io = { workspace = true }
+rofd-render = { workspace = true }
+rofd-export = { workspace = true }
+rofd-dom = { workspace = true }
