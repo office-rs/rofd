@@ -18,7 +18,7 @@ out_dir="$repo_root/target/java-classes"
 cd "$crate_dir"
 mkdir -p "$out_dir"
 
-echo "javac --release 8 -encoding UTF-8 -d target/java-classes java/**/*.java test/**/*.java"
+echo "find java test -name '*.java' -print0 | xargs -0 -r javac --release 8 -encoding UTF-8 -d target/java-classes"
 find java test -name '*.java' -print0 \
     | xargs -0 -r javac --release 8 -encoding UTF-8 -d "$out_dir"
 

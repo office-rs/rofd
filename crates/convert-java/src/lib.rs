@@ -4,7 +4,7 @@
 //!
 //! FFI discipline shared by every binding crate (spec §6.1): each entry
 //! point runs under `rofd_convert::catch_panics`; failures surface as
-//! `io.github.officers.RofdConvertException` — a Rust panic never crosses
+//! `io.github.officers.OfdConvertException` — a Rust panic never crosses
 //! the boundary.
 //!
 //! The Java-side counterparts are declared in
@@ -25,7 +25,7 @@ pub mod handles;
 use handles::{HandleTable, TakeError};
 
 /// JVM class name of the exception every failure maps onto.
-const EXCEPTION_CLASS: &str = "io/github/officers/RofdConvertException";
+const EXCEPTION_CLASS: &str = "io/github/officers/OfdConvertException";
 
 static TABLE: LazyLock<HandleTable> = LazyLock::new(HandleTable::new);
 
