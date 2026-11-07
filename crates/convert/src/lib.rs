@@ -61,6 +61,39 @@ pub fn media_bytes(doc: &OfdDocument) -> usize {
         .sum()
 }
 
+/// The single page-assembly point shared by the convert pipeline and every
+/// host PDF export path (convert spec §8/D18, phase-2 entry criterion): one
+/// loop turning a live [`PrintSession`] into the per-page [`PdfPage`]
+/// list `pdf_from_page_scenes` encodes — `page_rect` as the pixel
+/// width/height, `page_scene` as the page-local scene at print zoom, over
+/// `0..page_count`. Hosts calling this can never drift from convert's
+/// assembly; the loop exists exactly once, here.
+pub fn pdf_pages(session: &mut PrintSession) -> Vec<PdfPage> {
+    let count = session.page_count();
+    pdf_pages_at(session, 0..count)
+}
+
+/// The same single assembly over an explicit 0-based page index stream: the
+/// page-subset door for host exports that carry a validated page range
+/// (web-view's `exportPdf(pages)`). Indices are assumed pre-validated (the
+/// caller's `validate_pages` contract) — an out-of-range index panics in
+/// `page_rect`/`page_scene`, same as the host loops this replaces.
+pub fn pdf_pages_at(
+    session: &mut PrintSession,
+    indices: impl Iterator<Item = usize>,
+) -> Vec<PdfPage> {
+    indices
+        .map(|i| {
+            let (width, height) = session.page_rect(i);
+            PdfPage {
+                width_px: width as f32,
+                height_px: height as f32,
+                scene: session.page_scene(i),
+            }
+        })
+        .collect()
+}
+
 /// Output format. v1 ships PDF only; the enum keeps an extension point
 /// (spec D8) so future formats (Png etc.) join as new arms without
 /// touching any L1 signature or binding.
@@ -289,16 +322,10 @@ impl Converter {
         }
 
         // 4. Headless session over every page, encoded by rofd-export.
+        //    Assembly goes through the shared `pdf_pages` — the single
+        //    loop every host export path calls too (spec §8/D18).
         let mut session = PrintSession::headless(doc, fonts, opts.content);
-        let mut pages = Vec::with_capacity(session.page_count());
-        for i in 0..session.page_count() {
-            let (width, height) = session.page_rect(i);
-            pages.push(PdfPage {
-                width_px: width as f32,
-                height_px: height as f32,
-                scene: session.page_scene(i),
-            });
-        }
+        let pages = pdf_pages(&mut session);
         let bytes =
             pdf_from_page_scenes(&pages).map_err(|e| ConvertError::Encode(e.to_string()))?;
         Ok(ConvertOutput {

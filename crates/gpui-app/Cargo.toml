@@ -12,6 +12,9 @@ rofd-io = { workspace = true }
 rofd-export = { workspace = true }
 rofd-component = { workspace = true }
 rofd-dom = { workspace = true }
+# Shared PDF page assembly (host/export_pdf -> pdf_pages, spec §8/D18):
+# platform-free convert crate, legal for hosts at the stack top.
+rofd-convert = { workspace = true }
 # Print panel types (JobHandle/PrintSettings) — already in the build via
 # rofd-gpui-view/rofd-component; declared directly for the host glue.
 office-rs-print = { workspace = true }

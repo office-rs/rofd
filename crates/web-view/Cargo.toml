@@ -26,6 +26,9 @@ rofd-render = { workspace = true }
 # wasm32 — only the imaging+serde type layer compiles here).
 rofd-export = { workspace = true }
 office-rs-print = { workspace = true }
+# Shared PDF page assembly (exportPdf -> pdf_pages/pdf_pages_at, spec
+# §8/D18): the page loop lives once in the platform-free convert crate.
+rofd-convert = { workspace = true }
 vello = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }

@@ -202,8 +202,11 @@ pub fn mediabox_count(bytes: &[u8]) -> usize {
 
 /// The editor export path (convert spec D18's reference pipeline): parse
 /// the same bytes, load them into a real component (empty default font),
-/// begin a print session, and encode the per-page scenes exactly the way
-/// the hosts' export flows do.
+/// begin a print session, and assemble the per-page `PdfPage` list through
+/// the SAME shared helper (`rofd_convert::pdf_pages`) the convert pipeline
+/// and every host export path use — parity is by construction now, so this
+/// stand-in only supplies the editor-side session (component-loaded
+/// document, config-empty fonts) and the encode step.
 ///
 /// Registry-free by construction — the component builds its own
 /// `FontStore` from the document resources and the config's empty default,
@@ -216,15 +219,7 @@ pub fn editor_path_pdf(bytes: &[u8], content: PrintContent) -> Vec<u8> {
         rofd_component::OfdComponent::new_native(rofd_component::OfdConfig::new(Arc::new(vec![])));
     component.load_document(doc);
     let mut session = component.begin_print(content);
-    let mut pages = Vec::with_capacity(session.page_count());
-    for i in 0..session.page_count() {
-        let (width, height) = session.page_rect(i);
-        pages.push(rofd_export::PdfPage {
-            width_px: width as f32,
-            height_px: height as f32,
-            scene: session.page_scene(i),
-        });
-    }
+    let pages = rofd_convert::pdf_pages(&mut session);
     rofd_export::pdf_from_page_scenes(&pages).expect("editor path encodes")
 }
 

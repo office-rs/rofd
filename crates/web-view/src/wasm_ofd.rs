@@ -148,14 +148,17 @@ mod wasm_impl {
     use std::rc::Rc;
 
     use office_rs_print::{PageRange, Parity, PrintSettings};
+    // Shared PDF page assembly (spec §8/D18): the export path's page loop
+    // lives once, in rofd-convert, with every other host export path.
     use rofd_component::render_target::SceneLayers;
     use rofd_component::{
         BodyTextSelection, ContextTarget, FrameNeed, Modifiers, MouseButton, OfdComponent,
         OfdConfig, PointerCursor, PrintContent, RenderTarget, ScrollDirection, ViewEvent, ZoomMode,
     };
+    use rofd_convert::{pdf_pages, pdf_pages_at};
     use rofd_dom::{AnnotationId, AnnotationSelection, OfdDocument, OfdWarning};
     use rofd_editor::TextCursor;
-    use rofd_export::{pdf_from_page_scenes, PdfPage};
+    use rofd_export::pdf_from_page_scenes;
     use rofd_io::{parse_ofd, save_ofd, write_ofd, PackageHandle};
     use rofd_render::Scene;
     use wasm_bindgen::prelude::*;
@@ -824,8 +827,9 @@ mod wasm_impl {
         /// 1-based page list — `None` exports every page; out-of-range
         /// entries are dropped and an empty survivor set is an error (the
         /// session's `validate_pages` contract). Thin shim: page scenes
-        /// come from a fresh `begin_print` session, encoding from
-        /// `rofd_export`.
+        /// come from a fresh `begin_print` session, page assembly from the
+        /// shared `rofd_convert::pdf_pages` loop (spec §8/D18), encoding
+        /// from `rofd_export`.
         #[wasm_bindgen(js_name = exportPdf)]
         pub fn export_pdf(
             &mut self,
@@ -840,26 +844,21 @@ mod wasm_impl {
                 seal: seal.unwrap_or(true),
             };
             let mut session = self.component.begin_print(content);
-            // validate_pages returns 1-based indices; PdfPage is indexed 0-based.
-            let indices: Vec<usize> = match &pages {
-                Some(list) => session
-                    .validate_pages(list)
-                    .map_err(|e| JsValue::from_str(&format!("export failed: {e}")))?
-                    .into_iter()
-                    .map(|p| p - 1)
-                    .collect(),
-                None => (0..session.page_count()).collect(),
+            // validate_pages returns 1-based indices; assembly is 0-based.
+            // Both branches share rofd-convert's single assembly loop.
+            let assembled = match &pages {
+                Some(list) => {
+                    let indices: Vec<usize> = session
+                        .validate_pages(list)
+                        .map_err(|e| JsValue::from_str(&format!("export failed: {e}")))?
+                        .into_iter()
+                        .map(|p| p - 1)
+                        .collect();
+                    pdf_pages_at(&mut session, indices.into_iter())
+                }
+                None => pdf_pages(&mut session),
             };
-            let mut pdf_pages = Vec::with_capacity(indices.len());
-            for i in indices {
-                let (width, height) = session.page_rect(i);
-                pdf_pages.push(PdfPage {
-                    width_px: width as f32,
-                    height_px: height as f32,
-                    scene: session.page_scene(i),
-                });
-            }
-            pdf_from_page_scenes(&pdf_pages)
+            pdf_from_page_scenes(&assembled)
                 .map_err(|e| JsValue::from_str(&format!("export failed: {e}")))
         }
 

@@ -8,25 +8,20 @@
 use std::path::Path;
 
 use rofd_component::{OfdComponent, PrintContent};
-use rofd_export::{pdf_from_page_scenes, PdfPage};
+use rofd_convert::pdf_pages;
+use rofd_export::pdf_from_page_scenes;
 
 use super::document_io::write_atomic;
 
 /// Export the component's current document to `path` as a one-file PDF:
 /// every page of a `begin_print` session with the default all-on content
-/// preset (watermark/annotations/seal on, convert spec D17), encoded by
-/// `rofd-export` and written atomically (sibling temp file + rename).
+/// preset (watermark/annotations/seal on, convert spec D17), assembled
+/// through the shared `rofd_convert::pdf_pages` loop (spec §8/D18 — host
+/// export and convert can never drift), encoded by `rofd-export` and
+/// written atomically (sibling temp file + rename).
 pub fn export_pdf(component: &OfdComponent, path: &Path) -> Result<(), String> {
     let mut session = component.begin_print(PrintContent::default());
-    let mut pages = Vec::with_capacity(session.page_count());
-    for i in 0..session.page_count() {
-        let (width, height) = session.page_rect(i);
-        pages.push(PdfPage {
-            width_px: width as f32,
-            height_px: height as f32,
-            scene: session.page_scene(i),
-        });
-    }
+    let pages = pdf_pages(&mut session);
     let bytes =
         pdf_from_page_scenes(&pages).map_err(|e| format!("export {}: {e}", path.display()))?;
     write_atomic(path, &bytes)

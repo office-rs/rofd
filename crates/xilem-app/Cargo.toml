@@ -9,6 +9,9 @@ rofd-component = { workspace = true }
 rofd-dom = { workspace = true }
 rofd-io = { workspace = true }
 rofd-export = { workspace = true }
+# Shared PDF page assembly (host/export_pdf -> pdf_pages, spec §8/D18):
+# platform-free convert crate, legal for hosts at the stack top.
+rofd-convert = { workspace = true }
 xilem = { workspace = true }
 rfd = { workspace = true }
 office-rs-print = { workspace = true }
