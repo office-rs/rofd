@@ -7695,6 +7695,7 @@ dependencies = [
  "rofd-export",
  "rofd-io",
  "rofd-render",
+ "zip",
 ]
 
 [[package]]

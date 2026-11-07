@@ -23,11 +23,8 @@ use rofd_dom::Resources;
 use rofd_render::FontStore;
 
 /// Immutable view of the registry for a [`Converter`](crate::Converter)
-/// snapshot (Task 5). `Arc`-cloned from storage — zero font-byte copies.
-/// `expect(dead_code)` (not `allow`): when Task 5 starts consuming this,
-/// the unfulfilled expectation fails the `-D warnings` build and forces
-/// the attribute's removal.
-#[expect(dead_code)]
+/// snapshot. `Arc`-cloned from storage — zero font-byte copies. Consumed
+/// by [`Converter::new`](crate::Converter::new).
 pub(crate) struct RegistrySnapshot {
     pub fonts: Vec<Arc<Vec<u8>>>,
     pub default_font: Option<Arc<Vec<u8>>>,
@@ -163,13 +160,10 @@ pub fn has_default_font() -> bool {
     lock_registry().default_font.is_some()
 }
 
-/// Snapshot the registry for a [`Converter`](crate::Converter) (Task 5):
-/// fonts registered before this call are visible to every convert of the
-/// new instance; later registrations need a new instance (spec D9).
-/// `Arc`-clones only — zero font-byte copies. Dead until Task 5 wires it
-/// into [`Converter::new`](crate::Converter::new) (see
-/// [`RegistrySnapshot`] for the `expect` rationale).
-#[expect(dead_code)]
+/// Snapshot the registry for a [`Converter`](crate::Converter): fonts
+/// registered before this call are visible to every convert of the new
+/// instance; later registrations need a new instance (spec D9).
+/// `Arc`-clones only — zero font-byte copies.
 pub(crate) fn registry_snapshot() -> RegistrySnapshot {
     let reg = lock_registry();
     RegistrySnapshot {

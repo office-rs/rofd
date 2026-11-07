@@ -29,10 +29,31 @@ pub use fonts::{
     has_default_font, register_default_font, register_font, register_font_file, registered_families,
 };
 
+use std::sync::Arc;
+
+use rofd_component::PrintSession;
+use rofd_dom::OfdDocument;
+use rofd_export::{pdf_from_page_scenes, PdfPage};
+use rofd_render::FontStore;
+
 /// Default page budget (spec §6.1): 10_000 pages.
 pub const DEFAULT_MAX_PAGES: u32 = 10_000;
 /// Default media budget (spec §6.1): 1 GiB of embedded media bytes.
 pub const DEFAULT_MAX_MEDIA_BYTES: usize = 1 << 30;
+
+/// Total embedded media bytes of a document: the sum of every image and
+/// font payload in `resources` (the media budget's measure). Public and
+/// standalone-testable because `write_ofd`'s v1 full-write emits no
+/// resource entries, so end-to-end fixtures cannot carry media bytes —
+/// the same pub posture as rword's `check_media_budget`.
+pub fn media_bytes(doc: &OfdDocument) -> usize {
+    doc.resources
+        .images
+        .values()
+        .chain(doc.resources.font_data.values())
+        .map(|bytes| bytes.len())
+        .sum()
+}
 
 /// Output format. v1 ships PDF only; the enum keeps an extension point
 /// (spec D8) so future formats (Png etc.) join as new arms without
@@ -160,14 +181,13 @@ pub fn catch_panics<T>(f: impl FnOnce() -> Result<T, ConvertError>) -> Result<T,
 /// shape is still instance-bound-to-thread: a safe superset that stays
 /// correct if a warm engine holding a `FontStore` ever lands (at which
 /// point this contract tightens without any L2 API change).
-///
-/// Fields (registry snapshot + default-font anchor, from
-/// `crate::fonts::registry_snapshot()` — present since Task 4) and
-/// `convert` arrive in Task 5.
 pub struct Converter {
-    /// Placeholder keeping the struct constructible before Task 5's
-    /// snapshot fields exist.
-    _priv: (),
+    /// Registry fonts at [`Converter::new`] time (spec D9: fonts
+    /// registered later need a new instance).
+    fonts: Vec<Arc<Vec<u8>>>,
+    /// Default-font anchor (spec D19) at snapshot time; `None` falls back
+    /// to empty bytes (system-font fallback inside `FontStore`).
+    default_font: Option<Arc<Vec<u8>>>,
 }
 
 impl Converter {
@@ -176,7 +196,103 @@ impl Converter {
     /// are visible to every `convert` of this instance, later
     /// registrations need a new instance, spec D9).
     pub fn new() -> Converter {
-        Converter { _priv: () }
+        let snapshot = fonts::registry_snapshot();
+        Converter {
+            fonts: snapshot.fonts,
+            default_font: snapshot.default_font,
+        }
+    }
+
+    /// One-call conversion: OFD bytes in, [`OutputFormat`] bytes out
+    /// (spec §6.1). Pipeline order is load-bearing:
+    ///
+    /// 1. `parse_ofd` — decode failures surface as
+    ///    [`ConvertError::Decode`] before any budget is consulted,
+    /// 2. budget guards (pages, then media) — a pathological document
+    ///    fails fast as [`ConvertError::BudgetExceeded`] instead of
+    ///    pinning a pool thread mid-render,
+    /// 3. per-call `FontStore` from the document resources plus the
+    ///    snapshotted registry fonts (default anchored per D19),
+    /// 4. a headless `PrintSession` renders every page at print zoom and
+    ///    `rofd-export` encodes them; encode failures (including the
+    ///    empty-page-list rejection of a 0-page document) surface as
+    ///    [`ConvertError::Encode`].
+    ///
+    /// Non-fatal parse warnings pass through to
+    /// [`ConvertOutput::warnings`] unchanged (spec D20). Binding crates
+    /// wrap calls with [`catch_panics`] for the panic boundary.
+    pub fn convert(
+        &mut self,
+        format: OutputFormat,
+        ofd: &[u8],
+        opts: &ConvertOptions,
+    ) -> Result<ConvertOutput, ConvertError> {
+        match format {
+            OutputFormat::Pdf => self.convert_to_pdf(ofd, opts),
+        }
+    }
+
+    /// The PDF arm of [`Converter::convert`] (v1's only format; the
+    /// `OutputFormat` match above stays exhaustive so future formats join
+    /// as new arms).
+    fn convert_to_pdf(
+        &self,
+        ofd: &[u8],
+        opts: &ConvertOptions,
+    ) -> Result<ConvertOutput, ConvertError> {
+        // 1. Decode. Errors are data: mapped, never unwrapped.
+        let report = rofd_io::parse_ofd(ofd).map_err(|e| ConvertError::Decode(e.to_string()))?;
+        let doc = report.document;
+
+        // 2. Budgets, after parse (decode errors win) and before any scene
+        //    building.
+        let max_pages = u64::from(opts.max_pages.unwrap_or(DEFAULT_MAX_PAGES));
+        let actual_pages = doc.pages.len() as u64;
+        if actual_pages > max_pages {
+            return Err(ConvertError::BudgetExceeded {
+                what: "pages",
+                limit: max_pages,
+                actual: actual_pages,
+            });
+        }
+        let max_media = opts.max_media_bytes.unwrap_or(DEFAULT_MAX_MEDIA_BYTES) as u64;
+        let actual_media = media_bytes(&doc) as u64;
+        if actual_media > max_media {
+            return Err(ConvertError::BudgetExceeded {
+                what: "media_bytes",
+                limit: max_media,
+                actual: actual_media,
+            });
+        }
+
+        // 3. Per-call font store: document resources first, then every
+        //    snapshotted registry font, default anchored from the snapshot.
+        let default_font = self
+            .default_font
+            .clone()
+            .unwrap_or_else(|| Arc::new(Vec::new()));
+        let mut fonts = FontStore::from_resources(&doc.resources, default_font);
+        for bytes in &self.fonts {
+            fonts.register_font(bytes.clone());
+        }
+
+        // 4. Headless session over every page, encoded by rofd-export.
+        let mut session = PrintSession::headless(doc, fonts, opts.content);
+        let mut pages = Vec::with_capacity(session.page_count());
+        for i in 0..session.page_count() {
+            let (width, height) = session.page_rect(i);
+            pages.push(PdfPage {
+                width_px: width as f32,
+                height_px: height as f32,
+                scene: session.page_scene(i),
+            });
+        }
+        let bytes =
+            pdf_from_page_scenes(&pages).map_err(|e| ConvertError::Encode(e.to_string()))?;
+        Ok(ConvertOutput {
+            bytes,
+            warnings: report.warnings,
+        })
     }
 }
 

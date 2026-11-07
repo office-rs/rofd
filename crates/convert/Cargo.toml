@@ -16,3 +16,9 @@ rofd-io = { workspace = true }
 rofd-render = { workspace = true }
 rofd-export = { workspace = true }
 rofd-dom = { workspace = true }
+
+[dev-dependencies]
+# Test-side fixture repacking: write_ofd's v1 full-write emits no resource
+# entries, so fixtures needing real image/font bytes through parse_ofd are
+# repacked with the same zip crate the io layer uses.
+zip = { workspace = true }
