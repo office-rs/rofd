@@ -138,6 +138,19 @@ impl FontStore {
         self.fonts.get(id).or(self.default.as_ref())
     }
 
+    /// Read-only probe: family names of every whole font that registered
+    /// successfully — the document fonts (`families` map values) plus the
+    /// default font's family when one is anchored. Slice-registered
+    /// families are not listed (they carry internal `__rofs_` names).
+    /// Order is unspecified; callers dedup/sort as needed.
+    pub fn registered_family_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.families.values().cloned().collect();
+        if let Some(family) = &self.default_family {
+            names.push(family.clone());
+        }
+        names
+    }
+
     /// Register an additional font (raw bytes) at runtime - e.g. a CJK font
     /// loaded by the web SDK after construction. The font is added to the shared
     /// `FontContext` so parley can select it: via the default family (the first

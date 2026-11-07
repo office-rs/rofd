@@ -23,6 +23,12 @@
 //! font surface and no unregister — a registry would grow unboundedly
 //! under per-document uploads (spec §6.1 ruling).
 
+mod fonts;
+
+pub use fonts::{
+    has_default_font, register_default_font, register_font, register_font_file, registered_families,
+};
+
 /// Default page budget (spec §6.1): 10_000 pages.
 pub const DEFAULT_MAX_PAGES: u32 = 10_000;
 /// Default media budget (spec §6.1): 1 GiB of embedded media bytes.
@@ -155,10 +161,11 @@ pub fn catch_panics<T>(f: impl FnOnce() -> Result<T, ConvertError>) -> Result<T,
 /// correct if a warm engine holding a `FontStore` ever lands (at which
 /// point this contract tightens without any L2 API change).
 ///
-/// Fields arrive in Task 4 (registry snapshot + default-font anchor);
-/// `convert` arrives in Task 5.
+/// Fields (registry snapshot + default-font anchor, from
+/// `crate::fonts::registry_snapshot()` — present since Task 4) and
+/// `convert` arrive in Task 5.
 pub struct Converter {
-    /// Placeholder keeping the struct constructible before Task 4's
+    /// Placeholder keeping the struct constructible before Task 5's
     /// snapshot fields exist.
     _priv: (),
 }
