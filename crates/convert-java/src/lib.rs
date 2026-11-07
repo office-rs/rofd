@@ -29,8 +29,10 @@ const EXCEPTION_CLASS: &str = "io/github/officers/OfdConvertException";
 
 static TABLE: LazyLock<HandleTable> = LazyLock::new(HandleTable::new);
 
-/// Per-handle warnings of the last `nConvert` call, keyed by handle id.
-/// `nTakeWarnings` drains and clears the slot.
+/// Per-handle warnings of the last SUCCESSFUL `nConvert` call, keyed by
+/// handle id. The slot is cleared at the start of every attempt (so a
+/// failed convert leaves it empty — never a stale pre-failure set) and
+/// drained by `nClose`; `nTakeWarnings` drains and clears it.
 static LAST_WARNINGS: LazyLock<Mutex<HashMap<u64, Vec<String>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -165,6 +167,18 @@ fn park_warnings(id: u64, warnings: Vec<rofd_convert::OfdWarning>) {
         .insert(id, warnings_to_strings(warnings));
 }
 
+/// Remove the handle's parked warnings without reading them: the start
+/// of every `nConvert` attempt (a failed convert must not leave the
+/// previous call's set behind) and every `nClose` path that removes the
+/// handle (a closed id has no parked warnings, and its slot does not
+/// linger for the lifetime of the process).
+fn clear_warnings(id: u64) {
+    LAST_WARNINGS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&id);
+}
+
 /// Drain the handle's parked warnings (empty when none were parked —
 /// the Java side always gets an array).
 fn take_warnings(id: u64) -> Vec<String> {
@@ -217,11 +231,15 @@ pub extern "system" fn Java_io_github_officers_NativeLink_nClose(
         // Stale close (already closed / never existed) reports false —
         // harmless for the PhantomReference last-resort path, which races
         // explicit closes by design.
-        Ok(Ok(())) => JNI_TRUE,
+        Ok(Ok(())) => {
+            clear_warnings(id as u64);
+            JNI_TRUE
+        }
         Ok(Err(TakeError::Stale)) => JNI_FALSE,
         Ok(Err(TakeError::InUse)) => {
             // close() while leased removes the map entry; the lease's
             // put() no-ops. The instance is released either way.
+            clear_warnings(id as u64);
             JNI_TRUE
         }
         Err(e) => {
@@ -341,8 +359,12 @@ pub extern "system" fn Java_io_github_officers_NativeLink_nRegisteredFamilies(
     }
 }
 
-/// Package version (version lockstep, spec §7: CLI `--version` and Java
-/// `getVersion()` both resolve to the crate version).
+/// Package version (version lockstep, spec §9: CLI `--version` and Java
+/// `getVersion()` both resolve to the crate version). Every release bump
+/// must move the whole `rofd-convert-v*` lockstep checklist in one step —
+/// `crates/convert{,-cli,-java}/Cargo.toml` +
+/// `crates/convert-java/pom.xml` — or this value drifts from the
+/// published Maven coordinates.
 #[no_mangle]
 pub extern "system" fn Java_io_github_officers_NativeLink_nVersion(
     env: JNIEnv,
@@ -363,10 +385,12 @@ pub extern "system" fn Java_io_github_officers_NativeLink_nVersion(
     }
 }
 
-/// One-call conversion through the leased instance. On success the
-/// warnings of THIS call park in LAST_WARNINGS[id] for nTakeWarnings;
-/// the instance is put back on every path (InUse/Stale throw without
-/// touching the instance).
+/// One-call conversion through the leased instance. The attempt clears
+/// the handle's warnings slot up front, and only a SUCCESSFUL conversion
+/// parks its warnings in LAST_WARNINGS[id] for nTakeWarnings — after a
+/// failed attempt (exception) the slot is empty, so takeWarnings never
+/// returns a stale pre-failure set. The instance is put back on every
+/// path (InUse/Stale throw without touching the instance).
 #[no_mangle]
 // Raw array handle arrives from the JVM (valid local ref by the JNI
 // contract); this export is never called from Rust code.
@@ -398,6 +422,10 @@ pub extern "system" fn Java_io_github_officers_NativeLink_nConvert(
             return std::ptr::null_mut();
         }
     };
+    // Last-call-wins with a sharp edge: the slot is cleared BEFORE the
+    // attempt, so a failed convert leaves it empty (takeWarnings then
+    // reports the last successful call's set — or none).
+    clear_warnings(id as u64);
     // Kernel call under the panic boundary; the instance goes back on
     // every path (a Stale race makes put a no-op).
     let result = rofd_convert::catch_panics(
@@ -460,6 +488,7 @@ mod tests {
     // test threads never observe each other's parked warnings.
     const WARN_ID_A: u64 = 9_001;
     const WARN_ID_B: u64 = 9_002;
+    const WARN_ID_C: u64 = 9_003;
 
     #[test]
     fn format_ordinal_zero_is_pdf_and_only_pdf() {
@@ -573,6 +602,41 @@ mod tests {
             take_warnings(WARN_ID_A + 10).len(),
             1,
             "the parking handle sees its own warnings"
+        );
+    }
+
+    #[test]
+    fn warning_slot_clears_on_attempt_start_and_close() {
+        // The nConvert/nClose contract in miniature: every attempt clears
+        // the slot before running, so a FAILED convert leaves it empty —
+        // never the previous call's stale set; only success parks again,
+        // and nClose drains the slot of the handle it removes.
+        let old = rofd_convert::OfdWarning::FontSubstituted {
+            requested: "SimSun".into(),
+            used: "default".into(),
+        };
+        park_warnings(WARN_ID_C, vec![old]);
+        clear_warnings(WARN_ID_C); // start of the next attempt (it fails)
+        assert_eq!(
+            take_warnings(WARN_ID_C),
+            Vec::<String>::new(),
+            "a failed attempt must not expose the previous call's warnings"
+        );
+        let fresh = rofd_convert::OfdWarning::MissingFeature {
+            feature: "JBIG2".into(),
+            entry: "Doc_0/Res/Img_0.xml".into(),
+        };
+        park_warnings(WARN_ID_C, vec![fresh]); // a later success parks
+        assert_eq!(
+            take_warnings(WARN_ID_C).len(),
+            1,
+            "the successful call's warnings are parked after the clear"
+        );
+        clear_warnings(WARN_ID_C); // what nClose performs
+        assert_eq!(
+            take_warnings(WARN_ID_C),
+            Vec::<String>::new(),
+            "a closed handle leaves no parked warnings behind"
         );
     }
 

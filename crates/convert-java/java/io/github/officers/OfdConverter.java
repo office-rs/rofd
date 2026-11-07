@@ -110,7 +110,9 @@ public final class OfdConverter implements AutoCloseable {
                 watermark, annotations, seal, maxPages, maxMediaBytes);
     }
 
-    /** Drain and clear this instance's last conversion warnings. */
+    /** Drain and clear the warnings of the last SUCCESSFUL conversion.
+     * A failed conversion clears the slot (no stale pre-failure set),
+     * and closing the instance drains it. */
     public String[] takeWarnings() {
         return NativeLink.nTakeWarnings(handle);
     }
