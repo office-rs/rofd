@@ -1017,7 +1017,10 @@ mod wasm_impl {
             let on_warning_js = self.callbacks.on_warning.clone();
             self.component
                 .on_warning(Box::new(move |warnings: &[OfdWarning]| {
-                    let msgs: Vec<String> = warnings.iter().map(warning_to_string).collect();
+                    // Human-readable lines straight from the shared
+                    // `Display` impl in rofd-dom (the `Debug` derive is
+                    // too Rust-y for a JS-facing message).
+                    let msgs: Vec<String> = warnings.iter().map(|w| w.to_string()).collect();
                     call_js1_str_array(&on_warning_js, &msgs);
                 }));
 
@@ -1124,26 +1127,6 @@ mod wasm_impl {
                 arr.push(&JsValue::from_str(m));
             }
             let _ = js_fn.call1(&JsValue::null(), &arr);
-        }
-    }
-
-    /// Format an [`OfdWarning`] as a human-readable string for JS consumption.
-    /// `OfdWarning` has no `Display` impl, so we format each variant explicitly
-    /// (the `Debug` derive is too Rust-y for a JS-facing message).
-    fn warning_to_string(w: &OfdWarning) -> String {
-        match w {
-            OfdWarning::MissingFeature { feature, entry } => {
-                format!("missing feature '{feature}' in {entry} (skipped)")
-            }
-            OfdWarning::SkippedObject { page, reason } => {
-                format!("skipped object on page {}: {reason}", page.0)
-            }
-            OfdWarning::FontSubstituted { requested, used } => {
-                format!("font '{requested}' not found; substituted with '{used}'")
-            }
-            OfdWarning::ResourceNotFound { kind, id } => {
-                format!("missing {kind} resource: {id}")
-            }
         }
     }
 

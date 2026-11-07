@@ -46,6 +46,29 @@ pub enum OfdWarning {
     ResourceNotFound { kind: ResourceKind, id: String },
 }
 
+/// One human-readable line per variant. Shared formatter for every
+/// warning consumer (the wasm event bridge, the convert CLI); wording
+/// mirrors the original web-view private formatter verbatim so no
+/// consumer sees a message change.
+impl std::fmt::Display for OfdWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OfdWarning::MissingFeature { feature, entry } => {
+                write!(f, "missing feature '{feature}' in {entry} (skipped)")
+            }
+            OfdWarning::SkippedObject { page, reason } => {
+                write!(f, "skipped object on page {}: {reason}", page.0)
+            }
+            OfdWarning::FontSubstituted { requested, used } => {
+                write!(f, "font '{requested}' not found; substituted with '{used}'")
+            }
+            OfdWarning::ResourceNotFound { kind, id } => {
+                write!(f, "missing {kind} resource: {id}")
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,6 +80,41 @@ mod tests {
             entry: "Doc_0/Res/Img_0.xml".into(),
         };
         assert!(format!("{w:?}").contains("JBIG2"));
+    }
+
+    #[test]
+    fn warning_display_is_one_line_per_variant() {
+        // Exact strings pinned: these are the messages hosts show users
+        // (web-view on_warning, the convert CLI stderr loop).
+        let missing = OfdWarning::MissingFeature {
+            feature: "JBIG2".into(),
+            entry: "Doc_0/Res/Img_0.xml".into(),
+        };
+        assert_eq!(
+            missing.to_string(),
+            "missing feature 'JBIG2' in Doc_0/Res/Img_0.xml (skipped)"
+        );
+        let skipped = OfdWarning::SkippedObject {
+            page: PageId::new("3"),
+            reason: "unrecognized element".into(),
+        };
+        assert_eq!(
+            skipped.to_string(),
+            "skipped object on page 3: unrecognized element"
+        );
+        let substituted = OfdWarning::FontSubstituted {
+            requested: "SimSun".into(),
+            used: "default".into(),
+        };
+        assert_eq!(
+            substituted.to_string(),
+            "font 'SimSun' not found; substituted with 'default'"
+        );
+        let resource = OfdWarning::ResourceNotFound {
+            kind: ResourceKind::Font,
+            id: "Font_4".into(),
+        };
+        assert_eq!(resource.to_string(), "missing font resource: Font_4");
     }
 
     #[test]
