@@ -30,6 +30,9 @@ mvn -DskipTests package                                              # thin main
 mvn -DskipTests package -Dnative.dir=<staging> -Dskip.natives.check=true   # fat, single-platform local packaging
 ```
 
+- A plain `mvn package` always produces the **thin** jar — the fat shape requires `-Dnative.dir`; the published main jar is fat because the release pipeline stages all four platforms.
+- Switch jar shapes with `mvn clean` between builds — a previous fat packaging leaves `natives/` in `target/classes`, which a plain re-package would silently embed into the "thin" jar.
+
 The staging dir holds `<platform>/<lib>` trees (e.g. `windows-x86_64/rofdconvert.dll`, built by `cargo build --release -p rofd-convert-java`). Without `-Dskip.natives.check=true` the build enforces that all four platforms are staged — release packaging must never ship a partial fat jar.
 
 ## Fonts

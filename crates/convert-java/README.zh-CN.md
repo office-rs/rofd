@@ -30,6 +30,9 @@ mvn -DskipTests package                                              # 瘦主 ja
 mvn -DskipTests package -Dnative.dir=<staging> -Dskip.natives.check=true   # fat，单平台本地打包
 ```
 
+- 裸 `mvn package` 产出的**总是瘦 jar**——fat 形态必须带 `-Dnative.dir`；发布出去的主 jar 是 fat，因为发布流水线会把四平台全部 staging。
+- 两种 jar 形态切换构建时务必夹一次 `mvn clean`——上一次 fat 打包留在 `target/classes` 的 `natives/` 会被下一次裸打包悄悄装进"瘦" jar。
+
 staging 目录装 `<platform>/<lib>` 目录树（如 `windows-x86_64/rofdconvert.dll`，由 `cargo build --release -p rofd-convert-java` 产出）。不加 `-Dskip.natives.check=true` 时构建强制四平台齐全——发布打包绝不允许装出缺平台的 fat jar。
 
 ## 字体
