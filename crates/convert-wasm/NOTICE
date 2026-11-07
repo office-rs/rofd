@@ -1,0 +1,16 @@
+rofd-convert
+Copyright 2026 the rofd project authors
+
+This product includes software licensed under the Apache License,
+Version 2.0 (see LICENSE).
+
+Third-party notices: the conversion kernel and its language bindings
+link against third-party Rust crates. The full dependency license
+inventory is audited by `cargo deny check licenses` (allow-list in
+deny.toml; all permissive: Apache-2.0 / MIT / BSD / ISC / Zlib /
+Unicode-3.0 / 0BSD / CC0-1.0 / MPL-2.0(file-level) / BSL-1.0). Run it
+in the repository root to regenerate the current inventory.
+
+This product may also embed font programs supplied by integrators at
+runtime via the registration APIs; no font files are distributed in
+these packages (convert spec §7: published packages ship zero fonts).

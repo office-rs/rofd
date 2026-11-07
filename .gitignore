@@ -41,3 +41,8 @@ crates/convert-java/demo/native-stage/
 
 # Node addon staged locally by the demo (built artifact)
 crates/convert-node/rofd_convert_node.node
+
+# wasm build outputs
+crates/convert-wasm/pkg/
+crates/convert-wasm/sdk/dist/
+crates/convert-wasm/demo/assets/

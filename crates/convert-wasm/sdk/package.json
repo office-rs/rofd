@@ -1,0 +1,21 @@
+{
+  "name": "@office-rs/rofd-convert-wasm",
+  "version": "0.1.0",
+  "description": "Headless OFD to PDF conversion in the browser (wasm, no editor, no WebGPU) — works in Web Workers",
+  "license": "Apache-2.0",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "LICENSE",
+    "NOTICE",
+    "index.js",
+    "index.d.ts",
+    "dist/"
+  ],
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
