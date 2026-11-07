@@ -164,6 +164,7 @@ fn textbox_roundtrips() {
             size: 12.0,
             color: Color::Rgb(0, 0, 0),
             border: None,
+            runs: Vec::new(),
         },
         None,
     );
@@ -234,6 +235,7 @@ fn freetext_textbox_roundtrips() {
             size: 5.0,
             color: Color::Rgb(13, 13, 13),
             border: None,
+            runs: Vec::new(),
         },
         None,
     );

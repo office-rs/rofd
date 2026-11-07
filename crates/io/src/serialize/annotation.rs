@@ -317,6 +317,7 @@ fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload, next_id: &
                 size,
                 color,
                 border,
+                ..
             },
         ) => {
             // A bordered text box re-emits its frame ahead of the text (the

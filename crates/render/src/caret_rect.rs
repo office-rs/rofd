@@ -250,6 +250,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
+                runs: Vec::new(),
             },
             AnnotationKind::TextBox,
         );
@@ -292,6 +293,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
+                runs: Vec::new(),
             },
             AnnotationKind::TextBox,
         );
@@ -397,6 +399,7 @@ mod tests {
                     size: 12.0,
                     color: Color::Rgb(0, 0, 0),
                     border: None,
+                    runs: Vec::new(),
                 },
             });
         let fonts = FontStore::from_resources(&doc.resources, Arc::new(font_bytes.to_vec()));

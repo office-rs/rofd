@@ -122,6 +122,7 @@ pub fn draw_annotations(
                 size,
                 color,
                 border,
+                ..
             } => {
                 // Bordered text box (文本框): stroke the frame around the text.
                 // Inset by LineWidth/2 to mirror the serialized border path
@@ -1101,6 +1102,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
+                runs: Vec::new(),
             },
             AnnotationKind::TextBox,
         );
@@ -1146,6 +1148,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
+                runs: Vec::new(),
             },
             AnnotationKind::TextBox,
         );
@@ -1182,6 +1185,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
+                runs: Vec::new(),
             },
             AnnotationKind::TextBox,
         );
@@ -1347,6 +1351,7 @@ mod tests {
                     size: 12.0,
                     color: Color::Rgb(0, 0, 0),
                     border: None,
+                    runs: Vec::new(),
                 },
                 AnnotationKind::TextBox,
             ),
@@ -1615,6 +1620,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
+                runs: Vec::new(),
             },
             AnnotationKind::TextBox,
         );

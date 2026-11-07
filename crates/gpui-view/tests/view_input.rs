@@ -155,6 +155,7 @@ fn add_textbox(view: &mut OfdGpuiView) {
             size: 10.0,
             color: Color::Rgb(0, 0, 0),
             border: None,
+            runs: Vec::new(),
         },
     );
 }
@@ -434,6 +435,7 @@ fn ctrl_x_copies_without_deleting(cx: &mut TestAppContext) {
                 size: 10.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
+                runs: Vec::new(),
             },
         );
     });

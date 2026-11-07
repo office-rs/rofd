@@ -3507,6 +3507,7 @@ mod tests {
                 size: 10.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
+                runs: Vec::new(),
             },
         );
         c.editor.set_cursor(id, 2);
@@ -8292,6 +8293,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
+                runs: Vec::new(),
             },
         });
         c.load_document(doc);
@@ -8340,6 +8342,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
+                runs: Vec::new(),
             },
         });
         c.load_document(doc);

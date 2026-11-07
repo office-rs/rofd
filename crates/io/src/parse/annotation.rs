@@ -478,6 +478,7 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
                 size,
                 color: color.unwrap_or_default(),
                 border,
+                runs: Vec::new(),
             }
         }
         AnnotationKind::Stamp => {
