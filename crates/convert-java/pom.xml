@@ -1,0 +1,290 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  rofd-convert Java packaging (convert spec 2026-11-06 §6.4, D10/D16).
+  Coordinates: io.github.office-rs:rofd-convert (jar name rofd-convert).
+
+  Default build (`mvn package`) produces the main jar only (Java 8
+  bytecode per kernel D10, LICENSE embedded per D16). Platform natives
+  ship as CLASSIFIER jars (natives/<platform>/<lib> — e.g.
+  natives/windows-x86_64/rofdconvert.dll), assembled per platform by the
+  cargo release matrix (after rword's convert-release.yml workflow).
+
+  Release build (`mvn -Pcentral-release deploy`) publishes to Maven
+  Central: main + sources + javadoc jars, the four platform classifier
+  jars (attached from target/natives-jars/ — staged there by the release
+  pipeline from the cargo matrix output), GPG-signed, uploaded through
+  the Central Portal publishing plugin (server id `central` —
+  credentials in the CI settings.xml from repo secrets).
+
+  Zero-config fat jar (`mvn package -Dnative.dir=<staging dir>`): the
+  embed-natives profile embeds natives/<platform>/ trees into the main
+  jar (validated for all four platforms, see the profile below).
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>io.github.office-rs</groupId>
+  <artifactId>rofd-convert</artifactId>
+  <version>0.1.0</version>
+  <packaging>jar</packaging>
+
+  <name>rofd-convert</name>
+  <description>Headless OFD to PDF conversion (JNI bindings over the rofd kernel)</description>
+  <url>https://github.com/office-rs/rofd</url>
+  <licenses>
+    <license>
+      <name>Apache-2.0</name>
+      <url>https://www.apache.org/licenses/LICENSE-2.0</url>
+    </license>
+  </licenses>
+  <developers>
+    <developer>
+      <id>flw</id>
+      <name>office-rs</name>
+      <organization>office-rs</organization>
+      <organizationUrl>https://github.com/office-rs</organizationUrl>
+    </developer>
+  </developers>
+  <scm>
+    <connection>scm:git:https://github.com/office-rs/rofd.git</connection>
+    <developerConnection>scm:git:git@github.com:office-rs/rofd.git</developerConnection>
+    <url>https://github.com/office-rs/rofd</url>
+  </scm>
+
+  <properties>
+    <maven.compiler.release>8</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <!-- embed-natives profile: enforcer gate on by default; flip to true
+         with -Dskip.natives.check=true for local single-platform packaging
+         (the acceptance demo does exactly that). -->
+    <skip.natives.check>false</skip.natives.check>
+  </properties>
+
+  <!-- Zero dependencies by design (convert spec §6.4: thin binding) —
+       nothing at any scope. The loader test is a plain-main harness
+       (no JUnit on the compile path); see the surefire configuration. -->
+  <dependencies></dependencies>
+
+  <build>
+    <sourceDirectory>${project.basedir}/java</sourceDirectory>
+    <testSourceDirectory>${project.basedir}/test/java</testSourceDirectory>
+    <!-- Embed the license texts at the jar root (spec D16: each package
+         carries LICENSE + third-party notice; NOTICE does not exist at
+         the repo root yet — the include is a no-op until it lands). -->
+    <resources>
+      <resource>
+        <directory>${project.basedir}/../..</directory>
+        <includes>
+          <include>LICENSE</include>
+          <include>NOTICE</include>
+        </includes>
+      </resource>
+    </resources>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.8.1</version>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.2.5</version>
+        <configuration>
+          <!-- NativeLoaderTest is a plain-main harness (assert + exit
+               code), not a JUnit test class — never run it from surefire.
+               Execute manually:
+               java -cp target/test-classes;target/classes \
+                   io.github.officers.NativeLoaderTest -->
+          <skipTests>true</skipTests>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+
+  <profiles>
+    <!-- Zero-config fat jar (convert spec §6.4, after rword's 2026-11-05
+         zero-config design). Activated by passing -Dnative.dir=<staging
+         dir containing natives/<platform>/ trees> (what the release
+         matrix assembles). The two executions share the prepare-package
+         phase and MUST stay in this declaration order: copy first, then
+         validate — requireFilesExist checks all four platforms so a
+         partial staging fails the build. -Dskip.natives.check=true skips
+         only the validation (local single-platform packaging, e.g. the
+         acceptance demo). -->
+    <profile>
+      <id>embed-natives</id>
+      <activation>
+        <property>
+          <name>native.dir</name>
+        </property>
+      </activation>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-resources-plugin</artifactId>
+            <version>3.3.1</version>
+            <executions>
+              <execution>
+                <id>copy-natives</id>
+                <phase>prepare-package</phase>
+                <goals><goal>copy-resources</goal></goals>
+                <configuration>
+                  <outputDirectory>${project.build.outputDirectory}/natives</outputDirectory>
+                  <resources>
+                    <resource>
+                      <directory>${native.dir}</directory>
+                    </resource>
+                  </resources>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-enforcer-plugin</artifactId>
+            <version>3.4.1</version>
+            <executions>
+              <execution>
+                <id>enforce-natives</id>
+                <phase>prepare-package</phase>
+                <goals><goal>enforce</goal></goals>
+                <configuration>
+                  <skip>${skip.natives.check}</skip>
+                  <rules>
+                    <requireFilesExist>
+                      <message>Embedded natives incomplete: -Dnative.dir must stage all four platforms (natives/&lt;platform&gt;/&lt;lib&gt; per the release matrix). -Dskip.natives.check=true skips this check for local single-platform packaging only.</message>
+                      <files>
+                        <file>${project.build.outputDirectory}/natives/linux-x86_64/librofdconvert.so</file>
+                        <file>${project.build.outputDirectory}/natives/windows-x86_64/rofdconvert.dll</file>
+                        <file>${project.build.outputDirectory}/natives/macos-x86_64/librofdconvert.dylib</file>
+                        <file>${project.build.outputDirectory}/natives/macos-aarch64/librofdconvert.dylib</file>
+                      </files>
+                    </requireFilesExist>
+                  </rules>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <!-- Release publication to Maven Central (CI only — release
+         pipeline's publish-maven job). Requires the platform classifier
+         jars staged under target/natives-jars/ first, a `central` server
+         in settings.xml (Central Portal token), and the release GPG key
+         imported into the keyring. -->
+    <profile>
+      <id>central-release</id>
+      <build>
+        <plugins>
+          <!-- Central requires -sources.jar -->
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-source-plugin</artifactId>
+            <version>3.3.1</version>
+            <executions>
+              <execution>
+                <id>attach-sources</id>
+                <goals><goal>jar-no-fork</goal></goals>
+              </execution>
+            </executions>
+          </plugin>
+          <!-- Central requires -javadoc.jar (doclint off: plain javadoc,
+               no strict HTML audit needed). -->
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-javadoc-plugin</artifactId>
+            <version>3.6.3</version>
+            <configuration>
+              <release>8</release>
+              <doclint>none</doclint>
+              <quiet>true</quiet>
+            </configuration>
+            <executions>
+              <execution>
+                <id>attach-javadocs</id>
+                <goals><goal>jar</goal></goals>
+              </execution>
+            </executions>
+          </plugin>
+          <!-- Attach the platform native jars (staged by CI under
+               target/natives-jars/) so GPG signing + the Central upload
+               pick them up with the rest of the project's artifacts. -->
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>build-helper-maven-plugin</artifactId>
+            <version>3.5.0</version>
+            <executions>
+              <execution>
+                <id>attach-natives</id>
+                <phase>package</phase>
+                <goals><goal>attach-artifact</goal></goals>
+                <configuration>
+                  <artifacts>
+                    <artifact>
+                      <file>${project.build.directory}/natives-jars/rofd-convert-${project.version}-linux-x86_64.jar</file>
+                      <type>jar</type>
+                      <classifier>linux-x86_64</classifier>
+                    </artifact>
+                    <artifact>
+                      <file>${project.build.directory}/natives-jars/rofd-convert-${project.version}-windows-x86_64.jar</file>
+                      <type>jar</type>
+                      <classifier>windows-x86_64</classifier>
+                    </artifact>
+                    <artifact>
+                      <file>${project.build.directory}/natives-jars/rofd-convert-${project.version}-macos-x86_64.jar</file>
+                      <type>jar</type>
+                      <classifier>macos-x86_64</classifier>
+                    </artifact>
+                    <artifact>
+                      <file>${project.build.directory}/natives-jars/rofd-convert-${project.version}-macos-aarch64.jar</file>
+                      <type>jar</type>
+                      <classifier>macos-aarch64</classifier>
+                    </artifact>
+                  </artifacts>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <!-- Sign every artifact (loopback: the CI key has no passphrase,
+               gpg must not try to prompt). -->
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-gpg-plugin</artifactId>
+            <version>3.2.6</version>
+            <configuration>
+              <gpgArguments>
+                <arg>--pinentry-mode</arg>
+                <arg>loopback</arg>
+              </gpgArguments>
+            </configuration>
+            <executions>
+              <execution>
+                <id>sign-artifacts</id>
+                <phase>verify</phase>
+                <goals><goal>sign</goal></goals>
+              </execution>
+            </executions>
+          </plugin>
+          <!-- Upload the signed bundle to the Central Portal
+               (server id `central` in settings.xml; auto-publish so one
+               Release = one fully published Maven version). -->
+          <plugin>
+            <groupId>org.sonatype.central</groupId>
+            <artifactId>central-publishing-maven-plugin</artifactId>
+            <version>0.12.0</version>
+            <extensions>true</extensions>
+            <configuration>
+              <publishingServerId>central</publishingServerId>
+              <autoPublish>true</autoPublish>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+</project>
