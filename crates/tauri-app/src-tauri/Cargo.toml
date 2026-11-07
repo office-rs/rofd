@@ -2,6 +2,7 @@
 name = "tauri-app"
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
 description = "rofd Tauri 桌面宿主：把 web-app 前端封装为系统 WebView 桌面客户端"
 
 # 二进制产物名设为 rofd（与 tauri.conf.json 的 mainBinaryName 一致），

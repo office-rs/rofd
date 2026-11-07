@@ -194,6 +194,7 @@ pub struct ConvertOutput { pub bytes: Vec<u8>, pub warnings: Vec<ConvertWarning>
 - 各包内嵌 LICENSE（Apache-2.0）与第三方声明文件。
 - 产物命名统一 `rofd-convert` 家族。
 - **① 期依赖许可审计结论（2026-11-07，D16 收口）**：`rofd-convert` 运行时外部依赖 = **0**（`crates/convert/Cargo.toml` 的 `[dependencies]` 全为 workspace 内部 path 依赖）；`rofd-convert-cli` 运行时依赖仅 `rofd-convert`。dev-deps 不随产物分发：`rofd-convert` 的 `zip`（workspace 钉 2.2，与 rofd-io 同源，手工打包 fixture 复包）+ `rofd-convert-cli` 的 rofd-io/rofd-dom（fixture 组装）。传递栈与编辑器线一致——`Cargo.lock` 差异 bb4d05d..e37c927 仅新增 `rofd-convert`/`rofd-convert-cli` 两个内部包，**零新增外部包**；fuzz 侧 `libfuzzer-sys` 位于独立 fuzz workspace（自有 lock，commit e37c927 起跟踪），不进根运行图。结论：无新增许可面，依赖栈全宽松许可。
+- **③ 期 release 卫生落位（2026-11-07，Task 3）**：`cargo deny check licenses` 常态化（`deny.toml`，镜像 rword 姿态；workspace 全 crate 补 `license = "Apache-2.0"` manifest 字段后 `licenses ok`）；根 `NOTICE` + 各发布 crate 的 LICENSE/NOTICE 对（convert-java 已落，convert-node/convert-py 随其 crate 落）；字体 fixture 出处注记 `crates/render/tests/fixtures/fonts/README.md`（TestFont=DejaVu 有据、TestFontCjk 子集如实描述、TwoFamily=fontTools 生成）。
 
 ## 10. AGENTS.md 同步清单（① 期完成后）
 
