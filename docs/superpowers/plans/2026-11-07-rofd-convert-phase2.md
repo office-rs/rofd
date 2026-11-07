@@ -46,7 +46,7 @@
 - [ ] **Step 1: 定位硬失败源**——读 `crates/export/src/pdf.rs` 的字体嵌入路径（`SinkContext`/glyph run 嵌入），找到 krilla subset 报错上抛为 `ExportError::Encode` 的位置（① 期 Task 8 手测的 "malformed font" 即此处）。
 - [ ] **Step 2: 写失败测试（seam）**——将字体嵌入抽为可注入失败的窄缝（fn 接受嵌入结果 `Result`），对 `Err` 分支断言：产出 PDF 字节 + warnings 含降级消息（镜像 rword"降级通道"测试形态；krilla 真实坏字体 fixture 难造，seam 测试钉行为，真实 specimen 走 Step 4 手测）。
 - [ ] **Step 3: 实现降级**——失败字体：记 warning、跳过该 run 的字形绘制（保留页面其余内容），不返回 `Encode` 错误。跑全量：`cargo test -p rofd-export` + parity（`cargo test -p rofd-convert --test parity`）必须原样绿。
-- [ ] **Step 4: 手测清偿**——`cargo run -p rofd-convert-cli -- test/ru-yuan-ji-lu.ofd target/degrade-probe.pdf`：**exit 0**、stderr 有降级 warning、输出有效 PDF（① 期为 exit 3）。结果记入提交信息。
+- [ ] **Step 4: 手测清偿**——`cargo run -p rofd-convert-cli -- test/ru-yuan-ji-lu.ofd target/degrade-probe.pdf`：**exit 0**、stderr 有降级 warning、输出有效 PDF（① 期为 exit 3）。结果记入提交信息。（2026-11-07 更正：stderr 实际只见 no-default-font 提示与 io warnings——降级 warning 留在 export sink 内部通道，D20 现状 v1 只透出 io warnings；export 降级 warning 的对外透出列为 ③ 期入口标准。）
 - [ ] **Step 5: spec §8 边界行更新**（"可能编码失败"→"降级为警告+跳过，2026-11-07 ②期 Task 1"）。
 - [ ] **Step 6: Commit** `feat(export): degrade unsubsettable-font failure to warning + skip (phase-2 entry criterion)`
 

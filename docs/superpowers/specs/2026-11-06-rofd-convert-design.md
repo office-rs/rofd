@@ -144,7 +144,7 @@ pub struct ConvertOutput { pub bytes: Vec<u8>, pub warnings: Vec<ConvertWarning>
 ### 6.4 `rofd-convert-java`（`crates/convert-java/`，② 期）
 
 - JNI 手动 bindgen 壳、Java 8 字节码（major 52）；thin jar（`-Djava.library.path`）+ zero-config fat jar（native 目录内嵌，沿用 rword 2026-11-05 zero-config native loading 设计）双形态。
-- L2：`RofdConverter` 类，实例 ThreadLocal 持有（D15）；`convert(byte[], ConvertOptions)` 同步返回。
+- L2（2026-11-07 as-built 更正）：`OfdConverter`（AutoCloseable 单线程实例，PhantomReference 清理线程兜底回收）+ `OfdConverterPool` 槽池承担并发（D15）；`convertPdf(byte[], OfdConvertOptions)` 同步返回。
 - 坐标：Maven `io.github.office-rs:rofd-convert`，Java 包名 `io.github.officers`（与 groupId 去连字符一致，镜像 rword）。
 - 验收：demo 两幕（act 1 fallback tier、act 2 zero-config fat jar）输出 == CLI 字节。
 
