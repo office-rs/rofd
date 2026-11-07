@@ -167,6 +167,8 @@ converter hosts（CLI/未来绑定）只碰 rofd-convert，与"编辑器宿主�
 
 ### 4.9 平台边界：功能内聚核心层，适配器只做绑定
 
+### 4.10 convert 及以下不依赖任何平台 crate（与 component 同律）；converter hosts 只碰 rofd-convert
+
 ---
 
 ## 5. 各 crate 工作要点
