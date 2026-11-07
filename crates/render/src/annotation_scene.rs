@@ -595,10 +595,9 @@ pub(crate) fn draw_text_runs(
         // first line); subtracting it lands the baseline exactly at
         // rect.y + run.baseline.
         let ascent = first.y as f64;
-        let mut affine =
-            base * Affine::translate((rect.x + run.x, rect.y + run.baseline - ascent));
+        let mut affine = base * Affine::translate((rect.x + run.x, rect.y + run.baseline - ascent));
         if run.italic {
-            affine = affine * Affine::new([1.0, 0.0, -ITALIC_SKEW, 1.0, 0.0, 0.0]);
+            affine *= Affine::new([1.0, 0.0, -ITALIC_SKEW, 1.0, 0.0, 0.0]);
         }
         let brush = to_peniko(run.color.unwrap_or(Color::Rgb(0, 0, 0)));
         let mut builder = painter

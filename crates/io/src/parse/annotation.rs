@@ -234,7 +234,11 @@ fn handle_event(p: &mut PendingAnnot, ev: &Result<Event, quick_xml::Error>) {
                 // one TextObject may carry several TextCodes (one per line)
                 // and an overwrite would drop all but the last.
                 if let Some(AppearanceObject::Text { codes, .. }) = p.cur_obj.as_mut() {
-                    codes.push((std::mem::take(&mut p.text_body), p.code_origin.0, p.code_origin.1));
+                    codes.push((
+                        std::mem::take(&mut p.text_body),
+                        p.code_origin.0,
+                        p.code_origin.1,
+                    ));
                 }
                 p.in_text_code = false;
             }
@@ -315,10 +319,7 @@ fn flat_content_from_runs(runs: &[rofd_dom::TextRun]) -> String {
         a.baseline
             .partial_cmp(&b.baseline)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(
-                a.x.partial_cmp(&b.x)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-            )
+            .then(a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
     });
     let mut content = String::new();
     let mut prev: Option<&rofd_dom::TextRun> = None;

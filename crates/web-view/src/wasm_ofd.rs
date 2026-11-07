@@ -65,6 +65,10 @@ pub fn parse_tool_kind(kind: &str) -> Tool {
         "arrow" => Tool::Create(CreateKind::Shape(ShapeKind::Arrow)),
         "line" => Tool::Create(CreateKind::Shape(ShapeKind::Line)),
         "polygon" => Tool::Create(CreateKind::Shape(ShapeKind::Polygon)),
+        // Annotate-tab text tools: click-placed typewriter (文字批注) and
+        // drag-framed text box (文本框).
+        "typewriter" => Tool::Create(CreateKind::Typewriter),
+        "textbox" => Tool::Create(CreateKind::TextBox),
         _ => Tool::Text,
     }
 }
@@ -1290,6 +1294,21 @@ mod tests {
     #[test]
     fn parse_tool_kind_hand() {
         assert_eq!(parse_tool_kind("hand"), Tool::Hand);
+    }
+
+    #[test]
+    fn parse_tool_kind_text_tools() {
+        // The annotate tab's two text-create tools (ribbon buttons).
+        assert_eq!(
+            parse_tool_kind("typewriter"),
+            Tool::Create(CreateKind::Typewriter)
+        );
+        assert_eq!(
+            parse_tool_kind("textbox"),
+            Tool::Create(CreateKind::TextBox)
+        );
+        // Unknown strings still fall back to Text.
+        assert_eq!(parse_tool_kind("TypeWriter"), Tool::Text);
     }
 
     #[test]

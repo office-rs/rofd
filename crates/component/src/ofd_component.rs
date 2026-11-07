@@ -1868,10 +1868,7 @@ impl OfdComponent {
                                 // Text tools: drop the caret at offset 0 so
                                 // typing starts immediately (the box was
                                 // created empty).
-                                if matches!(
-                                    kind,
-                                    CreateKind::Typewriter | CreateKind::TextBox
-                                ) {
+                                if matches!(kind, CreateKind::Typewriter | CreateKind::TextBox) {
                                     self.editor.set_cursor(id.clone(), 0);
                                     self.fire_cursor_change();
                                 }
@@ -4490,7 +4487,10 @@ mod tests {
         // One undo removes the box.
         assert!(c.undo());
         assert!(
-            c.document().annotations.for_page(&PageId::new("P0")).is_empty(),
+            c.document()
+                .annotations
+                .for_page(&PageId::new("P0"))
+                .is_empty(),
             "undo removes the typewriter box"
         );
     }
@@ -4561,7 +4561,10 @@ mod tests {
             y: 21.0,
         });
         assert!(
-            c2.document().annotations.for_page(&PageId::new("P0")).is_empty(),
+            c2.document()
+                .annotations
+                .for_page(&PageId::new("P0"))
+                .is_empty(),
             "tiny drag creates nothing"
         );
     }

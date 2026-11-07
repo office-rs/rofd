@@ -131,7 +131,11 @@ fn surgical_save_preserves_textbox_runs() {
     // Body entries byte-identical (the surgical invariant).
     let orig_entries = rofd_io::zip_util::read_all_entries(&original).unwrap();
     let saved_entries = rofd_io::zip_util::read_all_entries(&saved).unwrap();
-    for name in ["OFD.xml", "Doc_0/Pages/Page_0/Content.xml", "Doc_0/Res/Font.xml"] {
+    for name in [
+        "OFD.xml",
+        "Doc_0/Pages/Page_0/Content.xml",
+        "Doc_0/Res/Font.xml",
+    ] {
         assert_eq!(by_name(&orig_entries, name), by_name(&saved_entries, name));
     }
 
