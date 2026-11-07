@@ -88,7 +88,15 @@ impl FontStore {
         // 整只字体（嵌入/default）的 FamilyId 记账：Task 3 链重建时排在切片后。
         let mut whole_family_ids = Vec::new();
 
-        for (id, bytes) in &res.font_data {
+        // Document fonts register in FontId order, NOT `res.font_data`'s
+        // HashMap iteration order: the registration order fixes the
+        // `whole_family_ids` ledger and therefore the SansSerif append
+        // order, which must not vary per process for documents embedding
+        // 2+ fonts (same cross-process determinism contract as
+        // `register_font_with_ids`'s family ranking, convert spec §8).
+        let mut doc_fonts: Vec<(&FontId, &Arc<Vec<u8>>)> = res.font_data.iter().collect();
+        doc_fonts.sort_by(|a, b| a.0 .0.cmp(&b.0 .0));
+        for (id, bytes) in doc_fonts {
             if let Some(font) = make_font(bytes.clone()) {
                 let (family, ids) = register_font_with_ids(&mut font_cx, &font);
                 if let Some(name) = family {

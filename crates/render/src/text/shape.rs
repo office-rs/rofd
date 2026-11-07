@@ -58,8 +58,8 @@ pub fn shape_text(text: &str, font: &FontData, size: f64) -> Vec<ShapedGlyph> {
 }
 
 /// Register `font`'s bytes with `fcx.collection` and return the
-/// registered family name (the first family reported by the font) alongside
-/// the family ids it registered under.
+/// registration's canonical family name alongside the family ids in a
+/// deterministic order.
 ///
 /// The bytes are shared (not copied): `font.data` is a `Blob<u8>`
 /// which clones cheaply (Arc internally), and `register_fonts` takes
@@ -69,18 +69,38 @@ pub fn shape_text(text: &str, font: &FontData, size: f64) -> Vec<ShapedGlyph> {
 /// (e.g. `SansSerif`) so parley can fall back to it when a named family lacks
 /// a glyph - critical on wasm, where system fonts are unavailable and
 /// registered fonts are the only fallback source.
+///
+/// Determinism (convert spec §8, phase-2 Task 2b): fontique's
+/// `register_fonts` builds its return list by iterating an internal
+/// `HashMap<FamilyId, _>`, so the list order - and with it the old
+/// `families.first()` name pick - is RANDOM PER PROCESS. A TTC whose
+/// faces carry distinct family names (simsun.ttc: face 0 "SimSun" +
+/// face 1 "NSimSun") would otherwise anchor a coin-flip family name per
+/// process: two CLI runs of the same conversion shaped different faces
+/// and emitted different bytes (phase-2 Task 1; rword hit the same
+/// fontique behavior in their convert demo and fixed it identically).
+/// Families are therefore ranked by their LOWEST face index - face 0 is
+/// what `FontData::new(blob, 0)` (the `make_font` draw handle) carries,
+/// so the canonical name must resolve shaping to that same face, not to
+/// a name-sorted one - with family name as the tiebreak, making both the
+/// canonical name and the id order (SansSerif appends) process-independent.
 pub(crate) fn register_font_with_ids(
     fcx: &mut FontContext,
     font: &FontData,
 ) -> (Option<String>, Vec<parley::fontique::FamilyId>) {
     let blob = font.data.clone();
     let families = fcx.collection.register_fonts(blob, None);
-    let ids: Vec<parley::fontique::FamilyId> = families.iter().map(|(id, _)| *id).collect();
-    let name = families.first().and_then(|(id, _)| {
-        fcx.collection
-            .family(*id)
-            .map(|info| info.name().to_owned())
-    });
+    let mut ranked: Vec<(u32, String, parley::fontique::FamilyId)> = Vec::new();
+    for (id, fonts) in &families {
+        let Some(name) = fcx.collection.family_name(*id) else {
+            continue;
+        };
+        let lowest_face = fonts.iter().map(|f| f.index()).min().unwrap_or(u32::MAX);
+        ranked.push((lowest_face, name.to_owned(), *id));
+    }
+    ranked.sort();
+    let name = ranked.first().map(|(_, name, _)| name.clone());
+    let ids = ranked.into_iter().map(|(_, _, id)| id).collect();
     (name, ids)
 }
 
@@ -195,6 +215,98 @@ pub(crate) fn shape_grouped_with_family(
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    /// simsun.ttc fixture candidates: the repo's web-app fonts dir first
+    /// (gitignored - dev machines only), then the Windows system font dir
+    /// (the phase-2 Task 1 observation source). Absent everywhere -> None:
+    /// a single-face fixture cannot reproduce a face flip.
+    fn locate_simsun_ttc() -> Option<Vec<u8>> {
+        for path in [
+            "../../web-app/public/fonts/simsun.ttc",
+            "C:/Windows/Fonts/simsun.ttc",
+        ] {
+            if let Ok(bytes) = std::fs::read(path) {
+                return Some(bytes);
+            }
+        }
+        None
+    }
+
+    /// The observable contract of one `register_font_with_ids` call: the
+    /// canonical family name plus every registered family in ranked order
+    /// with its lowest face index (raw `FamilyId`s are per-collection, so
+    /// names + face indexes are the comparable signature).
+    type RegistrationSignature = (Option<String>, Vec<(String, u32)>);
+
+    fn registration_signature(fcx: &mut FontContext, font: &FontData) -> RegistrationSignature {
+        let (name, ids) = register_font_with_ids(fcx, font);
+        let ranked = ids
+            .iter()
+            .map(|id| {
+                let family = fcx
+                    .collection
+                    .family(*id)
+                    .expect("just-registered family resolves");
+                let lowest = family
+                    .fonts()
+                    .iter()
+                    .map(|f| f.index())
+                    .min()
+                    .expect("family carries at least one font");
+                (family.name().to_owned(), lowest)
+            })
+            .collect();
+        (name, ranked)
+    }
+
+    #[test]
+    fn ttc_registration_is_deterministic_across_fresh_contexts() {
+        // Cross-process byte stability (convert spec §8, phase-2 Task 2b):
+        // fontique's `register_fonts` returns the registration's families
+        // by iterating an internal HashMap, so both the list order and the
+        // old `families.first()` pick are RANDOM PER PROCESS. A TTC whose
+        // faces carry distinct family names (simsun.ttc: face 0 "SimSun" +
+        // face 1 "NSimSun") must not let that order decide the canonical
+        // family, or two CLI runs of the same conversion shape different
+        // faces -> different bytes (observed live: two sha256 values
+        // across 6 processes, phase-2 Task 1). 32 fresh FontContexts model
+        // 32 fresh font states: pre-fix the coin flips disagree (P(all
+        // agree) ~ 2^-31); post-fix the signature is pinned.
+        let Some(ttc) = locate_simsun_ttc() else {
+            eprintln!("skipping: no simsun.ttc fixture (repo fonts dir or C:/Windows/Fonts)");
+            return;
+        };
+        let font = FontData::new(peniko::Blob::new(Arc::new(ttc)), 0);
+
+        let mut reference: Option<RegistrationSignature> = None;
+        for i in 0..32 {
+            let mut fcx = FontContext::new();
+            let got = registration_signature(&mut fcx, &font);
+            assert!(!got.1.is_empty(), "TTC registers at least one family");
+            assert_eq!(
+                got.0.as_deref(),
+                Some(got.1[0].0.as_str()),
+                "canonical name must be the first ranked family"
+            );
+            assert_eq!(
+                got.1[0].1, 0,
+                "face 0 anchors the canonical name (FontData::new(blob, 0) draws it)"
+            );
+            let faces: Vec<u32> = got.1.iter().map(|(_, f)| *f).collect();
+            assert!(
+                faces.windows(2).all(|w| w[0] <= w[1]),
+                "families rank by ascending face index, got {faces:?}"
+            );
+            if let Some(want) = &reference {
+                assert_eq!(
+                    &got, want,
+                    "fresh context #{i} disagreed on TTC face selection"
+                );
+            } else {
+                reference = Some(got);
+            }
+        }
+    }
 
     fn load_font() -> FontData {
         let bytes = include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
