@@ -127,6 +127,14 @@ pub struct ConvertOptions {
 #[non_exhaustive]
 pub enum ConvertWarning {
     Parse(rofd_dom::OfdWarning),
+    /// `count` parse warnings of one kind collapsed onto their first member
+    /// (flood governance, phase-3 Task 2): real documents emit hundreds of
+    /// same-reason `SkippedObject` lines; the stream stays one entry per
+    /// kind-key. `Display` appends " (×N)".
+    ParseRepeats {
+        representative: Box<rofd_dom::OfdWarning>,
+        count: usize,
+    },
     Encode(String),
 }
 
@@ -134,17 +142,72 @@ impl std::fmt::Display for ConvertWarning {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ConvertWarning::Parse(w) => write!(f, "{w}"),
+            ConvertWarning::ParseRepeats {
+                representative,
+                count,
+            } => write!(f, "{representative} (\u{d7}{count})"),
             ConvertWarning::Encode(line) => write!(f, "{line}"),
         }
     }
 }
 
-/// Stable merge order for a conversion's warning stream: all parse
-/// warnings first (parse-report order), then encoder degradations.
-fn merged_warnings(parse: Vec<rofd_dom::OfdWarning>, encode: Vec<String>) -> Vec<ConvertWarning> {
-    parse
+/// Kind-key for flood aggregation: the variant discriminant plus the
+/// reason-ish field that varies least (entries/pages/ids vary per page —
+/// collapsing on them would keep the flood). The match is exhaustive over
+/// today's closed variant set — a new variant fails compilation here and
+/// must pick its key explicitly.
+fn kind_key(w: &rofd_dom::OfdWarning) -> String {
+    use rofd_dom::OfdWarning;
+    match w {
+        OfdWarning::MissingFeature { feature, .. } => format!("MissingFeature:{feature}"),
+        OfdWarning::SkippedObject { reason, .. } => format!("SkippedObject:{reason}"),
+        OfdWarning::FontSubstituted { requested, used } => {
+            format!("FontSubstituted:{requested}->{used}")
+        }
+        OfdWarning::ResourceNotFound { kind, id } => format!("ResourceNotFound:{kind:?}:{id}"),
+    }
+}
+
+/// Collapse a parse-warning flood into one entry per kind-key (first
+/// occurrence order preserved). Singletons stay [`ConvertWarning::Parse`];
+/// groups become [`ConvertWarning::ParseRepeats`] with the first member as
+/// representative and the full group size as count.
+fn aggregate_parse_warnings(warnings: Vec<rofd_dom::OfdWarning>) -> Vec<ConvertWarning> {
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: std::collections::HashMap<String, (rofd_dom::OfdWarning, usize)> =
+        std::collections::HashMap::new();
+    for w in warnings {
+        let key = kind_key(&w);
+        groups
+            .entry(key.clone())
+            .or_insert_with(|| {
+                order.push(key);
+                (w, 0)
+            })
+            .1 += 1;
+    }
+    order
         .into_iter()
-        .map(ConvertWarning::Parse)
+        .map(|key| {
+            let (first, count) = groups.remove(&key).expect("key inserted with its slot");
+            if count > 1 {
+                ConvertWarning::ParseRepeats {
+                    representative: Box::new(first),
+                    count,
+                }
+            } else {
+                ConvertWarning::Parse(first)
+            }
+        })
+        .collect()
+}
+
+/// Stable merge order for a conversion's warning stream: the (aggregated)
+/// parse warnings first (first-occurrence order), then encoder
+/// degradations.
+fn merged_warnings(parse: Vec<rofd_dom::OfdWarning>, encode: Vec<String>) -> Vec<ConvertWarning> {
+    aggregate_parse_warnings(parse)
+        .into_iter()
         .chain(encode.into_iter().map(ConvertWarning::Encode))
         .collect()
 }
@@ -410,6 +473,46 @@ mod tests {
         assert!(
             matches!(&merged[1], ConvertWarning::Encode(_)),
             "{merged:?}"
+        );
+    }
+
+    #[test]
+    fn flood_aggregation_collapses_repeated_kinds() {
+        use rofd_dom::{OfdWarning, PageId};
+        let mk = |p: usize| OfdWarning::SkippedObject {
+            page: PageId::new(format!("P{p}")),
+            reason: "unknown element <PageBlock>".to_string(),
+        };
+        // One lone warning of a kind + 736 same-reason SkippedObjects across
+        // distinct pages: the flood collapses to one entry per kind-key,
+        // the group reporting its representative and total count.
+        let mut ws = vec![OfdWarning::MissingFeature {
+            feature: "Template".to_string(),
+            entry: "a".to_string(),
+        }];
+        for p in 0..736 {
+            ws.push(mk(p));
+        }
+        let out = aggregate_parse_warnings(ws);
+        assert_eq!(out.len(), 2, "one entry per distinct kind-key: {out:?}");
+        assert!(matches!(&out[0], ConvertWarning::Parse(_)), "{out:?}");
+        match &out[1] {
+            ConvertWarning::ParseRepeats {
+                representative,
+                count,
+            } => {
+                assert_eq!(*count, 736, "the whole group folds into one entry");
+                assert!(
+                    matches!(**representative, OfdWarning::SkippedObject { .. }),
+                    "representative is the group's first member"
+                );
+            }
+            other => panic!("expected collapsed group: {other:?}"),
+        }
+        assert!(
+            out[1].to_string().contains("\u{d7}736"),
+            "Display carries the count: {}",
+            out[1]
         );
     }
 
