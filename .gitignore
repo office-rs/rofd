@@ -34,3 +34,7 @@ TODO.md
 # cargo-fuzz build artifacts (crates/convert/fuzz is its own workspace,
 # never a member of the root workspace)
 crates/convert/fuzz/target/
+
+# convert-java demo staging (compiled demo classes + fat-jar native staging)
+crates/convert-java/demo/classes/
+crates/convert-java/demo/native-stage/
