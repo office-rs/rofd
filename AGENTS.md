@@ -302,7 +302,6 @@ If you're tempted to reintroduce a winit-layer bridge、canvas-origin 记账、�
 | `napi` / `napi-derive` / `napi-build` | crates.io | `2`（convert-node；rword 同 pin） |
 | `pyo3` | crates.io | `0.30`（convert-py，abi3-py39；rword 同 pin） |
 | `krilla` | crates.io | `0.8`（feature `pdf`，PDF 编码） |
-| `jni` | crates.io | `0.21`（与 rword convert-java 同 pin；rofd-convert-java 的唯一外部依赖） |
 | `gpui-pre` / `gpui-pre-platform` | crates.io | `=0.3.10`（zed@08cbb88 快照重发布；官方 crates.io gpui 0.2.2 缺 Windows/IME 修复，不可换用） |
 | `gpui-kit` / `gpui-kit-assets` | crates.io | `=0.8.1`（图标走 `with_assets(AllAssets)`） |
 
