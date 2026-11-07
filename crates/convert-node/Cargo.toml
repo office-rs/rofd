@@ -1,0 +1,17 @@
+[package]
+name = "rofd-convert-node"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+name = "rofd_convert_node"
+
+[dependencies]
+rofd-convert = { workspace = true }
+napi = { workspace = true }
+napi-derive = { workspace = true }
+
+[build-dependencies]
+napi-build = { workspace = true }
