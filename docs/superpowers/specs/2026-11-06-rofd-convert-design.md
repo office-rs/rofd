@@ -169,7 +169,7 @@ pub struct ConvertOutput { pub bytes: Vec<u8>, pub warnings: Vec<ConvertWarning>
 
 | 期 | 内容 | 出口判据 |
 |---|---|---|
-| ① | `rofd-convert` 内核 + `rofd-convert-cli`；D17 默认翻转（含三宿主与测试）；线程契约文档化（Send 现状测试 + 绑线程建议）；预算旋钮；parity 测试（§8）；fuzz 靶 `convert_ofd`；soak 骨架；依赖许可审计 | CLI 转真实样例绿；parity 字节一致测试绿；fuzz 20000 runs 无 panic；`cargo test/clippy/fmt` 全绿 |
+| ① | `rofd-convert` 内核 + `rofd-convert-cli`；D17 默认翻转（含三宿主与测试）；线程契约文档化（Send 现状测试 + 绑线程建议）；预算旋钮；parity 测试（§8）；fuzz 靶 `convert_ofd`；soak 骨架；依赖许可审计 | CLI 转真实样例绿；parity 字节一致测试绿；fuzz 20000 runs 无 panic；`cargo test/clippy/fmt` 全绿。（补跑注记 2026-11-07 ②期 Task 3：Windows libFuzzer 符号化器缺陷致会话中断，本机已跑 ~7700 次 0 崩溃 0 rofd 帧 ASan 发现；WSL 仅 stable 无 nightly/cargo-fuzz 且不擅自安装——20k 满额**待 CI/Linux 机清偿**，语料可复用） |
 | ② | `rofd-convert-java`：JNI 壳 + jar 双形态 + 两幕 demo + Maven 发布件 | demo 两幕 == CLI 字节 |
 | ③ | `rofd-convert-node` + `rofd-convert-py`：napi/PyO3 + 平台包 + npm/PyPI 发布件 | pooled demo == CLI 字节（两语言） |
 | ④ | `rofd-convert-wasm`：wasm 绑定 + sdk + main/worker demo | 浏览器 demo == CLI 字节 |
