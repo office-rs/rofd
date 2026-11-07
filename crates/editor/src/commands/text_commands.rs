@@ -3,6 +3,35 @@ use rofd_dom::{AnnotationId, AnnotationKind, AnnotationPayload, Color, NoteIcon,
 use crate::editor::Editor;
 use crate::payload_util::{set_color, set_width};
 
+/// Collapse a rich TextBox to its flat fallback style. Runs are the
+/// parse-time appearance snapshot of a foreign file; any text edit makes
+/// them stale (fragments no longer map to the content), so the first
+/// mutation folds the first run's style into the flat fields and clears
+/// the runs - inside the SAME transaction, so one undo restores the rich
+/// appearance wholesale. A no-op for runs-empty boxes and other payloads.
+fn collapse_runs(payload: &mut AnnotationPayload) {
+    if let AnnotationPayload::TextBox {
+        font,
+        size,
+        color,
+        runs,
+        ..
+    } = payload
+    {
+        if let Some(first) = runs.first() {
+            let run_font = first.font.clone();
+            let run_size = first.size;
+            let run_color = first.color;
+            *font = run_font;
+            *size = run_size;
+            if let Some(c) = run_color {
+                *color = c;
+            }
+            runs.clear();
+        }
+    }
+}
+
 impl Editor {
     /// Set the primary color.
     pub fn set_annotation_color(&mut self, id: &AnnotationId, color: Color) {
@@ -35,6 +64,7 @@ impl Editor {
             None => return,
         };
         let mut after = before.clone();
+        collapse_runs(&mut after.payload);
         if let Some(content) = text_content_mut(&mut after.payload) {
             let off = offset.min(content.chars().count());
             let mut new = content.chars().take(off).collect::<String>();
@@ -53,6 +83,7 @@ impl Editor {
             None => return,
         };
         let mut after = before.clone();
+        collapse_runs(&mut after.payload);
         if let Some(content) = text_content_mut(&mut after.payload) {
             let total = content.chars().count();
             let start = offset.min(total);
@@ -76,6 +107,7 @@ impl Editor {
             None => return,
         };
         let mut after = before.clone();
+        collapse_runs(&mut after.payload);
         if let Some(content) = text_content_mut(&mut after.payload) {
             *content = text.into();
         }
@@ -149,7 +181,8 @@ fn text_content_mut(p: &mut AnnotationPayload) -> Option<&mut String> {
 mod tests {
     use crate::editor::Editor;
     use rofd_dom::{
-        AnnotationId, AnnotationKind, AnnotationPayload, Color, NoteIcon, PageId, Rect,
+        AnnotationId, AnnotationKind, AnnotationPayload, Color, FontId, NoteIcon, PageId, Rect,
+        TextRun,
     };
 
     fn note_editor(content: &str) -> (Editor, AnnotationId) {
@@ -173,6 +206,55 @@ mod tests {
         (e, id)
     }
 
+    fn rich_textbox_editor() -> (Editor, AnnotationId) {
+        let mut e = Editor::new();
+        e.set_clock("t".into(), 1);
+        let id = e.create_annotation(
+            AnnotationKind::TextBox,
+            PageId::new("P0"),
+            AnnotationPayload::TextBox {
+                rect: Rect {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 46.0,
+                    h: 10.0,
+                },
+                content: "发的古格".into(),
+                font: FontId::new("118"),
+                size: 4.2333,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                runs: vec![
+                    TextRun {
+                        text: "发的古".into(),
+                        font: FontId::new("118"),
+                        size: 4.2333,
+                        color: None,
+                        bold: false,
+                        italic: false,
+                        x: 1.0,
+                        baseline: 6.0,
+                    },
+                    TextRun {
+                        text: "格".into(),
+                        font: FontId::new("157"),
+                        size: 4.2333,
+                        color: Some(Color::Rgb(75, 172, 198)),
+                        bold: true,
+                        italic: false,
+                        x: 20.0,
+                        baseline: 6.0,
+                    },
+                ],
+            },
+        );
+        (e, id)
+    }
+
+    fn textbox_payload<'a>(e: &'a Editor, id: &AnnotationId) -> &'a AnnotationPayload {
+        &e.document().annotations.find(id).unwrap().payload
+    }
+
     fn content_of(e: &Editor, id: &AnnotationId) -> String {
         let a = e.document().annotations.find(id).unwrap();
         match &a.payload {
@@ -186,6 +268,75 @@ mod tests {
         let (mut e, id) = note_editor("Hello");
         e.insert_text(&id, 2, "XX");
         assert_eq!(content_of(&e, &id), "HeXXllo");
+    }
+
+    #[test]
+    fn text_edit_collapses_rich_runs_to_flat_style() {
+        // The first text edit makes the parse-time runs stale; the SAME
+        // transaction collapses the box to the flat fallback style
+        // (runs[0]) so caret/hit geometry and rendering stay consistent.
+        let (mut e, id) = rich_textbox_editor();
+        e.insert_text(&id, 4, "!");
+        match textbox_payload(&e, &id) {
+            AnnotationPayload::TextBox {
+                content,
+                font,
+                size,
+                runs,
+                ..
+            } => {
+                assert_eq!(content, "发的古格!");
+                assert!(runs.is_empty(), "runs collapsed on first edit");
+                assert_eq!(font.0, "118", "flat style <- runs[0]");
+                assert!((size - 4.2333).abs() < 1e-9);
+            }
+            other => panic!("expected TextBox, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn text_edit_collapse_undo_restores_runs() {
+        // One undo restores the rich appearance wholesale (the collapse
+        // lives inside the edit's transaction, not a separate step).
+        let (mut e, id) = rich_textbox_editor();
+        let before = textbox_payload(&e, &id).clone();
+        e.delete_text(&id, 0, 1);
+        assert!(matches!(
+            textbox_payload(&e, &id),
+            AnnotationPayload::TextBox { runs, .. } if runs.is_empty()
+        ));
+        assert!(e.undo());
+        assert_eq!(textbox_payload(&e, &id), &before, "undo restores runs");
+    }
+
+    #[test]
+    fn flat_textbox_edit_keeps_runs_empty() {
+        let mut e = Editor::new();
+        e.set_clock("t".into(), 1);
+        let id = e.create_annotation(
+            AnnotationKind::TextBox,
+            PageId::new("P0"),
+            AnnotationPayload::TextBox {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 30.0,
+                    h: 8.0,
+                },
+                content: "hi".into(),
+                font: FontId::new("F1"),
+                size: 3.5,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                runs: vec![],
+            },
+        );
+        e.insert_text(&id, 1, "o");
+        assert!(matches!(
+            textbox_payload(&e, &id),
+            AnnotationPayload::TextBox { content, runs, .. }
+                if content == "hoi" && runs.is_empty()
+        ));
     }
 
     #[test]
