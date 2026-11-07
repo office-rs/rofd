@@ -7868,6 +7868,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rofd-convert-wasm"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "rofd-convert",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "rofd-dom"
 version = "0.1.0"
 dependencies = [

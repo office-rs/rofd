@@ -1,0 +1,20 @@
+[package]
+name = "rofd-convert-wasm"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Disable wasm-pack's wasm-opt pass (same door as rofd-web-view): current
+# stable rustc emits multi-table wasm (reference-types) that wasm-pack's
+# cached wasm-opt cannot parse ("Only 1 table definition allowed in MVP").
+# wasm-opt only shrinks; skipping it does not affect functionality.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[dependencies]
+rofd-convert = { workspace = true }
+wasm-bindgen = { workspace = true }
+js-sys = { workspace = true }
