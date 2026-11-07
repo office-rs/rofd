@@ -4,7 +4,7 @@
 
 use rofd_dom::{
     Annotation, AnnotationId, AnnotationKind, AnnotationPayload, Color, FontId, ImageId, NoteIcon,
-    PageId, PathCommand, PathData, Point, Rect, ShapeKind,
+    PageId, PathCommand, PathData, Point, Rect, ShapeKind, TextRun,
 };
 
 fn ann(
@@ -188,6 +188,134 @@ fn stamp_roundtrips() {
         None,
     );
     assert_eq!(st, roundtrip(&st));
+}
+
+#[test]
+fn textbox_empty_content_roundtrips() {
+    // A freshly created box (new tools): empty content, no runs, no border.
+    let tb = ann(
+        30,
+        AnnotationKind::TextBox,
+        AnnotationPayload::TextBox {
+            rect: Rect {
+                x: 5.0,
+                y: 5.0,
+                w: 30.0,
+                h: 8.0,
+            },
+            content: String::new(),
+            font: FontId::new("F1"),
+            size: 3.5,
+            color: Color::Rgb(0, 0, 0),
+            border: None,
+            runs: Vec::new(),
+        },
+        None,
+    );
+    assert_eq!(tb, roundtrip(&tb));
+}
+
+#[test]
+fn textbox_rich_runs_roundtrip() {
+    // Rich runs: serialize -> parse preserves every styled fragment's
+    // font/size/color/bold/italic and appearance-local pen position.
+    let tb = ann(
+        31,
+        AnnotationKind::TextBox,
+        AnnotationPayload::TextBox {
+            rect: Rect {
+                x: 10.0,
+                y: 20.0,
+                w: 46.0,
+                h: 10.0,
+            },
+            content: "发的古典风格".into(),
+            font: FontId::new("118"),
+            size: 4.2333,
+            color: Color::Rgb(0, 0, 0),
+            border: Some(Color::Rgb(255, 0, 0)),
+            runs: vec![
+                TextRun {
+                    text: "发的古".into(),
+                    font: FontId::new("118"),
+                    size: 4.2333,
+                    color: None,
+                    bold: false,
+                    italic: false,
+                    x: 1.1764,
+                    baseline: 6.631,
+                },
+                TextRun {
+                    text: "典".into(),
+                    font: FontId::new("154"),
+                    size: 6.35,
+                    color: None,
+                    bold: false,
+                    italic: false,
+                    x: 13.8763,
+                    baseline: 6.631,
+                },
+                TextRun {
+                    text: "风".into(),
+                    font: FontId::new("118"),
+                    size: 4.2333,
+                    color: None,
+                    bold: false,
+                    italic: true,
+                    x: 20.2263,
+                    baseline: 6.631,
+                },
+                TextRun {
+                    text: "格".into(),
+                    font: FontId::new("157"),
+                    size: 4.2333,
+                    color: Some(Color::Rgb(75, 172, 198)),
+                    bold: true,
+                    italic: false,
+                    x: 24.4596,
+                    baseline: 6.631,
+                },
+            ],
+        },
+        None,
+    );
+    let back = roundtrip(&tb);
+    match (&tb.payload, &back.payload) {
+        (
+            AnnotationPayload::TextBox {
+                content: ca,
+                border: ba,
+                runs: ra,
+                ..
+            },
+            AnnotationPayload::TextBox {
+                content: cb,
+                border: bb,
+                runs: rb,
+                ..
+            },
+        ) => {
+            assert_eq!(ca, cb, "flat content preserved");
+            assert_eq!(ba, bb, "border preserved");
+            assert_eq!(ra.len(), rb.len(), "run count preserved");
+            for (x, y) in ra.iter().zip(rb.iter()) {
+                assert_eq!(x.text, y.text, "run text");
+                assert_eq!(x.font, y.font, "run font");
+                assert!((x.size - y.size).abs() < 1e-6, "run size");
+                assert_eq!(x.color, y.color, "run color");
+                assert_eq!(x.bold, y.bold, "run bold");
+                assert_eq!(x.italic, y.italic, "run italic");
+                assert!((x.x - y.x).abs() < 1e-6, "pen x: {} vs {}", x.x, y.x);
+                assert!(
+                    (x.baseline - y.baseline).abs() < 1e-6,
+                    "baseline: {} vs {}",
+                    x.baseline,
+                    y.baseline
+                );
+            }
+        }
+        _ => panic!("expected TextBox on both sides"),
+    }
 }
 
 #[test]
