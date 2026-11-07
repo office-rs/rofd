@@ -184,6 +184,7 @@ pub struct ConvertOutput { pub bytes: Vec<u8>, pub warnings: Vec<ConvertWarning>
 - **预算**：max_pages / max_media_bytes 触发 `BudgetExceeded` 的单元测试。
 - **覆盖率** 80%（仓规）。
 - **渲染保真边界沿用 v1 现状**：模板继承/JBIG2/瓦片图等桩处理经 warnings 透出，不在 convert 范围内解决。
+- **系统回退字体 × krilla 子集化**（2026-11-07 Task 8 手测发现，宿主 Windows + ru-yuan-ji-lu.ofd）：native 构建的 fontique 系统回退字体可能不被 krilla 子集化支持——真实文本文档在空注册表下可能编码失败，CLI 以退出码 3 干净报告；要求跨机器可复现的部署按 D19 显式注册足够字体。
 
 ## 9. 发布工程
 
@@ -192,6 +193,7 @@ pub struct ConvertOutput { pub bytes: Vec<u8>, pub warnings: Vec<ConvertWarning>
 - 工作流 `convert-release.yml` 同型：按 tag 前缀门控（`rofd-convert-v*`），手动 dispatch；与主仓 `v*` 发布线独立（rword v0.1.2 前车之鉴）。
 - 各包内嵌 LICENSE（Apache-2.0）与第三方声明文件。
 - 产物命名统一 `rofd-convert` 家族。
+- **① 期依赖许可审计结论（2026-11-07，D16 收口）**：`rofd-convert` 运行时外部依赖 = **0**（`crates/convert/Cargo.toml` 的 `[dependencies]` 全为 workspace 内部 path 依赖）；`rofd-convert-cli` 运行时依赖仅 `rofd-convert`。dev-deps 不随产物分发：`rofd-convert` 的 `zip`（workspace 钉 2.2，与 rofd-io 同源，手工打包 fixture 复包）+ `rofd-convert-cli` 的 rofd-io/rofd-dom（fixture 组装）。传递栈与编辑器线一致——`Cargo.lock` 差异 bb4d05d..e37c927 仅新增 `rofd-convert`/`rofd-convert-cli` 两个内部包，**零新增外部包**；fuzz 侧 `libfuzzer-sys` 位于独立 fuzz workspace（自有 lock，commit e37c927 起跟踪），不进根运行图。结论：无新增许可面，依赖栈全宽松许可。
 
 ## 10. AGENTS.md 同步清单（① 期完成后）
 

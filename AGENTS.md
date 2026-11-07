@@ -84,15 +84,29 @@ tauri-app 前端**复用 web-app 源码**（`main.ts` 从 `../web-app/src` 导�
 
 产物命名统一为 `rofd`（详见 release-tauri.yml）。
 
+### 转换内核 / CLI（headless convert）
+
+```bash
+cargo run -p rofd-convert-cli -- test/ru-yuan-ji-lu.ofd target/convert-probe.pdf --font C:/Windows/Fonts/simsun.ttc  # bin rofd-convert
+cargo run -p rofd-convert --example convert_bench --release  # 3 场景基线
+cargo test -p rofd-convert --test soak -- --ignored          # Linux RSS soak
+cd crates/convert/fuzz && cargo +nightly fuzz run convert_ofd -- -runs=20000
+# ^ Windows：MSVC ASan DLL 目录须在 PATH 上
+```
+
+带文字的真实样例在空字体注册表下**必须给 `--font`**：系统回退字体可能不被 krilla 子集化支持，未注册即转换会以退出码 3 失败（spec 2026-11-06 §8 边界）。
+
 ---
 
 ## 3. 仓库布局与分层
 
-严格 5 层单向依赖，**反向边禁止**。每个 crate 的 `[dependencies]` 是依赖方向的唯一事实来源。**平台边界线画在 component 与适配器之间**：component 及以下六个 crate（含叶子 rofd-export）平台无关（不依赖 winit/web-sys/wgpu/arboard 等平台 crate），xilem-view / web-view / gpui-view 是仅有的三层平台绑定。
+严格 5 层单向依赖，**反向边禁止**。每个 crate 的 `[dependencies]` 是依赖方向的唯一事实来源。**平台边界线画在 component 与适配器之间**：component 及以下六个 crate（含叶子 rofd-export）平台无关（不依赖 winit/web-sys/wgpu/arboard 等平台 crate），xilem-view / web-view / gpui-view 是仅有的三层平台绑定；rofd-convert（转换会话层）同属平台无关核心，是 component/io/render/export 的上邻。
 
 ```
-crates/xilem-app      ─┐
-                       ├─► xilem-view ─┐
+crates/convert-cli ─► rofd-convert ─────┐
+                                        │
+crates/xilem-app      ─┐                │
+                       ├─► xilem-view ─┤
                        │                ├──► component ─┬─► render ──┐
 crates/web-app ─► web-view ─────────────┤                ├─► editor ──┴─► dom
    (JS + Vite,         (wasm-bindgen    │                │
@@ -100,6 +114,8 @@ crates/web-app ─► web-view ─────────────┤       
                                         │
 crates/gpui-app ─► gpui-view ───────────┘
 ```
+
+converter hosts（CLI/未来绑定）只碰 rofd-convert，与"编辑器宿主只碰 component"同构。
 
 | crate            | 路径                 | 职责 | 依赖（rofd 内部） |
 | ---------------- | -------------------- | --- | ----------------- |
@@ -109,6 +125,8 @@ crates/gpui-app ─► gpui-view ───────────┘
 | `rofd-render`    | `crates/render`      | `imaging::record::Scene` 构建 + hit_test/caret_rect | dom |
 | `rofd-editor`    | `crates/editor`      | 批注选区、命令模式、Step/Transaction/History | dom |
 | `rofd-component` | `crates/component`   | **唯一集成入口** `OfdComponent`：ViewEvent、Callbacks、脏缓存 | dom + render + editor + office-rs-print（类型层）（**不依赖 io**） |
+| `rofd-convert`   | `crates/convert`     | 转换会话层 facade：`Converter`/进程级字体注册表/预算/`catch_unwind`；converter hosts 只 import 此 crate | component + io + render + export + dom |
+| `rofd-convert-cli` | `crates/convert-cli` | bin `rofd-convert`：零依赖 argv 解析/退出码 0-2-3/字体注册 warn-and-continue | rofd-convert |
 | `rofd-xilem-view`| `crates/xilem-view`  | masonry/xilem 薄适配器：`OfdWidget` + `ofd()`/`ofd_with_config()` | component |
 | `rofd-web-view`  | `crates/web-view`    | WASM 薄适配器：`WasmOfd` + `WebGpuRenderTarget` + TS SDK | component + io + editor + dom + rofd-export + office-rs-print（类型层） + vello + imaging + imaging_vello + wgpu + web-sys |
 | `rofd-gpui-view` | `crates/gpui-view`   | gpui 适配层 SDK：`OfdGpuiView`（Entity/Element）+ `GpuiOfdHandle` + IME 桥 + 打印对话框状态机/discover-only services | component + dom + imaging + gpui-pre/gpui-pre-platform + office-rs-print（list_printers）+ ttf-parser + image（**不依赖 io**） |
@@ -159,7 +177,16 @@ crates/gpui-app ─► gpui-view ───────────┘
 - `OfdConfig`：`default_font_bytes`、`page_gap`（默认 20）、`zoom`（初始 PX_PER_MM，`with_zoom` 可覆盖）。
 - 场景脏缓存（终态公共 API）：`update_scene()` 按脏标志重合成、`scene() -> &Scene`、`set_viewport_size(f64,f64)`、`mark_scene_dirty`（pub(crate)）。
 - 文本编辑：`paste_text`、`delete_annotation`、`tick_blink`（两目标统一，wasm 由 `renderFrame` 驱动，见 §4.4）、preedit 状态机（组件自持 `Option<PreeditState>`，简化 caret overlay，不做 ghost-document 回流）。
-- 打印内核缝（spec 2026-10-31）：`begin_print(PrintContent) -> PrintSession`，内容三开关（水印/批注/图章，默认净版+图章）；页场景/纸型/页计划全经 session（`page_scene`/`page_parameters`/`plan`，`1-3,5` 范围语法由 office-rs-print 解析，宿主不重写）；native 一键直打 `print_direct`（begin_print→plan→payload→`print_pages`）。
+- 打印内核缝（spec 2026-10-31）：`begin_print(PrintContent) -> PrintSession`，内容三开关（水印/批注/图章，默认**全开 ✔✔✔**——spec 2026-11-06 D17 翻转，commit 052f528；`PrintContent::default()` 三项皆 true，宿主与 convert 均经 default 派生）；页场景/纸型/页计划全经 session（`page_scene`/`page_parameters`/`plan`，`1-3,5` 范围语法由 office-rs-print 解析，宿主不重写）；native 一键直打 `print_direct`（begin_print→plan→payload→`print_pages`）。
+
+### rofd-convert（headless 转换线，spec 2026-11-06）
+
+- 会话层 facade：converter hosts（CLI/未来 java/node/py/wasm 绑定）只 import 此 crate，够不到 component/io/render/export。长期 `Converter` 实例 + 单调用 `convert(format, ofd_bytes, opts)` 字节进字节出（无 open/edit/close 三段式）；`catch_unwind` 边界（panic → `ConvertError::Internal`，`catch_panics` pub 供绑定共用 FFI 纪律）。
+- 进程级字体注册表（D9/D19）：`register_font`/`register_font_file`/`registered_families`/`has_default_font`/`register_default_font`（显式默认字体锚点，**后注册者生效**）；**注册必须先于 `Converter::new()`**——实例持注册表快照（Arc 共享零拷贝），之后的注册要换新实例才可见。append-only 无注销；同字节幂等 no-op。字体注入只此一门，无 per-call 口。
+- 预算旋钮：`ConvertOptions{content, max_pages, max_media_bytes}`，默认 `DEFAULT_MAX_PAGES`=10000 / `DEFAULT_MAX_MEDIA_BYTES`=1GiB，超限 `BudgetExceeded` fail-fast（核查在 parse 之后，zip 解压内存峰值先于预算——D21 已知边界）。
+- parity 原则（D18）：convert 经 `PrintSession::headless` 复用编辑器导出同一条场景组装（`page_body_scene` + `draw_annotations` + `PRINT_ZOOM`），与编辑器"导出 PDF"**字节级一致**（`crates/convert/tests/parity.rs` 钉死）。
+- FontStore 逐调用重建：无跨调用温排形缓存（实例长寿买到的是注册表共享，不是温缓存）；`Converter` 当前为 `Send`（D15 修订 2026-11-07，测试钉住现状非承诺），L2 仍按"实例绑线程"建议实现。
+- CLI（`rofd-convert-cli`，bin `rofd-convert`）：零依赖 argv 解析；退出码 0 成功 / 2 用法错误 / 3 转换失败；`--font`/`--fonts-dir`/`--default-font` 注册失败 warn-and-continue；`--no-watermark`/`--no-annotations`/`--no-seal`（默认全开 D17，只提供关闭项）。
 
 ### rofd-xilem-view（as-built 九条契约）
 
@@ -259,6 +286,7 @@ superpowers 工作流：spec → plan → TDD → 自审 → 提交，全部 con
 | editor 只改 .annotations | 在 editor 里改 pages |
 | xilem-view 只依赖 component | 往适配器塞 io/业务逻辑 |
 | 改 io 后跑手术刀测试 | 只断言模型相等 |
+| converter 绑定/CLI 只碰 rofd-convert | 绑定/CLI 直接 import rofd-io/rofd-export/component |
 | SDK 渲染调度经 `RenderScheduler`/kick（真值 = `needs_frame`） | 在 SDK 起恒定 rAF 循环；往 tick 里加经 Proxy 的 wasm 读而不依赖 `inLoopTick` 兜底 |
 
 ---
