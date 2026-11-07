@@ -38,3 +38,6 @@ crates/convert/fuzz/target/
 # convert-java demo staging (compiled demo classes + fat-jar native staging)
 crates/convert-java/demo/classes/
 crates/convert-java/demo/native-stage/
+
+# Node addon staged locally by the demo (built artifact)
+crates/convert-node/rofd_convert_node.node
