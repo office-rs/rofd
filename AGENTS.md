@@ -120,9 +120,15 @@ node crates/convert-wasm/demo/run.mjs           # 验收：浏览器 main+Worker
 严格 5 层单向依赖，**反向边禁止**。每个 crate 的 `[dependencies]` 是依赖方向的唯一事实来源。**平台边界线画在 component 与适配器之间**：component 及以下六个 crate（含叶子 rofd-export）平台无关（不依赖 winit/web-sys/wgpu/arboard 等平台 crate），xilem-view / web-view / gpui-view 是仅有的三层平台绑定；rofd-convert（转换会话层）同属平台无关核心，是 component/io/render/export 的上邻。
 
 ```
-crates/convert-cli  ─┐
-                     ├─► rofd-convert ──┐
-crates/convert-java ─┘                  │
+crates/convert-cli   ─┐
+                      │
+crates/convert-java  ─┤
+                      ├─► rofd-convert ──┐
+crates/convert-node  ─┤                  │
+                      │                  │
+crates/convert-py    ─┤                  │
+                                        │
+crates/convert-wasm  ─┘                  │
                                         │
 crates/xilem-app      ─┐                │
                        ├─► xilem-view ─┤

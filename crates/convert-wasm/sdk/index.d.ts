@@ -12,10 +12,10 @@ export default function init(module_or_path?: string | URL | WebAssembly.Module)
 
 /** Register font bytes into the process registry (idempotent on identical
  * bytes). Returns false when the bytes are not a parsable font. */
-export function registerFont(bytes: Uint8Array | ArrayBuffer): boolean;
+export function registerFont(bytes: Uint8Array): boolean;
 
 /** Anchor the process default font (kernel D19); a later anchor wins. */
-export function registerDefaultFont(bytes: Uint8Array | ArrayBuffer): boolean;
+export function registerDefaultFont(bytes: Uint8Array): boolean;
 
 /** Whether a default font is anchored in the registry. */
 export function hasDefaultFont(): boolean;
@@ -26,7 +26,7 @@ export function registeredFamilies(): string[];
 
 /** Convert OFD bytes to PDF (kernel-default options: all content layers
  * on, default budgets). Throws Error on conversion failure. */
-export function convertToPdf(ofd: Uint8Array | ArrayBuffer): ConvertResult;
+export function convertToPdf(ofd: Uint8Array): ConvertResult;
 
 /** Package version. */
 export function version(): string;
