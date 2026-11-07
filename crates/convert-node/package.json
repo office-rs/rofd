@@ -1,0 +1,33 @@
+{
+  "name": "@office-rs/rofd-convert",
+  "version": "0.1.0",
+  "description": "Headless OFD to PDF conversion (napi-rs bindings over the rofd kernel)",
+  "license": "Apache-2.0",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "bin": {
+    "rofd-convert": "cli.js"
+  },
+  "files": [
+    "LICENSE",
+    "NOTICE",
+    "index.js",
+    "index.d.ts",
+    "pool.js",
+    "pool-worker.js",
+    "cli.js"
+  ],
+  "engines": {
+    "node": ">= 10"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "optionalDependencies": {
+    "@office-rs/rofd-convert-linux-x64-gnu": "0.1.0",
+    "@office-rs/rofd-convert-win32-x64-msvc": "0.1.0",
+    "@office-rs/rofd-convert-darwin-x64": "0.1.0",
+    "@office-rs/rofd-convert-darwin-arm64": "0.1.0"
+  },
+  "devDependencies": {}
+}
