@@ -7822,7 +7822,7 @@ dependencies = [
 
 [[package]]
 name = "rofd-convert"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rofd-component",
  "rofd-dom",
@@ -7834,7 +7834,7 @@ dependencies = [
 
 [[package]]
 name = "rofd-convert-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rofd-convert",
  "rofd-dom",
@@ -7843,7 +7843,7 @@ dependencies = [
 
 [[package]]
 name = "rofd-convert-java"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "jni 0.21.1",
  "rofd-convert",
@@ -7851,7 +7851,7 @@ dependencies = [
 
 [[package]]
 name = "rofd-convert-node"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "napi",
  "napi-build",
@@ -7861,7 +7861,7 @@ dependencies = [
 
 [[package]]
 name = "rofd-convert-py"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pyo3",
  "rofd-convert",
@@ -7869,7 +7869,7 @@ dependencies = [
 
 [[package]]
 name = "rofd-convert-wasm"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "js-sys",
  "rofd-convert",

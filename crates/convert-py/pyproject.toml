@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rofd-convert"
-version = "0.1.0"
+version = "0.1.1"
 description = "Headless OFD to PDF conversion (PyO3 bindings over the rofd kernel)"
 readme = "README.md"
 license = "Apache-2.0"

@@ -145,13 +145,16 @@ jobs:
       # committed fixture goes through the degradation path (exit with a
       # valid %PDF and warnings).
       - name: Zero-config load + convert smoke
+        env:
+          TAG_VER: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
           mkdir -p /tmp/smoke && cat > /tmp/smoke/SmokeMain.java <<'EOF'
           import io.github.officers.OfdConverter;
           public class SmokeMain {
               public static void main(String[] args) throws Exception {
-                  if (!"0.1.0".equals(OfdConverter.getVersion())) {
-                      throw new IllegalStateException("version mismatch: " + OfdConverter.getVersion());
+                  String want = args[1];
+                  if (!want.equals(OfdConverter.getVersion())) {
+                      throw new IllegalStateException("version mismatch: want " + want + ", got " + OfdConverter.getVersion());
                   }
                   byte[] ofd = java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(args[0]));
                   OfdConverter c = OfdConverter.create();
@@ -165,7 +168,8 @@ jobs:
           EOF
           JAR="$(ls crates/convert-java/target/rofd-convert-*.jar | grep -v -- -linux- | grep -v -- -windows- | grep -v -- -macos-)"
           javac --release 8 -cp "$JAR" -d /tmp/smoke /tmp/smoke/SmokeMain.java
-          java -cp "$JAR:/tmp/smoke" SmokeMain test/sample.ofd
+          VER="${TAG_VER#rofd-convert-v}"
+          java -cp "$JAR:/tmp/smoke" SmokeMain test/sample.ofd "$VER"
       - uses: actions/upload-artifact@v4
         with:
           name: jars
@@ -513,13 +517,19 @@ jobs:
             cp "$f" "$dir/"
             cp "${GITHUB_WORKSPACE}/LICENSE" "${GITHUB_WORKSPACE}/NOTICE" "$dir/"
             {
+              echo "# @office-rs/rofd-convert-$p"
+              echo ""
+              echo "Native addon for [@office-rs/rofd-convert](https://www.npmjs.com/package/@office-rs/rofd-convert) ($p)."
+              echo "Installed automatically via optionalDependencies - you should never depend on this package directly."
+            } > "$dir/README.md"
+            {
               echo '{'
               echo "  \"name\": \"@office-rs/rofd-convert-$p\","
               echo "  \"version\": \"$VER\","
               echo "  \"description\": \"rofd-convert native addon ($p)\","
               echo "  \"license\": \"Apache-2.0\","
               echo "  \"main\": \"rofd_convert_node-$p.node\","
-              echo "  \"files\": [\"rofd_convert_node-$p.node\", \"LICENSE\", \"NOTICE\"],"
+              echo "  \"files\": [\"rofd_convert_node-$p.node\", \"LICENSE\", \"NOTICE\", \"README.md\"],"
               echo "  \"os\": [\"$os\"],"
               echo "  \"cpu\": [\"$cpu\"],"
               echo "  \"publishConfig\": { \"access\": \"public\" }"
