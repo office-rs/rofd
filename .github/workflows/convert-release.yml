@@ -423,7 +423,7 @@ jobs:
           tag_name: ${{ github.event.release.tag_name || inputs.tag }}
           files: |
             node-artifacts/*
-            py-artifacts/*/*.whl
+            py-artifacts/**/*.whl
             wasm-artifacts/rofd-convert-wasm-sdk.tar.gz
 
   # Publish the abi3 wheels to PyPI via Trusted Publishing (OIDC). The
