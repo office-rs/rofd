@@ -1,7 +1,7 @@
 # rofd-convert 发布手册（runbook）
 
 对应 spec：`docs/superpowers/specs/2026-11-06-rofd-convert-design.md` §9（发布工程）、D13（版本与触发）、D16（Apache-2.0）。
-状态：2026-11-08（发布接线完成；人工前置 P1-P4 **未配**——见 §1）。对应工作流：`.github/workflows/convert-release.yml`（镜像 rword 同名工作流的成熟形态）。
+状态：2026-11-08 **v0.1.0 已发布，四通道全通**：PyPI `rofd-convert` ✓（workflow）、Maven Central `io.github.office-rs:rofd-convert` ✓（workflow，repo1 已可下载、search 索引滞后属正常）、npm 六包 ✓（**本地发布**——GitHub release 资产 CDN 对 runner 持续 504，wasm-pack 装不上致 publish-npm 连锁 skip；改从 CI artifacts 取 .node + 本地构建 wasm 后按 workflow 同款脚本发）。构建期修复：libcups 链接（office-rs/print `backend` feature + cargo workspace 继承不对称——member 侧 default-features=false 被忽略，必须在 workspace 条目上关）、wheel 附件 glob、wasm-pack 改 `gh release download` 安装（80d566e）。GPG：新生成 rofd 专用钥 DE65EABE（公钥已上 keyserver；rword 旧钥口令失传）。P1-P4 凭据全部入库。
 
 ## 1. 人工前置（org 级，仓库内无法替代；逐项配好后 registry 发布才会通）
 
