@@ -6,14 +6,18 @@
 // register callbacks -> bindEvents -> start on-demand rendering).
 // The web app just calls `init` and optionally passes fonts/callbacks.
 
-import { FontRuntime } from '@office-rs/font-runtime';
-import { RenderScheduler } from './scheduler';
-import { withKick } from './with-kick';
-import { printViaIframe } from './print';
-import * as fontFlow from './fontFlow';
-import type { FontSlicesConfig, SystemFontProvider } from './fontFlow';
+import { FontRuntime } from "@office-rs/font-runtime";
+import { RenderScheduler } from "./scheduler";
+import { withKick } from "./with-kick";
+import { printViaIframe } from "./print";
+import * as fontFlow from "./fontFlow";
+import type { FontSlicesConfig, SystemFontProvider } from "./fontFlow";
 
-export type { FontSlicesConfig, SystemFontEntry, SystemFontProvider } from './fontFlow';
+export type {
+  FontSlicesConfig,
+  SystemFontEntry,
+  SystemFontProvider,
+} from "./fontFlow";
 
 // --- wasm module shape (wasm-pack --target web) ---
 // `default` is the async init; `create_wasm_ofd` is the WebGPU factory,
@@ -42,7 +46,11 @@ interface WasmOfd {
   /** Current font requirements: normalized family keys + sorted deduped codepoints. */
   collectFontRequirements(): { families: string[]; codepoints: number[] };
   /** Register a decoded (OTF/TTF) font slice. `false` = bytes parsed to no family. */
-  registerFontSlice(bytes: Uint8Array, familyKey: string, sliceId: string): boolean;
+  registerFontSlice(
+    bytes: Uint8Array,
+    familyKey: string,
+    sliceId: string,
+  ): boolean;
   /** Whether this instance renders via the CPU fallback path. Read once at
    * init and frozen onto the `Ofd` instance as `isCpuFallback`. */
   isCpuFallback(): boolean;
@@ -76,12 +84,20 @@ interface WasmOfd {
   handleMouseMove(x: number, y: number): void;
   handleMouseScroll(dx: number, dy: number): void;
   handleZoom(factor: number): void;
-  handleScrollPage(direction: 'up' | 'down'): void;
+  handleScrollPage(direction: "up" | "down"): void;
   handleZoomAt(factor: number, cx: number, cy: number): void;
   handleFocusGained(): void;
   handleFocusLost(): void;
   loadOfd(bytes: Uint8Array): void;
   saveOfd(): Uint8Array;
+  /** IME composition surface (spec: the component owns the preedit state
+   * machine; the browser's CompositionEvent carries no caret range). */
+  handleImePreedit(text: string): void;
+  handleImeCommit(text: string): void;
+  /** Viewport-space caret rect `[x, y, w, h]` (device px) for the current
+   * text cursor, or null. The SDK anchors its hidden IME input here so the
+   * OS candidate window follows the caret. */
+  caretRect(): number[] | null;
   canUndo(): boolean;
   canRedo(): boolean;
   undo(): boolean;
@@ -91,7 +107,9 @@ interface WasmOfd {
   setOnSelectionChange(cb: (() => void) | null): void;
   setOnCursorChange(cb: (() => void) | null): void;
   setOnSaveRequest(cb: (() => void) | null): void;
-  setOnContextMenu(cb: ((x: number, y: number, annotationId: string | null) => void) | null): void;
+  setOnContextMenu(
+    cb: ((x: number, y: number, annotationId: string | null) => void) | null,
+  ): void;
   setOnWarning(cb: ((warnings: string[]) => void) | null): void;
   setOnAnnotationFocus(cb: ((annotationId: string) => void) | null): void;
   setOnAnnotationInteract(cb: ((annotationId: string) => void) | null): void;
@@ -103,7 +121,9 @@ interface WasmOfd {
   setOnPointerCursor(cb: ((shape: string) => void) | null): void;
   setOnCopy(cb: ((text: string) => void) | null): void;
   getSelectedText(): string | null;
-  applyMarkup(kind: 'highlight' | 'underline' | 'strikeout' | 'squiggly'): string | null;
+  applyMarkup(
+    kind: "highlight" | "underline" | "strikeout" | "squiggly",
+  ): string | null;
   hasTextSelection(): boolean;
   setOnTextSelectionChange(cb: (() => void) | null): void;
   setTool(kind: string): void;
@@ -116,12 +136,22 @@ interface WasmOfd {
    * watermark/annotations/seal on, convert spec D17); `pages` is a 1-based
    * list — omit for every page. Throws on failure (empty page survivor set,
    * encoder error). */
-  exportPdf(watermark?: boolean, annotations?: boolean, seal?: boolean, pages?: number[]): Uint8Array;
+  exportPdf(
+    watermark?: boolean,
+    annotations?: boolean,
+    seal?: boolean,
+    pages?: number[],
+  ): Uint8Array;
   /** Resolve a print dialog's range/parity selection into the concrete
    * 1-based page list. `rangeKind` is "All" | "Current" | "Custom"
    * (Custom requires `customSpec`, a "1-3,5" grammar string); `parity` is
    * "All" | "Odd" | "Even". Throws on unknown strings or a bad spec. */
-  planPrintPages(rangeKind: string, customSpec: string | undefined, parity: string, currentPage: number): Uint32Array | number[];
+  planPrintPages(
+    rangeKind: string,
+    customSpec: string | undefined,
+    parity: string,
+    currentPage: number,
+  ): Uint32Array | number[];
   /** Paper + orientation of the first page as PascalCase wire strings
    * (`[paper, orientation]`, e.g. `["A4", "Portrait"]`) — the print
    * dialog's paper/orientation defaults (the document is the paper
@@ -139,10 +169,10 @@ export interface FontSource {
 }
 
 /** The four text-markup annotation kinds (actions over a body-text selection). */
-export type MarkupKind = 'highlight' | 'underline' | 'strikeout' | 'squiggly';
+export type MarkupKind = "highlight" | "underline" | "strikeout" | "squiggly";
 
 /** Viewport zoom mode (适应宽度/高度/页面 state machine). */
-export type ZoomMode = 'custom' | 'fit-width' | 'fit-height' | 'fit-page';
+export type ZoomMode = "custom" | "fit-width" | "fit-height" | "fit-page";
 
 /** Content flags for PDF export / print (print spec 2026-10-31). All
  * optional — omitted fields pass undefined through to the wasm defaults
@@ -202,7 +232,7 @@ export interface OfdConfig {
   onZoomChange?: (zoom: number) => void;
   /** Initial zoom mode. Fit modes apply once the viewport is laid out
    * (the first resize after init). */
-  zoomMode?: Exclude<ZoomMode, 'custom'>;
+  zoomMode?: Exclude<ZoomMode, "custom">;
   /** Fired when the zoom mode changes (entering a fit mode, or a manual
    * zoom exiting to 'custom'). Receives the new mode string. */
   onZoomModeChange?: (mode: ZoomMode) => void;
@@ -239,7 +269,9 @@ export interface OfdConfig {
  * Microtasks still run within the same task tick, so browser user
  * activation (clipboard writes etc.) is preserved.
  */
-function deferCb<A extends unknown[]>(cb: (...args: A) => void): (...args: A) => void {
+function deferCb<A extends unknown[]>(
+  cb: (...args: A) => void,
+): (...args: A) => void {
   return (...args: A) => {
     queueMicrotask(() => cb(...args));
   };
@@ -260,6 +292,12 @@ function deferCb<A extends unknown[]>(cb: (...args: A) => void): (...args: A) =>
 export class Ofd {
   private wasm: WasmOfd;
   private canvas: HTMLCanvasElement;
+  /** Hidden IME host input: owns keyboard focus + IME composition (a canvas
+   * is not an editable context - without it the OS IME never starts, which
+   * is why typed Chinese never reached the editor). */
+  private imeInput!: HTMLInputElement;
+  /** User onCursorChange hook, invoked after the internal IME re-anchoring. */
+  private userCursorCb?: () => void;
   private scheduler: RenderScheduler;
   private abortController: AbortController;
   // Click counting (mirrors the native adapter): pointerdown's
@@ -271,7 +309,7 @@ export class Ofd {
   private lastClickY = -Infinity;
   /** 字体流状态：off=未启用 init=进行中 ready=watcher 已挂（失败回 off，
    * 下次 loadOfd 重试——spec §5 渲染不阻塞）。 */
-  private fontFlowState: 'off' | 'init' | 'ready' = 'off';
+  private fontFlowState: "off" | "init" | "ready" = "off";
   private fontWatch?: fontFlow.FontWatch;
   private fontSlicesCfg?: FontSlicesConfig;
   private onWarningCb?: (warnings: string[]) => void;
@@ -284,7 +322,11 @@ export class Ofd {
    * 实例生命周期内不变——模式由工厂选择决定）。 */
   readonly isCpuFallback: boolean;
 
-  private constructor(wasm: WasmOfd, canvas: HTMLCanvasElement, isCpuFallback: boolean) {
+  private constructor(
+    wasm: WasmOfd,
+    canvas: HTMLCanvasElement,
+    isCpuFallback: boolean,
+  ) {
     this.wasm = wasm;
     this.canvas = canvas;
     this.isCpuFallback = isCpuFallback;
@@ -304,7 +346,7 @@ export class Ofd {
         const bytes = await loadFont(font);
         wasmOfd?.registerFont(bytes);
       } catch (e) {
-        console.warn('[rofd] font load failed; text may not render', e);
+        console.warn("[rofd] font load failed; text may not render", e);
       }
     }
   }
@@ -317,23 +359,22 @@ export class Ofd {
    * after wire), wires callbacks, binds DOM events, and starts on-demand
    * rendering. Returns a ready-to-use `Ofd`.
    */
-  static async init(
-    container: HTMLElement,
-    config?: OfdConfig,
-  ): Promise<Ofd> {
+  static async init(container: HTMLElement, config?: OfdConfig): Promise<Ofd> {
     // 1. Load wasm module (--target web: fetch-based, auto-resolves .wasm).
-    const wasm = (await import('../dist/rofd_web_view.js')) as unknown as WasmModule;
+    const wasm =
+      (await import("../dist/rofd_web_view.js")) as unknown as WasmModule;
     await wasm.default();
 
-    // 2. Create canvas inside container.
-    const canvas = document.createElement('canvas');
-    canvas.tabIndex = 0;
-    canvas.style.width = '100%';
-    canvas.style.height = '100%';
-    canvas.style.outline = 'none';
+    // 2. Create canvas inside container. The canvas is NOT keyboard-focus
+    //    - a hidden input (created in bindEvents) owns keyboard + IME.
+    const canvas = document.createElement("canvas");
+    canvas.tabIndex = -1;
+    canvas.style.width = "100%";
+    canvas.style.height = "100%";
+    canvas.style.outline = "none";
     // Initial cursor matches the component's PointerCursor::Default state;
     // the onPointerCursor callback takes over on the first state change.
-    canvas.style.cursor = 'default';
+    canvas.style.cursor = "default";
     container.appendChild(canvas);
 
     // 3. Create WasmOfd: WebGPU first; on unavailability fall back to the CPU
@@ -344,14 +385,14 @@ export class Ofd {
     let wasmOfd: WasmOfd;
     try {
       if (!navigator.gpu) {
-        throw new Error('WebGPU is not supported in this browser');
+        throw new Error("WebGPU is not supported in this browser");
       }
       wasmOfd = await wasm.create_wasm_ofd(canvas);
     } catch (e) {
       if (config?.cpuFallback === false) {
         throw new Error(
           `rofd 需要 WebGPU：${e instanceof Error ? e.message : String(e)}` +
-            '。请使用支持 WebGPU 的浏览器，或在浏览器设置中开启硬件加速。',
+            "。请使用支持 WebGPU 的浏览器，或在浏览器设置中开启硬件加速。",
         );
       }
       const tuning = config?.cpuFallbackTuning ?? {};
@@ -361,9 +402,13 @@ export class Ofd {
         tuning.maxPagePixels ?? 8_000_000,
       );
       // One-shot notice (also the Task 10 smoke marker) + host notification.
-      console.info('[rofd] WebGPU 不可用，已切换 CPU 软渲染（页位图缓存已启用）');
+      console.info(
+        "[rofd] WebGPU 不可用，已切换 CPU 软渲染（页位图缓存已启用）",
+      );
       if (config?.onWarning) {
-        deferCb(config.onWarning)(['cpu-fallback: WebGPU unavailable, rendering on CPU']);
+        deferCb(config.onWarning)([
+          "cpu-fallback: WebGPU unavailable, rendering on CPU",
+        ]);
       }
     }
 
@@ -377,24 +422,39 @@ export class Ofd {
     let fontKick: () => void = () => {};
     const userOnChange = config?.onChange;
     if (userOnChange || config?.fontSlices) {
-      wasmOfd.setOnChange(deferCb(() => {
-        userOnChange?.();
-        fontKick();
-      }));
+      wasmOfd.setOnChange(
+        deferCb(() => {
+          userOnChange?.();
+          fontKick();
+        }),
+      );
     }
-    if (config?.onSelectionChange) wasmOfd.setOnSelectionChange(deferCb(config.onSelectionChange));
-    if (config?.onCursorChange) wasmOfd.setOnCursorChange(deferCb(config.onCursorChange));
-    if (config?.onSaveRequest) wasmOfd.setOnSaveRequest(deferCb(config.onSaveRequest));
-    if (config?.onContextMenu) wasmOfd.setOnContextMenu(deferCb(config.onContextMenu));
+    if (config?.onSelectionChange)
+      wasmOfd.setOnSelectionChange(deferCb(config.onSelectionChange));
+    // onCursorChange is NOT registered here: bindEvents subscribes one
+    // internal callback (IME re-anchoring) that wraps the user hook, which
+    // init sets on the instance after wire().
+    if (config?.onSaveRequest)
+      wasmOfd.setOnSaveRequest(deferCb(config.onSaveRequest));
+    if (config?.onContextMenu)
+      wasmOfd.setOnContextMenu(deferCb(config.onContextMenu));
     if (config?.onWarning) wasmOfd.setOnWarning(deferCb(config.onWarning));
-    if (config?.onAnnotationFocus) wasmOfd.setOnAnnotationFocus(deferCb(config.onAnnotationFocus));
-    if (config?.onAnnotationInteract) wasmOfd.setOnAnnotationInteract(deferCb(config.onAnnotationInteract));
-    if (config?.onPageChange) wasmOfd.setOnPageChange(deferCb(config.onPageChange));
-    if (config?.onZoomChange) wasmOfd.setOnZoomChange(deferCb(config.onZoomChange));
+    if (config?.onAnnotationFocus)
+      wasmOfd.setOnAnnotationFocus(deferCb(config.onAnnotationFocus));
+    if (config?.onAnnotationInteract)
+      wasmOfd.setOnAnnotationInteract(deferCb(config.onAnnotationInteract));
+    if (config?.onPageChange)
+      wasmOfd.setOnPageChange(deferCb(config.onPageChange));
+    if (config?.onZoomChange)
+      wasmOfd.setOnZoomChange(deferCb(config.onZoomChange));
     // The wasm bridge passes zoom_mode_str() values - exactly the ZoomMode
     // literals - so the string-typed callback safely narrows to ZoomMode.
-    if (config?.onZoomModeChange) wasmOfd.setOnZoomModeChange(deferCb(config.onZoomModeChange as (mode: string) => void));
-    if (config?.onTextSelectionChange) wasmOfd.setOnTextSelectionChange(deferCb(config.onTextSelectionChange));
+    if (config?.onZoomModeChange)
+      wasmOfd.setOnZoomModeChange(
+        deferCb(config.onZoomModeChange as (mode: string) => void),
+      );
+    if (config?.onTextSelectionChange)
+      wasmOfd.setOnTextSelectionChange(deferCb(config.onTextSelectionChange));
 
     // The wasm side reports CSS cursor names directly
     // ("default"/"grab"/"grabbing"/"text"), so no
@@ -425,6 +485,10 @@ export class Ofd {
 
     // 6. Create wrapper (proxy + events + watchdog) via the shared wiring.
     const ofd = Ofd.wire(wasmOfd, canvas);
+    // bindEvents subscribes ONE onCursorChange (internal IME anchoring
+    // wrapping this user hook) - register the hook after wire so the two
+    // never overwrite each other.
+    ofd.setUserCursorChange(config?.onCursorChange);
 
     // Slice font flow (if configured) starts now: the instance holds the
     // proxied wasm font surface, so every registered slice kicks the
@@ -440,14 +504,14 @@ export class Ofd {
     fontKick = () => ofd.fontWatchKick();
 
     // Prevent the browser's native context menu on the canvas (right-click).
-    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
     // 7. Initial resize (eager direct render) + first frame kick.
     ofd.resize();
     ofd.kick();
 
-    // 8. Focus the canvas so keyboard input works immediately.
-    canvas.focus();
+    // 8. Focus the hidden IME input so keyboard input works immediately.
+    ofd.focusKeyboard();
 
     return ofd;
   }
@@ -462,7 +526,9 @@ export class Ofd {
     // CPU 回退标记读一次定格：真实工厂产物恒有 isCpuFallback（经 proxy
     // 亦是直通方法调用）；`__testNew` 的合成表面可能缺省该方法 → false。
     const isCpuFallback =
-      typeof wasmOfd.isCpuFallback === 'function' ? wasmOfd.isCpuFallback() : false;
+      typeof wasmOfd.isCpuFallback === "function"
+        ? wasmOfd.isCpuFallback()
+        : false;
     const ofd = new Ofd(proxied, canvas, isCpuFallback);
     ofd.bindEvents();
     kickLoop = () => ofd.kick();
@@ -477,13 +543,50 @@ export class Ofd {
   }
 
   /** Destroy the surface: stop the scheduler, abort listeners, cancel the
-   * font watcher, remove canvas. */
+   * font watcher, remove canvas + the hidden IME input. */
   destroy(): void {
     this.fontWatch?.cancel();
     this.scheduler.dispose();
     this.abortController.abort();
+    if (this.imeInput?.parentNode) {
+      this.imeInput.parentNode.removeChild(this.imeInput);
+    }
     if (this.canvas.parentNode) {
       this.canvas.parentNode.removeChild(this.canvas);
+    }
+  }
+
+  /** Move keyboard/IME focus to the hidden input (the keyboard surface). */
+  focusKeyboard(): void {
+    this.imeInput.focus();
+  }
+
+  /** Register the host's onCursorChange hook. The internal subscription
+   * (bindEvents) re-anchors the IME input first, then invokes this hook. */
+  setUserCursorChange(cb?: () => void): void {
+    this.userCursorCb = cb ? (deferCb(cb) as () => void) : undefined;
+  }
+
+  /** Re-anchor the hidden IME input at the caret rect (best effort: any
+   * failure leaves the input where it was - the candidate window still
+   * opens, just at the stale position). */
+  private positionImeAtCaret(): void {
+    const surface = this.wasm as unknown as Record<string, unknown>;
+    if (typeof surface.caretRect !== "function") {
+      return;
+    }
+    try {
+      const rect = (surface.caretRect as () => number[] | null)();
+      if (!rect || rect.length !== 4) {
+        return;
+      }
+      const dpr = window.devicePixelRatio || 1;
+      this.imeInput.style.left = `${this.canvas.offsetLeft + rect[0] / dpr}px`;
+      this.imeInput.style.top = `${this.canvas.offsetTop + rect[1] / dpr}px`;
+      this.imeInput.style.width = `${Math.max(1, rect[2] / dpr)}px`;
+      this.imeInput.style.height = `${Math.max(1, rect[3] / dpr)}px`;
+    } catch {
+      // Best-effort anchoring; never fatal.
     }
   }
 
@@ -516,15 +619,15 @@ export class Ofd {
     const cfg = this.fontSlicesCfg;
     // 流只从 off 态进入：init 中重入会双重拉流，ready 中重入会双挂
     // watcher（泄漏一个 300ms debounce 定时器）。
-    if (!cfg || this.fontFlowState !== 'off') {
+    if (!cfg || this.fontFlowState !== "off") {
       return;
     }
-    this.fontFlowState = 'init';
+    this.fontFlowState = "init";
     const live = await fontFlow.filterLiveManifests(cfg.manifests);
     // 桌面纯系统通道（draft D4）manifests 为空：切片流上膛不拉，系统流仍须
     // 启动——只有"无活清单且无系统通道"才回 off（浏览器降级不变）。
     if (live.length === 0 && !this.systemFontsCfg) {
-      this.fontFlowState = 'off';
+      this.fontFlowState = "off";
       return;
     }
     const runtime = new FontRuntime({
@@ -539,7 +642,9 @@ export class Ofd {
     };
     this.wasmFontSurface = wasmFont;
     const onError = (err: fontFlow.FontFlowError): void => {
-      this.onWarningCb?.([`fonts: ${err.family ? `${err.family} ` : ''}${err.message}`]);
+      this.onWarningCb?.([
+        `fonts: ${err.family ? `${err.family} ` : ""}${err.message}`,
+      ]);
     };
     this.fontRuntime = runtime;
     if (this.systemFontsCfg) {
@@ -555,14 +660,14 @@ export class Ofd {
       system: this.systemFlow,
     });
     if (!ok) {
-      this.fontFlowState = 'off';
+      this.fontFlowState = "off";
       return;
     }
     this.fontWatch = fontFlow.scheduleFontWatch(wasmFont, runtime, {
       onError,
       system: this.systemFlow,
     });
-    this.fontFlowState = 'ready';
+    this.fontFlowState = "ready";
     // 文档已在 init 窗口期间加载的情形：就绪后立即补一拍，watcher 会收集
     // 加载后的需求并补片——runtime 去重使竞争外的情形为空转。
     this.fontWatch?.kick();
@@ -590,7 +695,9 @@ export class Ofd {
       // 与另两个入口同途上报（AGENTS §4.6 错误显式分层）；satisfy 自身
       // 永不抛错，这里是防御层。
       const err = fontFlow.toFontFlowError(e);
-      this.onWarningCb?.([`fonts: ${err.family ? `${err.family} ` : ''}${err.message}`]);
+      this.onWarningCb?.([
+        `fonts: ${err.family ? `${err.family} ` : ""}${err.message}`,
+      ]);
     }
   }
 
@@ -641,28 +748,114 @@ export class Ofd {
 
   /** Bind DOM events on the canvas, translating them to wasm calls. */
   private bindEvents(): void {
-    const opts: AddEventListenerOptions = { signal: this.abortController.signal };
+    const opts: AddEventListenerOptions = {
+      signal: this.abortController.signal,
+    };
     const dpr = () => window.devicePixelRatio || 1;
 
-    // Keyboard.
-    this.canvas.addEventListener(
-      'keydown',
+    // Hidden IME host: a canvas is not an editable context, so the OS IME
+    // never starts a composition against it. A 1px transparent input keeps
+    // the focus and receives the composition; its position tracks the caret
+    // so the OS candidate window anchors there (pdf.js-style).
+    const input = document.createElement("input");
+    input.setAttribute("data-rofd-ime", "");
+    input.type = "text";
+    input.autocapitalize = "off";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    // Tab-reachable (the canvas used to be tabIndex=0 before the focus
+    // migration): keyboard-only users must be able to re-enter the editor
+    // after clicking a ribbon control.
+    input.tabIndex = 0;
+    input.style.position = "absolute";
+    input.style.opacity = "0";
+    input.style.border = "none";
+    input.style.padding = "0";
+    input.style.margin = "0";
+    input.style.width = "1px";
+    input.style.height = "1px";
+    input.style.zIndex = "-1";
+    input.style.pointerEvents = "none";
+    input.style.left = "0px";
+    input.style.top = "0px";
+    (this.canvas.parentElement ?? document.body).appendChild(input);
+    this.imeInput = input;
+
+    // Keyboard lives on the hidden input (the focus owner). Keys arriving
+    // while an IME composition is active MUST NOT be forwarded: Chrome/Edge
+    // deliver keydown 'Process'/229 during composition and the committed
+    // text arrives via compositionend only - forwarding both would
+    // double-insert.
+    input.addEventListener(
+      "keydown",
       (e: KeyboardEvent) => {
+        if (e.isComposing || e.keyCode === 229) {
+          return;
+        }
         e.preventDefault();
         // PageUp/PageDown scroll by one page height (ScrollPage), not a
         // generic KeyDown: the component's handle_key doesn't act on these
         // keys, so routing them as ScrollPage gives them an effect (viewport
         // scroll by page_h + page_gap). Mirrors the native adapter.
-        if (e.key === 'PageUp') {
-          this.wasm.handleScrollPage('up');
-        } else if (e.key === 'PageDown') {
-          this.wasm.handleScrollPage('down');
+        if (e.key === "PageUp") {
+          this.wasm.handleScrollPage("up");
+        } else if (e.key === "PageDown") {
+          this.wasm.handleScrollPage("down");
         } else {
-          this.wasm.handleKeyDown(e.key, e.shiftKey, e.ctrlKey, e.altKey, e.metaKey);
+          this.wasm.handleKeyDown(
+            e.key,
+            e.shiftKey,
+            e.ctrlKey,
+            e.altKey,
+            e.metaKey,
+          );
         }
       },
       opts,
     );
+
+    // IME composition bridge: preedit updates show inline via the
+    // component's preedit state machine; commit inserts at the cursor. The
+    // preedit MUST be cleared after commit (a stale composition swallows
+    // the next keystroke) and the input's value reset (a leftover value
+    // would re-commit on the next compositionend).
+    input.addEventListener(
+      "compositionupdate",
+      (e: CompositionEvent) => {
+        this.wasm.handleImePreedit(e.data || "");
+      },
+      opts,
+    );
+    input.addEventListener(
+      "compositionend",
+      (e: CompositionEvent) => {
+        this.wasm.handleImeCommit(e.data || "");
+        this.wasm.handleImePreedit("");
+        input.value = "";
+      },
+      opts,
+    );
+
+    // Focus model: the hidden input is the keyboard surface.
+    input.addEventListener("focus", () => this.wasm.handleFocusGained(), opts);
+    input.addEventListener("blur", () => this.wasm.handleFocusLost(), opts);
+
+    // Internal onCursorChange: re-anchor the IME input at the caret, then
+    // run the user hook. Synthetic test surfaces may lack the setter - the
+    // capability check keeps __testNew wiring working.
+    // The re-anchor MUST be deferred: the wasm bridge fires JS callbacks
+    // synchronously INSIDE the &mut export that moved the cursor, and
+    // caretRect() is itself a &mut export - calling it re-entrantly throws
+    // WasmRefCell's BORROW_ERROR on the real surface. A microtask runs
+    // after the wasm call returns and the borrow is released (the same
+    // pattern as the host-callback deferCb).
+    const surface = this.wasm as unknown as Record<string, unknown>;
+    if (typeof surface.setOnCursorChange === "function") {
+      (surface.setOnCursorChange as (cb: () => void) => void)(() => {
+        queueMicrotask(() => this.positionImeAtCaret());
+        this.userCursorCb?.();
+      });
+    }
 
     // Pointer events (coords in device pixels: CSS * DPR). pointerdown
     // captures the pointer so pointermove/pointerup keep firing on the
@@ -670,10 +863,12 @@ export class Ofd {
     // ribbon); without capture the component would never see the up and
     // the drag state (hand-tool pan, grabbing cursor) would stick.
     this.canvas.addEventListener(
-      'pointerdown',
+      "pointerdown",
       (e: PointerEvent) => {
         e.preventDefault();
-        this.canvas.focus();
+        // Focus the hidden input: keyboard + IME start working on click.
+        this.imeInput.focus();
+        this.positionImeAtCaret();
         this.canvas.setPointerCapture(e.pointerId);
         const rect = this.canvas.getBoundingClientRect();
         const x = (e.clientX - rect.left) * dpr();
@@ -697,7 +892,7 @@ export class Ofd {
     );
 
     this.canvas.addEventListener(
-      'pointerup',
+      "pointerup",
       (e: PointerEvent) => {
         const rect = this.canvas.getBoundingClientRect();
         this.wasm.handleMouseUp(
@@ -716,7 +911,7 @@ export class Ofd {
     // Fallback: the browser cancels the pointer (e.g. touch gesture
     // takeover); forward as an up so any drag state still clears.
     this.canvas.addEventListener(
-      'pointercancel',
+      "pointercancel",
       (e: PointerEvent) => {
         const rect = this.canvas.getBoundingClientRect();
         this.wasm.handleMouseUp(
@@ -733,17 +928,20 @@ export class Ofd {
     );
 
     this.canvas.addEventListener(
-      'pointermove',
+      "pointermove",
       (e: PointerEvent) => {
         const rect = this.canvas.getBoundingClientRect();
-        this.wasm.handleMouseMove((e.clientX - rect.left) * dpr(), (e.clientY - rect.top) * dpr());
+        this.wasm.handleMouseMove(
+          (e.clientX - rect.left) * dpr(),
+          (e.clientY - rect.top) * dpr(),
+        );
       },
       opts,
     );
 
     // Scroll / zoom.
     this.canvas.addEventListener(
-      'wheel',
+      "wheel",
       (e: WheelEvent) => {
         e.preventDefault();
         if (e.ctrlKey || e.metaKey) {
@@ -762,19 +960,18 @@ export class Ofd {
       { ...opts, passive: false },
     );
 
-    // Focus.
-    this.canvas.addEventListener('focus', () => this.wasm.handleFocusGained(), opts);
-    this.canvas.addEventListener('blur', () => this.wasm.handleFocusLost(), opts);
+    // Focus lives on the hidden IME input (bound above); the canvas carries
+    // no focus listeners - clicking it routes focus to the input.
 
     // Resize.
-    window.addEventListener('resize', () => this.resize(), opts);
+    window.addEventListener("resize", () => this.resize(), opts);
 
     // Watchdog (spec 2026-10-13 §7.4): hidden tabs are fully silenced -
     // Chromium still releases ~1 rAF/s for hidden pages with pending
     // frames and aligns timers to 1s slots (rword pitfall 2), so gating
     // alone is not enough. Returning to visible or window focus kicks.
     document.addEventListener(
-      'visibilitychange',
+      "visibilitychange",
       () => {
         if (document.hidden) {
           this.scheduler.suspendForHidden();
@@ -784,7 +981,7 @@ export class Ofd {
       },
       opts,
     );
-    window.addEventListener('focus', () => this.scheduler.kick(), opts);
+    window.addEventListener("focus", () => this.scheduler.kick(), opts);
   }
 
   /** Resize the canvas backing store to match its CSS size (× DPR) + notify wasm. */
@@ -824,11 +1021,11 @@ export class Ofd {
   loadOfd(bytes: Uint8Array): void {
     this.wasm.loadOfd(bytes);
     // 文档换了需求全变：立即 kick watcher；流此前失败则重试（spec §3.2）。
-    if (this.fontFlowState === 'ready') {
+    if (this.fontFlowState === "ready") {
       this.fontWatch?.kick();
       // 系统字体补载遍不等防抖窗（draft 2026-10-18 §4.2 打开文档入口）。
       void this.runSystemPass();
-    } else if (this.fontFlowState === 'off' && this.fontSlicesCfg) {
+    } else if (this.fontFlowState === "off" && this.fontSlicesCfg) {
       void this.retryFontFlow();
     }
   }
@@ -856,8 +1053,8 @@ export class Ofd {
    * 1-based page list (`parity` filters the planned range). Metadata only
    * — no font gate needed (nothing is rendered). */
   async planPages(
-    range: { kind: 'All' | 'Current' | 'Custom'; spec?: string },
-    parity: 'All' | 'Odd' | 'Even',
+    range: { kind: "All" | "Current" | "Custom"; spec?: string },
+    parity: "All" | "Odd" | "Even",
     currentPage: number,
   ): Promise<number[]> {
     return Array.from(
@@ -977,7 +1174,7 @@ export class Ofd {
 
   /** Scroll by one page height. `direction` is "up" or "down". Intended for
    * PageUp/PageDown keys. */
-  handleScrollPage(direction: 'up' | 'down'): void {
+  handleScrollPage(direction: "up" | "down"): void {
     this.wasm.handleScrollPage(direction);
   }
 
@@ -1007,7 +1204,7 @@ export class Ofd {
 /** Load a font: inline `data` if present, else `fetch(url)`. */
 async function loadFont(source: FontSource): Promise<Uint8Array> {
   if (source.data) return source.data;
-  if (!source.url) throw new Error('FontSource must have url or data');
+  if (!source.url) throw new Error("FontSource must have url or data");
   const response = await fetch(source.url);
   if (!response.ok) throw new Error(`Failed to load font: ${source.url}`);
   const buffer = await response.arrayBuffer();

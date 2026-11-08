@@ -31,6 +31,7 @@ pub fn body_requirements(doc: &OfdDocument) -> FontRequirements {
 }
 
 /// 批注动态文本需求：TextBox/Watermark content + 引用族（排除嵌入）。
+/// 富 runs 逐段渲染：每段的字体族与文本码点同样进需求。
 pub fn annotation_requirements(doc: &OfdDocument) -> (Vec<String>, Vec<u32>) {
     let mut families: Vec<String> = Vec::new();
     let mut cps: Vec<u32> = Vec::new();
@@ -40,6 +41,12 @@ pub fn annotation_requirements(doc: &OfdDocument) -> (Vec<String>, Vec<u32>) {
             | AnnotationPayload::Watermark { content, font, .. } => {
                 collect_family(doc, font, &mut families);
                 cps.extend(content.chars().map(u32::from));
+                if let AnnotationPayload::TextBox { runs, .. } = &ann.payload {
+                    for run in runs {
+                        collect_family(doc, &run.font, &mut families);
+                        cps.extend(run.text.chars().map(u32::from));
+                    }
+                }
             }
             _ => {}
         }
@@ -86,5 +93,71 @@ fn finish(mut families: Vec<String>, mut cps: Vec<u32>) -> FontRequirements {
     FontRequirements {
         families,
         codepoints: cps,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rofd_dom::{
+        Annotation, AnnotationId, AnnotationKind, Color, FontRef, PageId, Rect, TextRun,
+    };
+
+    #[test]
+    fn annotation_requirements_collects_run_fonts_and_codepoints() {
+        // A rich TextBox renders fragment-by-fragment with each run's OWN
+        // font: every run font's declared family (and the run text's
+        // codepoints) must reach the requirements so the web font flow can
+        // load the right slices.
+        let mut doc = OfdDocument::default();
+        doc.resources.fonts.insert(
+            FontId::new("F9"),
+            FontRef {
+                id: FontId::new("F9"),
+                family_name: Some("楷体".into()),
+            },
+        );
+        doc.annotations.insert(Annotation {
+            id: AnnotationId::from_int(1),
+            kind: AnnotationKind::TextBox,
+            page: PageId::new("P0"),
+            creator: String::new(),
+            created: 0,
+            modified: 0,
+            reply_to: None,
+            payload: AnnotationPayload::TextBox {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 40.0,
+                    h: 10.0,
+                },
+                content: "a字".into(),
+                font: FontId::new("F1"),
+                size: 4.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                runs: vec![TextRun {
+                    text: "a字".into(),
+                    font: FontId::new("F9"),
+                    size: 4.0,
+                    color: None,
+                    bold: false,
+                    italic: false,
+                    x: 0.0,
+                    baseline: 4.0,
+                }],
+            },
+        });
+        let (families, cps) = annotation_requirements(&doc);
+        let expected = rofd_render::normalize_family_key("楷体");
+        assert!(
+            families.contains(&expected),
+            "run font family {expected:?} missing from {families:?}"
+        );
+        assert!(
+            cps.contains(&u32::from('字')),
+            "run text codepoint U+5B57 missing"
+        );
     }
 }

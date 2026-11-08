@@ -317,6 +317,7 @@ fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload, next_id: &
                 size,
                 color,
                 border,
+                runs,
             },
         ) => {
             // A bordered text box re-emits its frame ahead of the text (the
@@ -335,9 +336,18 @@ fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload, next_id: &
                     next_id,
                 ));
             }
-            inner.push_str(&text_object_xml(
-                rect, &font.0, *size, *color, content, next_id,
-            ));
+            if runs.is_empty() {
+                inner.push_str(&text_object_xml(
+                    rect, &font.0, *size, *color, content, next_id,
+                ));
+            } else {
+                // Rich runs: one TextObject per styled fragment at its own
+                // pen position. Boundary.y + TextCode Y round-trips the
+                // baseline exactly: y = (baseline - size), Y = size.
+                for run in runs {
+                    inner.push_str(&text_run_object_xml(run, next_id));
+                }
+            }
             format!(
                 "<ofd:Appearance Boundary=\"{} {} {} {}\">{}</ofd:Appearance>",
                 rect.x, rect.y, rect.w, rect.h, inner
@@ -475,6 +485,42 @@ fn text_object_xml(
         ));
     }
     s
+}
+
+/// Build a `<TextObject>` element for one rich [`TextRun`]: the fragment's
+/// own font/size/color/bold/italic at its own pen position
+/// (`Boundary = (x, baseline - size, w, size*1.2)`, `TextCode X=0 Y=size` —
+/// the parse inverse reads `x = boundary.x` and
+/// `baseline = boundary.y + size` exactly).
+fn text_run_object_xml(run: &rofd_dom::TextRun, next_id: &mut u64) -> String {
+    let id = mint_object_id(next_id);
+    let chars = run.text.chars().count().max(1);
+    let w = chars as f64 * run.size;
+    let h = run.size * 1.2;
+    let mut style = String::new();
+    if run.italic {
+        style.push_str(" Italic=\"true\"");
+    }
+    if run.bold {
+        style.push_str(" Weight=\"700\"");
+    }
+    let fill = match run.color {
+        Some(c) => format!("<ofd:FillColor Value=\"{}\"/>", color_str(c)),
+        None => String::new(),
+    };
+    format!(
+        "<ofd:TextObject ID=\"{}\" Boundary=\"{} {} {} {}\" Font=\"{}\" Size=\"{}\"{}>{}{}</ofd:TextObject>",
+        id,
+        run.x,
+        run.baseline - run.size,
+        w,
+        h,
+        xml_escape(&run.font.0),
+        run.size,
+        style,
+        fill,
+        text_code_xml(&run.text, run.size)
+    )
 }
 
 /// Build a `<TextCode>` element carrying per-char `DeltaX` advances.

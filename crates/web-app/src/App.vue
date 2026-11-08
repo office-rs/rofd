@@ -4,9 +4,20 @@
     <header class="ribbon">
       <!-- 页签行：文件菜单 | 阅读/注释/编辑/签章/票据 | 品牌 -->
       <nav class="tabbar">
-        <button class="tb-menu" type="button" title="文件" :class="{ open: dropdown.kind === 'file' }" @click="toggleFileMenu">
+        <button
+          class="tb-menu"
+          type="button"
+          title="文件"
+          :class="{ open: dropdown.kind === 'file' }"
+          @click="toggleFileMenu"
+        >
           <svg viewBox="0 0 16 16" width="14" height="14">
-            <path d="M2 3.5h12M2 8h12M2 12.5h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            <path
+              d="M2 3.5h12M2 8h12M2 12.5h12"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+            />
           </svg>
         </button>
         <div class="tb-main">
@@ -31,10 +42,20 @@
         <!-- ═══════════════ 阅读 ═══════════════ -->
         <div v-show="activeTab === 'read'" class="tb-row">
           <RibbonGroup>
-            <ToolButton label="手型" tooltip="手型工具：拖动平移文档" :active="activeTool === 'hand'" @click="setTool('hand')">
+            <ToolButton
+              label="手型"
+              tooltip="手型工具：拖动平移文档"
+              :active="activeTool === 'hand'"
+              @click="setTool('hand')"
+            >
               <HandIcon />
             </ToolButton>
-            <ToolButton label="文本" tooltip="文本工具：选择正文文本与批注" :active="activeTool === 'text'" @click="setTool('text')">
+            <ToolButton
+              label="文本"
+              tooltip="文本工具：选择正文文本与批注"
+              :active="activeTool === 'text'"
+              @click="setTool('text')"
+            >
               <TextSelectIcon />
             </ToolButton>
           </RibbonGroup>
@@ -43,7 +64,14 @@
             <ToolButton label="缩小" tooltip="缩小" @click="zoomBy(0.9)">
               <ZoomOutIcon />
             </ToolButton>
-            <ToolButton label="显示比例" :value="`${zoomPercent}%`" tooltip="显示比例" has-dropdown @click="setZoomPercent(100)" @dropdown="openDropdown('zoom', $event)">
+            <ToolButton
+              label="显示比例"
+              :value="`${zoomPercent}%`"
+              tooltip="显示比例"
+              has-dropdown
+              @click="setZoomPercent(100)"
+              @dropdown="openDropdown('zoom', $event)"
+            >
               <ZoomLabelIcon />
             </ToolButton>
             <ToolButton label="放大" tooltip="放大" @click="zoomBy(1.1)">
@@ -52,7 +80,11 @@
           </RibbonGroup>
 
           <RibbonGroup>
-            <ToolButton label="实际大小" tooltip="实际大小 (100%)" @click="setZoomPercent(100)">
+            <ToolButton
+              label="实际大小"
+              tooltip="实际大小 (100%)"
+              @click="setZoomPercent(100)"
+            >
               <ActualSizeIcon />
             </ToolButton>
             <ToolButton
@@ -91,11 +123,23 @@
           </RibbonGroup>
 
           <RibbonGroup>
-            <ToolButton label="上一页" tooltip="上一页 (PageUp)" @click="scrollPage('up')">
+            <ToolButton
+              label="上一页"
+              tooltip="上一页 (PageUp)"
+              @click="scrollPage('up')"
+            >
               <PrevPageIcon />
             </ToolButton>
-            <ToolButton label="页码" :value="`${pageIndex + 1}`" tooltip="当前页码" />
-            <ToolButton label="下一页" tooltip="下一页 (PageDown)" @click="scrollPage('down')">
+            <ToolButton
+              label="页码"
+              :value="`${pageIndex + 1}`"
+              tooltip="当前页码"
+            />
+            <ToolButton
+              label="下一页"
+              tooltip="下一页 (PageDown)"
+              @click="scrollPage('down')"
+            >
               <NextPageIcon />
             </ToolButton>
             <ToolButton label="首页" tooltip="v1 暂未开放" disabled>
@@ -119,13 +163,28 @@
           </RibbonGroup>
 
           <RibbonGroup>
-            <ToolButton label="全屏" tooltip="全屏阅读" :active="isFullscreen" @click="toggleFullscreen">
+            <ToolButton
+              label="全屏"
+              tooltip="全屏阅读"
+              :active="isFullscreen"
+              @click="toggleFullscreen"
+            >
               <FullscreenIcon />
             </ToolButton>
-            <ToolButton label="背景" tooltip="设置阅读背景" has-dropdown @dropdown="openDropdown('background', $event)">
+            <ToolButton
+              label="背景"
+              tooltip="设置阅读背景"
+              has-dropdown
+              @dropdown="openDropdown('background', $event)"
+            >
               <BackgroundIcon />
             </ToolButton>
-            <ToolButton label="自动翻页" tooltip="自动翻页（3 秒/页）" :active="autoPaging" @click="toggleAutoPage">
+            <ToolButton
+              label="自动翻页"
+              tooltip="自动翻页（3 秒/页）"
+              :active="autoPaging"
+              @click="toggleAutoPage"
+            >
               <AutoPageIcon />
             </ToolButton>
           </RibbonGroup>
@@ -134,10 +193,20 @@
         <!-- ═══════════════ 注释（rofd v1 核心） ═══════════════ -->
         <div v-show="activeTab === 'annotate'" class="tb-row">
           <RibbonGroup>
-            <ToolButton label="手型" tooltip="手型工具：拖动平移文档" :active="activeTool === 'hand'" @click="setTool('hand')">
+            <ToolButton
+              label="手型"
+              tooltip="手型工具：拖动平移文档"
+              :active="activeTool === 'hand'"
+              @click="setTool('hand')"
+            >
               <HandIcon />
             </ToolButton>
-            <ToolButton label="文本" tooltip="文本工具：选择正文文本与批注" :active="activeTool === 'text'" @click="setTool('text')">
+            <ToolButton
+              label="文本"
+              tooltip="文本工具：选择正文文本与批注"
+              :active="activeTool === 'text'"
+              @click="setTool('text')"
+            >
               <TextSelectIcon />
             </ToolButton>
           </RibbonGroup>
@@ -195,22 +264,64 @@
           </RibbonGroup>
 
           <RibbonGroup>
-            <ToolButton label="手绘" tooltip="手绘批注：自由曲线" :active="activeTool === 'freehand'" @click="setTool('freehand')">
+            <ToolButton
+              label="手绘"
+              tooltip="手绘批注：自由曲线"
+              :active="activeTool === 'freehand'"
+              @click="setTool('freehand')"
+            >
               <FreehandIcon />
             </ToolButton>
-            <ToolButton label="图形" :tooltip="`图形批注：${shapeLabel}（下拉切换图形）`" :active="isShapeTool" has-dropdown @click="setTool(activeShape)" @dropdown="openDropdown('shape', $event)">
+            <ToolButton
+              label="图形"
+              :tooltip="`图形批注：${shapeLabel}（下拉切换图形）`"
+              :active="isShapeTool"
+              has-dropdown
+              @click="setTool(activeShape)"
+              @dropdown="openDropdown('shape', $event)"
+            >
               <component :is="shapeIcon" />
+            </ToolButton>
+            <ToolButton
+              label="文字批注"
+              tooltip="文字批注：点击页面放置并直接输入（无边框）"
+              :active="activeTool === 'typewriter'"
+              @click="setTool('typewriter')"
+            >
+              <TypewriterIcon />
+            </ToolButton>
+            <ToolButton
+              label="文本框"
+              tooltip="文本框：拖拽画出边框后输入"
+              :active="activeTool === 'textbox'"
+              @click="setTool('textbox')"
+            >
+              <TextBoxIcon />
             </ToolButton>
           </RibbonGroup>
 
           <RibbonGroup>
-            <ToolButton label="撤销" tooltip="撤销 (Ctrl+Z)" :disabled="!canUndo" @click="undo">
+            <ToolButton
+              label="撤销"
+              tooltip="撤销 (Ctrl+Z)"
+              :disabled="!canUndo"
+              @click="undo"
+            >
               <UndoIcon />
             </ToolButton>
-            <ToolButton label="恢复" tooltip="恢复 (Ctrl+Y)" :disabled="!canRedo" @click="redo">
+            <ToolButton
+              label="恢复"
+              tooltip="恢复 (Ctrl+Y)"
+              :disabled="!canRedo"
+              @click="redo"
+            >
               <RedoIcon />
             </ToolButton>
-            <ToolButton label="删除" tooltip="删除选中的批注 (Del)" @click="deleteSelectedAnnotations">
+            <ToolButton
+              label="删除"
+              tooltip="删除选中的批注 (Del)"
+              @click="deleteSelectedAnnotations"
+            >
               <DeleteIcon />
             </ToolButton>
           </RibbonGroup>
@@ -231,16 +342,31 @@
             <ToolButton label="文档" tooltip="v1 暂未开放：正文只读" disabled>
               <DocSettingsIcon />
             </ToolButton>
-            <ToolButton label="水印" tooltip="v1 暂未开放：正文只读" disabled has-dropdown>
+            <ToolButton
+              label="水印"
+              tooltip="v1 暂未开放：正文只读"
+              disabled
+              has-dropdown
+            >
               <WatermarkIcon />
             </ToolButton>
           </RibbonGroup>
 
           <RibbonGroup>
-            <ToolButton label="手型" tooltip="手型工具：拖动平移文档" :active="activeTool === 'hand'" @click="setTool('hand')">
+            <ToolButton
+              label="手型"
+              tooltip="手型工具：拖动平移文档"
+              :active="activeTool === 'hand'"
+              @click="setTool('hand')"
+            >
               <HandIcon />
             </ToolButton>
-            <ToolButton label="文本" tooltip="文本工具：选择正文文本与批注" :active="activeTool === 'text'" @click="setTool('text')">
+            <ToolButton
+              label="文本"
+              tooltip="文本工具：选择正文文本与批注"
+              :active="activeTool === 'text'"
+              @click="setTool('text')"
+            >
               <TextSelectIcon />
             </ToolButton>
           </RibbonGroup>
@@ -255,13 +381,22 @@
         <!-- ═══════════════ 签章（v1 非目标，禁用占位） ═══════════════ -->
         <div v-show="activeTab === 'sign'" class="tb-row">
           <RibbonGroup>
-            <ToolButton label="签章" tooltip="v1 暂未开放：电子签章" disabled has-dropdown>
+            <ToolButton
+              label="签章"
+              tooltip="v1 暂未开放：电子签章"
+              disabled
+              has-dropdown
+            >
               <StampIcon />
             </ToolButton>
           </RibbonGroup>
 
           <RibbonGroup>
-            <ToolButton label="验签" tooltip="v1 暂未开放：电子签章验签" disabled>
+            <ToolButton
+              label="验签"
+              tooltip="v1 暂未开放：电子签章验签"
+              disabled
+            >
               <VerifySealIcon />
             </ToolButton>
           </RibbonGroup>
@@ -270,10 +405,20 @@
         <!-- ═══════════════ 票据（v1 非目标，禁用占位） ═══════════════ -->
         <div v-show="activeTab === 'invoice'" class="tb-row">
           <RibbonGroup>
-            <ToolButton label="手型" tooltip="手型工具：拖动平移文档" :active="activeTool === 'hand'" @click="setTool('hand')">
+            <ToolButton
+              label="手型"
+              tooltip="手型工具：拖动平移文档"
+              :active="activeTool === 'hand'"
+              @click="setTool('hand')"
+            >
               <HandIcon />
             </ToolButton>
-            <ToolButton label="文本" tooltip="文本工具：选择正文文本与批注" :active="activeTool === 'text'" @click="setTool('text')">
+            <ToolButton
+              label="文本"
+              tooltip="文本工具：选择正文文本与批注"
+              :active="activeTool === 'text'"
+              @click="setTool('text')"
+            >
               <TextSelectIcon />
             </ToolButton>
           </RibbonGroup>
@@ -282,7 +427,14 @@
             <ToolButton label="缩小" tooltip="缩小" @click="zoomBy(0.9)">
               <ZoomOutIcon />
             </ToolButton>
-            <ToolButton label="显示比例" :value="`${zoomPercent}%`" tooltip="显示比例" has-dropdown @click="setZoomPercent(100)" @dropdown="openDropdown('zoom', $event)">
+            <ToolButton
+              label="显示比例"
+              :value="`${zoomPercent}%`"
+              tooltip="显示比例"
+              has-dropdown
+              @click="setZoomPercent(100)"
+              @dropdown="openDropdown('zoom', $event)"
+            >
               <ZoomLabelIcon />
             </ToolButton>
             <ToolButton label="放大" tooltip="放大" @click="zoomBy(1.1)">
@@ -315,7 +467,11 @@
           </RibbonGroup>
 
           <RibbonGroup>
-            <ToolButton label="数据查看" tooltip="v1 暂未开放：票据数据" disabled>
+            <ToolButton
+              label="数据查看"
+              tooltip="v1 暂未开放：票据数据"
+              disabled
+            >
               <DataViewIcon />
             </ToolButton>
           </RibbonGroup>
@@ -335,7 +491,11 @@
     <!-- ── 下拉浮层（Teleport 到 body；遮罩点击关闭） ── -->
     <Teleport to="body">
       <div v-if="dropdown.kind" class="dd-mask" @mousedown="closeDropdown" />
-      <div v-if="dropdown.kind" class="dd-pop" :style="{ left: `${dropdown.x}px`, top: `${dropdown.y}px` }">
+      <div
+        v-if="dropdown.kind"
+        class="dd-pop"
+        :style="{ left: `${dropdown.x}px`, top: `${dropdown.y}px` }"
+      >
         <FileMenu
           v-if="dropdown.kind === 'file'"
           @open="onFileMenuOpen"
@@ -371,7 +531,11 @@
           @pick="(c) => pickMarkupColor('squiggly', c)"
           @custom="openCustomColor"
         />
-        <ShapeMenu v-else-if="dropdown.kind === 'shape'" :model-value="activeShape" @select="pickShape" />
+        <ShapeMenu
+          v-else-if="dropdown.kind === 'shape'"
+          :model-value="activeShape"
+          @select="pickShape"
+        />
         <ZoomMenu
           v-else-if="dropdown.kind === 'zoom'"
           :model-value="zoomPercent"
@@ -396,13 +560,22 @@
     </Teleport>
 
     <!-- ── 画布区：SDK 在此挂载 WebGPU canvas ── -->
-    <main ref="containerRef" class="canvas-wrap" :style="{ background: deskBackground }" @mousedown="onCanvasMouseDown">
+    <main
+      ref="containerRef"
+      class="canvas-wrap"
+      :style="{ background: deskBackground }"
+      @mousedown="onCanvasMouseDown"
+    >
       <div v-if="loading" class="loading">
         <a-spin tip="正在初始化编辑器…" />
       </div>
 
       <!-- 右键批注菜单浮层 -->
-      <div v-if="ctxMenu.visible" class="ctx-menu" :style="{ left: `${ctxMenu.x}px`, top: `${ctxMenu.y}px` }">
+      <div
+        v-if="ctxMenu.visible"
+        class="ctx-menu"
+        :style="{ left: `${ctxMenu.x}px`, top: `${ctxMenu.y}px` }"
+      >
         <div class="ctx-item" @click="deleteCtxAnnotation">删除批注</div>
       </div>
     </main>
@@ -414,7 +587,12 @@
     </footer>
 
     <!-- 隐藏控件：自定义颜色取色器（初值随请求面板的工具设置） -->
-    <input ref="colorInputRef" type="color" hidden @change="onCustomColorChange" />
+    <input
+      ref="colorInputRef"
+      type="color"
+      hidden
+      @change="onCustomColorChange"
+    />
 
     <!-- Print content-flag panel (file menu「打印…」): three checkboxes,
          then the system print dialog owns printer/copies/range. -->
@@ -447,20 +625,27 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue';
-import { message } from 'ant-design-vue';
-import type { Component } from 'vue';
-import { Ofd, type MarkupKind, type ZoomMode } from '@office-rs/rofd';
-import { resolveFontConfig } from './config/fonts';
-import { buildPrintOptions } from './print/panelOptions';
-import PrintDialog from './print/PrintDialog.vue';
-import RibbonGroup from './components/RibbonGroup.vue';
-import ToolButton from './components/ToolButton.vue';
-import FileMenu from './components/FileMenu.vue';
-import HighlightColorPanel from './components/HighlightColorPanel.vue';
-import ShapeMenu from './components/ShapeMenu.vue';
-import ZoomMenu from './components/ZoomMenu.vue';
-import { fileHost } from './host';
+import {
+  computed,
+  onBeforeUnmount,
+  onMounted,
+  reactive,
+  ref,
+  shallowRef,
+} from "vue";
+import { message } from "ant-design-vue";
+import type { Component } from "vue";
+import { Ofd, type MarkupKind, type ZoomMode } from "@office-rs/rofd";
+import { resolveFontConfig } from "./config/fonts";
+import { buildPrintOptions } from "./print/panelOptions";
+import PrintDialog from "./print/PrintDialog.vue";
+import RibbonGroup from "./components/RibbonGroup.vue";
+import ToolButton from "./components/ToolButton.vue";
+import FileMenu from "./components/FileMenu.vue";
+import HighlightColorPanel from "./components/HighlightColorPanel.vue";
+import ShapeMenu from "./components/ShapeMenu.vue";
+import ZoomMenu from "./components/ZoomMenu.vue";
+import { fileHost } from "./host";
 import {
   ActualSizeIcon,
   ArrowIcon,
@@ -504,7 +689,9 @@ import {
   SquigglyIcon,
   StampIcon,
   StrikeoutIcon,
+  TextBoxIcon,
   TextSelectIcon,
+  TypewriterIcon,
   UnderlineIcon,
   UndoIcon,
   VerifySealIcon,
@@ -512,33 +699,33 @@ import {
   ZoomInIcon,
   ZoomLabelIcon,
   ZoomOutIcon,
-} from './components/Icons';
+} from "./components/Icons";
 
 // ─── 常量表 ─────────────────────────────────────────────────────────────────
 
 const TABS = [
-  { key: 'read', label: '阅读' },
-  { key: 'annotate', label: '注释' },
-  { key: 'edit', label: '编辑' },
-  { key: 'sign', label: '签章' },
-  { key: 'invoice', label: '票据' },
+  { key: "read", label: "阅读" },
+  { key: "annotate", label: "注释" },
+  { key: "edit", label: "编辑" },
+  { key: "sign", label: "签章" },
+  { key: "invoice", label: "票据" },
 ] as const;
 
 /** 图形工具 kind → 图标/标签（图形下拉与"图形"按钮共用）。 */
 const SHAPE_TOOLS: Record<string, { label: string; icon: Component }> = {
-  rect: { label: '矩形', icon: RectIcon },
-  ellipse: { label: '椭圆', icon: EllipseIcon },
-  line: { label: '直线', icon: LineIcon },
-  arrow: { label: '箭头', icon: ArrowIcon },
-  polygon: { label: '多边形', icon: PolygonIcon },
+  rect: { label: "矩形", icon: RectIcon },
+  ellipse: { label: "椭圆", icon: EllipseIcon },
+  line: { label: "直线", icon: LineIcon },
+  arrow: { label: "箭头", icon: ArrowIcon },
+  polygon: { label: "多边形", icon: PolygonIcon },
 };
 
 /** 阅读背景（画布桌面色）。 */
 const DESK_BACKGROUNDS = [
-  { label: '默认灰', value: '#525659' },
-  { label: '浅灰', value: '#d4d6d9' },
-  { label: '护眼绿', value: '#c7edcc' },
-  { label: '深色', value: '#26282a' },
+  { label: "默认灰", value: "#525659" },
+  { label: "浅灰", value: "#d4d6d9" },
+  { label: "护眼绿", value: "#c7edcc" },
+  { label: "深色", value: "#26282a" },
 ];
 
 // Vite 注入的 base 路径：本地 dev 为 '/'，生产构建为 '/rofd/'（GitHub Pages 子路径）。
@@ -556,18 +743,18 @@ const colorInputRef = ref<HTMLInputElement>();
 const ofd = shallowRef<Ofd | null>(null);
 
 const loading = ref(true);
-const activeTab = ref<(typeof TABS)[number]['key']>('read');
-const activeTool = ref('text');
-const highlightColor = ref('#FFDD00');
+const activeTab = ref<(typeof TABS)[number]["key"]>("read");
+const activeTool = ref("text");
+const highlightColor = ref("#FFDD00");
 /** 线类标注工具颜色（默认蓝——component 层 DEFAULT_MARKUP_COLOR；图标随色变化）。 */
-const underlineColor = ref('#0000FF');
-const strikeoutColor = ref('#0000FF');
-const squigglyColor = ref('#0000FF');
+const underlineColor = ref("#0000FF");
+const strikeoutColor = ref("#0000FF");
+const squigglyColor = ref("#0000FF");
 /** 正文文字选区是否存在（markup 按钮禁用态；spec 2026-09-10 R1）。 */
 const hasTextSelection = ref(false);
 const pageIndex = ref(0);
 const zoom = ref(PX_PER_MM);
-const zoomMode = ref<ZoomMode>('custom');
+const zoomMode = ref<ZoomMode>("custom");
 const zoomPercent = computed(() => Math.round((zoom.value / PX_PER_MM) * 100));
 const canUndo = ref(false);
 const canRedo = ref(false);
@@ -577,24 +764,39 @@ const autoPaging = ref(false);
 let autoPageTimer: number | null = null;
 
 /** 当前图形工具（"图形"按钮图标随其变化；初始矩形）。 */
-const activeShape = ref('rect');
-const shapeIcon = computed(() => SHAPE_TOOLS[activeShape.value]?.icon ?? RectIcon);
-const shapeLabel = computed(() => SHAPE_TOOLS[activeShape.value]?.label ?? '矩形');
+const activeShape = ref("rect");
+const shapeIcon = computed(
+  () => SHAPE_TOOLS[activeShape.value]?.icon ?? RectIcon,
+);
+const shapeLabel = computed(
+  () => SHAPE_TOOLS[activeShape.value]?.label ?? "矩形",
+);
 const isShapeTool = computed(() => activeTool.value in SHAPE_TOOLS);
 
 /** 下拉浮层：kind 决定渲染哪个面板，x/y 为锚定按钮左下角（viewport 坐标）。 */
-type DropdownKind = 'file' | MarkupKind | 'shape' | 'zoom' | 'background' | null;
-const dropdown = reactive<{ kind: DropdownKind; x: number; y: number }>({ kind: null, x: 0, y: 0 });
+type DropdownKind =
+  "file" | MarkupKind | "shape" | "zoom" | "background" | null;
+const dropdown = reactive<{ kind: DropdownKind; x: number; y: number }>({
+  kind: null,
+  x: 0,
+  y: 0,
+});
 
-const ctxMenu = reactive({ visible: false, x: 0, y: 0, id: '' });
+const ctxMenu = reactive({ visible: false, x: 0, y: 0, id: "" });
 
 /** Print content-flag panel (file menu「打印…」): all three layers ✔ on by
  * default (convert spec D17); `busy` guards the confirm button while print runs. */
-const printPanel = reactive({ open: false, busy: false, watermark: true, annotations: true, seal: true });
+const printPanel = reactive({
+  open: false,
+  busy: false,
+  watermark: true,
+  annotations: true,
+  seal: true,
+});
 
 /** Tauri desktop host: the「打印…」entry opens the full PrintDialog (IPC
  * spool) instead of the browser flag panel; browsers keep the panel. */
-const isTauri = '__TAURI_INTERNALS__' in window;
+const isTauri = "__TAURI_INTERNALS__" in window;
 const printDialogOpen = ref(false);
 
 // ─── 工具栏动作 ─────────────────────────────────────────────────────────────
@@ -635,7 +837,11 @@ function zoomBy(factor: number): void {
   if (!el || !ofd.value) return;
   const rect = el.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
-  ofd.value.handleZoomAt(factor, (rect.width / 2) * dpr, (rect.height / 2) * dpr);
+  ofd.value.handleZoomAt(
+    factor,
+    (rect.width / 2) * dpr,
+    (rect.height / 2) * dpr,
+  );
 }
 
 /** 设置显示比例到指定百分数（显示比例下拉 / 实际大小按钮）。 */
@@ -649,14 +855,14 @@ function setZoomMode(mode: ZoomMode): void {
   ofd.value?.setZoomMode(mode);
 }
 
-function scrollPage(direction: 'up' | 'down'): void {
+function scrollPage(direction: "up" | "down"): void {
   ofd.value?.handleScrollPage(direction);
 }
 
 function deleteSelectedAnnotations(): void {
   const n = ofd.value?.deleteSelected() ?? 0;
   if (n > 0) message.success(`已删除 ${n} 个批注`);
-  else message.info('没有选中的批注');
+  else message.info("没有选中的批注");
   refreshHistoryState();
 }
 
@@ -675,7 +881,10 @@ function toggleAutoPage(): void {
     autoPaging.value = false;
   } else {
     autoPaging.value = true;
-    autoPageTimer = window.setInterval(() => ofd.value?.handleScrollPage('down'), 3000);
+    autoPageTimer = window.setInterval(
+      () => ofd.value?.handleScrollPage("down"),
+      3000,
+    );
   }
 }
 
@@ -684,7 +893,7 @@ function toggleAutoPage(): void {
 /** 从下拉箭头事件定位锚定按钮，打开对应面板（同 kind 再点即收起）。 */
 function openDropdown(kind: Exclude<DropdownKind, null>, e: Event): void {
   const target = e.target as Element | null;
-  const btn = target?.closest?.('.tool-btn') as HTMLElement | null;
+  const btn = target?.closest?.(".tool-btn") as HTMLElement | null;
   if (!btn) return;
   if (isSameGestureAsClose()) return; // 遮罩 mousedown 刚关闭：视为本次点击就是收起
   const rect = btn.getBoundingClientRect();
@@ -710,9 +919,9 @@ function toggleFileMenu(e: Event): void {
   const btn = e.currentTarget as HTMLElement | null;
   if (!btn) return;
   if (isSameGestureAsClose()) return;
-  const bar = btn.closest('.tabbar') as HTMLElement | null;
+  const bar = btn.closest(".tabbar") as HTMLElement | null;
   const rect = (bar ?? btn).getBoundingClientRect();
-  dropdown.kind = dropdown.kind === 'file' ? null : 'file';
+  dropdown.kind = dropdown.kind === "file" ? null : "file";
   dropdown.x = btn.getBoundingClientRect().left;
   dropdown.y = rect.bottom + 1;
 }
@@ -747,18 +956,23 @@ function onFileMenuPrint(): void {
 }
 
 function isMarkupKind(kind: Exclude<DropdownKind, null>): kind is MarkupKind {
-  return kind === 'highlight' || kind === 'underline' || kind === 'strikeout' || kind === 'squiggly';
+  return (
+    kind === "highlight" ||
+    kind === "underline" ||
+    kind === "strikeout" ||
+    kind === "squiggly"
+  );
 }
 
 function markupColorOf(kind: MarkupKind): string {
   switch (kind) {
-    case 'highlight':
+    case "highlight":
       return highlightColor.value;
-    case 'underline':
+    case "underline":
       return underlineColor.value;
-    case 'strikeout':
+    case "strikeout":
       return strikeoutColor.value;
-    case 'squiggly':
+    case "squiggly":
       return squigglyColor.value;
   }
 }
@@ -767,16 +981,19 @@ function pickHighlightColor(color: string): void {
   highlightColor.value = color;
   ofd.value?.setHighlightColor(color);
   if (hasTextSelection.value) {
-    applyMarkup('highlight'); // 选色即应用（R4）
+    applyMarkup("highlight"); // 选色即应用（R4）
   }
   closeDropdown();
 }
 
 /** 线类工具选色：颜色独立配置（setMarkupColor），有选区即应用（R4）。 */
-function pickMarkupColor(kind: Exclude<MarkupKind, 'highlight'>, color: string): void {
-  if (kind === 'underline') {
+function pickMarkupColor(
+  kind: Exclude<MarkupKind, "highlight">,
+  color: string,
+): void {
+  if (kind === "underline") {
     underlineColor.value = color;
-  } else if (kind === 'strikeout') {
+  } else if (kind === "strikeout") {
     strikeoutColor.value = color;
   } else {
     squigglyColor.value = color;
@@ -789,7 +1006,7 @@ function pickMarkupColor(kind: Exclude<MarkupKind, 'highlight'>, color: string):
 }
 
 /** 请求"其他颜色"的标注工具（取色器 change 回写目标）。 */
-const customColorKind = ref<MarkupKind>('highlight');
+const customColorKind = ref<MarkupKind>("highlight");
 
 function openCustomColor(): void {
   const kind = dropdown.kind;
@@ -805,7 +1022,7 @@ function openCustomColor(): void {
 function onCustomColorChange(e: Event): void {
   const input = e.target as HTMLInputElement;
   if (!input.value) return;
-  if (customColorKind.value === 'highlight') pickHighlightColor(input.value);
+  if (customColorKind.value === "highlight") pickHighlightColor(input.value);
   else pickMarkupColor(customColorKind.value, input.value);
 }
 
@@ -834,8 +1051,8 @@ async function openFile(): Promise<void> {
 async function save(): Promise<void> {
   const ofdInst = ofd.value;
   if (!ofdInst) return;
-  const ok = await fileHost.save(ofdInst.saveOfd(), 'document.ofd');
-  if (ok) message.success('已保存 document.ofd');
+  const ok = await fileHost.save(ofdInst.saveOfd(), "document.ofd");
+  if (ok) message.success("已保存 document.ofd");
 }
 
 /** Export as PDF (file menu): all content layers on (convert spec D17),
@@ -846,16 +1063,18 @@ async function exportPdf(): Promise<void> {
   try {
     const bytes = await ofdInst.exportPdf(buildPrintOptions(true, true, true));
     // Same Blob + a[download] idiom as host.ts save().
-    const blob = new Blob([bytes as BlobPart], { type: 'application/pdf' });
+    const blob = new Blob([bytes as BlobPart], { type: "application/pdf" });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
+    const a = document.createElement("a");
     a.href = url;
-    a.download = 'document.pdf';
+    a.download = "document.pdf";
     a.click();
     URL.revokeObjectURL(url);
   } catch (e) {
-    console.error('[rofd] export PDF failed:', e);
-    message.error(`导出 PDF 失败：${e instanceof Error ? e.message : String(e)}`);
+    console.error("[rofd] export PDF failed:", e);
+    message.error(
+      `导出 PDF 失败：${e instanceof Error ? e.message : String(e)}`,
+    );
   }
 }
 
@@ -870,10 +1089,16 @@ async function confirmPrint(): Promise<void> {
   }
   printPanel.busy = true;
   try {
-    await ofdInst.print(buildPrintOptions(printPanel.watermark, printPanel.annotations, printPanel.seal));
+    await ofdInst.print(
+      buildPrintOptions(
+        printPanel.watermark,
+        printPanel.annotations,
+        printPanel.seal,
+      ),
+    );
     printPanel.open = false;
   } catch (e) {
-    console.error('[rofd] print failed:', e);
+    console.error("[rofd] print failed:", e);
     message.error(`打印失败：${e instanceof Error ? e.message : String(e)}`);
   } finally {
     printPanel.busy = false;
@@ -901,7 +1126,7 @@ function deleteCtxAnnotation(): void {
 /** 点击菜单外任意处关闭（capture 捕获，画布 mousedown 也会冒泡到 window）。 */
 function closeCtxMenu(e: MouseEvent): void {
   const target = e.target as HTMLElement | null;
-  if (target && target.closest('.ctx-menu')) return;
+  if (target && target.closest(".ctx-menu")) return;
   ctxMenu.visible = false;
 }
 
@@ -917,8 +1142,8 @@ function onFullscreenChange(): void {
 // ─── 生命周期 ───────────────────────────────────────────────────────────────
 
 onMounted(async () => {
-  window.addEventListener('mousedown', closeCtxMenu, true);
-  document.addEventListener('fullscreenchange', onFullscreenChange);
+  window.addEventListener("mousedown", closeCtxMenu, true);
+  document.addEventListener("fullscreenchange", onFullscreenChange);
   try {
     const ofdInst = await Ofd.init(containerRef.value!, {
       // 字体通道：切片按需（?legacyFonts=1 时整字体全量回归）。
@@ -958,25 +1183,28 @@ onMounted(async () => {
     if (import.meta.env.DEV) {
       (window as unknown as { __ofd: unknown }).__ofd = ofdInst;
     }
-    ofdInst.setClock('rofd', Date.now());
+    ofdInst.setClock("rofd", Date.now());
     // 默认打开示例文档（public/sample.ofd），失败不阻塞空编辑器。
     try {
       const res = await fetch(`${BASE}sample.ofd`);
       if (res.ok) ofdInst.loadOfd(new Uint8Array(await res.arrayBuffer()));
     } catch (e) {
-      console.warn('[rofd] sample.ofd 加载失败:', e);
+      console.warn("[rofd] sample.ofd 加载失败:", e);
     }
   } catch (e) {
-    console.error('[rofd] editor init failed:', e);
-    message.error(`编辑器初始化失败：${e instanceof Error ? e.message : String(e)}`, 8);
+    console.error("[rofd] editor init failed:", e);
+    message.error(
+      `编辑器初始化失败：${e instanceof Error ? e.message : String(e)}`,
+      8,
+    );
   } finally {
     loading.value = false;
   }
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener('mousedown', closeCtxMenu, true);
-  document.removeEventListener('fullscreenchange', onFullscreenChange);
+  window.removeEventListener("mousedown", closeCtxMenu, true);
+  document.removeEventListener("fullscreenchange", onFullscreenChange);
   if (autoPageTimer !== null) window.clearInterval(autoPageTimer);
   ofd.value?.destroy();
   ofd.value = null;
@@ -1062,7 +1290,7 @@ body,
 }
 
 .tb-tab.on::after {
-  content: '';
+  content: "";
   position: absolute;
   left: 50%;
   bottom: 0;

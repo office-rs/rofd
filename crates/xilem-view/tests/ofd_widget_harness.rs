@@ -116,6 +116,7 @@ fn setup_command() -> OfdCommand {
                 size: 10.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
+                runs: Vec::new(),
             },
         );
     })

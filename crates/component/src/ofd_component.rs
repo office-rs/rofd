@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use rofd_dom::{
-    AnnotationId, AnnotationKind, AnnotationPayload, AnnotationSelection, Color, OfdDocument,
-    OfdWarning, PageId, PathCommand, PathData, Point, Rect, ShapeKind,
+    AnnotationId, AnnotationKind, AnnotationPayload, AnnotationSelection, Color, FontId,
+    OfdDocument, OfdWarning, PageId, PathCommand, PathData, Point, Rect, ShapeKind,
 };
 use rofd_editor::{Editor, TextCursor};
 use rofd_render::{
@@ -36,6 +36,13 @@ use web_time::Instant;
 pub enum CreateKind {
     Shape(ShapeKind),
     Freehand,
+    /// 文字批注 (TypeWriter): a plain click places a borderless, empty
+    /// text box at the click point and drops the caret - typing starts
+    /// immediately.
+    Typewriter,
+    /// 文本框: a drag draws the frame of a bordered text box; the caret
+    /// lands at offset 0 on commit.
+    TextBox,
 }
 
 impl CreateKind {
@@ -44,6 +51,7 @@ impl CreateKind {
         match self {
             CreateKind::Shape(s) => AnnotationKind::Shape(*s),
             CreateKind::Freehand => AnnotationKind::Freehand,
+            CreateKind::Typewriter | CreateKind::TextBox => AnnotationKind::TextBox,
         }
     }
 }
@@ -1795,15 +1803,24 @@ impl OfdComponent {
                             path,
                         } => {
                             // Degenerate-create guard: a click-without-drag
-                            // (start ~= current) must commit nothing. Applies
-                            // to all create kinds (Shape/Freehand - a
-                            // single-point Freehand click is equally inert).
-                            // `drag` was already taken above, so the drag
-                            // state is cleared either way.
+                            // (start ~= current) must commit nothing - EXCEPT
+                            // the typewriter tool, whose click IS the
+                            // placement gesture. Applies to all other create
+                            // kinds (Shape/Freehand - a single-point Freehand
+                            // click is equally inert). `drag` was already
+                            // taken above, so the drag state is cleared
+                            // either way.
                             let dist = ((current.0 - start.0).powi(2)
                                 + (current.1 - start.1).powi(2))
                             .sqrt();
-                            if dist < MIN_CREATE_DRAG_PX {
+                            // The exemption only holds when the release
+                            // lands INSIDE a page: PointerDown starts a
+                            // Create drag anywhere, and a desk release
+                            // would fall back to page 1 and mint an
+                            // off-page box.
+                            let typewriter = matches!(kind, CreateKind::Typewriter)
+                                && point_on_page(self.editor.document(), &self.viewport, current);
+                            if dist < MIN_CREATE_DRAG_PX && !typewriter {
                                 // Suppressed: no annotation, no history, no
                                 // selection change, no focus/interact
                                 // callbacks. Fall through to the repaint
@@ -1854,6 +1871,13 @@ impl OfdComponent {
                                 self.fire_annotation_focus(&id);
                                 self.fire_annotation_interact(&id);
                                 self.fire_selection_change();
+                                // Text tools: drop the caret at offset 0 so
+                                // typing starts immediately (the box was
+                                // created empty).
+                                if matches!(kind, CreateKind::Typewriter | CreateKind::TextBox) {
+                                    self.editor.set_cursor(id.clone(), 0);
+                                    self.fire_cursor_change();
+                                }
                             }
                         }
                         DragState::Move {
@@ -3114,6 +3138,19 @@ const DEFAULT_SHAPE_WIDTH: f64 = 0.3528;
 /// zoom.
 const MIN_CREATE_DRAG_PX: f64 = 3.0;
 
+/// Default font size for tool-created text boxes: 16pt in mm (the
+/// reference authoring tools' typewriter default).
+const DEFAULT_TEXTBOX_SIZE: f64 = 5.6444;
+
+/// Click-placed typewriter box: one text line's worth of frame, wide
+/// enough for a short phrase (the box grows on save once text exists).
+const TYPEWRITER_BOX_W: f64 = 30.0;
+const TYPEWRITER_BOX_H: f64 = 8.0;
+
+/// Default frame color of a tool-created 文本框 (black, like the reference
+/// tools' default border).
+const DEFAULT_TEXTBOX_BORDER: Color = Color::Rgb(0, 0, 0);
+
 /// Viewport-pixel distance a markup press must travel before it converts
 /// from a click (select the markup) to a drag (select the body text
 /// beneath, click-vs-drag - spec §5.2). Same scale as the adapter-side
@@ -3178,9 +3215,10 @@ fn compute_resize(handle: &HandlePos, anchor: (f64, f64), orig: Rect, point: (f6
 ///   position) is preserved - the bbox alone loses which diagonal was drawn.
 ///   Rect/Ellipse store empty `points` (no endpoint direction).
 ///
-/// Only drag-createable kinds exist here (spec 2026-09-10 §4.1): markup is
-/// built from a body-text selection by [`OfdComponent::apply_markup`],
-/// and Note/TextBox/... are created programmatically, not by a tool drag.
+/// Only tool-createable kinds exist here (spec 2026-09-10 §4.1): markup is
+/// built from a body-text selection by [`OfdComponent::apply_markup`];
+/// Typewriter/TextBox create empty editable boxes (the caret drops at
+/// offset 0 so typing starts immediately).
 fn build_create_payload(
     kind: &CreateKind,
     start: (f64, f64),
@@ -3234,6 +3272,34 @@ fn build_create_payload(
                 points,
             }
         }
+        // 文本框: the drag bounds become the framed box; typing starts at
+        // offset 0 (the PointerUp handler drops the caret).
+        CreateKind::TextBox => AnnotationPayload::TextBox {
+            rect: bbox(start, current),
+            content: String::new(),
+            font: FontId::default(),
+            size: DEFAULT_TEXTBOX_SIZE,
+            color: Color::Rgb(0, 0, 0),
+            border: Some(DEFAULT_TEXTBOX_BORDER),
+            runs: Vec::new(),
+        },
+        // 文字批注 (TypeWriter): placed at the PRESS point with a
+        // one-line frame (the release point is irrelevant - click or drag
+        // both place at where the pointer went down).
+        CreateKind::Typewriter => AnnotationPayload::TextBox {
+            rect: Rect {
+                x: start.0,
+                y: start.1,
+                w: TYPEWRITER_BOX_W,
+                h: TYPEWRITER_BOX_H,
+            },
+            content: String::new(),
+            font: FontId::default(),
+            size: DEFAULT_TEXTBOX_SIZE,
+            color: Color::Rgb(0, 0, 0),
+            border: None,
+            runs: Vec::new(),
+        },
     }
 }
 
@@ -3257,6 +3323,23 @@ fn current_page_id(doc: &OfdDocument, vp: &Viewport, point: (f64, f64)) -> PageI
     }
     // Fallback: first page if any, else a default PageId.
     doc.pages.first().map(|p| p.id.clone()).unwrap_or_default()
+}
+
+/// Whether a viewport point lands INSIDE some page (no first-page fallback,
+/// unlike [`current_page_id`]). Create tools use this to refuse desk clicks.
+fn point_on_page(doc: &OfdDocument, vp: &Viewport, point: (f64, f64)) -> bool {
+    let origins = rofd_render::page_origins(doc, vp);
+    doc.pages.iter().enumerate().any(|(i, page)| {
+        let Some(&(origin_x, origin_y)) = origins.get(i) else {
+            return false;
+        };
+        let page_w = page.physical_box.w * vp.zoom;
+        let page_h = page.physical_box.h * vp.zoom;
+        point.0 >= origin_x
+            && point.0 <= origin_x + page_w
+            && point.1 >= origin_y
+            && point.1 <= origin_y + page_h
+    })
 }
 
 /// Convert a viewport-space point to page-local coordinates for a specific page.
@@ -3509,6 +3592,7 @@ mod tests {
                 size: 10.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
+                runs: Vec::new(),
             },
         );
         c.editor.set_cursor(id, 2);
@@ -4373,6 +4457,195 @@ mod tests {
         assert!(matches!(c.tool, Tool::Create(_)));
         c.set_tool(Tool::Text);
         assert!(matches!(c.tool, Tool::Text));
+    }
+
+    #[test]
+    fn typewriter_click_on_desk_creates_nothing() {
+        // The typewriter exemption from the degenerate-drag guard must not
+        // mint boxes on the desk background: PointerDown starts a Create
+        // drag anywhere, and a desk release would fall back to page 1 and
+        // place an off-page box. Only releases INSIDE a page place.
+        let mut c = component_with_page();
+        c.viewport.size = (800.0, 600.0);
+        c.set_tool(Tool::Create(CreateKind::Typewriter));
+        // Page spans x [300, 500] at zoom 1 (viewport 800 wide); (100, 100)
+        // is desk.
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 100.0,
+            y: 100.0,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 100.0,
+            y: 100.0,
+        });
+        assert!(
+            c.document()
+                .annotations
+                .by_page
+                .values()
+                .all(|v| v.is_empty()),
+            "desk click creates nothing"
+        );
+        assert!(!c.can_undo(), "no history entry for the desk click");
+        // The same gesture inside the page still places (regression guard).
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 350.0,
+            y: 100.0,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 350.0,
+            y: 100.0,
+        });
+        assert!(
+            !c.document()
+                .annotations
+                .for_page(&PageId::new("P0"))
+                .is_empty(),
+            "in-page click still places"
+        );
+    }
+
+    #[test]
+    fn typewriter_click_places_editable_borderless_textbox() {
+        // 文字批注 (TypeWriter semantics): a plain CLICK on the page places a
+        // borderless, empty TextBox sized to one text line and drops the
+        // caret at offset 0 - typing starts immediately.
+        let mut c = component_with_page();
+        c.set_tool(Tool::Create(CreateKind::Typewriter));
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 50.0,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        });
+        let outcome = c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 50.0,
+            y: 50.0,
+        });
+        assert!(outcome.needs_repaint);
+        let (id, ann) = c
+            .document()
+            .annotations
+            .for_page(&PageId::new("P0"))
+            .first()
+            .map(|a| (a.id.clone(), a.clone()))
+            .expect("typewriter box created");
+        assert_eq!(ann.kind, rofd_dom::AnnotationKind::TextBox);
+        match &ann.payload {
+            AnnotationPayload::TextBox {
+                rect,
+                content,
+                border,
+                runs,
+                ..
+            } => {
+                assert_eq!(content, "");
+                assert!(runs.is_empty());
+                assert_eq!(border, &None, "typewriter text has no frame");
+                assert!((rect.x - 50.0).abs() < 1e-9, "placed at the click");
+                assert!((rect.y - 50.0).abs() < 1e-9);
+                assert!(rect.w > 0.0 && rect.h > 0.0, "sized to a line box");
+            }
+            other => panic!("expected TextBox, got {other:?}"),
+        }
+        // Editable immediately: selection + caret at offset 0.
+        assert!(matches!(c.selection(), AnnotationSelection::Single(s) if *s == id));
+        let cursor = c.text_cursor().expect("caret placed for typing");
+        assert_eq!(cursor.annotation, id);
+        assert_eq!(cursor.offset, 0);
+        // One undo removes the box.
+        assert!(c.undo());
+        assert!(
+            c.document()
+                .annotations
+                .for_page(&PageId::new("P0"))
+                .is_empty(),
+            "undo removes the typewriter box"
+        );
+    }
+
+    #[test]
+    fn textbox_tool_drag_creates_bordered_editable_box() {
+        // 文本框: drag out a frame; the bordered box is selected with the
+        // caret at offset 0. A degenerate (sub-threshold) drag creates
+        // nothing.
+        let mut c = component_with_page();
+        c.set_tool(Tool::Create(CreateKind::TextBox));
+        c.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 10.0,
+            y: 10.0,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        });
+        c.handle_event(&ViewEvent::PointerMove { x: 80.0, y: 40.0 });
+        let outcome = c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 80.0,
+            y: 40.0,
+        });
+        assert!(outcome.needs_repaint);
+        let (id, ann) = c
+            .document()
+            .annotations
+            .for_page(&PageId::new("P0"))
+            .first()
+            .map(|a| (a.id.clone(), a.clone()))
+            .expect("bordered box created");
+        assert_eq!(ann.kind, rofd_dom::AnnotationKind::TextBox);
+        match &ann.payload {
+            AnnotationPayload::TextBox {
+                rect,
+                border,
+                content,
+                ..
+            } => {
+                assert_eq!(content, "");
+                assert_eq!(border, &Some(Color::Rgb(0, 0, 0)), "text box frame");
+                assert!((rect.x - 10.0).abs() < 1e-9);
+                assert!((rect.y - 10.0).abs() < 1e-9);
+                assert!((rect.w - 70.0).abs() < 1e-9);
+                assert!((rect.h - 30.0).abs() < 1e-9);
+            }
+            other => panic!("expected TextBox, got {other:?}"),
+        }
+        assert!(matches!(c.selection(), AnnotationSelection::Single(s) if *s == id));
+        let cursor = c.text_cursor().expect("caret at drag end");
+        assert_eq!(cursor.annotation, id);
+        assert_eq!(cursor.offset, 0);
+
+        // Degenerate drag (below MIN_CREATE_DRAG_PX): no annotation.
+        let mut c2 = component_with_page();
+        c2.set_tool(Tool::Create(CreateKind::TextBox));
+        c2.handle_event(&ViewEvent::PointerDown {
+            button: MouseButton::Left,
+            x: 20.0,
+            y: 20.0,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        });
+        c2.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 21.0,
+            y: 21.0,
+        });
+        assert!(
+            c2.document()
+                .annotations
+                .for_page(&PageId::new("P0"))
+                .is_empty(),
+            "tiny drag creates nothing"
+        );
     }
 
     #[test]
@@ -8294,6 +8567,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
+                runs: Vec::new(),
             },
         });
         c.load_document(doc);
@@ -8342,6 +8616,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
+                runs: Vec::new(),
             },
         });
         c.load_document(doc);

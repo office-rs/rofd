@@ -208,6 +208,7 @@ converter hosts（CLI/未来绑定）只碰 rofd-convert，与"编辑器宿主�
 - `OfdConfig`：`default_font_bytes`、`page_gap`（默认 20）、`zoom`（初始 PX_PER_MM，`with_zoom` 可覆盖）。
 - 场景脏缓存（终态公共 API）：`update_scene()` 按脏标志重合成、`scene() -> &Scene`、`set_viewport_size(f64,f64)`、`mark_scene_dirty`（pub(crate)）。
 - 文本编辑：`paste_text`、`delete_annotation`、`tick_blink`（两目标统一，wasm 由 `renderFrame` 驱动，见 §4.4）、preedit 状态机（组件自持 `Option<PreeditState>`，简化 caret overlay，不做 ghost-document 回流）。
+- 创建工具含文字两件套（2026-11-07）：`CreateKind::Typewriter`（点击放置无边框空框即落光标）与 `CreateKind::TextBox`（拖拽画带边框框）；富文本框（解析自外来文件的逐段样式 `TextBox.runs`）渲染按段保真（合成粗体/斜体），首次文本编辑在同一 Transaction 内塌缩为平铺样式（一次 undo 还原富外观）。
 - 打印内核缝（spec 2026-10-31）：`begin_print(PrintContent) -> PrintSession`，内容三开关（水印/批注/图章，默认**全开 ✔✔✔**——spec 2026-11-06 D17 翻转，commit 052f528；`PrintContent::default()` 三项皆 true，宿主与 convert 均经 default 派生）；页场景/纸型/页计划全经 session（`page_scene`/`page_parameters`/`plan`，`1-3,5` 范围语法由 office-rs-print 解析，宿主不重写）；native 一键直打 `print_direct`（begin_print→plan→payload→`print_pages`）。
 
 ### rofd-convert（headless 转换线，spec 2026-11-06）
@@ -245,6 +246,7 @@ converter hosts（CLI/未来绑定）只碰 rofd-convert，与"编辑器宿主�
 - `WasmOfd`（wasm-bindgen）+ `WebGpuRenderTarget` + JS 事件桥。工厂 `create_wasm_ofd`。wasm-pack --target web。
 - CPU 回退（spec 2026-10-18）：WebGPU 不可用时 SDK 落 `create_wasm_ofd_cpu`（vello_cpu + 页位图缓存）于**同一 canvas**——前提是 `create_wasm_ofd` **先探 adapter（`compatible_surface: None`）后 `create_surface`**（canvas 一旦绑了 webgpu context 就永远拿不到 2d context，回退必挂）；该链路由 `npm run smoke:nogpu` 冒烟守护，勿倒回"先绑 surface 再探 adapter"。
 - SDK 在 `crates/web-view/sdk/`，入口 `Ofd.init(container, config?)`，发布为 npm 包 `@office-rs/rofd`。
+- IME 桥（2026-11-07）：canvas 不可编辑，OS IME 不会对它起组合——SDK 用 1px 透明 `<input data-rofd-ime>` 承载键盘焦点与组合（`compositionupdate`→`handleImePreedit`、`compositionend`→`handleImeCommit` + 清 preedit + 清 value；组合期间 keydown（`isComposing`/`keyCode 229`）一律丢弃防双插）；input 经 `caretRect()` 锚定到光标处（候选窗跟光标）；焦点模型整体从 canvas 迁到该 input。
 - 渲染调度（spec 2026-10-13 web-render-on-demand）：内核 `needs_frame() -> FrameNeed` 是唯一真值；wasm 融合导出 `renderFrame()` 返回 `0` / `>0`ms / `-1`。SDK 自挂起调度器（`scheduler.ts` `RenderScheduler` + `with-kick.ts` Proxy kick + watchdog）：`0`→rAF 立即重渲、`>0`→唯一 `setTimeout` 唤醒（blink deadline，web 的 WaitUntil）、`-1`→完全挂起；任何 wasm 方法调用经 Proxy kick 恰预约一个 rAF（`renderFrame` 豁免）；`visibilitychange` 隐藏完全静默；`pauseRendering`/`resumeRendering` 为宿主政策层手柄。
 
 ### xilem-app

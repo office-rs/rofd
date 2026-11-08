@@ -65,6 +65,10 @@ pub fn parse_tool_kind(kind: &str) -> Tool {
         "arrow" => Tool::Create(CreateKind::Shape(ShapeKind::Arrow)),
         "line" => Tool::Create(CreateKind::Shape(ShapeKind::Line)),
         "polygon" => Tool::Create(CreateKind::Shape(ShapeKind::Polygon)),
+        // Annotate-tab text tools: click-placed typewriter (文字批注) and
+        // drag-framed text box (文本框).
+        "typewriter" => Tool::Create(CreateKind::Typewriter),
+        "textbox" => Tool::Create(CreateKind::TextBox),
         _ => Tool::Text,
     }
 }
@@ -543,6 +547,40 @@ mod wasm_impl {
                 modifiers,
             });
             Ok(())
+        }
+
+        /// IME composition update: the composition text shows inline (preedit
+        /// overlay) at the text cursor until the IME commits or cancels. An
+        /// empty `text` cancels the composition. The component owns the
+        /// preedit state machine; the browser's CompositionEvent carries no
+        /// caret range, so the preedit caret is always `None`.
+        #[wasm_bindgen(js_name = handleImePreedit)]
+        pub fn handle_ime_preedit(&mut self, text: &str) {
+            self.component.handle_event(&ViewEvent::ImePreedit {
+                text: text.to_string(),
+                caret: None,
+            });
+        }
+
+        /// IME composition commit: insert `text` at the text cursor. An
+        /// active preedit is the source of truth and commits instead (same
+        /// contract as the native adapters).
+        #[wasm_bindgen(js_name = handleImeCommit)]
+        pub fn handle_ime_commit(&mut self, text: &str) {
+            self.component.handle_event(&ViewEvent::ImeCommit {
+                text: text.to_string(),
+            });
+        }
+
+        /// Viewport-space caret rect `[x, y, w, h]` for the current text
+        /// cursor (device px, the web viewport convention), or `null` when
+        /// no cursor is set. The SDK positions its hidden IME input here so
+        /// the OS candidate window anchors at the caret.
+        #[wasm_bindgen(js_name = caretRect)]
+        pub fn caret_rect_js(&mut self) -> Option<Vec<f64>> {
+            self.component
+                .caret_rect()
+                .map(|r| vec![r.x, r.y, r.w, r.h])
         }
 
         // The arg count mirrors the DOM MouseEvent surface the JS bridge
@@ -1239,6 +1277,21 @@ mod tests {
     #[test]
     fn parse_tool_kind_hand() {
         assert_eq!(parse_tool_kind("hand"), Tool::Hand);
+    }
+
+    #[test]
+    fn parse_tool_kind_text_tools() {
+        // The annotate tab's two text-create tools (ribbon buttons).
+        assert_eq!(
+            parse_tool_kind("typewriter"),
+            Tool::Create(CreateKind::Typewriter)
+        );
+        assert_eq!(
+            parse_tool_kind("textbox"),
+            Tool::Create(CreateKind::TextBox)
+        );
+        // Unknown strings still fall back to Text.
+        assert_eq!(parse_tool_kind("TypeWriter"), Tool::Text);
     }
 
     #[test]

@@ -66,6 +66,104 @@ fn strip_max_unit_id(xml: &str) -> String {
     format!("{}{}", &xml[..open_start], &xml[close_end..])
 }
 
+/// Rich runs through the FULL surgical save path: the annotation entry is
+/// re-serialized from the AnnotationModel; re-parsing must give every styled
+/// fragment back (font/size/color/bold/italic + pen positions), and body
+/// entries stay byte-identical (§4.3).
+#[test]
+fn surgical_save_preserves_textbox_runs() {
+    use rofd_dom::{
+        Annotation, AnnotationId, AnnotationKind, AnnotationPayload, FontId, PageId, TextRun,
+    };
+    let original = fixtures::build_minimal_ofd();
+    let report = rofd_io::parse_ofd(&original).unwrap();
+    let mut doc = report.document.clone();
+    doc.annotations
+        .by_page
+        .entry(PageId::new("1"))
+        .or_default()
+        .push(Annotation {
+            id: AnnotationId::from_int(149),
+            kind: AnnotationKind::TextBox,
+            page: PageId::new("1"),
+            creator: "t".into(),
+            created: 1_783_656_237_000,
+            modified: 1_783_656_237_000,
+            reply_to: None,
+            payload: AnnotationPayload::TextBox {
+                rect: rofd_dom::Rect {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 46.0,
+                    h: 10.0,
+                },
+                content: "发的古典风格".into(),
+                font: FontId::new("118"),
+                size: 4.2333,
+                color: rofd_dom::Color::Rgb(0, 0, 0),
+                border: Some(rofd_dom::Color::Rgb(255, 0, 0)),
+                runs: vec![
+                    TextRun {
+                        text: "发的古".into(),
+                        font: FontId::new("118"),
+                        size: 4.2333,
+                        color: None,
+                        bold: false,
+                        italic: false,
+                        x: 1.1764,
+                        baseline: 6.631,
+                    },
+                    TextRun {
+                        text: "格".into(),
+                        font: FontId::new("157"),
+                        size: 4.2333,
+                        color: Some(rofd_dom::Color::Rgb(75, 172, 198)),
+                        bold: true,
+                        italic: false,
+                        x: 24.4596,
+                        baseline: 6.631,
+                    },
+                ],
+            },
+        });
+    let saved = rofd_io::save_ofd(&doc, &report.package).unwrap();
+
+    // Body entries byte-identical (the surgical invariant).
+    let orig_entries = rofd_io::zip_util::read_all_entries(&original).unwrap();
+    let saved_entries = rofd_io::zip_util::read_all_entries(&saved).unwrap();
+    for name in [
+        "OFD.xml",
+        "Doc_0/Pages/Page_0/Content.xml",
+        "Doc_0/Res/Font.xml",
+    ] {
+        assert_eq!(by_name(&orig_entries, name), by_name(&saved_entries, name));
+    }
+
+    // The rich annotation parses back with both runs intact.
+    let reparsed = rofd_io::parse_ofd(&saved).unwrap();
+    let anns = reparsed
+        .document
+        .annotations
+        .for_page(&PageId::new("1"))
+        .to_vec();
+    let ann = anns
+        .iter()
+        .find(|a| a.id == AnnotationId::from_int(149))
+        .expect("inserted rich annotation survived the save");
+    match &ann.payload {
+        AnnotationPayload::TextBox { content, runs, .. } => {
+            // Flat content re-derives from the runs on reparse.
+            assert_eq!(content, "发的古格");
+            assert_eq!(runs.len(), 2, "both runs survived the save");
+            assert!(runs[1].bold, "bold flag survived");
+            assert_eq!(runs[1].color, Some(rofd_dom::Color::Rgb(75, 172, 198)));
+            assert!((runs[1].x - 24.4596).abs() < 1e-6, "pen x survived");
+            assert!((runs[1].baseline - 6.631).abs() < 1e-6, "baseline survived");
+        }
+        other => panic!("expected TextBox, got {other:?}"),
+    }
+}
+
 /// Strict-reader interop: adding the FIRST annotation to a previously-bare
 /// document must wire the full GB/T 33190 discovery chain - readers locate
 /// annotations via `Document.xml` `<Annotations>` loc -> `Annots/Annotations.xml`
