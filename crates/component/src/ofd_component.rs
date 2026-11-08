@@ -2503,10 +2503,12 @@ impl OfdComponent {
     /// [`office_rs_print::JobHandle`] — the component is not blocked.
     ///
     /// Native only: office-rs-print's backend exports (`print_pages` et al.)
-    /// are `#[cfg(not(target_arch = "wasm32"))]` at that crate's root, so a
-    /// wasm sibling of this method cannot compile — the web path prints via
-    /// PDF export through the SDK instead.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// are `#[cfg(all(feature = "backend", not(target_arch = "wasm32")))]`
+    /// at that crate's root, so a wasm sibling of this method cannot
+    /// compile — the web path prints via PDF export through the SDK
+    /// instead. Likewise gated on this crate's `print-backend` feature:
+    /// headless consumers (the convert line) build the type layer alone.
+    #[cfg(all(feature = "print-backend", not(target_arch = "wasm32")))]
     pub fn print_direct(
         &mut self,
         printer: Option<&str>,
@@ -8380,7 +8382,7 @@ mod tests {
     /// Rword word_component.rs:15984 pattern: submitting a real spooler job
     /// must return a live handle, not an immediately-failed one. Desktop
     /// only (needs a printer system).
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "print-backend", not(target_arch = "wasm32")))]
     #[test]
     #[ignore = "requires a printer system; run with -- --ignored on a desktop"]
     fn print_direct_returns_job_handle() {

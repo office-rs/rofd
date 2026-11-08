@@ -62,7 +62,7 @@ web-time = "1"
 rofd-export = { path = "crates/export" }
 krilla = { version = "0.8", features = ["pdf"] }
 swash = "0.2"
-office-rs-print = { git = "https://github.com/office-rs/print.git", rev = "c2f99d5" }
+office-rs-print = { git = "https://github.com/office-rs/print.git", rev = "72b67a9" }
 # gpui line (spec 2026-10-31-gpui-view-gpui-app-design.md §12): gpui-pre is
 # the gpui-kit maintainer's snapshot re-publish of zed@08cbb88 — official
 # crates.io gpui is a year stale (0.2.2, missing the Windows/IME fixes).

@@ -6393,7 +6393,7 @@ dependencies = [
 [[package]]
 name = "office-rs-print"
 version = "0.1.0"
-source = "git+https://github.com/office-rs/print.git?rev=c2f99d5#c2f99d58ca31401b9e5562773cf5a643aca8ed03"
+source = "git+https://github.com/office-rs/print.git?rev=72b67a9#72b67a9d85a396f5b0541e29171ce523b55e25da"
 dependencies = [
  "image",
  "imaging",

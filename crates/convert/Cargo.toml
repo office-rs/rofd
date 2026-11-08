@@ -11,7 +11,10 @@ keywords = ["ofd", "pdf", "convert", "export"]
 categories = ["graphics"]
 
 [dependencies]
-rofd-component = { workspace = true }
+# No print backend: the convert line never prints, and the CUPS backend
+# is a link-time libcups dependency the distributed binaries must not
+# carry (convert spec §9).
+rofd-component = { workspace = true, default-features = false }
 rofd-io = { workspace = true }
 rofd-render = { workspace = true }
 rofd-export = { workspace = true }
