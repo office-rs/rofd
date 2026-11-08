@@ -426,19 +426,14 @@ jobs:
             py-artifacts/**/*.whl
             wasm-artifacts/rofd-convert-wasm-sdk.tar.gz
 
-  # Publish the abi3 wheels to PyPI via Trusted Publishing (OIDC). The
-  # pending-publisher must be registered on pypi.org pinning this exact
-  # quad: office-rs/rofd + convert-release.yml + environment `pypi`
-  # (runbook §1 P4 — NOT yet done for this repo); the `pypi` environment
-  # (to be created in repo settings) additionally restricts deployments
-  # to `rofd-convert-v*` tags.
+  # Publish the abi3 wheels to PyPI via an account API token
+  # (PYPI_API_TOKEN; the project `rofd-convert` is created on first
+  # publish). Token path chosen 2026-11-08 over trusted publishing —
+  # simpler for the first release; switching later is one workflow edit.
   publish-pypi:
     needs: build-python
     if: github.event_name == 'release' && startsWith(github.event.release.tag_name, 'rofd-convert-')
     runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -447,6 +442,8 @@ jobs:
           merge-multiple: true
       - name: Publish wheels to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
 
   # Publish the npm family: the four platform packages (synthesized from
   # the build-node matrix output, napi convention), the main package
