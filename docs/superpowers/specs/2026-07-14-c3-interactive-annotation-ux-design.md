@@ -1,7 +1,7 @@
 # rofd Cluster 3：交互式批注 UX 设计
 
 - **日期**: 2026-07-14
-- **状态**: Draft（待评审）
+- **状态**: **CLOSED（2026-11-08 审计闭案）——范围被后续 spec 吸收实现并超出，无剩余工作**。逐条核验：工具态/拖拽状态机（Tool{Text,Create,Hand}+DragState{Pan,Move,Resize,VertexMove}，2026-08-16 Tools P1-P3）；8 手柄+选择框+拖拽预览（render composite+handles.rs，含 Freehand/Markup 无手柄策略）；6 种创建（markup 4 种经文本选区 apply_markup、Shape/Freehand 拖拽创建）；移动/缩放/顶点编辑；右键菜单（web+native）；undo/redo；5 回调+on_zoom_mode_change/on_text_selection_change/on_pointer_cursor（web SDK 全接线）；Squiggly 往返（C1.5）。**推迟项中文本光标/可视光标/闪烁/IME 亦已落地**（caret_rect/tick_blink/preedit 状态机）；样式编辑 UI 与 Shift 多选维持推迟（后续）。
 - **范围**: V1 收尾子项目 3/4 -- 批注的创建（WPS 6 种拖拽绘制）、选择、移动、缩放（手柄）、删除、右键菜单、5 个回调；加 Squiggly 到模型
 - **前置**: Cluster 1（io 批注往返 GB/T 33190 合规）+ Cluster 2（手术刀保存调用链）已完成。C1/C2 揭示：component `handle_event` 丢弃 `PointerMove`/`PointerUp`（拖拽未实现）、无创建 UI、无选区手柄、无右键；render `composite` 不接 selection（无法画手柄）；`hit_test` 的 `AnnotationText` 从不返回；`caret_rect` 未用；`resize_annotation` 无 handle；仅 4 回调（缺 focus/interact/context_menu/page_change/zoom_change）
 - **参考**: WPS OFD 阅读器创建功能仅高亮/下划线/删除线/波浪线/手写/矩形（无 TextBox/便签/印章/水印）

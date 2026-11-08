@@ -1,7 +1,7 @@
 # rofd Cluster 4：次要缺口收尾 设计
 
 - **日期**: 2026-07-14
-- **状态**: Draft（待评审）
+- **状态**: **CLOSED（2026-11-08 审计闭案）——全部缺口已由后续工作实现，无剩余工作**。逐条核验：ViewEvent::ScrollPage（handle_event :2019 + 测试 :3782）/ZoomAt（ctrl+wheel 锚点缩放，zoom_section）/Ime（preedit 状态机，2026-09 起）；on_warning 回调（component slot + web SDK setOnWarning 全接线）；SkippedObject/FontSubstituted/ResourceNotFound 三类 warning 实发（convert 线 2026-11 实测：真实样例 737 条 SkippedObject、FontSubstituted/ResourceNotFound 有测试与触发路径）；错误用例（io error_cases.rs：坏 ZIP/XML/缺资源/模板）；page_origin pub helper（composite.rs:60）；phantom-txn 守卫（Freehand/Markup 无手柄，:2158/:6663）；zoom_change 守卫（EPSILON 比较 :1981）；右键 UX（web confirm + native context_menu）。"不在范围"两项中文本光标已落地（caret_rect/tick_blink）；样式编辑 UI 维持后续。
 - **范围**: V1 收尾子项目 4/4（最终）-- ViewEvent 补全、on_warning 回调、SkippedObject/FontSubstituted/ResourceNotFound 发出、错误/warning 用例测试、C3 deferred Minors
 - **前置**: C1+C2+C1.5+C3 已完成
 - **不在范围**: 文本光标（click-to-caret + 可视光标 + 闪烁）、样式编辑（颜色/线宽 UI）-- 后续
