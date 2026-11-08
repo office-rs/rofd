@@ -1,0 +1,548 @@
+name: convert-release
+
+# Convert-module release pipeline (convert spec §9, D13): a convert
+# Release (tag `rofd-convert-v*`) builds native libs on the platform
+# matrix, assembles the platform classifier jars, attaches every artifact
+# to the Release AND publishes — Maven Central (signed, Central Portal
+# plugin), PyPI (trusted publishing, OIDC) and npm (platform packages ->
+# main package -> wasm package).
+#
+# Secrets (repo level, NOT yet configured for this repo — runbook §1):
+# CENTRAL_USERNAME / CENTRAL_PASSWORD (Central Portal token pair),
+# GPG_PRIVATE_KEY / GPG_PASSPHRASE (release signing key),
+# NPM_TOKEN (@office-rs org publish rights). Until they exist, a manual
+# dispatch is a full BUILD DRILL (all artifacts attached to the release)
+# and the publish jobs fail only when an actual Release is published.
+#
+# Guardrails: publish-crates.yml / publish-sdk.yml / release-tauri.yml
+# skip `rofd-convert-*` tags (added alongside this workflow); the pypi
+# environment (repo settings, to be created) only admits `rofd-convert-v*`
+# tags.
+#
+# Platform matrix today = 4 (linux-x64-gnu / win32-x64-msvc / darwin-x64 /
+# darwin-arm64), the proven rword set. linux-arm64-gnu (spec D12's fifth)
+# is a tracked follow-up: needs the pom enforcer, NativeLoader platform
+# table and npm slots edited together (runbook §6).
+#
+# Linux baseline is manylinux_2_28 (glibc 2.28) — GitHub-hosted runners'
+# node cannot run inside a glibc-2.17 container, so 2.28 is the floor.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build and attach artifacts to (e.g. rofd-convert-v0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-native:
+    # Gate: only run on `rofd-convert-v*` release tags or manual dispatch.
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'rofd-convert-') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x86_64
+            container: quay.io/pypa/manylinux_2_28_x86_64
+            lib: librofdconvert.so
+          - os: windows-latest
+            platform: windows-x86_64
+            container: ''
+            lib: rofdconvert.dll
+          - os: macos-latest
+            platform: macos-x86_64
+            container: ''
+            lib: librofdconvert.dylib
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            platform: macos-aarch64
+            container: ''
+            lib: librofdconvert.dylib
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container || null }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        if: matrix.container == ''
+        with:
+          targets: ${{ matrix.target || '' }}
+      # rust-toolchain.toml pins the toolchain - cargo uses THAT one, not
+      # dtolnay's, so the cross target must be added to the active one.
+      - name: Add cross target to the pinned toolchain
+        if: matrix.target != ''
+        run: rustup target add ${{ matrix.target }}
+      - name: Install build deps (manylinux only)
+        if: matrix.container != ''
+        run: |
+          dnf install -y fontconfig-devel
+          # HOME fix: rustup-init aborts on the /github/home vs /root
+          # mismatch; dtolnay is skipped for containers, so install the
+          # pinned toolchain (rust-toolchain.toml) ourselves.
+          export HOME=/root RUSTUP_HOME=/root/.rustup CARGO_HOME=/root/.cargo
+          PIN="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+          echo "RUSTUP_HOME=/root/.rustup" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=/root/.cargo" >> "$GITHUB_ENV"
+          echo "/root/.cargo/bin" >> "$GITHUB_PATH"
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain "$PIN"
+      - name: Build cdylib
+        run: cargo build -p rofd-convert-java --release ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+      - name: Stage natives
+        shell: bash
+        run: |
+          mkdir -p "natives/${{ matrix.platform }}"
+          SRC="target/${{ matrix.target && format('{0}/', matrix.target) || '' }}release/${{ matrix.lib }}"
+          cp "$SRC" "natives/${{ matrix.platform }}/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: natives-${{ matrix.platform }}
+          path: natives/
+
+  package-java:
+    needs: build-native
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'rofd-convert-') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: natives-*
+          path: artifacts
+          merge-multiple: true
+      - name: Build and install fat main jar
+        working-directory: crates/convert-java
+        run: mvn -q -Dnative.dir="$GITHUB_WORKSPACE/artifacts" install
+      - name: Print fat jar contents
+        run: unzip -l crates/convert-java/target/rofd-convert-*.jar | grep -E 'natives/|\.class' | head -30 && ls -la crates/convert-java/target/*.jar
+      - name: Assemble platform classifier jars
+        run: |
+          VER="$(mvn -q -f crates/convert-java/pom.xml help:evaluate -Dexpression=project.version -DforceStdout)"
+          STAGE="jarstage"
+          rm -rf "$STAGE"
+          for dir in artifacts/*/; do
+            platform="$(basename "$dir")"
+            mkdir -p "$STAGE/natives/$platform"
+            cp "$dir"/* "$STAGE/natives/$platform/"
+            jar cf "crates/convert-java/target/rofd-convert-$VER-$platform.jar" -C "$STAGE" "natives/$platform"
+          done
+      # Zero-config load smoke (linux consumer simulation): no library
+      # path / no sysprops — the fat jar's classpath natives/<platform>//
+      # resource tier must extract and load; a fontless convert of the
+      # committed fixture goes through the degradation path (exit with a
+      # valid %PDF and warnings).
+      - name: Zero-config load + convert smoke
+        run: |
+          mkdir -p /tmp/smoke && cat > /tmp/smoke/SmokeMain.java <<'EOF'
+          import io.github.officers.OfdConverter;
+          public class SmokeMain {
+              public static void main(String[] args) throws Exception {
+                  if (!"0.1.0".equals(OfdConverter.getVersion())) {
+                      throw new IllegalStateException("version mismatch: " + OfdConverter.getVersion());
+                  }
+                  byte[] ofd = java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(args[0]));
+                  OfdConverter c = OfdConverter.create();
+                  byte[] pdf = c.convertPdf(ofd);
+                  if (pdf.length < 4 || pdf[0] != '%' || pdf[1] != 'P' || pdf[2] != 'D' || pdf[3] != 'F') {
+                      throw new IllegalStateException("no %PDF magic");
+                  }
+                  System.out.println("SMOKE OK version=" + OfdConverter.getVersion() + " bytes=" + pdf.length);
+              }
+          }
+          EOF
+          JAR="$(ls crates/convert-java/target/rofd-convert-*.jar | grep -v -- -linux- | grep -v -- -windows- | grep -v -- -macos-)"
+          javac --release 8 -cp "$JAR" -d /tmp/smoke /tmp/smoke/SmokeMain.java
+          java -cp "$JAR:/tmp/smoke" SmokeMain test/sample.ofd
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jars
+          path: crates/convert-java/target/*.jar
+
+      - name: Attach jars to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name || inputs.tag }}
+          files: crates/convert-java/target/*.jar
+
+  # Publish the Java family to Maven Central: main + sources + javadoc +
+  # the four platform classifier jars, GPG-signed, uploaded through the
+  # Central Portal plugin (pom profile `central-release`). Requires the
+  # secrets CENTRAL_USERNAME / CENTRAL_PASSWORD / GPG_PRIVATE_KEY /
+  # GPG_PASSPHRASE and the release tag to match the pom version.
+  publish-maven:
+    needs: build-native
+    # Release event only: a manual dispatch is a BUILD DRILL (attach-only)
+    # and must never touch the registry.
+    if: github.event_name == 'release' && startsWith(github.event.release.tag_name, 'rofd-convert-')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: natives-*
+          path: artifacts
+          merge-multiple: true
+      - name: Verify tag matches pom version
+        working-directory: crates/convert-java
+        run: |
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          case "$TAG" in
+            rofd-convert-v*) ;;
+            *) echo "unexpected tag for a convert release: $TAG"; exit 1 ;;
+          esac
+          VER="${TAG#rofd-convert-v}"
+          POM="$(mvn -q help:evaluate -Dexpression=project.version -DforceStdout)"
+          if [ "$VER" != "$POM" ]; then
+            echo "tag version $VER != pom version $POM — bump crates/convert-java/pom.xml (and the sibling packages) before releasing"
+            exit 1
+          fi
+      - name: Stage classifier jars for the build-helper attach
+        run: |
+          VER="$(mvn -q -f crates/convert-java/pom.xml help:evaluate -Dexpression=project.version -DforceStdout)"
+          STAGE="crates/convert-java/target/natives-jars-stage"
+          rm -rf "$STAGE"
+          mkdir -p crates/convert-java/target/natives-jars
+          for dir in artifacts/*/; do
+            platform="$(basename "$dir")"
+            mkdir -p "$STAGE/natives/$platform"
+            cp "$dir"/* "$STAGE/natives/$platform/"
+            jar cf "crates/convert-java/target/natives-jars/rofd-convert-$VER-$platform.jar" -C "$STAGE" "natives/$platform"
+          done
+      - name: Import release GPG key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+      - name: Configure Central Portal credentials
+        env:
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
+        run: |
+          mkdir -p ~/.m2
+          cat > ~/.m2/settings.xml <<'XML'
+          <settings>
+            <servers>
+              <server>
+                <id>central</id>
+                <username>${env.CENTRAL_USERNAME}</username>
+                <password>${env.CENTRAL_PASSWORD}</password>
+              </server>
+            </servers>
+          </settings>
+          XML
+      - name: Publish to Maven Central
+        working-directory: crates/convert-java
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
+        run: mvn -B -Pcentral-release deploy -Dgpg.passphrase="$GPG_PASSPHRASE" -Dnative.dir="$GITHUB_WORKSPACE/artifacts"
+
+  build-node:
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'rofd-convert-') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x64-gnu
+            container: quay.io/pypa/manylinux_2_28_x86_64
+            lib: librofd_convert_node.so
+          - os: windows-latest
+            platform: win32-x64-msvc
+            container: ''
+            lib: rofd_convert_node.dll
+          - os: macos-latest
+            platform: darwin-x64
+            container: ''
+            lib: librofd_convert_node.dylib
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            platform: darwin-arm64
+            container: ''
+            lib: librofd_convert_node.dylib
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container || null }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        if: matrix.container == ''
+        with:
+          targets: ${{ matrix.target || '' }}
+      - name: Add cross target to the pinned toolchain
+        if: matrix.target != ''
+        run: rustup target add ${{ matrix.target }}
+      - name: Install rust (manylinux only)
+        if: matrix.container != ''
+        run: |
+          dnf install -y fontconfig-devel
+          export HOME=/root RUSTUP_HOME=/root/.rustup CARGO_HOME=/root/.cargo
+          PIN="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+          echo "RUSTUP_HOME=/root/.rustup" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=/root/.cargo" >> "$GITHUB_ENV"
+          echo "/root/.cargo/bin" >> "$GITHUB_PATH"
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain "$PIN"
+      - name: Build napi cdylib
+        run: cargo build -p rofd-convert-node --release ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+      # A napi module IS the platform's shared library renamed to .node.
+      - name: Stage .node module
+        shell: bash
+        run: |
+          SRC="target/${{ matrix.target && format('{0}/', matrix.target) || '' }}release/${{ matrix.lib }}"
+          mkdir -p node
+          cp "$SRC" "node/rofd_convert_node-${{ matrix.platform }}.node"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: node-${{ matrix.platform }}
+          path: node/
+
+  build-python:
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'rofd-convert-') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x86_64
+            container: quay.io/pypa/manylinux_2_28_x86_64
+            py: auto
+          - os: windows-latest
+            platform: win_amd64
+            container: ''
+            py: python
+          - os: macos-latest
+            platform: macosx_10_9_x86_64
+            container: ''
+            py: python
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            platform: macosx_11_0_arm64
+            container: ''
+            py: python
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container || null }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        if: matrix.container == ''
+        with:
+          targets: ${{ matrix.target || '' }}
+      - name: Add cross target to the pinned toolchain
+        if: matrix.target != ''
+        run: rustup target add ${{ matrix.target }}
+      - uses: actions/setup-python@v5
+        if: matrix.container == ''
+        with:
+          python-version: '3.12'
+      - name: Install rust (manylinux only)
+        if: matrix.container != ''
+        run: |
+          dnf install -y fontconfig-devel
+          export HOME=/root RUSTUP_HOME=/root/.rustup CARGO_HOME=/root/.cargo
+          PIN="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+          echo "RUSTUP_HOME=/root/.rustup" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=/root/.cargo" >> "$GITHUB_ENV"
+          echo "/root/.cargo/bin" >> "$GITHUB_PATH"
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain "$PIN"
+      - name: Build abi3 wheel
+        shell: bash
+        run: |
+          PY="${{ matrix.py }}"
+          # 'auto' (manylinux rows): resolve the newest pypa toolchain python
+          # (kept under /opt/python/cp3*/bin; /usr/bin/python3 has no pip)
+          if [ "$PY" = "auto" ]; then PY="$(ls -d /opt/python/cp3*/bin/python | sort -V | tail -1)"; fi
+          "$PY" -m pip install maturin
+          "$PY" -m maturin build --release -m crates/convert-py/Cargo.toml -o wheels ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-${{ matrix.platform }}
+          path: wheels/
+
+  build-wasm:
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'rofd-convert-') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build sdk dist (wasm-pack --target web)
+        run: node crates/convert-wasm/sdk/build.mjs
+      - name: Tar the publishable sdk shape
+        run: tar -czf rofd-convert-wasm-sdk.tar.gz -C crates/convert-wasm/sdk .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm-sdk
+          path: rofd-convert-wasm-sdk.tar.gz
+
+  attach-node-python:
+    needs: [build-node, build-python, build-wasm]
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'rofd-convert-') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: 'node-*'
+          path: node-artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: 'python-*'
+          path: py-artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: 'wasm-sdk'
+          path: wasm-artifacts
+          merge-multiple: true
+      - name: Attach modules, wheels and wasm sdk to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name || inputs.tag }}
+          files: |
+            node-artifacts/*
+            py-artifacts/*/*.whl
+            wasm-artifacts/rofd-convert-wasm-sdk.tar.gz
+
+  # Publish the abi3 wheels to PyPI via Trusted Publishing (OIDC). The
+  # pending-publisher must be registered on pypi.org pinning this exact
+  # quad: office-rs/rofd + convert-release.yml + environment `pypi`
+  # (runbook §1 P4 — NOT yet done for this repo); the `pypi` environment
+  # (to be created in repo settings) additionally restricts deployments
+  # to `rofd-convert-v*` tags.
+  publish-pypi:
+    needs: build-python
+    if: github.event_name == 'release' && startsWith(github.event.release.tag_name, 'rofd-convert-')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: 'python-*'
+          path: dist
+          merge-multiple: true
+      - name: Publish wheels to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  # Publish the npm family: the four platform packages (synthesized from
+  # the build-node matrix output, napi convention), the main package
+  # (JS L2 + CLI bin; its optionalDependencies pin the platform packages),
+  # and the wasm sdk. Requires NPM_TOKEN (runbook §1 P3) — release event
+  # only; already-published versions are skipped idempotently.
+  publish-npm:
+    needs: [build-node, build-wasm]
+    if: github.event_name == 'release' && startsWith(github.event.release.tag_name, 'rofd-convert-')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: 'node-*'
+          path: node-artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: 'wasm-sdk'
+          path: wasm-artifacts
+          merge-multiple: true
+      - name: Verify tag matches package versions
+        run: |
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          case "$TAG" in
+            rofd-convert-v*) ;;
+            *) echo "unexpected tag for a convert release: $TAG"; exit 1 ;;
+          esac
+          VER="${TAG#rofd-convert-v}"
+          NODE_PKG="$(node -p "require('./crates/convert-node/package.json').version")"
+          WASM_PKG="$(node -p "require('./crates/convert-wasm/sdk/package.json').version")"
+          if [ "$VER" != "$NODE_PKG" ] || [ "$VER" != "$WASM_PKG" ]; then
+            echo "tag $VER vs node $NODE_PKG / wasm $WASM_PKG — bump the package manifests (runbook §2 lockstep) before releasing"
+            exit 1
+          fi
+      - name: Publish platform packages
+        working-directory: node-artifacts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VER: ${{ github.event.release.tag_name }}
+        run: |
+          set -e
+          VER="${VER#rofd-convert-v}"
+          # platform -> "os cpu" (matches index.js PLATFORM_PACKAGES)
+          for entry in linux-x64-gnu:linux,x64 win32-x64-msvc:win32,x64 darwin-x64:darwin,x64 darwin-arm64:darwin,arm64; do
+            p="${entry%%:*}"; oscpu="${entry#*:}"
+            os="${oscpu%,*}"; cpu="${oscpu#*,}"
+            f="rofd_convert_node-$p.node"
+            [ -f "$f" ] || { echo "missing artifact $f"; exit 1; }
+            dir="pkg-$p"; mkdir -p "$dir"
+            cp "$f" "$dir/"
+            cp "${GITHUB_WORKSPACE}/LICENSE" "${GITHUB_WORKSPACE}/NOTICE" "$dir/"
+            {
+              echo '{'
+              echo "  \"name\": \"@office-rs/rofd-convert-$p\","
+              echo "  \"version\": \"$VER\","
+              echo "  \"description\": \"rofd-convert native addon ($p)\","
+              echo "  \"license\": \"Apache-2.0\","
+              echo "  \"main\": \"rofd_convert_node-$p.node\","
+              echo "  \"files\": [\"rofd_convert_node-$p.node\", \"LICENSE\", \"NOTICE\"],"
+              echo "  \"os\": [\"$os\"],"
+              echo "  \"cpu\": [\"$cpu\"],"
+              echo "  \"publishConfig\": { \"access\": \"public\" }"
+              echo '}'
+            } > "$dir/package.json"
+            if npm view "@office-rs/rofd-convert-$p@$VER" version >/dev/null 2>&1; then
+              echo "already published: @office-rs/rofd-convert-$p@$VER (skip)"
+            else
+              npm publish "./$dir" --access public
+            fi
+          done
+      - name: Publish main package
+        working-directory: crates/convert-node
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VER="$(node -p "require('./package.json').version")"
+          if npm view "@office-rs/rofd-convert@$VER" version >/dev/null 2>&1; then
+            echo "already published: @office-rs/rofd-convert@$VER (skip)"
+          else
+            npm publish --access public
+          fi
+      - name: Publish wasm package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          tar -xzf wasm-artifacts/rofd-convert-wasm-sdk.tar.gz -C crates/convert-wasm/sdk
+          cd crates/convert-wasm/sdk
+          VER="$(node -p "require('./package.json').version")"
+          if npm view "@office-rs/rofd-convert-wasm@$VER" version >/dev/null 2>&1; then
+            echo "already published: @office-rs/rofd-convert-wasm@$VER (skip)"
+          else
+            npm publish --access public
+          fi

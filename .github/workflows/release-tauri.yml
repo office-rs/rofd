@@ -32,6 +32,8 @@ env:
 
 jobs:
   release-tauri:
+    # Convert releases (rofd-convert-v*) are owned by convert-release.yml.
+    if: ${{ !startsWith(github.event.release.tag_name, 'rofd-convert-') }}
     runs-on: windows-latest
     permissions:
       contents: write   # 上传安装包到 Release assets 需要写权限

@@ -27,6 +27,8 @@ env:
 
 jobs:
   publish:
+    # Convert releases (rofd-convert-v*) are owned by convert-release.yml.
+    if: ${{ !startsWith(github.event.release.tag_name, 'rofd-convert-') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
