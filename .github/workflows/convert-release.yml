@@ -384,12 +384,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-      # Pinned: the action defaults to "latest", and a freshly-released
-      # wasm-pack 504s on its release asset while CDN propagates (hit twice
-      # on 2026-11-08). 0.14.0 is the locally-verified builder.
-      - uses: jetli/wasm-pack-action@v0.4.0
-        with:
-          version: v0.14.0
+      # Install wasm-pack via gh (api.github.com path): the plain CDN
+      # download 504'd for both v0.15.1 and pinned v0.14.0 on 2026-11-08
+      # (GitHub release-asset edge outage window).
+      - name: Install wasm-pack 0.14.0 (gh release download)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.14.0 -R rustwasm/wasm-pack -p 'wasm-pack-v0.14.0-x86_64-unknown-linux-musl.tar.gz' -O /tmp/wp.tgz
+          mkdir -p /tmp/wp && tar -xzf /tmp/wp.tgz -C /tmp/wp
+          BIN_DIR="$(dirname "$(find /tmp/wp -type f -name wasm-pack)")"
+          echo "$BIN_DIR" >> "$GITHUB_PATH"
+          "$BIN_DIR/wasm-pack" --version
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
