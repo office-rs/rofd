@@ -13,11 +13,9 @@ rofd-editor = { workspace = true }
 imaging = { workspace = true }
 # Print module (spec 2026-10-31): PrintContent/Paper live here; serde for
 # the PrintContent wire shape (workspace feature set: derive + rc).
-# Type layer only by default dependency spec: the native print backends
-# (link-time libcups on Linux) join through the `print-backend` feature.
-# Headless consumers (the convert line) build without it and link no
-# spooler libraries (convert spec §9).
-office-rs-print = { workspace = true, default-features = false }
+# Type layer only (workspace entry carries default-features = false);
+# the native backends join through the `print-backend` feature below.
+office-rs-print = { workspace = true }
 serde = { workspace = true }
 
 [features]

@@ -25,7 +25,7 @@ ttf-parser = "0.25"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 # Print job types for the handle verbs + dialog state machine
 # (print phase 2, spec 2026-10-31; same pin as component/xilem-view).
-office-rs-print = { workspace = true }
+office-rs-print = { workspace = true, features = ["backend"] }
 smallvec = "1"
 write-fonts = "0.55.0"
 read-fonts = "0.46.0"

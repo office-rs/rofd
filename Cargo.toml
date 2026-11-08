@@ -62,7 +62,13 @@ web-time = "1"
 rofd-export = { path = "crates/export" }
 krilla = { version = "0.8", features = ["pdf"] }
 swash = "0.2"
-office-rs-print = { git = "https://github.com/office-rs/print.git", rev = "72b67a9" }
+# default-features = false at the WORKSPACE level: cargo's inheritance
+# asymmetry means members cannot disable default features the workspace
+# entry leaves on - and the backend is a link-time libcups dependency on
+# Linux. Type-layer-only consumers (web-view, gpui-app join_all, convert
+# via rofd-component) inherit as-is; backend users add the feature
+# explicitly (rofd-component's print-backend, the print_services adapters).
+office-rs-print = { git = "https://github.com/office-rs/print.git", rev = "72b67a9", default-features = false }
 # gpui line (spec 2026-10-31-gpui-view-gpui-app-design.md §12): gpui-pre is
 # the gpui-kit maintainer's snapshot re-publish of zed@08cbb88 — official
 # crates.io gpui is a year stale (0.2.2, missing the Windows/IME fixes).
