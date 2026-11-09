@@ -128,10 +128,12 @@ fn serialize_one(
             ));
         }
     }
-    // WPS-compatible FreeText metadata (spec 2026-11-09 §1.5/§4.4):
-    // paragraph style + grow mode. The logical text itself goes into Remark
-    // below; WPS regenerates its appearance from Remark when editing.
+    // WPS/Suwell-compatible FreeText metadata (spec 2026-11-09 §1.5/§4.4):
+    // Qt rich text mirror + paragraph style + grow mode. The logical text
+    // itself goes into Remark below; the appearance stays the standard render
+    // carrier (including per-run styles in its TextObjects).
     if let AnnotationPayload::TextBox {
+        content,
         font,
         size,
         color,
@@ -141,10 +143,16 @@ fn serialize_one(
     } = &a.payload
     {
         let (flat_name, bold, italic) = paragraph_style(res, font, runs);
-        // ParagraphFormat + GrowMode are the WPS-known parameters (WPS
-        // preserves them across edits). AllRichText is deliberately not
-        // written: WPS only passes it through opaquely and rofd never reads
-        // it (behavior test 2026-11-09), so it would only become a stale copy.
+        // AllRichText: Suwell (the producer of this Qt dialect) may consume it
+        // for edit-mode rich text; WPS passes it through opaquely. rofd never
+        // reads it (Remark is the logical source), so for rofd-authored files
+        // it is an accurate mirror, not a second truth.
+        s.push_str(&format!(
+            "<ofd:Parameter Name=\"AllRichText\">{}</ofd:Parameter>",
+            xml_escape(&all_rich_text_html(
+                content, &flat_name, *size, *color, runs, res
+            ))
+        ));
         s.push_str(&format!(
             "<ofd:Parameter Name=\"ParagraphFormat\">{}</ofd:Parameter>",
             xml_escape(&paragraph_format_json(
@@ -620,6 +628,77 @@ fn color_hex(c: Color) -> String {
 
 fn json_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('\'', "&#39;")
+}
+
+/// HTML text body: escaped, hard newlines as `<br />`.
+fn html_text(s: &str) -> String {
+    html_escape(s).replace('\n', "<br />")
+}
+
+/// One Qt-rich-text span (the WPS/Suwell `AllRichText` dialect).
+fn span_html(
+    text: &str,
+    family: &str,
+    size_mm: f64,
+    color: Color,
+    bold: bool,
+    italic: bool,
+) -> String {
+    let pt = (size_mm * 72.0 / 25.4 * 100.0).round() / 100.0;
+    format!(
+        "<span style=\" font-family:'{}'; font-size:{}pt; font-weight:{}; font-style:{}; color:{};\">{}</span>",
+        html_escape(family),
+        pt,
+        if bold { "700" } else { "400" },
+        if italic { "italic" } else { "normal" },
+        color_hex(color),
+        html_text(text)
+    )
+}
+
+/// Qt RichText HTML mirror (WPS/Suwell `AllRichText`): one span for flat
+/// boxes, one per rich run. rofd writes but never reads it; the appearance
+/// remains the standard render carrier.
+fn all_rich_text_html(
+    content: &str,
+    flat_font_name: &str,
+    size: f64,
+    color: Color,
+    runs: &[rofd_dom::TextRun],
+    res: &Resources,
+) -> String {
+    let header = "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0//EN\" \"http://www.w3.org/TR/REC-html40/strict.dtd\">\n<html><head><meta name=\"qrichtext\" content=\"1\" /><meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\" /><style type=\"text/css\">\n</style></head><body>";
+    let mut body = String::new();
+    if runs.is_empty() {
+        body.push_str(&span_html(
+            content,
+            flat_font_name,
+            size,
+            color,
+            false,
+            false,
+        ));
+    } else {
+        for run in runs {
+            let family = font_name(res, &run.font);
+            body.push_str(&span_html(
+                &run.text,
+                &family,
+                run.size,
+                run.color.unwrap_or(color),
+                run.bold,
+                run.italic,
+            ));
+        }
+    }
+    format!("{header}{body}</body></html>")
 }
 
 /// WPS-compatible `ParagraphFormat` JSON (spec 2026-11-09 §4.4).
@@ -1345,8 +1424,9 @@ mod tests {
             xml.contains("<ofd:Remark>abc def ghi jkl</ofd:Remark>"),
             "{xml}"
         );
-        // WPS only passes AllRichText through; it is not written (no consumer).
-        assert!(!xml.contains("Name=\"AllRichText\""), "{xml}");
+        // AllRichText is written for Suwell-style Qt editors; WPS passes it
+        // through and rofd never reads it.
+        assert!(xml.contains("Name=\"AllRichText\""), "{xml}");
         assert!(xml.contains("Name=\"ParagraphFormat\""), "{xml}");
         assert!(xml.contains("Name=\"GrowMode\">FixWidth"), "{xml}");
         assert!(xml.contains("\"CharSpace\":0.0"), "{xml}");
@@ -1370,7 +1450,7 @@ mod tests {
     }
 
     #[test]
-    fn rich_textbox_emits_run_textobjects_but_no_allrichtext() {
+    fn rich_textbox_emits_run_textobjects_and_allrichtext_spans() {
         let (mut ann, _) = textbox_with_hints();
         if let AnnotationPayload::TextBox { runs, .. } = &mut ann.payload {
             runs.push(rofd_dom::TextRun {
@@ -1402,11 +1482,17 @@ mod tests {
             &Resources::default(),
             &TextLayoutHints::new(),
         );
-        assert!(!xml.contains("Name=\"AllRichText\""), "{xml}");
-        // Rich runs still serialize as per-fragment TextObjects.
+        // Rich runs still serialize as per-fragment TextObjects (the render
+        // carrier)...
         assert_eq!(xml.matches("<ofd:TextObject").count(), 2, "{xml}");
         assert!(xml.contains("Weight=\"700\""), "{xml}");
         assert!(xml.contains("Italic=\"true\""), "{xml}");
+        // ...and the Qt rich-text mirror carries the same runs.
+        assert_eq!(xml.matches("&lt;span").count(), 2, "{xml}");
+        assert!(xml.contains("font-weight:700"), "{xml}");
+        assert!(xml.contains("font-style:italic"), "{xml}");
+        assert!(xml.contains("#4bacc6"), "{xml}");
+        assert!(xml.contains("&lt;br /&gt;"), "{xml}");
     }
 
     #[test]
