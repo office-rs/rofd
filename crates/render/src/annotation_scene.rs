@@ -1843,6 +1843,7 @@ mod tests {
             &fonts,
             "hello",
             &AnnotationId::from_int(1),
+            0,
         );
         let baselines = glyph_baselines(&scene);
         assert!(!baselines.is_empty(), "composition was drawn");
@@ -1850,6 +1851,87 @@ mod tests {
             assert!(
                 *b >= vp.page_gap + rect.y,
                 "glyph baseline {b} not offset by TextBox origin (page-corner regression)"
+            );
+        }
+    }
+
+    #[test]
+    fn preedit_overlay_advances_by_prefix_width_at_offset() {
+        // The composition must paint AT ITS ORIGIN OFFSET in the content,
+        // not at the box front: the pen advances by the shaped width of the
+        // chars before the composition point (the same shaper the caret
+        // uses), so the preedit visually sits where it will commit.
+        let rect = Rect {
+            x: 30.0,
+            y: 40.0,
+            w: 100.0,
+            h: 60.0,
+        };
+        let a = ann(
+            AnnotationPayload::TextBox {
+                rect,
+                content: "hello".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                runs: Vec::new(),
+            },
+            AnnotationKind::TextBox,
+        );
+        let mut annotations = rofd_dom::AnnotationModel::default();
+        annotations
+            .by_page
+            .insert(rofd_dom::PageId::new("P0"), vec![a]);
+        let doc = rofd_dom::OfdDocument {
+            pages: vec![rofd_dom::Page {
+                id: rofd_dom::PageId::new("P0"),
+                physical_box: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 200.0,
+                    h: 200.0,
+                },
+                layers: vec![],
+                template: None,
+            }],
+            annotations,
+            ..Default::default()
+        };
+        let vp = crate::Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (200.0, 200.0),
+            page_gap: 20.0,
+        };
+        let fonts = test_font_store();
+        let prefix_width = fonts.line_width(&FontId::new("F1"), "hel", 12.0);
+        let mut scene = Scene::new();
+        crate::preedit_overlay::paint_preedit_overlay(
+            &mut scene,
+            &doc,
+            &vp,
+            &fonts,
+            "XY",
+            &AnnotationId::from_int(1),
+            3,
+        );
+        let mut txs: Vec<f64> = Vec::new();
+        for cmd in scene.commands() {
+            if let imaging::record::Command::Draw(id) = cmd {
+                if let imaging::record::Draw::GlyphRun(gr) = scene.draw_op(*id) {
+                    txs.push(gr.transform.as_coeffs()[4]);
+                }
+            }
+        }
+        assert!(!txs.is_empty(), "composition was drawn");
+        // Page origin x = 0 (page == viewport width); the run's pen =
+        // rect.x + width("hel"). The old code drew at rect.x alone.
+        for tx in &txs {
+            assert!(
+                (tx - (rect.x + prefix_width)).abs() < 1e-3,
+                "preedit pen {tx} != rect.x({}) + prefix width ({prefix_width})",
+                rect.x
             );
         }
     }

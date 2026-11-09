@@ -1120,6 +1120,7 @@ impl OfdComponent {
                 &fonts,
                 &state.text,
                 &state.annotation,
+                state.offset,
             );
         }
         // Hover tooltip paints last - above pages, handles and scrollbars

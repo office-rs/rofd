@@ -13,6 +13,10 @@ use crate::annotation_scene::{draw_glyph_run, shape_positioned};
 use crate::color::to_peniko;
 
 /// Paint the preedit overlay when the composition targets a TextBox.
+/// `offset` is the composition's origin CHAR offset in the content: the
+/// pen advances by the shaped width of the chars before it (the same
+/// shaper the caret uses), so the composition paints where it will commit
+/// - not at the box front.
 pub fn paint_preedit_overlay(
     scene: &mut Scene,
     doc: &rofd_dom::OfdDocument,
@@ -20,18 +24,20 @@ pub fn paint_preedit_overlay(
     fonts: &crate::FontStore,
     text: &str,
     annotation: &AnnotationId,
+    offset: usize,
 ) {
     let Some(ann) = doc.annotations.find(annotation) else {
         return;
     };
-    let (rect, font_id, size, dom_color) = match &ann.payload {
+    let (rect, font_id, size, dom_color, content) = match &ann.payload {
         AnnotationPayload::TextBox {
             rect,
             font,
             size,
             color,
+            content,
             ..
-        } => (rect, font, *size, *color),
+        } => (rect, font, *size, *color, content.as_str()),
         _ => return,
     };
     // Locate the owning page to resolve page origin (TextBox geometry is in
@@ -56,9 +62,15 @@ pub fn paint_preedit_overlay(
         return;
     };
     let brush = to_peniko(dom_color);
-    // Shaped glyphs are layout-relative: offset by the TextBox origin,
-    // matching draw_text_in_rect's affine (the committed-text path).
-    let affine = base * Affine::translate((rect.x, rect.y));
+    // Shaped glyphs are layout-relative: offset by the TextBox origin plus
+    // the width of the content BEFORE the composition point (clamped to the
+    // content length), matching the committed-text path and the caret.
+    let prefix: String = content
+        .chars()
+        .take(offset.min(content.chars().count()))
+        .collect();
+    let prefix_width = fonts.line_width(font_id, &prefix, size);
+    let affine = base * Affine::translate((rect.x + prefix_width, rect.y));
     let mut painter = Painter::new(scene);
     painter.with_clip(ClipRef::fill(clip), |p| {
         draw_glyph_run(p, &font_data, &glyphs, affine, brush, size);
