@@ -311,6 +311,10 @@ pub struct OfdComponent {
     pub(crate) scene_needs_paint: bool,
     /// Active IME preedit, if composing. Text enters the dom only on commit.
     pub(crate) preedit: Option<crate::preedit::PreeditState>,
+    /// Visual-line affinity for the caret after an ArrowUp/ArrowDown move:
+    /// `(offset, line)`. The hint is used only while the cursor offset still
+    /// matches; any other move changes the offset and invalidates it.
+    pub(crate) caret_line: Option<(usize, usize)>,
     /// body 静态字体需求缓存（spec 2026-10-17 字体切片 §2.1）：页面
     /// TextObject 码点 ∪ 声明族（排除嵌入）。在 `load_document`/`new_document`
     /// 换文档时重算一次；批注/preedit 的动态部分由 [`Self::font_requirements`]
@@ -386,6 +390,7 @@ impl OfdComponent {
             cursor_visible: true,
             blink_deadline: None,
             preedit: None,
+            caret_line: None,
             body_font_req: FontRequirements::default(),
             print_gen: Arc::new(AtomicU64::new(0)),
         }
@@ -456,6 +461,7 @@ impl OfdComponent {
         // document; its geometry is meaningless after the swap.
         self.drag = None;
         self.preedit = None;
+        self.caret_line = None;
         // A new document starts at the top (zoom is intentionally kept - the
         // user's chosen display ratio survives document switches).
         self.viewport.scroll = (0.0, 0.0);
@@ -1193,9 +1199,18 @@ impl OfdComponent {
         // Text caret: effective focus only, blink-gated.
         if self.focused && self.cursor_visible {
             if let Some(cursor) = self.editor.text_cursor().cloned() {
-                if let Some(rect) =
-                    rofd_render::caret_rect(doc, &vp, &fonts, &cursor.annotation, cursor.offset)
-                {
+                let line_hint = self
+                    .caret_line
+                    .filter(|(offset, _)| *offset == cursor.offset)
+                    .map(|(_, line)| line);
+                if let Some(rect) = rofd_render::caret_rect_on_line(
+                    doc,
+                    &vp,
+                    &fonts,
+                    &cursor.annotation,
+                    cursor.offset,
+                    line_hint,
+                ) {
                     rofd_render::paint_caret(&mut overlay, &rect);
                 }
             }
@@ -1385,12 +1400,17 @@ impl OfdComponent {
             self.font_store = Some(self.build_font_store());
         }
         let cursor = self.editor.text_cursor()?;
-        rofd_render::caret_rect(
+        let line_hint = self
+            .caret_line
+            .filter(|(offset, _)| *offset == cursor.offset)
+            .map(|(_, line)| line);
+        rofd_render::caret_rect_on_line(
             self.editor.document(),
             &self.viewport,
             self.font_store.as_ref().expect("font_store initialized"),
             &cursor.annotation,
             cursor.offset,
+            line_hint,
         )
     }
 
@@ -1400,14 +1420,14 @@ impl OfdComponent {
         }
     }
 
-    /// Offset + preferred column for one ArrowUp/ArrowDown move on a flat
-    /// TextBox (spec 2026-11-09 §1.7). `None` for Note/rich boxes, whose
-    /// arrows keep the status quo (no move).
+    /// Offset + preferred column + target visual line for one
+    /// ArrowUp/ArrowDown move on a flat TextBox (spec 2026-11-09 §1.7).
+    /// `None` for Note/rich boxes, whose arrows keep the status quo (no move).
     fn vertical_caret_offset(
         &mut self,
         cursor: &TextCursor,
         up: bool,
-    ) -> Option<(usize, Option<f32>)> {
+    ) -> Option<(usize, Option<f32>, usize)> {
         let payload = self
             .editor
             .document()
@@ -1435,7 +1455,11 @@ impl OfdComponent {
         } else {
             rofd_render::VerticalMove::Down
         };
-        let (offset, x) = rofd_render::caret_offset_vertical(
+        let current_line = self
+            .caret_line
+            .filter(|(offset, _)| *offset == cursor.offset)
+            .map(|(_, line)| line);
+        let (offset, x, line) = rofd_render::caret_offset_vertical(
             &content,
             &font,
             size,
@@ -1444,8 +1468,9 @@ impl OfdComponent {
             cursor.offset,
             direction,
             cursor.preferred_x.map(f64::from),
+            current_line,
         );
-        Some((offset, Some(x as f32)))
+        Some((offset, Some(x as f32), line))
     }
 
     /// Paste text at the current text cursor (Ctrl+V path: the widget
@@ -1510,6 +1535,7 @@ impl OfdComponent {
         let Some(state) = self.preedit.take() else {
             return false;
         };
+        self.caret_line = None;
         let text = rofd_editor::normalize_newlines(&state.text);
         let new_off = state.offset + text.chars().count();
         self.ensure_font_store();
@@ -1543,6 +1569,7 @@ impl OfdComponent {
     /// and paste. Returns `false` (no repaint) when no cursor is set.
     fn insert_at_cursor(&mut self, text: &str) -> bool {
         if let Some(cursor) = self.editor.text_cursor().cloned() {
+            self.caret_line = None;
             // LF-only content invariant (spec 2026-11-09 §1.2.1): normalize
             // BEFORE counting chars so the cursor advance matches.
             let text = rofd_editor::normalize_newlines(text);
@@ -1620,6 +1647,7 @@ impl OfdComponent {
                                                 self.text_content_len(&cursor.annotation)
                                                     .unwrap_or(0)
                                             });
+                                        self.caret_line = None;
                                         self.editor.set_cursor(cursor.annotation.clone(), offset);
                                         self.fire_cursor_change();
                                         self.mark_scene_dirty();
@@ -2431,6 +2459,7 @@ impl OfdComponent {
                 // while editing) - not a fixed jump to the content end.
                 if let Some(len) = self.text_content_len(&id) {
                     let offset = self.click_caret_offset(&id, p).unwrap_or(len);
+                    self.caret_line = None;
                     self.editor.set_cursor(id.clone(), offset);
                 }
                 self.fire_selection_change();
@@ -2639,6 +2668,7 @@ impl OfdComponent {
         if let Some(cursor) = self.editor.text_cursor().cloned() {
             match key {
                 Key::Char(c) => {
+                    self.caret_line = None;
                     self.insert_at_cursor(&c.to_string());
                     return EventOutcome {
                         needs_repaint: true,
@@ -2652,6 +2682,7 @@ impl OfdComponent {
                 }
                 Key::Backspace => {
                     if cursor.offset > 0 {
+                        self.caret_line = None;
                         self.ensure_font_store();
                         let store = self
                             .font_store
@@ -2673,6 +2704,7 @@ impl OfdComponent {
                     }
                 }
                 Key::Delete => {
+                    self.caret_line = None;
                     self.ensure_font_store();
                     let store = self
                         .font_store
@@ -2691,6 +2723,7 @@ impl OfdComponent {
                 }
                 Key::ArrowLeft => {
                     if cursor.offset > 0 {
+                        self.caret_line = None;
                         self.editor
                             .set_cursor(cursor.annotation.clone(), cursor.offset - 1);
                         self.fire_cursor_change();
@@ -2700,6 +2733,7 @@ impl OfdComponent {
                     }
                 }
                 Key::ArrowRight => {
+                    self.caret_line = None;
                     self.editor
                         .set_cursor(cursor.annotation.clone(), cursor.offset + 1);
                     self.fire_cursor_change();
@@ -2709,7 +2743,10 @@ impl OfdComponent {
                 }
                 Key::ArrowUp | Key::ArrowDown => {
                     let up = matches!(key, Key::ArrowUp);
-                    if let Some((offset, preferred_x)) = self.vertical_caret_offset(&cursor, up) {
+                    if let Some((offset, preferred_x, line)) =
+                        self.vertical_caret_offset(&cursor, up)
+                    {
+                        self.caret_line = Some((offset, line));
                         self.editor.set_cursor_with_preferred_x(
                             cursor.annotation.clone(),
                             offset,
@@ -2722,6 +2759,7 @@ impl OfdComponent {
                     }
                 }
                 Key::Escape => {
+                    self.caret_line = None;
                     self.editor.clear_cursor();
                     self.editor.clear_selection();
                     self.fire_cursor_change();
@@ -9295,6 +9333,39 @@ mod tests {
             modifiers: Modifiers::default(),
         });
         assert_eq!(c.editor.text_cursor().unwrap().offset, 15);
+    }
+
+    #[test]
+    fn arrow_down_reaches_short_middle_line_and_caret_stays() {
+        let mut c = component_with_narrow_textbox("abcdef ghijkl mn", 45.0, 60.0);
+        let id = textbox_id(&c);
+        c.editor.set_cursor(id, 6);
+        c.handle_event(&ViewEvent::KeyDown {
+            key: Key::ArrowDown,
+            modifiers: Modifiers::default(),
+        });
+        let offset = c.editor.text_cursor().unwrap().offset;
+        assert_eq!(
+            c.caret_line,
+            Some((offset, 1)),
+            "Down targets the middle line, not the next one"
+        );
+        let store = c.font_store.as_ref().expect("font store");
+        let w = store.shape_wrapped(&FontId::new("F1"), "abcdef ghijkl mn", 12.0, 45.0);
+        let rect = c.caret_rect().expect("caret");
+        assert!(
+            (rect.y - w.lines[1].top).abs() < 1e-6,
+            "caret displays on the line the arrow moved to"
+        );
+        c.handle_event(&ViewEvent::KeyDown {
+            key: Key::ArrowDown,
+            modifiers: Modifiers::default(),
+        });
+        assert_eq!(
+            c.caret_line.unwrap().1,
+            2,
+            "next Down reaches the last line"
+        );
     }
 
     #[test]

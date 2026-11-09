@@ -47,6 +47,21 @@ pub fn caret_rect(
     ann_id: &AnnotationId,
     offset: usize,
 ) -> Option<Rect> {
+    caret_rect_on_line(doc, vp, fonts, ann_id, offset, None)
+}
+
+/// Like [`caret_rect`], but with an optional visual-line affinity. A soft
+/// wrap boundary offset normally displays at the next line's start (§1.3);
+/// vertical caret movement records the line it moved to so the ambiguous
+/// offset is shown on that line instead (spec 2026-11-09 §1.7).
+pub fn caret_rect_on_line(
+    doc: &OfdDocument,
+    vp: &Viewport,
+    fonts: &FontStore,
+    ann_id: &AnnotationId,
+    offset: usize,
+    line_hint: Option<usize>,
+) -> Option<Rect> {
     let ann = doc
         .annotations
         .by_page
@@ -70,7 +85,7 @@ pub fn caret_rect(
     {
         if runs.is_empty() {
             let wrapped = fonts.shape_wrapped(font, content, *size, rect.w.max(*size));
-            let (line_idx, local) = wrapped.line_at_offset(offset);
+            let (line_idx, local) = line_and_local(&wrapped, offset, line_hint);
             let line = wrapped.lines.get(line_idx)?;
             let x_local = caret_x_on_line(&wrapped, line, local);
             let vx = origin_x + (rect.x + x_local) * vp.zoom;
@@ -141,6 +156,25 @@ fn caret_x_on_line(wrapped: &WrappedText, line: &WrappedLine, local: usize) -> f
     }
 }
 
+/// Map an offset to `(line, local)` honouring an optional line affinity. The
+/// hint is only used when the offset lies within that line's range, so stale
+/// affinities from a previous caret position cannot leak.
+fn line_and_local(
+    wrapped: &WrappedText,
+    offset: usize,
+    line_hint: Option<usize>,
+) -> (usize, usize) {
+    if let Some(i) = line_hint {
+        if let Some(line) = wrapped.lines.get(i) {
+            let end = line.char_start + line.char_len;
+            if offset >= line.char_start && offset <= end {
+                return (i, offset - line.char_start);
+            }
+        }
+    }
+    wrapped.line_at_offset(offset)
+}
+
 /// The visual line containing `y_in_rect` (clamped to the first/last line).
 fn line_index_at_y(wrapped: &WrappedText, y_in_rect: f64) -> usize {
     if wrapped.lines.is_empty() {
@@ -200,7 +234,10 @@ pub enum VerticalMove {
 /// line `Up` goes to the text start; on the last line `Down` goes to the
 /// text end (spec 2026-11-09 §1.7).
 ///
-/// Returns `(new char offset, preferred x used for this move)`.
+/// `current_line` is the caller's visual-line affinity from the previous
+/// vertical move: it disambiguates a soft-wrap boundary offset (which
+/// `line_at_offset` maps to the next line) so consecutive Down presses walk
+/// every line. Returns `(new char offset, preferred x, target line)`.
 #[allow(clippy::too_many_arguments)] // all parameters describe one caret move
 pub fn caret_offset_vertical(
     content: &str,
@@ -211,26 +248,35 @@ pub fn caret_offset_vertical(
     offset: usize,
     direction: VerticalMove,
     preferred_x: Option<f64>,
-) -> (usize, f64) {
+    current_line: Option<usize>,
+) -> (usize, f64, usize) {
     let wrapped = fonts.shape_wrapped(font_id, content, size, max_width);
     if wrapped.lines.is_empty() {
-        return (0, 0.0);
+        return (0, 0.0, 0);
     }
-    let (line_idx, local) = wrapped.line_at_offset(offset);
+    let (line_idx, local) = line_and_local(&wrapped, offset, current_line);
     let line = &wrapped.lines[line_idx];
     let current_x = caret_x_on_line(&wrapped, line, local);
     let x = preferred_x.unwrap_or(current_x);
     let last = wrapped.lines.len() - 1;
     match direction {
-        VerticalMove::Up if line_idx == 0 => (0, x),
-        VerticalMove::Down if line_idx == last => (wrapped.total_chars, x),
+        VerticalMove::Up if line_idx == 0 => (0, x, 0),
+        VerticalMove::Down if line_idx == last => (wrapped.total_chars, x, last),
         VerticalMove::Up => {
-            let target = &wrapped.lines[line_idx - 1];
-            (nearest_offset_on_line(&wrapped, target, x), x)
+            let target = line_idx - 1;
+            (
+                nearest_offset_on_line(&wrapped, &wrapped.lines[target], x),
+                x,
+                target,
+            )
         }
         VerticalMove::Down => {
-            let target = &wrapped.lines[line_idx + 1];
-            (nearest_offset_on_line(&wrapped, target, x), x)
+            let target = line_idx + 1;
+            (
+                nearest_offset_on_line(&wrapped, &wrapped.lines[target], x),
+                x,
+                target,
+            )
         }
     }
 }
@@ -667,7 +713,7 @@ mod tests {
     fn caret_offset_vertical_preserves_column() {
         let (_, fonts) = doc_with_font();
         let text = "abc def ghi jkl";
-        let (down, pref) = caret_offset_vertical(
+        let (down, pref, line) = caret_offset_vertical(
             text,
             &FontId::new("F1"),
             12.0,
@@ -676,12 +722,14 @@ mod tests {
             2,
             VerticalMove::Down,
             None,
+            None,
         );
         assert!(
             (8..=11).contains(&down),
             "lands on line 2 near column 2, got {down}"
         );
-        let (up, _) = caret_offset_vertical(
+        assert_eq!(line, 1);
+        let (up, _, up_line) = caret_offset_vertical(
             text,
             &FontId::new("F1"),
             12.0,
@@ -690,8 +738,74 @@ mod tests {
             down,
             VerticalMove::Up,
             Some(pref),
+            Some(line),
         );
         assert_eq!(up, 2, "returns to the original column");
+        assert_eq!(up_line, 0);
+    }
+
+    #[test]
+    fn vertical_move_targets_short_line_and_caret_stays_on_it() {
+        let (mut doc, fonts) = doc_with_font();
+        let text = "abcdef ghijkl mn";
+        let id = push_ann(
+            &mut doc,
+            AnnotationPayload::TextBox {
+                rect: Rect {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 45.0,
+                    h: 60.0,
+                },
+                content: text.into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                runs: Vec::new(),
+            },
+            AnnotationKind::TextBox,
+        );
+        let w = fonts.shape_wrapped(&FontId::new("F1"), text, 12.0, 45.0);
+        assert_eq!(w.lines.len(), 3, "fixture must wrap to three lines");
+        let (offset, pref, line) = caret_offset_vertical(
+            text,
+            &FontId::new("F1"),
+            12.0,
+            45.0,
+            &fonts,
+            6,
+            VerticalMove::Down,
+            None,
+            None,
+        );
+        assert_eq!(line, 1, "Down targets the middle line, not the next one");
+        assert_eq!(offset, w.lines[1].char_start + w.lines[1].char_len);
+        // The ambiguous soft-boundary offset normally displays on line 2;
+        // the affinity keeps it on the line the arrow moved to.
+        let r = caret_rect_on_line(&doc, &vp(), &fonts, &id, offset, Some(line)).unwrap();
+        assert!(
+            (r.y - (40.0 + w.lines[1].top)).abs() < 1e-6,
+            "caret stays on the target line"
+        );
+        let plain = caret_rect(&doc, &vp(), &fonts, &id, offset).unwrap();
+        assert!(
+            (plain.y - (40.0 + w.lines[2].top)).abs() < 1e-6,
+            "without affinity the offset maps to the next line"
+        );
+        // A second Down continues from the affinity line, not from line 2.
+        let (_, _, next_line) = caret_offset_vertical(
+            text,
+            &FontId::new("F1"),
+            12.0,
+            45.0,
+            &fonts,
+            offset,
+            VerticalMove::Down,
+            Some(pref),
+            Some(line),
+        );
+        assert_eq!(next_line, 2);
     }
 
     #[test]
@@ -707,6 +821,7 @@ mod tests {
                 &fonts,
                 2,
                 VerticalMove::Up,
+                None,
                 None
             )
             .0,
@@ -721,6 +836,7 @@ mod tests {
                 &fonts,
                 11,
                 VerticalMove::Down,
+                None,
                 None
             )
             .0,
@@ -730,12 +846,12 @@ mod tests {
 
     #[test]
     fn caret_offsets_use_chars_not_bytes_for_cjk() {
-        let (_, fonts) = doc_with_font();
+        // Deterministic CJK fixture: no system-font fallback dependency.
+        let (_, mut fonts) = doc_with_font();
+        assert!(fonts.register_font(Arc::new(
+            include_bytes!("../tests/fixtures/fonts/TestFontCjk.otf").to_vec()
+        )));
         let w = fonts.shape_wrapped(&FontId::new("F1"), "你好世界", 12.0, 30.0);
-        if w.glyphs.len() < 4 {
-            eprintln!("skipping: no CJK fallback font");
-            return;
-        }
         assert_eq!(w.lines.len(), 2);
         assert_eq!(w.line_at_offset(2), (1, 0));
         assert_eq!(

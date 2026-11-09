@@ -349,6 +349,39 @@ fn watermark_roundtrips() {
 // coverage of the §15.2 serialization fidelity contract started above.
 
 #[test]
+fn textbox_edge_whitespace_roundtrips() {
+    // quick-xml is configured with trim_text(true); the Remark/TextCode writer
+    // must encode edge whitespace as numeric refs so intentional leading/
+    // trailing spaces and hard newlines survive save+reload.
+    for content in ["ab\n", "\nab", "a\n\nb", " abc", "abc ", " abc def ", "   "] {
+        let tb = ann(
+            41,
+            AnnotationKind::TextBox,
+            AnnotationPayload::TextBox {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 100.0,
+                    h: 30.0,
+                },
+                content: content.into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                runs: Vec::new(),
+            },
+            None,
+        );
+        let back = roundtrip(&tb);
+        let AnnotationPayload::TextBox { content: got, .. } = &back.payload else {
+            panic!("expected TextBox");
+        };
+        assert_eq!(got, content, "content {content:?} must round-trip");
+    }
+}
+
+#[test]
 fn freetext_textbox_roundtrips() {
     let a = ann(
         20,

@@ -168,7 +168,10 @@ fn serialize_one(
         _ => None,
     };
     if let Some(content) = remark {
-        s.push_str(&format!("<ofd:Remark>{}</ofd:Remark>", xml_escape(content)));
+        s.push_str(&format!(
+            "<ofd:Remark>{}</ofd:Remark>",
+            xml_escape_preserving_edges(content)
+        ));
     }
     // Appearance per payload kind.
     s.push_str(&appearance_xml(
@@ -586,7 +589,7 @@ fn text_object_xml_from_hints(
             color_str(color),
             y,
             delta_attr,
-            xml_escape(&line.text)
+            xml_escape_preserving_edges(&line.text)
         ));
     }
     s
@@ -771,7 +774,7 @@ fn text_code_xml(line: &str, size: f64) -> String {
         "<ofd:TextCode X=\"0\" Y=\"{}\"{}>{}</ofd:TextCode>",
         size,
         delta_attr,
-        xml_escape(line)
+        xml_escape_preserving_edges(line)
     )
 }
 
@@ -1084,6 +1087,36 @@ fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+/// XML-escape text while encoding leading/trailing whitespace as numeric
+/// character references. The reader uses quick-xml `trim_text(true)` to drop
+/// inter-element indentation, which would otherwise eat intentional leading/
+/// trailing spaces and hard newlines in annotation content (spec 2026-11-09
+/// §1.5). Numeric refs are opaque to that trim pass and unescape back to the
+/// original characters.
+fn xml_escape_preserving_edges(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let Some(first) = chars.iter().position(|c| !c.is_whitespace()) else {
+        return chars
+            .iter()
+            .map(|c| format!("&#x{:X};", *c as u32))
+            .collect();
+    };
+    let last = chars
+        .iter()
+        .rposition(|c| !c.is_whitespace())
+        .expect("first exists");
+    let mut out = String::new();
+    for (i, c) in chars.iter().enumerate() {
+        if i < first || i > last {
+            out.push_str(&format!("&#x{:X};", *c as u32));
+        } else {
+            let mut buf = [0u8; 4];
+            out.push_str(&xml_escape(c.encode_utf8(&mut buf)));
+        }
+    }
+    out
 }
 
 #[cfg(test)]

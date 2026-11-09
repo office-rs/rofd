@@ -193,13 +193,13 @@ mod tests {
 
     #[test]
     fn wraps_cjk_per_char() {
-        let w = store().shape_wrapped(&FontId::new("F1"), "你好世界你好世界", 12.0, 30.0);
-        if w.glyphs.len() < 8 {
-            // CJK advances come from a system fallback font; a machine
-            // without one cannot exercise per-char wrapping.
-            eprintln!("skipping: no CJK fallback font");
-            return;
-        }
+        // Deterministic CJK fixture: every test machine gets the same metrics
+        // (no dependency on a system CJK fallback font).
+        let mut s = store();
+        assert!(s.register_font(Arc::new(
+            include_bytes!("../../tests/fixtures/fonts/TestFontCjk.otf").to_vec()
+        )));
+        let w = s.shape_wrapped(&FontId::new("F1"), "你好世界你好世界", 12.0, 30.0);
         assert_eq!(w.lines.len(), 4, "8 chars / 2 per line");
         assert!(w.lines.iter().all(|l| l.char_len == 2));
         assert_eq!(w.total_chars, 8);

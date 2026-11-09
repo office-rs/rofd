@@ -2056,4 +2056,89 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn preedit_rich_textbox_keeps_legacy_first_line_position() {
+        // Rich boxes keep the legacy single-line caret path (spec §1.2.2), so
+        // the composition must stay on the first line even when the flat
+        // content would wrap.
+        let rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 45.0,
+            h: 40.0,
+        };
+        let a = ann(
+            AnnotationPayload::TextBox {
+                rect,
+                content: "abc def ghi jkl".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                runs: vec![rofd_dom::TextRun {
+                    text: "abc def ghi jkl".into(),
+                    font: FontId::new("F1"),
+                    size: 12.0,
+                    color: None,
+                    bold: false,
+                    italic: false,
+                    x: 0.0,
+                    baseline: 12.0,
+                }],
+            },
+            AnnotationKind::TextBox,
+        );
+        let mut annotations = rofd_dom::AnnotationModel::default();
+        annotations
+            .by_page
+            .insert(rofd_dom::PageId::new("P0"), vec![a]);
+        let doc = rofd_dom::OfdDocument {
+            pages: vec![rofd_dom::Page {
+                id: rofd_dom::PageId::new("P0"),
+                physical_box: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 200.0,
+                    h: 200.0,
+                },
+                layers: vec![],
+                template: None,
+            }],
+            annotations,
+            ..Default::default()
+        };
+        let vp = crate::Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (200.0, 200.0),
+            page_gap: 20.0,
+        };
+        let fonts = test_font_store();
+        let mut scene = Scene::new();
+        crate::preedit_overlay::paint_preedit_overlay(
+            &mut scene,
+            &doc,
+            &vp,
+            &fonts,
+            "XY",
+            &AnnotationId::from_int(1),
+            8,
+        );
+        let mut tys = Vec::new();
+        for cmd in scene.commands() {
+            if let imaging::record::Command::Draw(id) = cmd {
+                if let imaging::record::Draw::GlyphRun(gr) = scene.draw_op(*id) {
+                    tys.push(gr.transform.as_coeffs()[5]);
+                }
+            }
+        }
+        assert!(!tys.is_empty(), "composition was drawn");
+        for ty in &tys {
+            assert!(
+                (ty - (vp.page_gap + rect.y)).abs() < 1e-3,
+                "rich preedit stays on the first line (got {ty})"
+            );
+        }
+    }
 }
