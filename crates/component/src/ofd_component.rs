@@ -1436,7 +1436,38 @@ impl OfdComponent {
                 }
                 match &self.tool {
                     Tool::Create(kind) => {
-                        // Start a create-drag. The payload is built on PointerUp.
+                        // Text create tools: a press ON the text annotation
+                        // being edited positions its caret (click-to-edit)
+                        // instead of starting a create - clicking back into
+                        // the text you are typing must never mint a new
+                        // annotation. Other presses start a create-drag
+                        // (payload built on PointerUp).
+                        if matches!(kind, CreateKind::Typewriter | CreateKind::TextBox) {
+                            if let Some(cursor) = self.editor.text_cursor().cloned() {
+                                if self.text_content_len(&cursor.annotation).is_some() {
+                                    let target = rofd_render::hit_test(
+                                        self.editor.document(),
+                                        &self.viewport,
+                                        self.editor.selection(),
+                                        p,
+                                    );
+                                    if target_annotation_id(&target) == Some(&cursor.annotation) {
+                                        let offset = self
+                                            .click_caret_offset(&cursor.annotation, p)
+                                            .unwrap_or_else(|| {
+                                                self.text_content_len(&cursor.annotation)
+                                                    .unwrap_or(0)
+                                            });
+                                        self.editor.set_cursor(cursor.annotation.clone(), offset);
+                                        self.fire_cursor_change();
+                                        self.mark_scene_dirty();
+                                        return EventOutcome {
+                                            needs_repaint: true,
+                                        };
+                                    }
+                                }
+                            }
+                        }
                         self.drag = Some(DragState::Create {
                             kind: kind.clone(),
                             start: p,
@@ -2232,9 +2263,12 @@ impl OfdComponent {
                     self.fire_annotation_focus(&id);
                 }
                 self.fire_annotation_interact(&id);
-                // For text annotations, position cursor at end.
+                // For text annotations, position the caret AT THE CLICKED
+                // CHARACTER (entering edit on the first click, repositioning
+                // while editing) - not a fixed jump to the content end.
                 if let Some(len) = self.text_content_len(&id) {
-                    self.editor.set_cursor(id.clone(), len);
+                    let offset = self.click_caret_offset(&id, p).unwrap_or(len);
+                    self.editor.set_cursor(id.clone(), offset);
                 }
                 self.fire_selection_change();
                 self.fire_cursor_change();
@@ -2313,6 +2347,52 @@ impl OfdComponent {
             AnnotationPayload::Note { content, .. }
             | AnnotationPayload::TextBox { content, .. }
             | AnnotationPayload::Watermark { content, .. } => Some(content.chars().count()),
+            _ => None,
+        }
+    }
+
+    /// Map a viewport-space press to a caret offset inside a TEXT
+    /// annotation: the shaped char boundary nearest the press x (page-local
+    /// x minus the annotation rect origin). Notes shape with the default
+    /// font at the caret's fixed 12.0 (mirroring [`rofd_render::caret_rect`]).
+    /// `None` for non-text payloads or unresolvable geometry; callers fall
+    /// back to the content length.
+    fn click_caret_offset(&mut self, id: &rofd_dom::AnnotationId, p: (f64, f64)) -> Option<usize> {
+        if self.font_store.is_none() {
+            self.font_store = Some(self.build_font_store());
+        }
+        let store = self.font_store.as_ref()?;
+        let ann = self.editor.document().annotations.find(id)?;
+        let page_idx = self
+            .editor
+            .document()
+            .pages
+            .iter()
+            .position(|pg| pg.id == ann.page)?;
+        let (origin_x, _origin_y) =
+            rofd_render::page_origin(self.editor.document(), &self.viewport, page_idx)?;
+        let local_x = (p.0 - origin_x) / self.viewport.zoom;
+        match &ann.payload {
+            AnnotationPayload::TextBox {
+                rect,
+                content,
+                font,
+                size,
+                ..
+            } => Some(rofd_render::caret_offset_at_x(
+                content,
+                font,
+                *size,
+                store,
+                local_x - rect.x,
+            )),
+            AnnotationPayload::Note { rect, content, .. } => Some(rofd_render::caret_offset_at_x(
+                content,
+                &FontId::default(),
+                12.0,
+                store,
+                local_x - rect.x,
+            )),
             _ => None,
         }
     }
@@ -4457,6 +4537,141 @@ mod tests {
         assert!(matches!(c.tool, Tool::Create(_)));
         c.set_tool(Tool::Text);
         assert!(matches!(c.tool, Tool::Text));
+    }
+
+    /// A TextBox whose content ("hello world") is long enough that
+    /// mid-text clicks land OUTSIDE the 12px selection-handle zones on the
+    /// rect edges (the shared "hi" box fits entirely inside them, so every
+    /// click hits a resize handle instead of the text). Cursor starts at
+    /// the content end = editing state.
+    fn component_with_long_textbox() -> OfdComponent {
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
+        c.set_clock("t".into(), 1);
+        let mut doc = OfdDocument::default();
+        doc.pages.push(Page {
+            id: PageId::new("P0"),
+            physical_box: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 200.0,
+            },
+            layers: vec![Layer::default()],
+            template: None,
+        });
+        c.load_document(doc);
+        let id = c.editor.create_annotation(
+            AnnotationKind::TextBox,
+            PageId::new("P0"),
+            AnnotationPayload::TextBox {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 120.0,
+                    h: 40.0,
+                },
+                content: "hello world".into(),
+                font: FontId::new("F1"),
+                size: 10.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                runs: Vec::new(),
+            },
+        );
+        c.editor.set_cursor(id, 11);
+        c.viewport = rofd_render::Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (200.0, 200.0),
+            page_gap: 0.0,
+        };
+        c
+    }
+
+    /// Shaped pen boundary of char `idx` in "hello world" and the line end
+    /// (system-fallback shaping, the same FontStore configuration the
+    /// component uses), for click-position math.
+    fn long_pens(idx: usize) -> (f64, f64) {
+        let fonts = rofd_render::FontStore::from_resources(
+            &rofd_dom::Resources::default(),
+            Arc::new(vec![]),
+        );
+        let fid = FontId::new("F1");
+        let (_, glyphs) = fonts.shape(&fid, "hello world", 10.0);
+        assert_eq!(glyphs.len(), 11, "11 glyphs for 'hello world'");
+        let end = fonts.line_width(&fid, "hello world", 10.0);
+        (glyphs[idx].x as f64, end)
+    }
+
+    #[test]
+    fn text_tool_click_positions_caret_at_click_point() {
+        // Clicking inside a text annotation must position the caret AT THE
+        // CLICKED CHARACTER, not jump to the content end.
+        let mut c = component_with_long_textbox();
+        c.set_tool(Tool::Text);
+        let (pen5, _end) = long_pens(5);
+        // Click just left of char 5's pen -> boundary 5, mid-text.
+        c.handle_event(&pd(pen5 - 0.01, 20.0));
+        assert_eq!(c.text_cursor().unwrap().offset, 5, "caret at the click");
+        // Click past the text (still inside the box) -> end offset.
+        let (_, end) = long_pens(5);
+        c.handle_event(&pd(end + 2.0, 20.0));
+        assert_eq!(c.text_cursor().unwrap().offset, 11);
+    }
+
+    #[test]
+    fn text_tool_click_while_editing_moves_caret() {
+        // Already editing (the helper starts the cursor in the box): a
+        // click inside repositions the caret without creating anything or
+        // changing the selection.
+        let mut c = component_with_long_textbox();
+        c.set_tool(Tool::Text);
+        let id_before = match c.selection() {
+            AnnotationSelection::Single(id) => id.clone(),
+            _ => panic!("box selected"),
+        };
+        let (pen5, _) = long_pens(5);
+        c.handle_event(&pd(pen5 - 0.01, 20.0));
+        assert_eq!(c.text_cursor().unwrap().offset, 5, "caret moved from end");
+        assert!(matches!(&c.selection(), AnnotationSelection::Single(id) if *id == id_before));
+        assert_eq!(
+            c.document().annotations.for_page(&PageId::new("P0")).len(),
+            1,
+            "no new annotation"
+        );
+    }
+
+    #[test]
+    fn typewriter_click_on_editing_annotation_positions_caret_not_create() {
+        // With a text create tool active and the caret already inside a
+        // text annotation, pressing ON that annotation positions the caret
+        // (click-to-edit) instead of minting a new annotation.
+        let mut c = component_with_long_textbox();
+        c.set_tool(Tool::Create(CreateKind::Typewriter));
+        let (pen5, _) = long_pens(5);
+        c.handle_event(&pd(pen5 - 0.01, 20.0));
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: pen5 - 0.01,
+            y: 20.0,
+        });
+        let anns = c.document().annotations.for_page(&PageId::new("P0"));
+        assert_eq!(anns.len(), 1, "no new annotation minted");
+        let cursor = c.text_cursor().expect("caret still active");
+        assert_eq!(cursor.annotation, anns[0].id, "same annotation");
+        assert_eq!(cursor.offset, 5, "caret repositioned to the click");
+        // Pressing elsewhere on the page still creates (tool intact).
+        c.handle_event(&pd(150.0, 50.0));
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 150.0,
+            y: 50.0,
+        });
+        assert_eq!(
+            c.document().annotations.for_page(&PageId::new("P0")).len(),
+            2,
+            "blank-page press still creates"
+        );
     }
 
     #[test]
@@ -8320,7 +8535,7 @@ mod tests {
         c.handle_event(&ViewEvent::PointerDown {
             button: MouseButton::Left,
             x: 90.0,
-            y: 5.0,
+            y: 20.0,
             modifiers: Modifiers::default(),
             click_count: 1,
         });

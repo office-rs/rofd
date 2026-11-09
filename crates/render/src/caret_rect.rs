@@ -22,7 +22,7 @@
 
 use imaging::kurbo::{Rect as KurboRect, Shape};
 use imaging::{record::Scene, Painter};
-use rofd_dom::{AnnotationId, AnnotationPayload, OfdDocument, Rect};
+use rofd_dom::{AnnotationId, AnnotationPayload, FontId, OfdDocument, Rect};
 
 use crate::text::FontStore;
 use crate::viewport::Viewport;
@@ -105,6 +105,32 @@ pub fn caret_rect(
         w: 1.0 * vp.zoom,
         h: size * vp.zoom,
     })
+}
+
+/// The caret char offset whose boundary (a shaped glyph pen, or the line
+/// end) is nearest `x_in_rect` (x relative to the annotation rect's
+/// origin). Chars map 1:1 to glyphs (the shaper disables ligatures), so
+/// glyph index == char offset; boundary `n` (past the last glyph) is the
+/// shaped line end. An empty run maps to 0.
+pub fn caret_offset_at_x(
+    content: &str,
+    font_id: &FontId,
+    size: f64,
+    fonts: &FontStore,
+    x_in_rect: f64,
+) -> usize {
+    let (_, glyphs) = fonts.shape(font_id, content, size);
+    let end = fonts.line_width(font_id, content, size);
+    let mut best = glyphs.len();
+    let mut best_d = (end - x_in_rect).abs();
+    for (i, g) in glyphs.iter().enumerate() {
+        let d = (g.x as f64 - x_in_rect).abs();
+        if d < best_d {
+            best_d = d;
+            best = i;
+        }
+    }
+    best
 }
 
 /// Paint the text caret: a vertical bar filled black at `rect` (viewport
