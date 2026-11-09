@@ -347,6 +347,17 @@ impl FontStore {
         cached
     }
 
+    /// The shaped advance width of `text` at `size` (the shaper's pen
+    /// position AFTER the last glyph). The end-of-text caret uses this: the
+    /// last glyph's own x is its LEFT edge, so falling back to it would draw
+    /// the caret on top of the final character. Not cached - callers hit
+    /// this per caret blink on short strings.
+    pub fn line_width(&self, font_id: &FontId, text: &str, size: f64) -> f64 {
+        let family = self.family_list_for(font_id);
+        let mut fcx = self.font_cx.borrow_mut();
+        shape_grouped_with_family(&mut fcx, text, size, family).1
+    }
+
     /// Shape a UI-text line with the default font family - the UI chrome (hover
     /// tooltip) uses no document font. No glyph cache: UI lines are short and
     /// transient, unlike body text (shaping 2 short lines per frame is trivial).

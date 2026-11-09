@@ -80,20 +80,24 @@ pub fn caret_rect(
     // Shape with the document font (or the default fallback) for glyph advances.
     let (_font, glyphs) = fonts.shape(font_id, content, size);
 
-    // Caret x (page-local) = the shaped glyph x at `offset`. For an offset at
-    // or past the end of the run, place the caret at the last glyph's x (the
-    // shaper's pen position for that glyph). For an empty run, x = 0.
+    // Caret x (page-local) = the shaped glyph x at `offset`. For an offset
+    // at or past the end of the run, the caret sits at the shaped line END
+    // (the pen position after the last glyph) - NOT at the last glyph's x,
+    // which is that glyph's LEFT edge and would draw the blinking bar on
+    // top of the final character. Multi-line content ends on its last line.
+    // For an empty run, x = 0.
+    let last_line = content.rsplit('\n').next().unwrap_or("");
     let caret_x_local = glyphs
         .get(offset)
-        .map(|g| g.x)
-        .unwrap_or_else(|| glyphs.last().map(|g| g.x).unwrap_or(0.0));
+        .map(|g| g.x as f64)
+        .unwrap_or_else(|| fonts.line_width(font_id, last_line, size));
 
     // Find the annotation's page index and compute its viewport origin via the
     // shared page_origin helper (same geometry as composite.rs).
     let page_idx = doc.pages.iter().position(|p| p.id == ann.page)?;
     let (origin_x, origin_y) = crate::composite::page_origin(doc, vp, page_idx)?;
 
-    let vx = origin_x + (rect.x + caret_x_local as f64) * vp.zoom;
+    let vx = origin_x + (rect.x + caret_x_local) * vp.zoom;
     let vy = origin_y + rect.y * vp.zoom;
     Some(Rect {
         x: vx,
@@ -272,6 +276,55 @@ mod tests {
         assert_eq!(r.y, expected_y, "caret y = page_origin_y + rect.y * zoom");
         assert_eq!(r.w, 1.0, "caret width = 1px * zoom");
         assert_eq!(r.h, 12.0, "caret height = size * zoom");
+    }
+
+    #[test]
+    fn caret_rect_at_end_sits_after_the_last_glyph() {
+        // Regression: at the end offset (offset == char count - where a
+        // click on the box and typing both leave the cursor), the caret
+        // used to fall back to the LAST GLYPH'S LEFT EDGE, drawing the
+        // blinking bar on top of the final character instead of after the
+        // text. The end caret must sit strictly right of the last glyph's
+        // pen (by roughly one advance) and exactly at the shaped line end.
+        let (mut doc, fonts) = doc_with_font();
+        let id = push_ann(
+            &mut doc,
+            AnnotationPayload::TextBox {
+                rect: Rect {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 100.0,
+                    h: 30.0,
+                },
+                content: "Hi".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                runs: Vec::new(),
+            },
+            AnnotationKind::TextBox,
+        );
+        let at = |off: usize| caret_rect(&doc, &vp(), &fonts, &id, off).unwrap();
+
+        let end = at(2);
+        let before_last = at(1);
+        assert!(
+            end.x > before_last.x,
+            "end caret must sit right of the last glyph's pen: {} vs {}",
+            end.x,
+            before_last.x
+        );
+        // The step past the pen is the last glyph's advance: within one em.
+        let step = end.x - before_last.x;
+        assert!(step > 0.0 && step <= 12.0, "advance-sized step, got {step}");
+        // Exactly the shaped line end (page_origin 300 + rect.x 10 + width).
+        let expected = 300.0 + 10.0 + fonts.line_width(&FontId::new("F1"), "Hi", 12.0);
+        assert!(
+            (end.x - expected).abs() < 1e-3,
+            "end x == page origin + rect.x + line width: {} vs {expected}",
+            end.x
+        );
     }
 
     #[test]
