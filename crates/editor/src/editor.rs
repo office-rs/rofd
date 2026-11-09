@@ -76,10 +76,21 @@ impl Editor {
     }
     /// Position the text cursor at `offset` within `annotation`.
     pub fn set_cursor(&mut self, annotation: AnnotationId, offset: usize) {
+        self.set_cursor_with_preferred_x(annotation, offset, None);
+    }
+
+    /// Position the text cursor and keep a preferred column x (vertical
+    /// caret movement across visual lines). `None` clears the preference.
+    pub fn set_cursor_with_preferred_x(
+        &mut self,
+        annotation: AnnotationId,
+        offset: usize,
+        preferred_x: Option<f32>,
+    ) {
         self.text_cursor = Some(TextCursor {
             annotation,
             offset,
-            preferred_x: None,
+            preferred_x,
         });
     }
     /// Clear the text cursor.
@@ -206,5 +217,15 @@ mod tests {
             assert!(e.undo());
         }
         assert!(!e.can_undo());
+    }
+
+    #[test]
+    fn set_cursor_with_preferred_x_round_trips() {
+        let mut e = Editor::new();
+        e.set_cursor_with_preferred_x(AnnotationId::from_int(1), 3, Some(4.5));
+        let c = e.text_cursor().unwrap();
+        assert_eq!((c.offset, c.preferred_x), (3, Some(4.5)));
+        e.set_cursor(AnnotationId::from_int(1), 3);
+        assert_eq!(e.text_cursor().unwrap().preferred_x, None);
     }
 }

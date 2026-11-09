@@ -7,6 +7,7 @@ pub mod payload_util;
 pub mod selection;
 pub mod steps;
 
+pub use commands::text_commands::normalize_newlines;
 pub use cursor::TextCursor;
 pub use editor::Editor;
 pub use selection::AnnotationSelection;

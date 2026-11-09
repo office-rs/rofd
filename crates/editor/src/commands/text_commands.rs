@@ -32,6 +32,15 @@ fn collapse_runs(payload: &mut AnnotationPayload) {
     }
 }
 
+/// Normalize line endings to `\n` (`\r\n` and lone `\r`).
+///
+/// Annotation content's model invariant is LF-only (spec 2026-11-09 §1.2.1):
+/// parley treats `\r\n` as TWO newline clusters, which would render a blank
+/// line between them.
+pub fn normalize_newlines(s: &str) -> String {
+    s.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 impl Editor {
     /// Set the primary color.
     pub fn set_annotation_color(&mut self, id: &AnnotationId, color: Color) {
@@ -59,18 +68,41 @@ impl Editor {
 
     /// Insert text into a text annotation (TextBox/Note/Watermark) at char offset.
     pub fn insert_text(&mut self, id: &AnnotationId, offset: usize, chars: &str) {
+        self.insert_text_measured(id, offset, chars, |_| None);
+    }
+
+    /// Insert text and let `measure` suggest a new annotation height. The
+    /// closure sees the post-edit payload (after `collapse_runs`), so the
+    /// component can shape the exact text with its font store; a `Some(h)`
+    /// is applied in the SAME transaction (one undo restores text + height).
+    /// `measure` must return `Some` only when growth is needed.
+    pub fn insert_text_measured<F>(
+        &mut self,
+        id: &AnnotationId,
+        offset: usize,
+        chars: &str,
+        measure: F,
+    ) where
+        F: FnOnce(&AnnotationPayload) -> Option<f64>,
+    {
         let before = match self.document.annotations.find(id).cloned() {
             Some(a) => a,
             None => return,
         };
         let mut after = before.clone();
         collapse_runs(&mut after.payload);
+        let chars = normalize_newlines(chars);
         if let Some(content) = text_content_mut(&mut after.payload) {
             let off = offset.min(content.chars().count());
             let mut new = content.chars().take(off).collect::<String>();
-            new.push_str(chars);
+            new.push_str(&chars);
             new.extend(content.chars().skip(off));
             *content = new;
+        }
+        if let Some(height) = measure(&after.payload) {
+            if let AnnotationPayload::TextBox { rect, .. } = &mut after.payload {
+                rect.h = height;
+            }
         }
         after.modified = self.current_ts;
         self.execute_transaction(self.replace_txn(id.clone(), before, after));
@@ -78,6 +110,20 @@ impl Editor {
 
     /// Delete `len` chars from a text annotation at char offset.
     pub fn delete_text(&mut self, id: &AnnotationId, offset: usize, len: usize) {
+        self.delete_text_measured(id, offset, len, |_| None);
+    }
+
+    /// Delete text and let `measure` suggest a new annotation height (same
+    /// contract as [`Self::insert_text_measured`]).
+    pub fn delete_text_measured<F>(
+        &mut self,
+        id: &AnnotationId,
+        offset: usize,
+        len: usize,
+        measure: F,
+    ) where
+        F: FnOnce(&AnnotationPayload) -> Option<f64>,
+    {
         let before = match self.document.annotations.find(id).cloned() {
             Some(a) => a,
             None => return,
@@ -96,6 +142,11 @@ impl Editor {
                 .collect();
             *content = kept;
         }
+        if let Some(height) = measure(&after.payload) {
+            if let AnnotationPayload::TextBox { rect, .. } = &mut after.payload {
+                rect.h = height;
+            }
+        }
         after.modified = self.current_ts;
         self.execute_transaction(self.replace_txn(id.clone(), before, after));
     }
@@ -109,7 +160,7 @@ impl Editor {
         let mut after = before.clone();
         collapse_runs(&mut after.payload);
         if let Some(content) = text_content_mut(&mut after.payload) {
-            *content = text.into();
+            *content = normalize_newlines(text);
         }
         after.modified = self.current_ts;
         self.execute_transaction(self.replace_txn(id.clone(), before, after));
@@ -368,5 +419,121 @@ mod tests {
         let child = e.reply_to(&parent, "reply");
         let c = e.document().annotations.find(&child).unwrap();
         assert_eq!(c.reply_to, Some(parent.clone()));
+    }
+
+    fn flat_textbox_editor() -> (Editor, AnnotationId) {
+        flat_textbox_editor_with("hi", 10.0)
+    }
+
+    fn flat_textbox_editor_with(content: &str, h: f64) -> (Editor, AnnotationId) {
+        let mut e = Editor::new();
+        e.set_clock("t".into(), 1);
+        let id = e.create_annotation(
+            AnnotationKind::TextBox,
+            PageId::new("P0"),
+            AnnotationPayload::TextBox {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 30.0,
+                    h,
+                },
+                content: content.into(),
+                font: FontId::new("F1"),
+                size: 3.5,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                runs: vec![],
+            },
+        );
+        (e, id)
+    }
+
+    fn textbox_rect(e: &Editor, id: &AnnotationId) -> Rect {
+        match textbox_payload(e, id) {
+            AnnotationPayload::TextBox { rect, .. } => *rect,
+            other => panic!("expected TextBox, got {other:?}"),
+        }
+    }
+
+    fn textbox_content(e: &Editor, id: &AnnotationId) -> String {
+        match textbox_payload(e, id) {
+            AnnotationPayload::TextBox { content, .. } => content.clone(),
+            other => panic!("expected TextBox, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn insert_text_measured_grows_height_in_same_transaction() {
+        let (mut e, id) = flat_textbox_editor(); // rect h = 10.0, content "hi"
+        e.insert_text_measured(&id, 0, "x", |payload| {
+            assert!(matches!(payload, AnnotationPayload::TextBox { .. }));
+            Some(77.0)
+        });
+        assert_eq!(textbox_rect(&e, &id).h, 77.0);
+        assert_eq!(textbox_content(&e, &id), "xhi");
+        assert!(e.undo());
+        assert_eq!(textbox_rect(&e, &id).h, 10.0, "undo restores height too");
+        assert_eq!(textbox_content(&e, &id), "hi");
+    }
+
+    #[test]
+    fn insert_text_measured_none_keeps_height() {
+        let (mut e, id) = flat_textbox_editor();
+        e.insert_text_measured(&id, 0, "x", |_| None);
+        assert_eq!(textbox_rect(&e, &id).h, 10.0);
+    }
+
+    #[test]
+    fn delete_text_measured_applies_growth() {
+        let (mut e, id) = flat_textbox_editor_with("hello", 10.0);
+        e.delete_text_measured(&id, 0, 1, |_| Some(33.0));
+        assert_eq!(textbox_rect(&e, &id).h, 33.0);
+        assert_eq!(textbox_content(&e, &id), "ello");
+    }
+
+    #[test]
+    fn insert_text_normalizes_crlf() {
+        let (mut e, id) = flat_textbox_editor(); // content "hi"
+        e.insert_text(&id, 0, "a\r\nb\rc");
+        assert_eq!(textbox_content(&e, &id), "a\nb\nchi");
+    }
+
+    #[test]
+    fn set_annotation_text_normalizes_crlf() {
+        let (mut e, id) = flat_textbox_editor();
+        e.set_annotation_text(&id, "a\r\nb");
+        assert_eq!(textbox_content(&e, &id), "a\nb");
+    }
+
+    #[test]
+    fn rich_textbox_first_edit_collapses_and_grows_atomically() {
+        let (mut e, id) = rich_textbox_editor(); // rect h = 10.0, runs non-empty
+        e.insert_text_measured(&id, 4, "x", |payload| {
+            let AnnotationPayload::TextBox {
+                runs, rect, font, ..
+            } = payload
+            else {
+                panic!("expected TextBox");
+            };
+            assert!(runs.is_empty(), "measure sees the post-collapse payload");
+            assert_eq!(font.0, "118", "collapsed to runs[0]");
+            Some(rect.h + 5.0)
+        });
+        match textbox_payload(&e, &id) {
+            AnnotationPayload::TextBox { rect, runs, .. } => {
+                assert_eq!(rect.h, 15.0);
+                assert!(runs.is_empty());
+            }
+            other => panic!("expected TextBox, got {other:?}"),
+        }
+        assert!(e.undo());
+        assert!(
+            matches!(
+                textbox_payload(&e, &id),
+                AnnotationPayload::TextBox { runs, rect, .. } if !runs.is_empty() && rect.h == 10.0
+            ),
+            "one undo restores runs AND height"
+        );
     }
 }
