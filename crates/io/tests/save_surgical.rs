@@ -152,8 +152,9 @@ fn surgical_save_preserves_textbox_runs() {
         .expect("inserted rich annotation survived the save");
     match &ann.payload {
         AnnotationPayload::TextBox { content, runs, .. } => {
-            // Flat content re-derives from the runs on reparse.
-            assert_eq!(content, "发的古格");
+            // The Remark mirror (written for WPS compatibility) preserves the
+            // model's logical content across save+reparse.
+            assert_eq!(content, "发的古典风格");
             assert_eq!(runs.len(), 2, "both runs survived the save");
             assert!(runs[1].bold, "bold flag survived");
             assert_eq!(runs[1].color, Some(rofd_dom::Color::Rgb(75, 172, 198)));

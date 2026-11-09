@@ -313,6 +313,12 @@ fn handle_element_start(p: &mut PendingAnnot, e: &BytesStart) {
 /// a new line (`\n`), same-line fragments concatenate directly. This keeps
 /// per-line splits (WPS: one TextObject per line) AND same-line styled
 /// fragments (Suwell: one TextObject per fragment) readable as one flow.
+/// Normalize line endings to `\n` (spec 2026-11-09 §1.2.1): parley treats
+/// `\r\n` as two newline clusters, so annotation content must be LF-only.
+fn normalize_newlines(s: &str) -> String {
+    s.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 fn flat_content_from_runs(runs: &[rofd_dom::TextRun]) -> String {
     let mut sorted: Vec<&rofd_dom::TextRun> = runs.iter().collect();
     sorted.sort_by(|a, b| {
@@ -513,7 +519,7 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
                     }
                     for (text, cx, cy) in codes {
                         runs.push(rofd_dom::TextRun {
-                            text: text.clone(),
+                            text: normalize_newlines(text),
                             font: rofd_dom::FontId::new(font.clone()),
                             size: *size,
                             color: *fill,
@@ -532,6 +538,19 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
                 // No TextObject found: fall back to Remark.
                 content = p.remark.clone();
             }
+            // WPS writes the logical text into Remark + AllRichText/
+            // ParagraphFormat, keeping the wrapped lines only in the
+            // appearance. Prefer Remark so the reloaded content is still
+            // reflowable (spec 2026-11-09 §1.5). A bare Remark without those
+            // parameters may be a comment, so it is not trusted.
+            let has_wps_meta = p
+                .params
+                .iter()
+                .any(|(name, _)| name == "AllRichText" || name == "ParagraphFormat");
+            if has_wps_meta && !p.remark.is_empty() {
+                content = p.remark.clone();
+            }
+            let content = normalize_newlines(&content);
             // Runs are the RICH-fidelity carrier only: keep them when the
             // appearance actually fragments styling (a bold/italic flag, or
             // adjacent runs differing in font/size/color). Uniform layouts
@@ -929,6 +948,87 @@ mod tests {
             }
             other => panic!("expected TextBox, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn freetext_prefers_remark_when_wps_params_present() {
+        // WPS stores the logical text in Remark + AllRichText/ParagraphFormat
+        // and the wrapped lines in the appearance. Preferring Remark keeps the
+        // content reflowable after reload (spec 2026-11-09 §1.5).
+        let xml = r#"<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016">
+<ofd:Annot Type="FreeText" ID="1" Subtype="FreeText">
+  <ofd:Remark>逻辑文本</ofd:Remark>
+  <ofd:Parameters>
+    <ofd:Parameter Name="AllRichText">&lt;html&gt;x&lt;/html&gt;</ofd:Parameter>
+    <ofd:Parameter Name="ParagraphFormat">{}</ofd:Parameter>
+  </ofd:Parameters>
+  <ofd:Appearance Boundary="0 0 45 40">
+    <ofd:TextObject ID="2" Boundary="0 0 22 14" Font="F1" Size="12">
+      <ofd:TextCode X="0" Y="12">逻辑</ofd:TextCode>
+    </ofd:TextObject>
+    <ofd:TextObject ID="3" Boundary="0 14 22 14" Font="F1" Size="12">
+      <ofd:TextCode X="0" Y="12">文本</ofd:TextCode>
+    </ofd:TextObject>
+  </ofd:Appearance>
+</ofd:Annot></ofd:PageAnnot>"#;
+        let anns = parse_page_annot(xml, &PageId::new("1")).unwrap();
+        let AnnotationPayload::TextBox { content, .. } = &anns[0].payload else {
+            panic!("expected TextBox");
+        };
+        assert_eq!(
+            content, "逻辑文本",
+            "Remark wins over wrapped appearance lines"
+        );
+    }
+
+    #[test]
+    fn freetext_remark_without_wps_params_keeps_appearance_content() {
+        // A bare Remark without the WPS parameters may be a comment, not the
+        // text-body mirror: keep the appearance-derived content.
+        let xml = r#"<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Annot Type="FreeText" ID="1" Subtype="FreeText">
+    <ofd:Remark>备注</ofd:Remark>
+    <ofd:Appearance Boundary="0 0 45 40">
+      <ofd:TextObject ID="2" Boundary="0 0 22 14" Font="F1" Size="12">
+        <ofd:TextCode X="0" Y="12">逻辑</ofd:TextCode>
+      </ofd:TextObject>
+      <ofd:TextObject ID="3" Boundary="0 14 22 14" Font="F1" Size="12">
+        <ofd:TextCode X="0" Y="12">文本</ofd:TextCode>
+      </ofd:TextObject>
+    </ofd:Appearance>
+  </ofd:Annot>
+</ofd:PageAnnot>"#;
+        let anns = parse_page_annot(xml, &PageId::new("1")).unwrap();
+        let AnnotationPayload::TextBox { content, .. } = &anns[0].payload else {
+            panic!("expected TextBox");
+        };
+        assert_eq!(
+            content, "逻辑\n文本",
+            "no WPS params -> appearance is still the source"
+        );
+    }
+
+    #[test]
+    fn freetext_crlf_is_normalized() {
+        let xml = r#"<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Annot Type="FreeText" ID="1" Subtype="FreeText">
+    <ofd:Remark>a<CRLF>b</ofd:Remark>
+    <ofd:Parameters>
+      <ofd:Parameter Name="AllRichText">x</ofd:Parameter>
+    </ofd:Parameters>
+    <ofd:Appearance Boundary="0 0 45 40">
+      <ofd:TextObject ID="2" Boundary="0 0 22 14" Font="F1" Size="12">
+        <ofd:TextCode X="0" Y="12">x<CRLF>y</ofd:TextCode>
+      </ofd:TextObject>
+    </ofd:Appearance>
+  </ofd:Annot>
+</ofd:PageAnnot>"#
+            .replace("<CRLF>", "\r\n");
+        let anns = parse_page_annot(&xml, &PageId::new("1")).unwrap();
+        let AnnotationPayload::TextBox { content, .. } = &anns[0].payload else {
+            panic!("expected TextBox");
+        };
+        assert_eq!(content, "a\nb");
     }
 
     #[test]
