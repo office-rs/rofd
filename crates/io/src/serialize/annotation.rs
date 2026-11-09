@@ -8,8 +8,8 @@
 //! `tests/annotation_roundtrip.rs`).
 
 use rofd_dom::{
-    Annotation, AnnotationKind, AnnotationPayload, Color, OfdDocument, PageId, PathData, Rect,
-    ShapeKind,
+    Annotation, AnnotationKind, AnnotationPayload, Color, FontId, OfdDocument, PageId, PathData,
+    Rect, Resources, ShapeKind, TextLayoutHints, TextLineHint,
 };
 
 use crate::annotation_geom::{
@@ -29,11 +29,17 @@ use crate::dateutil::format_last_mod_date;
 /// from it - GB/T 33190 表 2 types object IDs as unsigned integers, and strict
 /// readers drop an annotation file outright on a non-integer or duplicated
 /// object ID. The caller patches `<MaxUnitID>` to the final counter value.
-pub fn serialize_page_annot(_page: &PageId, anns: &[Annotation], next_id: &mut u64) -> String {
+pub fn serialize_page_annot(
+    _page: &PageId,
+    anns: &[Annotation],
+    next_id: &mut u64,
+    res: &Resources,
+    hints: &TextLayoutHints,
+) -> String {
     let mut s = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     s.push_str("<ofd:PageAnnot xmlns:ofd=\"http://www.ofdspec.org/2016\">");
     for a in anns {
-        s.push_str(&serialize_one(a, next_id));
+        s.push_str(&serialize_one(a, next_id, res, hints));
     }
     s.push_str("</ofd:PageAnnot>");
     s
@@ -62,7 +68,12 @@ fn mint_object_id(next_id: &mut u64) -> u64 {
 }
 
 /// Serialize a single `<Annot>` element.
-fn serialize_one(a: &Annotation, next_id: &mut u64) -> String {
+fn serialize_one(
+    a: &Annotation,
+    next_id: &mut u64,
+    res: &Resources,
+    hints: &TextLayoutHints,
+) -> String {
     let (ty, sub) = kind_to_type_subtype(&a.kind);
     let mut s = format!(
         "<ofd:Annot ID=\"{}\" Type=\"{}\" Creator=\"{}\" LastModDate=\"{}\" ReadOnly=\"false\"",
@@ -117,15 +128,55 @@ fn serialize_one(a: &Annotation, next_id: &mut u64) -> String {
             ));
         }
     }
+    // WPS-compatible FreeText metadata (spec 2026-11-09 §1.5/§4.4): the
+    // logical text mirror + Qt rich text + paragraph style + grow mode. WPS
+    // reads these for edit-mode reflow; rofd reads Remark on load.
+    if let AnnotationPayload::TextBox {
+        content,
+        font,
+        size,
+        color,
+        border,
+        runs,
+        ..
+    } = &a.payload
+    {
+        let (flat_name, bold, italic) = paragraph_style(res, font, runs);
+        s.push_str(&format!(
+            "<ofd:Parameter Name=\"AllRichText\">{}</ofd:Parameter>",
+            xml_escape(&all_rich_text_html(
+                content, &flat_name, *size, *color, runs, res
+            ))
+        ));
+        s.push_str(&format!(
+            "<ofd:Parameter Name=\"ParagraphFormat\">{}</ofd:Parameter>",
+            xml_escape(&paragraph_format_json(
+                &flat_name, *size, *color, bold, italic
+            ))
+        ));
+        let grow = if border.is_some() { "FixWidth" } else { "None" };
+        s.push_str(&format!(
+            "<ofd:Parameter Name=\"GrowMode\">{}</ofd:Parameter>",
+            grow
+        ));
+    }
     s.push_str("</ofd:Parameters>");
-    // Remark (Note content only).
-    if matches!(a.kind, AnnotationKind::Note) {
-        if let AnnotationPayload::Note { content, .. } = &a.payload {
-            s.push_str(&format!("<ofd:Remark>{}</ofd:Remark>", xml_escape(content)));
-        }
+    // Remark: the logical text mirror for Note and FreeText (WPS convention).
+    let remark = match &a.payload {
+        AnnotationPayload::Note { content, .. } => Some(content.as_str()),
+        AnnotationPayload::TextBox { content, .. } => Some(content.as_str()),
+        _ => None,
+    };
+    if let Some(content) = remark {
+        s.push_str(&format!("<ofd:Remark>{}</ofd:Remark>", xml_escape(content)));
     }
     // Appearance per payload kind.
-    s.push_str(&appearance_xml(&a.kind, &a.payload, next_id));
+    s.push_str(&appearance_xml(
+        &a.kind,
+        &a.payload,
+        next_id,
+        hints.get(&a.id).map(Vec::as_slice),
+    ));
     s.push_str("</ofd:Annot>");
     s
 }
@@ -153,7 +204,12 @@ fn kind_to_type_subtype(k: &AnnotationKind) -> (&'static str, Option<&'static st
 }
 
 /// Build the `<Appearance>` XML for the given kind + payload.
-fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload, next_id: &mut u64) -> String {
+fn appearance_xml(
+    kind: &AnnotationKind,
+    payload: &AnnotationPayload,
+    next_id: &mut u64,
+    line_hint: Option<&[TextLineHint]>,
+) -> String {
     match (kind, payload) {
         (AnnotationKind::Highlight, AnnotationPayload::Markup { quad_points, color }) => {
             markup_highlight_appearance(quad_points, color, next_id)
@@ -337,9 +393,14 @@ fn appearance_xml(kind: &AnnotationKind, payload: &AnnotationPayload, next_id: &
                 ));
             }
             if runs.is_empty() {
-                inner.push_str(&text_object_xml(
-                    rect, &font.0, *size, *color, content, next_id,
-                ));
+                match line_hint {
+                    Some(lines) if !lines.is_empty() => inner.push_str(
+                        &text_object_xml_from_hints(&font.0, *size, *color, lines, next_id),
+                    ),
+                    _ => inner.push_str(&text_object_xml(
+                        rect, &font.0, *size, *color, content, next_id,
+                    )),
+                }
             } else {
                 // Rich runs: one TextObject per styled fragment at its own
                 // pen position. Boundary.y + TextCode Y round-trips the
@@ -485,6 +546,168 @@ fn text_object_xml(
         ));
     }
     s
+}
+
+/// Build a `<TextObject>` per visual line from the wrapped-layout hints
+/// (spec 2026-11-09 §4.5): real parley line geometry (top/baseline/height/
+/// width) and per-char advances, so the saved appearance is a faithful
+/// snapshot of what rofd rendered.
+fn text_object_xml_from_hints(
+    font: &str,
+    size: f64,
+    color: Color,
+    lines: &[TextLineHint],
+    next_id: &mut u64,
+) -> String {
+    let mut s = String::new();
+    for line in lines {
+        let id = mint_object_id(next_id);
+        let y = line.baseline - line.top;
+        let n = line.text.chars().count();
+        let deltas: Vec<String> = line
+            .advances
+            .iter()
+            .take(n.saturating_sub(1))
+            .map(|a| format!("{a}"))
+            .collect();
+        let delta_attr = if deltas.is_empty() {
+            String::new()
+        } else {
+            format!(" DeltaX=\"{}\"", deltas.join(" "))
+        };
+        s.push_str(&format!(
+            "<ofd:TextObject ID=\"{}\" Boundary=\"0 {} {} {}\" Font=\"{}\" Size=\"{}\"><ofd:FillColor Value=\"{}\"/><ofd:TextCode X=\"0\" Y=\"{}\"{}>{}</ofd:TextCode></ofd:TextObject>",
+            id,
+            line.top,
+            line.width,
+            line.height,
+            xml_escape(font),
+            size,
+            color_str(color),
+            y,
+            delta_attr,
+            xml_escape(&line.text)
+        ));
+    }
+    s
+}
+
+/// Family name for a font resource id, falling back to the raw id.
+fn font_name(res: &Resources, id: &FontId) -> String {
+    res.fonts
+        .get(id)
+        .and_then(|f| f.family_name.clone())
+        .unwrap_or_else(|| id.0.clone())
+}
+
+/// Flat style for `ParagraphFormat`: the first rich run's style, or the
+/// payload's flat style for runs-empty boxes.
+fn paragraph_style(
+    res: &Resources,
+    font: &FontId,
+    runs: &[rofd_dom::TextRun],
+) -> (String, bool, bool) {
+    match runs.first() {
+        Some(run) => (font_name(res, &run.font), run.bold, run.italic),
+        None => (font_name(res, font), false, false),
+    }
+}
+
+fn color_hex(c: Color) -> String {
+    let Color::Rgb(r, g, b) = c;
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+fn json_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('\'', "&#39;")
+}
+
+/// HTML text body: escaped, hard newlines as `<br />`.
+fn html_text(s: &str) -> String {
+    html_escape(s).replace('\n', "<br />")
+}
+
+/// One Qt-rich-text span (the WPS `AllRichText` dialect).
+fn span_html(
+    text: &str,
+    family: &str,
+    size_mm: f64,
+    color: Color,
+    bold: bool,
+    italic: bool,
+) -> String {
+    let pt = (size_mm * 72.0 / 25.4 * 100.0).round() / 100.0;
+    format!(
+        "<span style=\" font-family:'{}'; font-size:{}pt; font-weight:{}; font-style:{}; color:{};\">{}</span>",
+        html_escape(family),
+        pt,
+        if bold { "700" } else { "400" },
+        if italic { "italic" } else { "normal" },
+        color_hex(color),
+        html_text(text)
+    )
+}
+
+/// Qt RichText HTML mirror (WPS `AllRichText`): one span for flat boxes, one
+/// per rich run. Write-only for rofd; WPS consumes it for edit-mode reflow.
+fn all_rich_text_html(
+    content: &str,
+    flat_font_name: &str,
+    size: f64,
+    color: Color,
+    runs: &[rofd_dom::TextRun],
+    res: &Resources,
+) -> String {
+    let header = "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0//EN\" \"http://www.w3.org/TR/REC-html40/strict.dtd\">\n<html><head><meta name=\"qrichtext\" content=\"1\" /><meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\" /><style type=\"text/css\">\n</style></head><body>";
+    let mut body = String::new();
+    if runs.is_empty() {
+        body.push_str(&span_html(
+            content,
+            flat_font_name,
+            size,
+            color,
+            false,
+            false,
+        ));
+    } else {
+        for run in runs {
+            let family = font_name(res, &run.font);
+            body.push_str(&span_html(
+                &run.text,
+                &family,
+                run.size,
+                run.color.unwrap_or(color),
+                run.bold,
+                run.italic,
+            ));
+        }
+    }
+    format!("{header}{body}</body></html>")
+}
+
+/// WPS-compatible `ParagraphFormat` JSON (spec 2026-11-09 §4.4).
+fn paragraph_format_json(
+    font_name: &str,
+    size: f64,
+    color: Color,
+    bold: bool,
+    italic: bool,
+) -> String {
+    format!(
+        "{{\"FontName\":\"{}\",\"FontSize\":{},\"FontColor\":\"{}\",\"Bold\":{},\"Italic\":{},\"Underline\":false,\"Indent\":0.0,\"LineSpace\":1.0,\"CharSpace\":0.0}}",
+        json_escape(font_name),
+        size,
+        color_hex(color),
+        bold,
+        italic
+    )
 }
 
 /// Build a `<TextObject>` element for one rich [`TextRun`]: the fragment's
@@ -866,7 +1089,9 @@ fn xml_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rofd_dom::{PathCommand, Point};
+    use rofd_dom::{
+        AnnotationId, FontId, PathCommand, Point, Resources, TextLayoutHints, TextLineHint,
+    };
 
     #[test]
     fn color_str_formats_rgb() {
@@ -1038,13 +1263,193 @@ mod tests {
     #[test]
     fn serialize_page_annot_empty_yields_empty_pagennot() {
         let mut next_id = 100u64;
-        let xml = serialize_page_annot(&PageId::new("1"), &[], &mut next_id);
+        let xml = serialize_page_annot(
+            &PageId::new("1"),
+            &[],
+            &mut next_id,
+            &Resources::default(),
+            &TextLayoutHints::new(),
+        );
         assert!(xml.contains("<ofd:PageAnnot"));
         assert!(xml.contains("</ofd:PageAnnot>"));
         // No <Annot> elements.
         assert!(!xml.contains("<ofd:Annot"));
         // No object IDs minted for an empty page.
         assert_eq!(next_id, 100);
+    }
+
+    fn textbox_with_hints() -> (Annotation, TextLayoutHints) {
+        let id = AnnotationId::from_int(7);
+        let ann = Annotation {
+            id: id.clone(),
+            kind: AnnotationKind::TextBox,
+            page: PageId::new("1"),
+            creator: "t".into(),
+            created: 0,
+            modified: 1,
+            reply_to: None,
+            payload: AnnotationPayload::TextBox {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 45.0,
+                    h: 40.0,
+                },
+                content: "abc def ghi jkl".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: Some(Color::Rgb(255, 0, 0)),
+                runs: Vec::new(),
+            },
+        };
+        let mut hints = TextLayoutHints::new();
+        hints.insert(
+            id,
+            vec![
+                TextLineHint {
+                    text: "abc def ".into(),
+                    top: 0.0,
+                    baseline: 11.14,
+                    height: 13.97,
+                    width: 48.42,
+                    advances: vec![7.4; 8],
+                },
+                TextLineHint {
+                    text: "ghi jkl".into(),
+                    top: 13.97,
+                    baseline: 25.11,
+                    height: 13.97,
+                    width: 35.99,
+                    advances: vec![7.6; 7],
+                },
+            ],
+        );
+        (ann, hints)
+    }
+
+    #[test]
+    fn textbox_hints_emit_one_textobject_per_line_with_real_geometry() {
+        let (ann, hints) = textbox_with_hints();
+        let mut next_id = 10;
+        let xml = serialize_page_annot(
+            &PageId::new("1"),
+            &[ann],
+            &mut next_id,
+            &Resources::default(),
+            &hints,
+        );
+        assert_eq!(xml.matches("<ofd:TextObject").count(), 2, "{xml}");
+        assert!(xml.contains("Boundary=\"0 13.97 35.99 13.97\""), "{xml}");
+        assert!(
+            xml.contains("Y=\"11.14\"") || xml.contains("Y=\"11.140000000000001\""),
+            "{xml}"
+        );
+        assert!(xml.contains("DeltaX=\"7.4 7.4"), "{xml}");
+    }
+
+    #[test]
+    fn textbox_without_hints_keeps_newline_split() {
+        let (mut ann, _) = textbox_with_hints();
+        if let AnnotationPayload::TextBox { content, .. } = &mut ann.payload {
+            *content = "a\nb".into();
+        }
+        let mut next_id = 10;
+        let xml = serialize_page_annot(
+            &PageId::new("1"),
+            &[ann],
+            &mut next_id,
+            &Resources::default(),
+            &TextLayoutHints::new(),
+        );
+        assert_eq!(xml.matches("<ofd:TextObject").count(), 2, "{xml}");
+        // Legacy path stacks at size * TEXTBOX_LINE_PITCH_RATIO.
+        assert!(
+            xml.contains("Boundary=\"0 14.399999999999999 45 14.399999999999999\""),
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn textbox_writes_wps_metadata() {
+        let (ann, _) = textbox_with_hints(); // border: Some(red)
+        let mut next_id = 10;
+        let xml = serialize_page_annot(
+            &PageId::new("1"),
+            &[ann],
+            &mut next_id,
+            &Resources::default(),
+            &TextLayoutHints::new(),
+        );
+        assert!(
+            xml.contains("<ofd:Remark>abc def ghi jkl</ofd:Remark>"),
+            "{xml}"
+        );
+        assert!(xml.contains("Name=\"AllRichText\""), "{xml}");
+        assert!(xml.contains("Name=\"ParagraphFormat\""), "{xml}");
+        assert!(xml.contains("Name=\"GrowMode\">FixWidth"), "{xml}");
+        assert!(xml.contains("\"CharSpace\":0.0"), "{xml}");
+    }
+
+    #[test]
+    fn typewriter_writes_grow_mode_none() {
+        let (mut ann, _) = textbox_with_hints();
+        if let AnnotationPayload::TextBox { border, .. } = &mut ann.payload {
+            *border = None;
+        }
+        let mut next_id = 10;
+        let xml = serialize_page_annot(
+            &PageId::new("1"),
+            &[ann],
+            &mut next_id,
+            &Resources::default(),
+            &TextLayoutHints::new(),
+        );
+        assert!(xml.contains("Name=\"GrowMode\">None"), "{xml}");
+    }
+
+    #[test]
+    fn rich_textbox_writes_span_per_run() {
+        let (mut ann, _) = textbox_with_hints();
+        if let AnnotationPayload::TextBox { runs, .. } = &mut ann.payload {
+            runs.push(rofd_dom::TextRun {
+                text: "粗\n".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Some(Color::Rgb(75, 172, 198)),
+                bold: true,
+                italic: true,
+                x: 0.0,
+                baseline: 12.0,
+            });
+            runs.push(rofd_dom::TextRun {
+                text: "体".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: None,
+                bold: false,
+                italic: false,
+                x: 12.0,
+                baseline: 12.0,
+            });
+        }
+        let mut next_id = 10;
+        let xml = serialize_page_annot(
+            &PageId::new("1"),
+            &[ann],
+            &mut next_id,
+            &Resources::default(),
+            &TextLayoutHints::new(),
+        );
+        // The HTML is XML-escaped inside the Parameter.
+        assert_eq!(xml.matches("&lt;span").count(), 2, "{xml}");
+        assert!(xml.contains("font-weight:700"), "{xml}");
+        assert!(xml.contains("font-style:italic"), "{xml}");
+        assert!(xml.contains("#4bacc6"), "{xml}");
+        assert!(
+            xml.contains("&lt;br /&gt;") || xml.contains("<br />"),
+            "{xml}"
+        );
     }
 
     #[test]

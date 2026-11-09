@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use rofd_dom::OfdDocument;
+use rofd_dom::{OfdDocument, TextLayoutHints};
 
 use crate::error::OfdError;
 use crate::serialize::annotation::{object_id_seed, serialize_page_annot};
@@ -16,7 +16,14 @@ use crate::zip_util::write_zip;
 /// - `Doc_0/Pages/Page_N/Content.xml` per page
 /// - `Doc_0/Annots/Annotations.xml` entry file (only if any page has annotations)
 /// - `Doc_0/Annots/Page_N/Annotation.xml` per annotated page
-pub fn write_ofd(doc: &OfdDocument) -> Result<Vec<u8>, OfdError> {
+///
+/// `text_layout` carries the wrapped annotation-text line geometry computed
+/// by the component (see [`crate::save_ofd_with_text_layout`]); pass an empty
+/// map for the legacy content-`\n` split.
+pub fn write_ofd_with_text_layout(
+    doc: &OfdDocument,
+    text_layout: &TextLayoutHints,
+) -> Result<Vec<u8>, OfdError> {
     let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
 
     let ofd_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
@@ -42,7 +49,10 @@ pub fn write_ofd(doc: &OfdDocument) -> Result<Vec<u8>, OfdError> {
     for (i, page) in doc.pages.iter().enumerate() {
         let anns = doc.annotations.for_page(&page.id);
         if !anns.is_empty() {
-            page_annot_xml.insert(i, serialize_page_annot(&page.id, anns, &mut next_id));
+            page_annot_xml.insert(
+                i,
+                serialize_page_annot(&page.id, anns, &mut next_id, &doc.resources, text_layout),
+            );
         }
     }
 
@@ -111,4 +121,10 @@ pub fn write_ofd(doc: &OfdDocument) -> Result<Vec<u8>, OfdError> {
     }
 
     write_zip(&entries)
+}
+
+/// Full write without wrapped-text line hints (legacy entry point): the
+/// appearance splits content on explicit `\n` only.
+pub fn write_ofd(doc: &OfdDocument) -> Result<Vec<u8>, OfdError> {
+    write_ofd_with_text_layout(doc, &TextLayoutHints::new())
 }

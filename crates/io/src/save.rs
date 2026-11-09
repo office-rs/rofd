@@ -1,4 +1,4 @@
-use rofd_dom::{OfdDocument, PageId};
+use rofd_dom::{OfdDocument, PageId, TextLayoutHints};
 
 use crate::error::OfdError;
 use crate::package::{EntryKind, PackageHandle};
@@ -24,7 +24,15 @@ use crate::zip_util::write_zip;
 /// If the model has annotations on a page whose package had no annotation
 /// file (rofd added the first annotation to a previously bare page),
 /// `ensure_annotation_entries` adds the missing entry + per-page files.
-pub fn save_ofd(doc: &OfdDocument, pkg: &PackageHandle) -> Result<Vec<u8>, OfdError> {
+///
+/// `text_layout` carries the wrapped annotation-text line geometry computed
+/// by the component; it is written into the appearance `TextObject`s. Pass
+/// an empty map for the legacy (content `\n` split) behaviour.
+pub fn save_ofd_with_text_layout(
+    doc: &OfdDocument,
+    pkg: &PackageHandle,
+    text_layout: &TextLayoutHints,
+) -> Result<Vec<u8>, OfdError> {
     // Pages with annotations, in document order: (page_id, page_index).
     let pages_with_ann: Vec<(PageId, usize)> = doc
         .pages
@@ -56,7 +64,13 @@ pub fn save_ofd(doc: &OfdDocument, pkg: &PackageHandle) -> Result<Vec<u8>, OfdEr
                         // longer has annotations (empty <PageAnnot>: they were
                         // all deleted), never resurrecting original bytes.
                         let anns = doc.annotations.for_page(&page.id);
-                        let xml = serialize_page_annot(&page.id, anns, &mut next_id);
+                        let xml = serialize_page_annot(
+                            &page.id,
+                            anns,
+                            &mut next_id,
+                            &doc.resources,
+                            text_layout,
+                        );
                         out.push((entry.name.clone(), xml.into_bytes()));
                     } else {
                         // Page index out of range - preserve original bytes.
@@ -81,7 +95,14 @@ pub fn save_ofd(doc: &OfdDocument, pkg: &PackageHandle) -> Result<Vec<u8>, OfdEr
 
     // Add entry + per-page files for pages that have annotations but no
     // corresponding package entry (rofd added the first annotation to a bare page).
-    ensure_annotation_entries(&mut out, doc, &pages_with_ann, pkg, &mut next_id);
+    ensure_annotation_entries(
+        &mut out,
+        doc,
+        &pages_with_ann,
+        pkg,
+        &mut next_id,
+        text_layout,
+    );
 
     // Document.xml: byte-patch <MaxUnitID> to the final counter, and - when
     // the model has annotations - ensure the <Annotations> loc so strict
@@ -222,6 +243,7 @@ fn ensure_annotation_entries(
     pages_with_ann: &[(PageId, usize)],
     pkg: &PackageHandle,
     next_id: &mut u64,
+    text_layout: &TextLayoutHints,
 ) {
     if pages_with_ann.is_empty() {
         return;
@@ -244,10 +266,17 @@ fn ensure_annotation_entries(
         let name = format!("{doc_root}/Annots/Page_{idx}/Annotation.xml");
         if !out.iter().any(|(n, _)| n == &name) {
             let anns = doc.annotations.for_page(pid);
-            let xml = serialize_page_annot(pid, anns, next_id);
+            let xml = serialize_page_annot(pid, anns, next_id, &doc.resources, text_layout);
             out.push((name, xml.into_bytes()));
         }
     }
+}
+
+/// Surgical save without wrapped-text line hints (legacy entry point): the
+/// appearance splits content on explicit `\n` only. Hosts should use
+/// [`save_ofd_with_text_layout`] with the component's `save_snapshot` hints.
+pub fn save_ofd(doc: &OfdDocument, pkg: &PackageHandle) -> Result<Vec<u8>, OfdError> {
+    save_ofd_with_text_layout(doc, pkg, &TextLayoutHints::new())
 }
 
 #[cfg(test)]

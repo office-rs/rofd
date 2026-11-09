@@ -4,7 +4,7 @@
 
 use rofd_dom::{
     Annotation, AnnotationId, AnnotationKind, AnnotationPayload, Color, FontId, ImageId, NoteIcon,
-    PageId, PathCommand, PathData, Point, Rect, ShapeKind, TextRun,
+    PageId, PathCommand, PathData, Point, Rect, Resources, ShapeKind, TextLayoutHints, TextRun,
 };
 
 fn ann(
@@ -33,6 +33,8 @@ fn roundtrip(a: &Annotation) -> Annotation {
         &a.page,
         std::slice::from_ref(a),
         &mut next_id,
+        &Resources::default(),
+        &TextLayoutHints::new(),
     );
     let parsed = rofd_io::parse::annotation::parse_page_annot(&xml, &a.page).unwrap();
     parsed.into_iter().next().expect("one annot")
@@ -518,6 +520,8 @@ fn multiple_annots_roundtrip_together() {
         &a1.page,
         &[a1.clone(), a2.clone()],
         &mut next_id,
+        &Resources::default(),
+        &TextLayoutHints::new(),
     );
     let parsed = rofd_io::parse::annotation::parse_page_annot(&xml, &a1.page).unwrap();
     assert_eq!(parsed.len(), 2);

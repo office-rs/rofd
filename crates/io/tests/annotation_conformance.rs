@@ -6,6 +6,7 @@
 
 use rofd_dom::{
     Annotation, AnnotationId, AnnotationKind, AnnotationPayload, Color, PageId, Point, Rect,
+    Resources, TextLayoutHints,
 };
 use rofd_io::serialize::annotation::serialize_page_annot;
 use rofd_io::zip_util::read_all_entries;
@@ -94,7 +95,13 @@ fn one_of_each_kind() -> Vec<Annotation> {
 fn serialized_object_ids_are_unique_integers() {
     let anns = one_of_each_kind();
     let mut next_id = 200u64;
-    let xml = serialize_page_annot(&PageId::new("1"), &anns, &mut next_id);
+    let xml = serialize_page_annot(
+        &PageId::new("1"),
+        &anns,
+        &mut next_id,
+        &Resources::default(),
+        &TextLayoutHints::new(),
+    );
     // Every ID in the file (annotation + appearance objects) shares the
     // ST_ID space: all digits, all unique.
     let ids: Vec<&str> = xml
@@ -134,7 +141,13 @@ fn highlight_appearance_is_filled_not_stroked() {
     // strict readers.
     let anns = vec![one_of_each_kind().remove(0)];
     let mut next_id = 200u64;
-    let xml = serialize_page_annot(&PageId::new("1"), &anns, &mut next_id);
+    let xml = serialize_page_annot(
+        &PageId::new("1"),
+        &anns,
+        &mut next_id,
+        &Resources::default(),
+        &TextLayoutHints::new(),
+    );
     assert!(xml.contains("Fill=\"true\""), "highlight must fill: {xml}");
     assert!(
         xml.contains("Stroke=\"false\""),
@@ -156,7 +169,13 @@ fn markup_line_kinds_stay_stroked() {
     // carry StrokeColor + LineWidth with the default Stroke).
     let anns = vec![one_of_each_kind().remove(1)];
     let mut next_id = 200u64;
-    let xml = serialize_page_annot(&PageId::new("1"), &anns, &mut next_id);
+    let xml = serialize_page_annot(
+        &PageId::new("1"),
+        &anns,
+        &mut next_id,
+        &Resources::default(),
+        &TextLayoutHints::new(),
+    );
     assert!(xml.contains("<ofd:StrokeColor"));
     assert!(!xml.contains("<ofd:FillColor"));
 }
@@ -172,7 +191,13 @@ fn path_object_geometry_is_appearance_relative() {
     // of its true position.
     let anns = one_of_each_kind();
     let mut next_id = 200u64;
-    let xml = serialize_page_annot(&PageId::new("1"), &anns, &mut next_id);
+    let xml = serialize_page_annot(
+        &PageId::new("1"),
+        &anns,
+        &mut next_id,
+        &Resources::default(),
+        &TextLayoutHints::new(),
+    );
     // Highlight: appearance stays page-absolute; PathObject relative + local.
     assert!(
         xml.contains("<ofd:Appearance Boundary=\"10 10 40 10\">"),
@@ -318,7 +343,13 @@ fn paths_close_with_explicit_segment_not_a_close_operator() {
         },
     )];
     let mut next_id = 200u64;
-    let xml = serialize_page_annot(&PageId::new("1"), &anns, &mut next_id);
+    let xml = serialize_page_annot(
+        &PageId::new("1"),
+        &anns,
+        &mut next_id,
+        &Resources::default(),
+        &TextLayoutHints::new(),
+    );
     assert!(!xml.contains(" Z "), "no close operator on the wire: {xml}");
     assert!(
         xml.contains(
@@ -346,7 +377,13 @@ fn squiggly_wave_stays_inside_boundary_and_is_dense() {
         },
     )];
     let mut next_id = 200u64;
-    let xml = serialize_page_annot(&PageId::new("1"), &anns, &mut next_id);
+    let xml = serialize_page_annot(
+        &PageId::new("1"),
+        &anns,
+        &mut next_id,
+        &Resources::default(),
+        &TextLayoutHints::new(),
+    );
     let data = xml
         .split("<ofd:AbbreviatedData>")
         .nth(1)
@@ -412,7 +449,13 @@ fn stroked_shapes_inset_by_half_line_width() {
             },
         )];
         let mut next_id = 200u64;
-        let xml = serialize_page_annot(&PageId::new("1"), &anns, &mut next_id);
+        let xml = serialize_page_annot(
+            &PageId::new("1"),
+            &anns,
+            &mut next_id,
+            &Resources::default(),
+            &TextLayoutHints::new(),
+        );
         let data = xml
             .split("<ofd:AbbreviatedData>")
             .nth(1)
@@ -488,7 +531,13 @@ fn textbox_textcode_carries_per_char_advances() {
         },
     )];
     let mut next_id = 200u64;
-    let xml = serialize_page_annot(&PageId::new("1"), &anns, &mut next_id);
+    let xml = serialize_page_annot(
+        &PageId::new("1"),
+        &anns,
+        &mut next_id,
+        &Resources::default(),
+        &TextLayoutHints::new(),
+    );
     // Line 1 "文字ab": advances of 文/字/a = full/full/half.
     assert!(
         xml.contains("DeltaX=\"5.6 5.6 2.8\""),
@@ -505,7 +554,13 @@ fn stamp_imageobject_scales_to_boundary_via_ctm() {
     // renders as a ~1mm speck (effectively invisible).
     let stamp = one_of_each_kind().remove(4);
     let mut next_id = 200u64;
-    let xml = serialize_page_annot(&PageId::new("1"), &[stamp], &mut next_id);
+    let xml = serialize_page_annot(
+        &PageId::new("1"),
+        &[stamp],
+        &mut next_id,
+        &Resources::default(),
+        &TextLayoutHints::new(),
+    );
     assert!(
         xml.contains("CTM=\"55 0 0 20 0 0\""),
         "image scaled to its boundary via CTM: {xml}"
@@ -540,7 +595,13 @@ fn textbox_border_round_trips() {
         other => panic!("expected TextBox, got {other:?}"),
     }
     let mut next_id = 200u64;
-    let out = serialize_page_annot(&PageId::new("1"), &anns, &mut next_id);
+    let out = serialize_page_annot(
+        &PageId::new("1"),
+        &anns,
+        &mut next_id,
+        &Resources::default(),
+        &TextLayoutHints::new(),
+    );
     assert_eq!(
         out.matches("<ofd:PathObject").count(),
         1,
