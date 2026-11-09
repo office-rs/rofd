@@ -149,6 +149,35 @@ impl AnnotationModel {
     }
 }
 
+/// Line pitch coefficient used by the OFD appearance serializer's legacy
+/// (no-layout-hints) path: one `TextObject` per explicit line, stacked at
+/// `size * this`. The layout-hint path uses real parley line geometry instead.
+pub const TEXTBOX_LINE_PITCH_RATIO: f64 = 1.2;
+
+/// One visual line's layout geometry, handed to the OFD appearance serializer
+/// (spec 2026-11-09 §1.5). Coordinates are millimetres relative to the text
+/// box origin.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextLineHint {
+    /// Line text (trailing spaces kept; no line break characters).
+    pub text: String,
+    /// Line box top (first line is 0).
+    pub top: f64,
+    /// Baseline offset from the text box origin.
+    pub baseline: f64,
+    /// Line box height (next line's `top` advances by this).
+    pub height: f64,
+    /// Line advance (pen position after the last glyph), used as the
+    /// `TextObject` Boundary width.
+    pub width: f64,
+    /// Per-character advances; the serializer writes the first `n - 1` as
+    /// `TextCode DeltaX`.
+    pub advances: Vec<f64>,
+}
+
+/// Per-annotation visual line layout, keyed by annotation id.
+pub type TextLayoutHints = HashMap<AnnotationId, Vec<TextLineHint>>;
+
 #[cfg(test)]
 mod tests {
     use super::*;

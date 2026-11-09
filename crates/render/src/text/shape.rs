@@ -168,6 +168,41 @@ pub(crate) fn shape_grouped_with_family(
     size: f64,
     family: FontFamily<'_>,
 ) -> (Vec<(FontData, Vec<ShapedGlyph>)>, f64) {
+    let (groups, lines) = shape_layout(fcx, text, size, family, None);
+    let width = lines.iter().map(|l| l.width).fold(0.0_f64, f64::max);
+    (groups, width)
+}
+
+/// One visual line's raw parley geometry, before char offsets are resolved.
+pub(crate) struct RawLine {
+    pub byte_range: std::ops::Range<usize>,
+    pub glyph_count: usize,
+    pub width: f64,
+    pub top: f64,
+    pub baseline: f64,
+    pub height: f64,
+}
+
+/// Shape `text` at `size` using `family`, wrapping at `max_advance`
+/// (parley greedy UAX #14 breaking). `OverflowWrap::Anywhere` lets an
+/// unbreakable word break at an arbitrary point instead of overflowing.
+pub(crate) fn shape_grouped_wrapped_with_family(
+    fcx: &mut FontContext,
+    text: &str,
+    size: f64,
+    family: FontFamily<'_>,
+    max_advance: f32,
+) -> (Vec<(FontData, Vec<ShapedGlyph>)>, Vec<RawLine>) {
+    shape_layout(fcx, text, size, family, Some(max_advance))
+}
+
+fn shape_layout(
+    fcx: &mut FontContext,
+    text: &str,
+    size: f64,
+    family: FontFamily<'_>,
+    max_advance: Option<f32>,
+) -> (Vec<(FontData, Vec<ShapedGlyph>)>, Vec<RawLine>) {
     let mut lcx: LayoutContext = LayoutContext::new();
     let mut builder = lcx.ranged_builder(fcx, text, 1.0, false);
     builder.push_default(StyleProperty::FontSize(size as f32));
@@ -177,19 +212,20 @@ pub(crate) fn shape_grouped_with_family(
     // Disable ligatures: liga=0 (keeps 1:1 char<->glyph for delta alignment).
     let liga_off = [FontFeature::new(Tag::from_bytes(*b"liga"), 0)];
     builder.push_default(StyleProperty::FontFeatures(liga_off.as_slice().into()));
+    // Emergency breaks inside an over-long word (annotation text boxes must
+    // never overflow their frame).
+    builder.push_default(StyleProperty::OverflowWrap(
+        parley::style::OverflowWrap::Anywhere,
+    ));
 
     let mut layout = builder.build(text);
-    layout.break_all_lines(None);
-
-    // Pinned parley 0.8 exposes the line width as `LineMetrics::advance`
-    // (full advance including trailing whitespace; our UI lines have none).
-    let width = layout
-        .lines()
-        .map(|l| l.metrics().advance as f64)
-        .fold(0.0_f64, f64::max);
+    layout.break_all_lines(max_advance);
 
     let mut groups: Vec<(FontData, Vec<ShapedGlyph>)> = Vec::new();
+    let mut lines: Vec<RawLine> = Vec::new();
     for line in layout.lines() {
+        let metrics = line.metrics();
+        let mut glyph_count = 0usize;
         for item in line.items() {
             if let PositionedLayoutItem::GlyphRun(run) = item {
                 let font = run.run().font().clone();
@@ -201,14 +237,23 @@ pub(crate) fn shape_grouped_with_family(
                         y: g.y,
                     })
                     .collect();
+                glyph_count += shaped.len();
                 match groups.last_mut() {
                     Some((prev_font, glyphs)) if *prev_font == font => glyphs.extend(shaped),
                     _ => groups.push((font, shaped)),
                 }
             }
         }
+        lines.push(RawLine {
+            byte_range: line.text_range(),
+            glyph_count,
+            width: metrics.advance as f64,
+            top: metrics.min_coord as f64,
+            baseline: metrics.baseline as f64,
+            height: metrics.line_height as f64,
+        });
     }
-    (groups, width)
+    (groups, lines)
 }
 
 #[cfg(test)]

@@ -11,8 +11,10 @@ use rofd_dom::{FontId, Resources};
 use swash::{FontRef, StringId};
 
 use super::shape::{
-    register_font_with_ids, shape_grouped_with_family, shape_with_family, ShapedGlyph,
+    register_font_with_ids, shape_grouped_with_family, shape_grouped_wrapped_with_family,
+    shape_with_family, ShapedGlyph,
 };
+use super::wrap::WrappedText;
 
 /// Holds document fonts (from `Resources.font_data`) + a default fallback font,
 /// resolved to `peniko::FontData` for Vello `draw_glyphs`.
@@ -67,6 +69,12 @@ pub struct FontStore {
     glyph_cache: RefCell<
         HashMap<FontId, HashMap<u64, HashMap<String, (Option<FontData>, Rc<Vec<ShapedGlyph>>)>>>,
     >,
+    /// Wrapped annotation-text cache:
+    /// `font_id -> (size_bits -> (width_bits -> (text -> layout)))`.
+    /// Cleared whenever the font set changes (same rule as `glyph_cache`).
+    #[allow(clippy::type_complexity)]
+    wrapped_cache:
+        RefCell<HashMap<FontId, HashMap<u64, HashMap<u64, HashMap<String, Rc<WrappedText>>>>>>,
 }
 
 impl FontStore {
@@ -128,6 +136,7 @@ impl FontStore {
             whole_family_ids,
             default_slice_key: None,
             glyph_cache: RefCell::new(HashMap::new()),
+            wrapped_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -214,6 +223,7 @@ impl FontStore {
         // Font set changed -> cached shapes (which may reference the old font
         // selection) are invalid.
         self.glyph_cache.borrow_mut().clear();
+        self.wrapped_cache.borrow_mut().clear();
         ok
     }
 
@@ -258,6 +268,7 @@ impl FontStore {
         self.rebuild_sansserif();
         // Font set changed -> cached shapes invalid (same rule as register_font).
         self.glyph_cache.borrow_mut().clear();
+        self.wrapped_cache.borrow_mut().clear();
         true
     }
 
@@ -345,6 +356,57 @@ impl FontStore {
             .or_default()
             .insert(text.to_string(), cached.clone());
         cached
+    }
+
+    /// Shape `text` and wrap it at `max_width` (millimetres at the given
+    /// font size): parley greedy UAX #14 breaks, `OverflowWrap::Anywhere`
+    /// for over-long words. Returns per-line geometry plus the flat glyph
+    /// list (line-relative x, layout-relative y) for drawing.
+    ///
+    /// Cached by `(font_id, size, max_width, text)`; the cache is cleared
+    /// whenever the font set changes.
+    pub fn shape_wrapped(
+        &self,
+        font_id: &FontId,
+        text: &str,
+        size: f64,
+        max_width: f64,
+    ) -> Rc<WrappedText> {
+        let size_key = size.to_bits();
+        let width_key = max_width.to_bits();
+        if let Some(cached) = self
+            .wrapped_cache
+            .borrow()
+            .get(font_id)
+            .and_then(|m1| m1.get(&size_key))
+            .and_then(|m2| m2.get(&width_key))
+            .and_then(|m3| m3.get(text))
+            .cloned()
+        {
+            return cached;
+        }
+        let family = self.family_list_for(font_id);
+        let (groups, raw_lines) = {
+            let mut fcx = self.font_cx.borrow_mut();
+            shape_grouped_wrapped_with_family(
+                &mut fcx,
+                text,
+                size,
+                family,
+                max_width.max(0.0) as f32,
+            )
+        };
+        let wrapped = Rc::new(WrappedText::from_layout(text, groups, raw_lines));
+        self.wrapped_cache
+            .borrow_mut()
+            .entry(font_id.clone())
+            .or_default()
+            .entry(size_key)
+            .or_default()
+            .entry(width_key)
+            .or_default()
+            .insert(text.to_string(), wrapped.clone());
+        wrapped
     }
 
     /// The shaped advance width of `text` at `size` (the shaper's pen
