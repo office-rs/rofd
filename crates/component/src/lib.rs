@@ -15,7 +15,7 @@ pub use callbacks::{Callbacks, ContextTarget, PointerCursor, TooltipFormatter};
 pub use config::OfdConfig;
 pub use event::{EventOutcome, Key, Modifiers, MouseButton, ScrollDirection, ViewEvent};
 pub use font_req::FontRequirements;
-pub use ofd_component::{CreateKind, FrameNeed, OfdComponent, Tool};
+pub use ofd_component::{CreateKind, FrameNeed, OfdComponent, SaveSnapshot, Tool};
 pub use print_session::{PrintContent, PrintSession, PRINT_ZOOM};
 pub use render_target::RenderTarget;
 pub use tooltip_text::{default_tooltip_lines, format_tooltip_datetime};

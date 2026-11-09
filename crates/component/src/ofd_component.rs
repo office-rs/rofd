@@ -323,6 +323,15 @@ pub struct OfdComponent {
     print_gen: Arc<AtomicU64>,
 }
 
+/// Host save snapshot (spec 2026-11-09 §1.5): the document to serialize plus
+/// per-annotation visual line layout for the OFD appearance writer. The
+/// document keeps logical content (soft wraps are never written into
+/// `content`); only `rect.h` is raised to fit wrapped lines.
+pub struct SaveSnapshot {
+    pub document: OfdDocument,
+    pub text_layout: rofd_dom::TextLayoutHints,
+}
+
 impl OfdComponent {
     /// Construct a component for a native (desktop, non-WASM) host.
     #[cfg(not(target_arch = "wasm32"))]
@@ -521,6 +530,50 @@ impl OfdComponent {
 
     pub fn document(&self) -> &OfdDocument {
         self.editor.document()
+    }
+
+    /// Snapshot for saving (spec 2026-11-09 §1.5): clone the document, then
+    /// for every flat TextBox compute the wrapped visual lines with the same
+    /// layout the renderer uses, raise `rect.h` to fit them, and return the
+    /// line hints for the OFD appearance writer. `content` is never rewritten
+    /// with soft breaks; rich TextBoxes / Note / Watermark / empty boxes are
+    /// left untouched.
+    pub fn save_snapshot(&self) -> SaveSnapshot {
+        let mut document = self.editor.document().clone();
+        let store = self
+            .font_store
+            .clone()
+            .unwrap_or_else(|| self.build_font_store());
+        let mut text_layout = rofd_dom::TextLayoutHints::new();
+        for ann in document.annotations.by_page.values_mut().flatten() {
+            let AnnotationPayload::TextBox {
+                rect,
+                content,
+                font,
+                size,
+                runs,
+                ..
+            } = &mut ann.payload
+            else {
+                continue;
+            };
+            if !runs.is_empty() || content.chars().count() == 0 {
+                continue;
+            }
+            let wrapped = store.shape_wrapped(font, content, *size, rect.w.max(*size));
+            if wrapped.lines.is_empty() {
+                continue;
+            }
+            text_layout.insert(ann.id.clone(), wrapped.to_layout_hints());
+            let required = wrapped.height();
+            if required > rect.h {
+                rect.h = required;
+            }
+        }
+        SaveSnapshot {
+            document,
+            text_layout,
+        }
     }
     pub fn selection(&self) -> &AnnotationSelection {
         self.editor.selection()
@@ -9319,5 +9372,90 @@ mod tests {
             wrapped.lines.len() >= 3,
             "clamped wrap width still breaks lines"
         );
+    }
+
+    #[test]
+    fn save_snapshot_keeps_logical_content_and_fits_height() {
+        let c = component_with_narrow_textbox("abc def ghi jkl", 45.0, 14.0);
+        let snap = c.save_snapshot();
+        let id = snap.document.annotations.for_page(&PageId::new("P0"))[0]
+            .id
+            .clone();
+        let ann = snap.document.annotations.find(&id).unwrap();
+        let AnnotationPayload::TextBox { rect, content, .. } = &ann.payload else {
+            panic!("expected TextBox");
+        };
+        assert_eq!(
+            content, "abc def ghi jkl",
+            "logical content is not hard-wrapped"
+        );
+        assert!(!content.contains('\n'));
+        let lines = &snap.text_layout[&id];
+        assert_eq!(lines.len(), 2);
+        let last = lines.last().unwrap();
+        assert!(rect.h >= last.top + last.height - 1e-9);
+    }
+
+    #[test]
+    fn save_snapshot_grows_foreign_overwide_height() {
+        let c = component_with_narrow_textbox("abc def ghi jkl", 45.0, 8.0);
+        let snap = c.save_snapshot();
+        let ann = &snap.document.annotations.for_page(&PageId::new("P0"))[0];
+        assert!(
+            matches!(&ann.payload, AnnotationPayload::TextBox { rect, .. } if rect.h > 8.0),
+            "saved snapshot height fits the wrapped lines"
+        );
+    }
+
+    #[test]
+    fn save_snapshot_skips_rich_note_and_empty_boxes() {
+        // Rich TextBox (runs non-empty): no layout hints, no reflow.
+        let mut c = component_with_narrow_textbox("flat", 45.0, 10.0);
+        let flat = textbox_id(&c);
+        let rich = c.create_annotation(
+            AnnotationKind::TextBox,
+            PageId::new("P0"),
+            AnnotationPayload::TextBox {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 45.0,
+                    h: 10.0,
+                },
+                content: "rich".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                runs: vec![rofd_dom::TextRun {
+                    text: "rich".into(),
+                    font: FontId::new("F1"),
+                    size: 12.0,
+                    color: None,
+                    bold: true,
+                    italic: false,
+                    x: 0.0,
+                    baseline: 12.0,
+                }],
+            },
+        );
+        c.delete_annotation(&flat);
+        let snap = c.save_snapshot();
+        assert!(
+            !snap.text_layout.contains_key(&rich),
+            "rich boxes keep their foreign appearance (no reflow)"
+        );
+
+        // Note: no hints, rect unchanged.
+        let c = component_with_note();
+        let snap = c.save_snapshot();
+        assert!(snap.text_layout.is_empty());
+
+        // Empty TextBox: no hints, no height growth.
+        let c = component_with_narrow_textbox("", 45.0, 8.0);
+        let snap = c.save_snapshot();
+        assert!(snap.text_layout.is_empty());
+        let ann = &snap.document.annotations.for_page(&PageId::new("P0"))[0];
+        assert!(matches!(&ann.payload, AnnotationPayload::TextBox { rect, .. } if rect.h == 8.0));
     }
 }
