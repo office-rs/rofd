@@ -531,11 +531,10 @@ struct TextParams<'a> {
     color: Color,
 }
 
-/// Shape `content` with the annotation's font and draw the glyphs into `rect`
-/// (non-rotated, opaque). The glyphs keep the shaper's layout-relative
-/// positions: the first line's baseline sits at the font's ascent below
-/// `rect.y` (so the line's ink top is at the rect origin) and the pen x
-/// starts at `rect.x`.
+/// Shape `content`, wrap it at the rect width, and draw the glyphs into
+/// `rect` (non-rotated, opaque). Glyph y positions are layout-relative, so
+/// the first line's ink top sits at `rect.y` and wrapped lines stack below
+/// it (spec 2026-11-09 §1.1).
 ///
 /// Skips silently if the font can't be resolved or shaping yields no glyphs.
 fn draw_text_in_rect(
@@ -545,11 +544,19 @@ fn draw_text_in_rect(
     fonts: &FontStore,
     base: Affine,
 ) {
-    let (font, glyphs) = shape_positioned(text.content, text.font, text.size, fonts);
-    let font = match font {
-        Some(f) => f,
-        None => return,
+    let wrapped = fonts.shape_wrapped(text.font, text.content, text.size, rect.w.max(text.size));
+    let Some(font) = wrapped.font.clone() else {
+        return;
     };
+    let glyphs: Vec<Glyph> = wrapped
+        .glyphs
+        .iter()
+        .map(|g| Glyph {
+            id: g.glyph_id,
+            x: g.x,
+            y: g.y,
+        })
+        .collect();
     let affine = base * Affine::translate((rect.x, rect.y));
     draw_glyph_run(
         painter,
@@ -1350,6 +1357,36 @@ mod tests {
     }
 
     #[test]
+    fn textbox_wraps_glyphs_to_multiple_baselines() {
+        let rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 45.0,
+            h: 40.0,
+        };
+        let ann = ann(
+            AnnotationPayload::TextBox {
+                rect,
+                content: "abc def ghi jkl".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                runs: Vec::new(),
+            },
+            AnnotationKind::TextBox,
+        );
+        let scene = build(&[ann]);
+        let mut baselines = glyph_baselines(&scene);
+        baselines.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        baselines.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+        assert!(
+            baselines.len() >= 2,
+            "wrapped text draws on at least two baselines, got {baselines:?}"
+        );
+    }
+
+    #[test]
     fn textbox_multiline_baselines_stay_inside_rect() {
         // Two lines: line 1 baseline = ascent, line 2 = ascent + line height
         // (~2.6 em combined for CJK-metric fonts) - must stay inside a 3 em
@@ -1932,6 +1969,90 @@ mod tests {
                 (tx - (rect.x + prefix_width)).abs() < 1e-3,
                 "preedit pen {tx} != rect.x({}) + prefix width ({prefix_width})",
                 rect.x
+            );
+        }
+    }
+
+    #[test]
+    fn preedit_positions_on_second_line() {
+        let rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 45.0,
+            h: 40.0,
+        };
+        let content = "abc def ghi jkl";
+        let a = ann(
+            AnnotationPayload::TextBox {
+                rect,
+                content: content.into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                runs: Vec::new(),
+            },
+            AnnotationKind::TextBox,
+        );
+        let mut annotations = rofd_dom::AnnotationModel::default();
+        annotations
+            .by_page
+            .insert(rofd_dom::PageId::new("P0"), vec![a]);
+        let doc = rofd_dom::OfdDocument {
+            pages: vec![rofd_dom::Page {
+                id: rofd_dom::PageId::new("P0"),
+                physical_box: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 200.0,
+                    h: 200.0,
+                },
+                layers: vec![],
+                template: None,
+            }],
+            annotations,
+            ..Default::default()
+        };
+        let vp = crate::Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (200.0, 200.0),
+            page_gap: 20.0,
+        };
+        let fonts = test_font_store();
+        let wrapped = fonts.shape_wrapped(&FontId::new("F1"), content, 12.0, 45.0);
+        let line1_top = wrapped.lines[1].top;
+        let mut scene = Scene::new();
+        crate::preedit_overlay::paint_preedit_overlay(
+            &mut scene,
+            &doc,
+            &vp,
+            &fonts,
+            "XY",
+            &AnnotationId::from_int(1),
+            8,
+        );
+        let mut txs = Vec::new();
+        let mut tys = Vec::new();
+        for cmd in scene.commands() {
+            if let imaging::record::Command::Draw(id) = cmd {
+                if let imaging::record::Draw::GlyphRun(gr) = scene.draw_op(*id) {
+                    txs.push(gr.transform.as_coeffs()[4]);
+                    tys.push(gr.transform.as_coeffs()[5]);
+                }
+            }
+        }
+        assert!(!txs.is_empty(), "composition was drawn");
+        for tx in &txs {
+            assert!(
+                (tx - rect.x).abs() < 1e-3,
+                "composition starts at the second line's x (got {tx})"
+            );
+        }
+        for ty in &tys {
+            assert!(
+                (ty - (vp.page_gap + rect.y + line1_top)).abs() < 1e-3,
+                "composition baseline on the second line (got {ty})"
             );
         }
     }

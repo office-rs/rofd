@@ -24,7 +24,7 @@ use imaging::kurbo::{Rect as KurboRect, Shape};
 use imaging::{record::Scene, Painter};
 use rofd_dom::{AnnotationId, AnnotationPayload, FontId, OfdDocument, Rect};
 
-use crate::text::FontStore;
+use crate::text::{FontStore, WrappedLine, WrappedText};
 use crate::viewport::Viewport;
 
 /// Caret rect (viewport space) for a text annotation at char `offset`.
@@ -36,9 +36,10 @@ use crate::viewport::Viewport;
 /// page-stacking helper: centering + scroll on both axes + `page_gap` +
 /// `zoom`).
 ///
-/// The caret x is the shaped glyph's x at `offset` (page-local), scaled by
-/// `zoom` and offset by the annotation rect's x + the page origin. The caret
-/// height is the font `size` scaled by `zoom`; width is `1.0 * zoom`.
+/// `runs`-empty TextBoxes use the wrapped layout: x is the line-relative
+/// glyph pen at `offset`, y is `rect.y + line.top`. Rich TextBoxes and
+/// Note/Watermark keep the legacy flat-content geometry (spec 2026-11-09
+/// §1.2.2, §1.3).
 pub fn caret_rect(
     doc: &OfdDocument,
     vp: &Viewport,
@@ -53,8 +54,37 @@ pub fn caret_rect(
         .flatten()
         .find(|a| &a.id == ann_id)?;
 
-    // Extract (content, font_id, size, rect) for text-bearing payloads.
-    // Notes carry their own content; non-text payloads return None.
+    // Find the annotation's page index and compute its viewport origin via the
+    // shared page_origin helper (same geometry as composite.rs).
+    let page_idx = doc.pages.iter().position(|p| p.id == ann.page)?;
+    let (origin_x, origin_y) = crate::composite::page_origin(doc, vp, page_idx)?;
+
+    if let AnnotationPayload::TextBox {
+        rect,
+        content,
+        font,
+        size,
+        runs,
+        ..
+    } = &ann.payload
+    {
+        if runs.is_empty() {
+            let wrapped = fonts.shape_wrapped(font, content, *size, rect.w.max(*size));
+            let (line_idx, local) = wrapped.line_at_offset(offset);
+            let line = wrapped.lines.get(line_idx)?;
+            let x_local = caret_x_on_line(&wrapped, line, local);
+            let vx = origin_x + (rect.x + x_local) * vp.zoom;
+            let vy = origin_y + (rect.y + line.top) * vp.zoom;
+            return Some(Rect {
+                x: vx,
+                y: vy,
+                w: 1.0 * vp.zoom,
+                h: size * vp.zoom,
+            });
+        }
+    }
+
+    // Legacy path: rich TextBox, Note, Watermark.
     let (content, font_id, size, rect) = match &ann.payload {
         AnnotationPayload::TextBox {
             rect,
@@ -92,11 +122,6 @@ pub fn caret_rect(
         .map(|g| g.x as f64)
         .unwrap_or_else(|| fonts.line_width(font_id, last_line, size));
 
-    // Find the annotation's page index and compute its viewport origin via the
-    // shared page_origin helper (same geometry as composite.rs).
-    let page_idx = doc.pages.iter().position(|p| p.id == ann.page)?;
-    let (origin_x, origin_y) = crate::composite::page_origin(doc, vp, page_idx)?;
-
     let vx = origin_x + (rect.x + caret_x_local) * vp.zoom;
     let vy = origin_y + rect.y * vp.zoom;
     Some(Rect {
@@ -105,6 +130,109 @@ pub fn caret_rect(
         w: 1.0 * vp.zoom,
         h: size * vp.zoom,
     })
+}
+
+/// Caret x within a visual line: the glyph pen at `local`, or the line end.
+fn caret_x_on_line(wrapped: &WrappedText, line: &WrappedLine, local: usize) -> f64 {
+    if local < line.glyph_end - line.glyph_start {
+        wrapped.glyphs[line.glyph_start + local].x as f64
+    } else {
+        line.width
+    }
+}
+
+/// The visual line containing `y_in_rect` (clamped to the first/last line).
+fn line_index_at_y(wrapped: &WrappedText, y_in_rect: f64) -> usize {
+    if wrapped.lines.is_empty() {
+        return 0;
+    }
+    wrapped
+        .lines
+        .iter()
+        .position(|line| y_in_rect < line.top + line.height)
+        .unwrap_or(wrapped.lines.len() - 1)
+}
+
+/// Char offset nearest `x_in_rect` within one visual line.
+fn nearest_offset_on_line(wrapped: &WrappedText, line: &WrappedLine, x_in_rect: f64) -> usize {
+    let count = line.glyph_end - line.glyph_start;
+    let mut best = count;
+    let mut best_d = (line.width - x_in_rect).abs();
+    for i in 0..count {
+        let d = (wrapped.glyphs[line.glyph_start + i].x as f64 - x_in_rect).abs();
+        if d < best_d {
+            best_d = d;
+            best = i;
+        }
+    }
+    line.char_start + best
+}
+
+/// The caret char offset nearest `(x_in_rect, y_in_rect)` in a wrapped text
+/// box: the click first selects the visual line by y, then the nearest char
+/// boundary on that line by x (spec 2026-11-09 §1.3).
+pub fn caret_offset_at_point(
+    content: &str,
+    font_id: &FontId,
+    size: f64,
+    max_width: f64,
+    fonts: &FontStore,
+    x_in_rect: f64,
+    y_in_rect: f64,
+) -> usize {
+    let wrapped = fonts.shape_wrapped(font_id, content, size, max_width);
+    if wrapped.lines.is_empty() {
+        return 0;
+    }
+    let line_idx = line_index_at_y(&wrapped, y_in_rect);
+    nearest_offset_on_line(&wrapped, &wrapped.lines[line_idx], x_in_rect)
+}
+
+/// Vertical caret movement direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerticalMove {
+    Up,
+    Down,
+}
+
+/// Move the caret to the previous/next visual line, keeping `preferred_x`
+/// (the column x in mm) across consecutive vertical moves. On the first
+/// line `Up` goes to the text start; on the last line `Down` goes to the
+/// text end (spec 2026-11-09 §1.7).
+///
+/// Returns `(new char offset, preferred x used for this move)`.
+#[allow(clippy::too_many_arguments)] // all parameters describe one caret move
+pub fn caret_offset_vertical(
+    content: &str,
+    font_id: &FontId,
+    size: f64,
+    max_width: f64,
+    fonts: &FontStore,
+    offset: usize,
+    direction: VerticalMove,
+    preferred_x: Option<f64>,
+) -> (usize, f64) {
+    let wrapped = fonts.shape_wrapped(font_id, content, size, max_width);
+    if wrapped.lines.is_empty() {
+        return (0, 0.0);
+    }
+    let (line_idx, local) = wrapped.line_at_offset(offset);
+    let line = &wrapped.lines[line_idx];
+    let current_x = caret_x_on_line(&wrapped, line, local);
+    let x = preferred_x.unwrap_or(current_x);
+    let last = wrapped.lines.len() - 1;
+    match direction {
+        VerticalMove::Up if line_idx == 0 => (0, x),
+        VerticalMove::Down if line_idx == last => (wrapped.total_chars, x),
+        VerticalMove::Up => {
+            let target = &wrapped.lines[line_idx - 1];
+            (nearest_offset_on_line(&wrapped, target, x), x)
+        }
+        VerticalMove::Down => {
+            let target = &wrapped.lines[line_idx + 1];
+            (nearest_offset_on_line(&wrapped, target, x), x)
+        }
+    }
 }
 
 /// The caret char offset whose boundary (a shaped glyph pen, or the line
@@ -486,6 +614,141 @@ mod tests {
         assert!(
             res.is_none(),
             "annotation on a page not in doc.pages -> None"
+        );
+    }
+
+    #[test]
+    fn caret_rect_second_line_uses_line_top() {
+        let (mut doc, fonts) = doc_with_font();
+        let id = push_ann(
+            &mut doc,
+            AnnotationPayload::TextBox {
+                rect: Rect {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 45.0,
+                    h: 40.0,
+                },
+                content: "abc def ghi jkl".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                runs: Vec::new(),
+            },
+            AnnotationKind::TextBox,
+        );
+        let w = fonts.shape_wrapped(&FontId::new("F1"), "abc def ghi jkl", 12.0, 45.0);
+        let line1 = &w.lines[1];
+        let r = caret_rect(&doc, &vp(), &fonts, &id, 9).unwrap(); // line 1, local 1
+                                                                  // Viewport y = page origin (20) + rect.y (20) + line.top.
+        assert!((r.y - (40.0 + line1.top)).abs() < 1e-6, "second line y");
+        let expected_x = 300.0 + 10.0 + w.glyphs[line1.glyph_start + 1].x as f64;
+        assert!((r.x - expected_x).abs() < 1e-6);
+    }
+
+    #[test]
+    fn caret_offset_at_point_second_line() {
+        let (_, fonts) = doc_with_font();
+        let w = fonts.shape_wrapped(&FontId::new("F1"), "abc def ghi jkl", 12.0, 45.0);
+        let off = caret_offset_at_point(
+            "abc def ghi jkl",
+            &FontId::new("F1"),
+            12.0,
+            45.0,
+            &fonts,
+            1.0,
+            w.lines[1].top + 1.0,
+        );
+        assert_eq!(off, 8, "left edge of line 2 -> its first char");
+    }
+
+    #[test]
+    fn caret_offset_vertical_preserves_column() {
+        let (_, fonts) = doc_with_font();
+        let text = "abc def ghi jkl";
+        let (down, pref) = caret_offset_vertical(
+            text,
+            &FontId::new("F1"),
+            12.0,
+            45.0,
+            &fonts,
+            2,
+            VerticalMove::Down,
+            None,
+        );
+        assert!(
+            (8..=11).contains(&down),
+            "lands on line 2 near column 2, got {down}"
+        );
+        let (up, _) = caret_offset_vertical(
+            text,
+            &FontId::new("F1"),
+            12.0,
+            45.0,
+            &fonts,
+            down,
+            VerticalMove::Up,
+            Some(pref),
+        );
+        assert_eq!(up, 2, "returns to the original column");
+    }
+
+    #[test]
+    fn vertical_edges_go_to_text_bounds() {
+        let (_, fonts) = doc_with_font();
+        let text = "abc def ghi jkl";
+        assert_eq!(
+            caret_offset_vertical(
+                text,
+                &FontId::new("F1"),
+                12.0,
+                45.0,
+                &fonts,
+                2,
+                VerticalMove::Up,
+                None
+            )
+            .0,
+            0
+        );
+        assert_eq!(
+            caret_offset_vertical(
+                text,
+                &FontId::new("F1"),
+                12.0,
+                45.0,
+                &fonts,
+                11,
+                VerticalMove::Down,
+                None
+            )
+            .0,
+            15
+        );
+    }
+
+    #[test]
+    fn caret_offsets_use_chars_not_bytes_for_cjk() {
+        let (_, fonts) = doc_with_font();
+        let w = fonts.shape_wrapped(&FontId::new("F1"), "你好世界", 12.0, 30.0);
+        if w.glyphs.len() < 4 {
+            eprintln!("skipping: no CJK fallback font");
+            return;
+        }
+        assert_eq!(w.lines.len(), 2);
+        assert_eq!(w.line_at_offset(2), (1, 0));
+        assert_eq!(
+            caret_offset_at_point(
+                "你好世界",
+                &FontId::new("F1"),
+                12.0,
+                30.0,
+                &fonts,
+                1.0,
+                w.lines[1].top + 1.0
+            ),
+            2
         );
     }
 }
