@@ -13,6 +13,7 @@
 
 use std::path::Path;
 
+use rofd_dom::TextLayoutHints;
 use rofd_io::zip_util::read_all_entries;
 use xilem_app::host::document_io::{load_ofd, save_ofd};
 
@@ -29,8 +30,13 @@ fn host_layer_surgical_save_preserves_body() {
 
     // Save to a temp destination: keep the source untouched.
     let target = std::env::temp_dir().join(format!("rofd_c2_{}.ofd", std::process::id()));
-    save_ofd(&loaded.document, loaded.package.as_ref(), &target)
-        .expect("save_ofd succeeds on real sample");
+    save_ofd(
+        &loaded.document,
+        loaded.package.as_ref(),
+        &TextLayoutHints::new(),
+        &target,
+    )
+    .expect("save_ofd succeeds on real sample");
     let saved = std::fs::read(&target).expect("saved file present");
 
     // Body Content.xml entries byte-identical before/after (invariant 4.3

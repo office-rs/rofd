@@ -163,7 +163,9 @@ mod wasm_impl {
     use rofd_dom::{AnnotationId, AnnotationSelection, OfdDocument, OfdWarning};
     use rofd_editor::TextCursor;
     use rofd_export::pdf_from_page_scenes;
-    use rofd_io::{parse_ofd, save_ofd, write_ofd, PackageHandle};
+    use rofd_io::{
+        parse_ofd, save_ofd_with_text_layout, write_ofd_with_text_layout, PackageHandle,
+    };
     use rofd_render::Scene;
     use wasm_bindgen::prelude::*;
     // 单调钟（AGENTS §4.4 动画例外）：wasm = performance.now()，与
@@ -730,9 +732,12 @@ mod wasm_impl {
         /// full write otherwise.
         #[wasm_bindgen(js_name = saveOfd)]
         pub fn save_ofd(&self) -> Result<Vec<u8>, JsValue> {
+            let snapshot = self.component.save_snapshot();
             match &self.package {
-                Some(pkg) => save_ofd(self.component.document(), pkg),
-                None => write_ofd(self.component.document()),
+                Some(pkg) => {
+                    save_ofd_with_text_layout(&snapshot.document, pkg, &snapshot.text_layout)
+                }
+                None => write_ofd_with_text_layout(&snapshot.document, &snapshot.text_layout),
             }
             .map_err(|e| JsValue::from_str(&format!("save failed: {e}")))
         }

@@ -432,13 +432,17 @@ impl AppShell {
             .clone()
             .expect("checked above");
         let package = self.sessions.sessions[idx].package.clone();
-        let document = self.sessions.sessions[idx]
+        let snapshot = self.sessions.sessions[idx]
             .editor
             .read(cx)
             .component
-            .document()
-            .clone();
-        match host::document_io::save_ofd(&document, package.as_ref(), &path) {
+            .save_snapshot();
+        match host::document_io::save_ofd(
+            &snapshot.document,
+            package.as_ref(),
+            &snapshot.text_layout,
+            &path,
+        ) {
             Ok(()) => {
                 self.sessions.sessions[idx].modified = false;
                 self.status = format!("已保存 {}", path.display());
@@ -475,13 +479,17 @@ impl AppShell {
                 let Some(idx) = shell.sessions.index_of(&editor) else {
                     return;
                 };
-                let document = shell.sessions.sessions[idx]
+                let snapshot = shell.sessions.sessions[idx]
                     .editor
                     .read(cx)
                     .component
-                    .document()
-                    .clone();
-                match host::document_io::save_ofd(&document, package.as_ref(), &path) {
+                    .save_snapshot();
+                match host::document_io::save_ofd(
+                    &snapshot.document,
+                    package.as_ref(),
+                    &snapshot.text_layout,
+                    &path,
+                ) {
                     Ok(()) => {
                         let stem = path.file_stem().map(|s| s.to_string_lossy().to_string());
                         let session = &mut shell.sessions.sessions[idx];

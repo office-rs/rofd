@@ -7,8 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
-use rofd_dom::OfdDocument;
-use rofd_io::{parse_ofd, save_ofd as io_save_ofd, write_ofd, PackageHandle};
+use rofd_dom::{OfdDocument, TextLayoutHints};
+use rofd_io::{parse_ofd, save_ofd_with_text_layout, write_ofd_with_text_layout, PackageHandle};
 
 /// Result of loading an `.ofd` file from disk.
 #[derive(Debug)]
@@ -42,11 +42,12 @@ pub fn load_ofd(path: &Path) -> Result<LoadedOfd, String> {
 pub fn save_ofd(
     document: &OfdDocument,
     package: Option<&PackageHandle>,
+    text_layout: &TextLayoutHints,
     path: &Path,
 ) -> Result<(), String> {
     let bytes = match package {
-        Some(pkg) => io_save_ofd(document, pkg),
-        None => write_ofd(document),
+        Some(pkg) => save_ofd_with_text_layout(document, pkg, text_layout),
+        None => write_ofd_with_text_layout(document, text_layout),
     }
     .map_err(|e| format!("serialize {}: {e}", path.display()))?;
     write_atomic(path, &bytes)
@@ -83,6 +84,7 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rofd_io::write_ofd;
 
     #[test]
     fn load_and_save_round_trip() {
@@ -94,7 +96,13 @@ mod tests {
         assert!(loaded.package.is_some(), "parsed file retains a package");
         assert!(loaded.warnings.is_empty(), "minimal doc has no warnings");
 
-        save_ofd(&loaded.document, loaded.package.as_ref(), &tmp).expect("save_ofd");
+        save_ofd(
+            &loaded.document,
+            loaded.package.as_ref(),
+            &TextLayoutHints::new(),
+            &tmp,
+        )
+        .expect("save_ofd");
 
         let written = std::fs::read(&tmp).expect("file written");
         parse_ofd(&written).expect("written file re-parses");
@@ -110,7 +118,7 @@ mod tests {
     #[test]
     fn save_without_package_full_writes() {
         let tmp = std::env::temp_dir().join(format!("rofd_doc_io_full_{}.ofd", std::process::id()));
-        save_ofd(&OfdDocument::default(), None, &tmp).expect("full write");
+        save_ofd(&OfdDocument::default(), None, &TextLayoutHints::new(), &tmp).expect("full write");
         let written = std::fs::read(&tmp).expect("file written");
         parse_ofd(&written).expect("full-write output re-parses");
         let _ = std::fs::remove_file(&tmp);

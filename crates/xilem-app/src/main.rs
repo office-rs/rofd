@@ -299,10 +299,11 @@ fn save_to(app: &mut AppState, path: PathBuf) {
     let package = app.package.clone();
     let outcome = app.save_outcome.clone();
     push(app, move |c| {
-        let document = c.document().clone();
+        let snapshot = c.save_snapshot();
         *outcome.lock().unwrap() = Some(HostOutcome::Save(host::document_io::save_ofd(
-            &document,
+            &snapshot.document,
             package.as_ref(),
+            &snapshot.text_layout,
             &path,
         )));
     });
