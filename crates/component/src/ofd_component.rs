@@ -940,7 +940,43 @@ impl OfdComponent {
         self.after_annotation_change();
     }
 
+    /// Apply the wrapped-text height floor to a TextBox rect (spec 2026-11-09
+    /// §1.4): content is unchanged during a resize, so the required height is
+    /// computed up front. Rich boxes are left alone.
+    fn with_text_height(&mut self, id: &rofd_dom::AnnotationId, mut rect: Rect) -> Rect {
+        let payload = self
+            .editor
+            .document()
+            .annotations
+            .find(id)
+            .map(|a| a.payload.clone());
+        let Some(AnnotationPayload::TextBox {
+            content,
+            font,
+            size,
+            runs,
+            ..
+        }) = payload
+        else {
+            return rect;
+        };
+        if !runs.is_empty() {
+            return rect;
+        }
+        self.ensure_font_store();
+        let Some(store) = self.font_store.as_ref() else {
+            return rect;
+        };
+        let wrapped = store.shape_wrapped(&font, &content, size, rect.w.max(size));
+        let required = wrapped.height();
+        if required > rect.h {
+            rect.h = required;
+        }
+        rect
+    }
+
     pub fn resize_annotation(&mut self, id: &rofd_dom::AnnotationId, new_rect: rofd_dom::Rect) {
+        let new_rect = self.with_text_height(id, new_rect);
         self.editor.resize_annotation(id, new_rect);
         self.after_annotation_change();
     }
@@ -1305,6 +1341,60 @@ impl OfdComponent {
         )
     }
 
+    fn ensure_font_store(&mut self) {
+        if self.font_store.is_none() {
+            self.font_store = Some(self.build_font_store());
+        }
+    }
+
+    /// Offset + preferred column for one ArrowUp/ArrowDown move on a flat
+    /// TextBox (spec 2026-11-09 §1.7). `None` for Note/rich boxes, whose
+    /// arrows keep the status quo (no move).
+    fn vertical_caret_offset(
+        &mut self,
+        cursor: &TextCursor,
+        up: bool,
+    ) -> Option<(usize, Option<f32>)> {
+        let payload = self
+            .editor
+            .document()
+            .annotations
+            .find(&cursor.annotation)
+            .map(|a| a.payload.clone())?;
+        let AnnotationPayload::TextBox {
+            rect,
+            content,
+            font,
+            size,
+            runs,
+            ..
+        } = payload
+        else {
+            return None;
+        };
+        if !runs.is_empty() {
+            return None;
+        }
+        self.ensure_font_store();
+        let store = self.font_store.as_ref()?;
+        let direction = if up {
+            rofd_render::VerticalMove::Up
+        } else {
+            rofd_render::VerticalMove::Down
+        };
+        let (offset, x) = rofd_render::caret_offset_vertical(
+            &content,
+            &font,
+            size,
+            rect.w.max(size),
+            store,
+            cursor.offset,
+            direction,
+            cursor.preferred_x.map(f64::from),
+        );
+        Some((offset, Some(x as f32)))
+    }
+
     /// Paste text at the current text cursor (Ctrl+V path: the widget
     /// supplies the platform clipboard string). Returns false when no cursor
     /// is set or the text is empty.
@@ -1367,9 +1457,17 @@ impl OfdComponent {
         let Some(state) = self.preedit.take() else {
             return false;
         };
-        let new_off = state.offset + state.text.chars().count();
+        let text = rofd_editor::normalize_newlines(&state.text);
+        let new_off = state.offset + text.chars().count();
+        self.ensure_font_store();
+        let store = self
+            .font_store
+            .as_ref()
+            .expect("font_store initialized above");
         self.editor
-            .insert_text(&state.annotation, state.offset, &state.text);
+            .insert_text_measured(&state.annotation, state.offset, &text, |payload| {
+                measure_textbox_growth(store, payload)
+            });
         self.editor.set_cursor(state.annotation, new_off);
         self.after_annotation_change();
         self.reset_blink();
@@ -1392,9 +1490,19 @@ impl OfdComponent {
     /// and paste. Returns `false` (no repaint) when no cursor is set.
     fn insert_at_cursor(&mut self, text: &str) -> bool {
         if let Some(cursor) = self.editor.text_cursor().cloned() {
+            // LF-only content invariant (spec 2026-11-09 §1.2.1): normalize
+            // BEFORE counting chars so the cursor advance matches.
+            let text = rofd_editor::normalize_newlines(text);
             let new_off = cursor.offset + text.chars().count();
+            self.ensure_font_store();
+            let store = self
+                .font_store
+                .as_ref()
+                .expect("font_store initialized above");
             self.editor
-                .insert_text(&cursor.annotation, cursor.offset, text);
+                .insert_text_measured(&cursor.annotation, cursor.offset, &text, |payload| {
+                    measure_textbox_growth(store, payload)
+                });
             self.editor.set_cursor(cursor.annotation.clone(), new_off);
             self.after_annotation_change();
             self.fire_cursor_change();
@@ -1955,6 +2063,7 @@ impl OfdComponent {
                                     compute_resize(&handle, anchor, orig, current_local);
                                 // Skip if the rect didn't actually change.
                                 if final_rect != orig {
+                                    let final_rect = self.with_text_height(&id, final_rect);
                                     self.editor.resize_annotation(&id, final_rect);
                                     self.after_annotation_change();
                                 }
@@ -2353,9 +2462,9 @@ impl OfdComponent {
     }
 
     /// Map a viewport-space press to a caret offset inside a TEXT
-    /// annotation: the shaped char boundary nearest the press x (page-local
-    /// x minus the annotation rect origin). Notes shape with the default
-    /// font at the caret's fixed 12.0 (mirroring [`rofd_render::caret_rect`]).
+    /// annotation: for a flat TextBox the press selects the visual line by y
+    /// and the nearest char boundary by x; Note/rich TextBox keep the legacy
+    /// x-only mapping (spec 2026-11-09 §1.3).
     /// `None` for non-text payloads or unresolvable geometry; callers fall
     /// back to the content length.
     fn click_caret_offset(&mut self, id: &rofd_dom::AnnotationId, p: (f64, f64)) -> Option<usize> {
@@ -2370,23 +2479,39 @@ impl OfdComponent {
             .pages
             .iter()
             .position(|pg| pg.id == ann.page)?;
-        let (origin_x, _origin_y) =
+        let (origin_x, origin_y) =
             rofd_render::page_origin(self.editor.document(), &self.viewport, page_idx)?;
         let local_x = (p.0 - origin_x) / self.viewport.zoom;
+        let local_y = (p.1 - origin_y) / self.viewport.zoom;
         match &ann.payload {
             AnnotationPayload::TextBox {
                 rect,
                 content,
                 font,
                 size,
+                runs,
                 ..
-            } => Some(rofd_render::caret_offset_at_x(
-                content,
-                font,
-                *size,
-                store,
-                local_x - rect.x,
-            )),
+            } => {
+                if runs.is_empty() {
+                    Some(rofd_render::caret_offset_at_point(
+                        content,
+                        font,
+                        *size,
+                        rect.w.max(*size),
+                        store,
+                        local_x - rect.x,
+                        local_y - rect.y,
+                    ))
+                } else {
+                    Some(rofd_render::caret_offset_at_x(
+                        content,
+                        font,
+                        *size,
+                        store,
+                        local_x - rect.x,
+                    ))
+                }
+            }
             AnnotationPayload::Note { rect, content, .. } => Some(rofd_render::caret_offset_at_x(
                 content,
                 &FontId::default(),
@@ -2461,21 +2586,30 @@ impl OfdComponent {
         if let Some(cursor) = self.editor.text_cursor().cloned() {
             match key {
                 Key::Char(c) => {
-                    let s = c.to_string();
-                    let new_off = cursor.offset + s.chars().count();
-                    self.editor
-                        .insert_text(&cursor.annotation, cursor.offset, &s);
-                    self.editor.set_cursor(cursor.annotation.clone(), new_off);
-                    self.after_annotation_change();
-                    self.fire_cursor_change();
+                    self.insert_at_cursor(&c.to_string());
+                    return EventOutcome {
+                        needs_repaint: true,
+                    };
+                }
+                Key::Enter => {
+                    self.insert_at_cursor("\n");
                     return EventOutcome {
                         needs_repaint: true,
                     };
                 }
                 Key::Backspace => {
                     if cursor.offset > 0 {
-                        self.editor
-                            .delete_text(&cursor.annotation, cursor.offset - 1, 1);
+                        self.ensure_font_store();
+                        let store = self
+                            .font_store
+                            .as_ref()
+                            .expect("font_store initialized above");
+                        self.editor.delete_text_measured(
+                            &cursor.annotation,
+                            cursor.offset - 1,
+                            1,
+                            |payload| measure_textbox_growth(store, payload),
+                        );
                         self.editor
                             .set_cursor(cursor.annotation.clone(), cursor.offset - 1);
                         self.after_annotation_change();
@@ -2486,8 +2620,17 @@ impl OfdComponent {
                     }
                 }
                 Key::Delete => {
-                    self.editor
-                        .delete_text(&cursor.annotation, cursor.offset, 1);
+                    self.ensure_font_store();
+                    let store = self
+                        .font_store
+                        .as_ref()
+                        .expect("font_store initialized above");
+                    self.editor.delete_text_measured(
+                        &cursor.annotation,
+                        cursor.offset,
+                        1,
+                        |payload| measure_textbox_growth(store, payload),
+                    );
                     self.after_annotation_change();
                     return EventOutcome {
                         needs_repaint: true,
@@ -2510,6 +2653,20 @@ impl OfdComponent {
                     return EventOutcome {
                         needs_repaint: true,
                     };
+                }
+                Key::ArrowUp | Key::ArrowDown => {
+                    let up = matches!(key, Key::ArrowUp);
+                    if let Some((offset, preferred_x)) = self.vertical_caret_offset(&cursor, up) {
+                        self.editor.set_cursor_with_preferred_x(
+                            cursor.annotation.clone(),
+                            offset,
+                            preferred_x,
+                        );
+                        self.fire_cursor_change();
+                        return EventOutcome {
+                            needs_repaint: true,
+                        };
+                    }
                 }
                 Key::Escape => {
                     self.editor.clear_cursor();
@@ -3296,6 +3453,31 @@ fn compute_resize(handle: &HandlePos, anchor: (f64, f64), orig: Rect, point: (f6
 ///   position) is preserved - the bbox alone loses which diagonal was drawn.
 ///   Rect/Ellipse store empty `points` (no endpoint direction).
 ///
+/// Height growth for a flat TextBox after a text edit (spec 2026-11-09
+/// §1.2): shape the post-edit content at the box width and return the
+/// required height only when it exceeds the current rect. `None` for rich
+/// boxes (their appearance is a foreign fidelity snapshot), other payloads,
+/// empty content and no-grow cases.
+fn measure_textbox_growth(store: &FontStore, payload: &AnnotationPayload) -> Option<f64> {
+    let AnnotationPayload::TextBox {
+        rect,
+        content,
+        font,
+        size,
+        runs,
+        ..
+    } = payload
+    else {
+        return None;
+    };
+    if !runs.is_empty() || content.chars().count() == 0 {
+        return None;
+    }
+    let wrapped = store.shape_wrapped(font, content, *size, rect.w.max(*size));
+    let required = wrapped.height();
+    (required > rect.h + 1e-9).then_some(required)
+}
+
 /// Only tool-createable kinds exist here (spec 2026-09-10 §4.1): markup is
 /// built from a body-text selection by [`OfdComponent::apply_markup`];
 /// Typewriter/TextBox create empty editable boxes (the caret drops at
@@ -8906,5 +9088,236 @@ mod tests {
 
         c.current_page = Some(4);
         assert_eq!(c.current_page_1based(), 5);
+    }
+
+    fn component_with_narrow_textbox(content: &str, w: f64, h: f64) -> OfdComponent {
+        let bytes = include_bytes!("../../render/tests/fixtures/fonts/TestFont.ttf").to_vec();
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(bytes)));
+        c.set_clock("t".into(), 1);
+        let mut doc = OfdDocument::default();
+        doc.pages.push(Page {
+            id: PageId::new("P0"),
+            physical_box: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 200.0,
+            },
+            layers: vec![Layer::default()],
+            template: None,
+        });
+        c.load_document(doc);
+        let id = c.create_annotation(
+            AnnotationKind::TextBox,
+            PageId::new("P0"),
+            AnnotationPayload::TextBox {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w,
+                    h,
+                },
+                content: content.into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                runs: Vec::new(),
+            },
+        );
+        c.editor.set_cursor(id, content.chars().count());
+        c.viewport = rofd_render::Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (200.0, 200.0),
+            page_gap: 0.0,
+        };
+        c
+    }
+
+    fn textbox_rect(c: &OfdComponent) -> Rect {
+        let ann = c
+            .document()
+            .annotations
+            .for_page(&PageId::new("P0"))
+            .first()
+            .expect("one annotation");
+        match &ann.payload {
+            AnnotationPayload::TextBox { rect, .. } => *rect,
+            other => panic!("expected textbox, got {other:?}"),
+        }
+    }
+
+    fn textbox_id(c: &OfdComponent) -> AnnotationId {
+        c.document()
+            .annotations
+            .for_page(&PageId::new("P0"))
+            .first()
+            .expect("one annotation")
+            .id
+            .clone()
+    }
+
+    #[test]
+    fn typing_wraps_without_mutating_content_and_grows_height() {
+        let mut c = component_with_narrow_textbox("abc def", 45.0, 14.0);
+        for ch in [' ', 'g', 'h', 'i', ' ', 'j', 'k', 'l'] {
+            c.handle_event(&ViewEvent::KeyDown {
+                key: Key::Char(ch),
+                modifiers: Modifiers::default(),
+            });
+        }
+        assert_eq!(textbox_content(&c), "abc def ghi jkl");
+        assert!(
+            !textbox_content(&c).contains('\n'),
+            "soft wrap stays out of content"
+        );
+        let rect = textbox_rect(&c);
+        let store = c.font_store.as_ref().expect("font store");
+        let wrapped = store.shape_wrapped(
+            &FontId::new("F1"),
+            "abc def ghi jkl",
+            12.0,
+            rect.w.max(12.0),
+        );
+        assert!(wrapped.lines.len() >= 2);
+        assert!(rect.h > 14.0, "height grows to fit the wrapped lines");
+    }
+
+    #[test]
+    fn enter_inserts_newline_and_moves_cursor() {
+        let mut c = component_with_narrow_textbox("ab", 100.0, 10.0);
+        c.handle_event(&ViewEvent::KeyDown {
+            key: Key::Enter,
+            modifiers: Modifiers::default(),
+        });
+        assert_eq!(textbox_content(&c), "ab\n");
+        assert_eq!(c.editor.text_cursor().unwrap().offset, 3);
+        assert!(textbox_rect(&c).h > 10.0, "explicit line grows the box");
+    }
+
+    #[test]
+    fn backspace_at_line_start_joins_lines() {
+        let mut c = component_with_narrow_textbox("ab\ncd", 100.0, 30.0);
+        c.editor.set_cursor(textbox_id(&c), 3);
+        c.handle_event(&ViewEvent::KeyDown {
+            key: Key::Backspace,
+            modifiers: Modifiers::default(),
+        });
+        assert_eq!(textbox_content(&c), "abcd");
+    }
+
+    #[test]
+    fn arrow_down_then_up_keeps_column() {
+        let mut c = component_with_narrow_textbox("abc def ghi jkl", 45.0, 40.0);
+        let id = textbox_id(&c);
+        c.editor.set_cursor(id, 2);
+        c.handle_event(&ViewEvent::KeyDown {
+            key: Key::ArrowDown,
+            modifiers: Modifiers::default(),
+        });
+        let down = c.editor.text_cursor().unwrap().offset;
+        assert!(down >= 8, "moved to the second visual line, got {down}");
+        assert!(c.editor.text_cursor().unwrap().preferred_x.is_some());
+        c.handle_event(&ViewEvent::KeyDown {
+            key: Key::ArrowUp,
+            modifiers: Modifiers::default(),
+        });
+        assert_eq!(c.editor.text_cursor().unwrap().offset, 2);
+    }
+
+    #[test]
+    fn arrow_edges_go_to_text_bounds() {
+        let mut c = component_with_narrow_textbox("abc def ghi jkl", 45.0, 40.0);
+        let id = textbox_id(&c);
+        c.editor.set_cursor(id.clone(), 2);
+        c.handle_event(&ViewEvent::KeyDown {
+            key: Key::ArrowUp,
+            modifiers: Modifiers::default(),
+        });
+        assert_eq!(c.editor.text_cursor().unwrap().offset, 0);
+        c.editor.set_cursor(id, 15);
+        c.handle_event(&ViewEvent::KeyDown {
+            key: Key::ArrowDown,
+            modifiers: Modifiers::default(),
+        });
+        assert_eq!(c.editor.text_cursor().unwrap().offset, 15);
+    }
+
+    #[test]
+    fn click_caret_offset_uses_click_y() {
+        let mut c = component_with_narrow_textbox("abc def ghi jkl", 45.0, 40.0);
+        let id = textbox_id(&c);
+        let store = c.font_store.as_ref().expect("font store");
+        let wrapped = store.shape_wrapped(&FontId::new("F1"), "abc def ghi jkl", 12.0, 45.0);
+        let y = wrapped.lines[1].top + 1.0;
+        assert_eq!(c.click_caret_offset(&id, (1.0, y)), Some(8));
+    }
+
+    #[test]
+    fn narrowing_resize_grows_height_widening_does_not_shrink() {
+        let mut c = component_with_narrow_textbox("abc def ghi jkl", 120.0, 14.0);
+        let id = textbox_id(&c);
+        c.resize_annotation(
+            &id,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 45.0,
+                h: 14.0,
+            },
+        );
+        let h1 = textbox_rect(&c).h;
+        assert!(h1 > 14.0, "narrower width needs more lines");
+        c.resize_annotation(
+            &id,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 120.0,
+                h: h1,
+            },
+        );
+        assert!(
+            (textbox_rect(&c).h - h1).abs() < 1e-9,
+            "widening never shrinks"
+        );
+    }
+
+    #[test]
+    fn note_enter_inserts_but_does_not_grow_note_rect() {
+        let mut c = component_with_note();
+        let AnnotationSelection::Single(id) = c.editor.selection().clone() else {
+            panic!("note is selected after creation");
+        };
+        c.editor.set_cursor(id.clone(), 2);
+        c.handle_event(&ViewEvent::KeyDown {
+            key: Key::Enter,
+            modifiers: Modifiers::default(),
+        });
+        let ann = c.editor.document().annotations.find(&id).unwrap();
+        assert!(
+            matches!(&ann.payload, AnnotationPayload::Note { rect, content, .. }
+            if content == "hi\n" && rect.h == 100.0)
+        );
+    }
+
+    #[test]
+    fn zero_width_box_wraps_at_one_em_without_panic() {
+        let mut c = component_with_narrow_textbox("abc", 0.0, 14.0);
+        for ch in ['d', 'e'] {
+            c.handle_event(&ViewEvent::KeyDown {
+                key: Key::Char(ch),
+                modifiers: Modifiers::default(),
+            });
+        }
+        assert_eq!(textbox_content(&c), "abcde");
+        let rect = textbox_rect(&c);
+        let store = c.font_store.as_ref().expect("font store");
+        let wrapped = store.shape_wrapped(&FontId::new("F1"), "abcde", 12.0, rect.w.max(12.0));
+        assert!(
+            wrapped.lines.len() >= 3,
+            "clamped wrap width still breaks lines"
+        );
     }
 }
