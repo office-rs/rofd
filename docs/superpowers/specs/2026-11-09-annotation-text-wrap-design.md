@@ -25,8 +25,8 @@
 5. **保存 / 重开都不丢流式能力**：保存时同时写
    - `Appearance`（渲染缓存：逐行 TextObject，行几何与字距来自真实排版）；
    - `Remark`（标准字段，纯文本逻辑内容）；
-   - WPS 兼容的 `AllRichText` / `ParagraphFormat` / `GrowMode`（编辑态互操作）。
-   重开后 rofd 从 `Remark` 恢复逻辑文本，拖宽仍能流式重排；WPS 打开 rofd 保存的文本框也能编辑/重排。
+   - WPS 认识的 `ParagraphFormat` / `GrowMode`（可选样式/增长提示）。
+   重开后 rofd 从 `Remark` 恢复逻辑文本，拖宽仍能流式重排；WPS 打开 rofd 保存的文本框也能编辑/重排（行为测试 2026-11-09：WPS 的流式能力只依赖 `Remark` + `Appearance`，不依赖 `AllRichText`）。
 6. **Enter 插入换行**：文本光标激活时按 Enter 在光标处插入显式 `\n`（硬换行），光标落到下一行行首；与普通键入同一条 Transaction，同样触发框高增长。三端适配器已把键盘 Enter 映射为 `Key::Enter`，只需组件处理。
 7. **上下方向键按视觉行移动光标**：`ArrowUp` / `ArrowDown` 在当前折行/显式行布局中跨行移动，保留列偏好（`TextCursor.preferred_x`），行内取最近字符边界；到达首行再按上 / 末行再按下时落到文首 / 文末。
 
@@ -38,7 +38,7 @@
 - 载入时改写外来文档的几何/内容（编辑与保存快照时生效）。
 - 带 Shift 的文字选区（`TextCursor` 无 selection extent，上下移动不扩展选区）。
 - 对齐 WPS 的 1mm 内边距（本轮保持 rofd 现有“文字从 rect 原点开始”的绘制；WPS 重排可能比 rofd 早折一个字符，见 §5）。
-- 解析 `AllRichText` HTML（只写不读；rofd 读取 `Remark`）。
+- 解析/写入 `AllRichText`：WPS 行为测试（2026-11-09）证明它只透传、不解析；rofd 既不读也不写。
 - 保留非 FreeText 批注的 WPS 私有 `Parameter`（如 highlight 的 identity 字段；现状即会丢弃）。
 
 ## 1. 行为规范
@@ -115,12 +115,12 @@ preedit：
 
 ### 1.5 保存与 WPS 互操作
 
-OFD 的 `Appearance` 是版式缓存，不是可编辑源。WPS 的 FreeText 批注把逻辑文本与样式存在 `Remark` + 三个私有 `Parameter` 里（已核实 `test/text_annotation.ofd`、`test/sample.ofd`），`Appearance` 只用于显示。rofd 采用同一约定：
+OFD 的 `Appearance` 是版式缓存，不是可编辑源。WPS 的 FreeText 批注把**逻辑文本**存在 `Remark` 里，`Appearance` 只用于显示；WPS 新建的文本框甚至不带任何 `<ofd:Parameters>`，仍能重新打开并流式重排（行为测试 2026-11-09）。`AllRichText` 只是某个上层编辑器写入的私有 HTML，WPS 只透传、不解析。rofd 采用同一约定：
 
 | 消费者 | 读取内容 | 用途 |
 |---|---|---|
 | 严格阅读器 / WPS 查看态 | `Appearance` 的 PathObject + TextObject | rofd 排版的固定快照（折点、字距、行高一致） |
-| WPS 编辑态 | `AllRichText` + `ParagraphFormat` + `GrowMode` | 恢复逻辑文本与样式，按框宽流式重排 |
+| WPS 编辑态 | `Remark`（逻辑文本）+ `ParagraphFormat`（可选样式）+ `GrowMode`（可选增长提示） | 恢复逻辑文本与样式，按框宽流式重排 |
 | rofd | `Remark`（逻辑文本）+ 第一个 TextObject 样式 / 富 `runs` | parley 重新排版，重开仍是流式 |
 
 保存产物（`runs` 为空的 TextBox）：
@@ -131,15 +131,15 @@ OFD 的 `Appearance` 是版式缓存，不是可编辑源。WPS 的 FreeText 批
    - 这样按外观渲染的阅读器看到的折点与字距 = rofd 屏幕。
 2. **`Remark`**：逻辑文本（只含 Enter 产生的硬 `\n`，不含软折行），XML 转义。
    - **边缘空白保真**：解析器使用 quick-xml `trim_text(true)` 丢弃元素间缩进，会吃掉内容首尾的空格/换行；因此 `Remark` 与 `TextCode` 的首尾空白字符以数字字符引用（`&#x20;`/`&#xA;` 等）写出，trim 不识别、反转义后还原原文。`"ab\n"`、`" abc"`、全空白内容均原样往返。
-3. **`ParagraphFormat`**：JSON（WPS 同构）：
+3. **`ParagraphFormat`**（可选提示）：JSON（WPS 同构）：
    ```json
    {"FontName":"宋体","FontSize":5.6444,"FontColor":"#0d0d0d",
     "Bold":false,"Italic":false,"Underline":false,
     "Indent":0.0,"LineSpace":1.0,"CharSpace":0.0}
    ```
-   `FontName` 取 `Resources.fonts[FontId].family_name`；`FontSize` 为 mm；`CharSpace` 写 0（rofd 不做字距）。
-4. **`AllRichText`**：WPS 同构的 Qt RichText HTML——固定头部 + 一个或多个 `<span style="font-family:'…'; font-size:{pt}pt; font-weight:400|700; font-style:normal|italic; color:#RRGGBB;">…</span>`；硬 `\n` 写 `<br />`。平铺样式写单 span，富 `runs` 逐 run 写 span。rofd **只写不读**。
-5. **`GrowMode`**：有边框（文本框）→ `FixWidth`；无边框（文字批注）→ `None`（与 WPS 样例一致）。
+   `FontName` 取 `Resources.fonts[FontId].family_name`；`FontSize` 为 mm；`CharSpace` 写 0（rofd 不做字距）。WPS 认识并保留该参数，但它不是流式重排的前提。
+4. **`GrowMode`**（可选提示）：有边框（文本框）→ `FixWidth`；无边框（文字批注）→ `None`。WPS 新建的框不写它；rofd 写它只为增长语义提示。
+5. **不写 `AllRichText`**：WPS 只透传、不解析；rofd 不读。写出只会产生陈旧副本，故省略。
 
 保存/解析 API：
 
@@ -151,12 +151,12 @@ OFD 的 `Appearance` 是版式缓存，不是可编辑源。WPS 的 FreeText 批
   `hints` 由组件用与渲染相同的 `shape_wrapped` 生成；旧的 `save_ofd` / `write_ofd` 保留，委托为空 hints（外观退化为按 content 的 `\n` 分行 + 1.2em 行距，供测试/兼容）。
 - 组件 `save_snapshot() -> SaveSnapshot { document, text_layout }`：文档只克隆并补足外来超宽框的 `rect.h`（`runs` 为空的 TextBox），content 保持逻辑文本**不写入软折行**。
 - 宿主保存时改用 `save_snapshot()` + `save_ofd_with_text_layout`。
-- 解析：FreeText 批注只要带有 `AllRichText` 或 `ParagraphFormat` 参数且 `Remark` 非空，就把 `Remark` 作为 content（取代现在“没有 TextObject 才用 Remark”的规则）；样式仍取外观第一个 TextObject。没有 TextObject 时保持现有 Remark 回退。
+- 解析：FreeText 批注的**非空 `Remark` 无条件作为 content**（WPS 新建框没有任何 `Parameter`，仍以 Remark 为逻辑文本；行为测试 2026-11-09）；`Remark` 为空时回退外观内容。样式仍取外观第一个 TextObject。
 - 重开：content = 逻辑文本 → 拖宽重新排版；`runs` 仍从外观解析（富外观保真）。
 
 已知边界：
 
-- `AllRichText` 不解析；若文件只有 `AllRichText` 没有 `Remark`，rofd 退回按外观内容（现行为）。
+- `AllRichText` 不解析也不写出；旧文件若只有 `AllRichText` 没有 `Remark`，rofd 退回按外观内容。
 - 非 FreeText 批注的 WPS 私有参数仍会被丢弃（超出本次范围）。
 - WPS 重排使用 Qt 引擎且带 1mm 内边距；rofd 用 parley 且从 rect 原点起排，跨引擎断点可能有细微差异（见 §5）。
 
@@ -199,7 +199,7 @@ OFD 的 `Appearance` 是版式缓存，不是可编辑源。WPS 的 FreeText 批
                   rofd-io::save_ofd_with_text_layout
                         ├── Appearance: 逐行 TextObject（快照）
                         ├── Remark: 逻辑文本
-                        └── AllRichText / ParagraphFormat / GrowMode（WPS 互操作）
+                        └── ParagraphFormat / GrowMode（可选 WPS 提示；不写 AllRichText）
 ```
 
 - `Editor` 不依赖 render：新增带 `measure: impl FnOnce(&AnnotationPayload) -> Option<f64>` 的文本命令变体，组件注入闭包；旧命令委托为 `|_| None`。
@@ -313,13 +313,13 @@ OFD 的 `Appearance` 是版式缓存，不是可编辑源。WPS 的 FreeText 批
 
 - 序列化：
   - `serialize_page_annot(page, anns, next_id, resources, hints)`：内部逐 annot 传 hints。
-  - `serialize_one`：FreeText 批注额外写 `Remark`（逻辑 content）、`AllRichText`、`ParagraphFormat`、`GrowMode`（§1.5、§4.4）。
+  - `serialize_one`：FreeText 批注额外写 `Remark`（逻辑 content）、`ParagraphFormat`、`GrowMode`（§1.5、§4.4）；**不写 `AllRichText`**。
   - `text_object_xml`：有 hints 时按 `TextLineHint` 逐行输出（Boundary `0 top width height`、`TextCode Y = baseline - top`、真实 `DeltaX`）；无 hints 时保持现行为（按 `\n` 分行、行距 `TEXTBOX_LINE_PITCH_RATIO`）。
-  - 富 `runs` 路径不变（`text_run_object_xml`），但同样写三个 WPS 参数。
+  - 富 `runs` 路径不变（`text_run_object_xml`），同样写 `Remark`/`ParagraphFormat`/`GrowMode`。
 - 新增 `save_ofd_with_text_layout(doc, pkg, hints)` / `write_ofd_with_text_layout(doc, hints)`；旧函数委托空 hints。
 - 解析：
   - TextBox 的 content 与 `TextRun.text` 归一化 `\r\n` / `\r` → `\n`；
-  - 带 `AllRichText` 或 `ParagraphFormat` 参数且 `Remark` 非空 → content = Remark；否则保持现有规则（无 TextObject 时回退 Remark）。
+  - FreeText 的非空 `Remark` 无条件作为 content（WPS 新建框无任何参数也依赖 Remark）；空 Remark 回退外观内容。
 - `rofd-io` 不新增字体/排版依赖。
 
 ## 4. 关键算法
@@ -375,7 +375,7 @@ save_snapshot():
 
 ### 4.4 WPS 元数据生成
 
-- `Remark` = `xml_escape(content)`。
+- `Remark` = `xml_escape_preserving_edges(content)`（首尾空白写成数字字符引用）。
 - `ParagraphFormat` JSON：
   - `FontName` = `resources.fonts.get(font).and_then(|f| f.family_name.clone()).unwrap_or_default()`（富 runs 用 `runs[0]`）；
   - `FontSize` = `size`（mm，f64）；
@@ -383,12 +383,8 @@ save_snapshot():
   - `Bold`/`Italic` = 平铺 false / 富 runs 取 `runs[0]`；`Underline` = false；
   - `Indent` = 0.0，`LineSpace` = 1.0，`CharSpace` = 0.0。
   - 字符串按 JSON 规则转义（字体名可能含引号/反斜杠）。
-- `AllRichText`：
-  - 固定 DOCTYPE/head（与 WPS 样例一致，`meta name="qrichtext"`）；
-  - body 内为 span 序列：平铺 = 单 span（annotation 的 font/size/color）；富 = 逐 `TextRun` span（font-family 取该 run 的 FontId 对应 family_name；size 转 pt = `mm * 72.0 / 25.4`；weight 700/400；style italic/normal；color `#rrggbb`）；
-  - 文本 HTML 转义（`&`/`<`/`>`/`'`），`\n` → `<br />`；
-  - 整段 HTML 再按 XML 文本转义写进 `<ofd:Parameter Name="AllRichText">`。
 - `GrowMode` = `border.is_some() ? "FixWidth" : "None"`。
+- **不生成 `AllRichText`**：WPS 行为测试（2026-11-09）证明它只是不透明透传，没有任何消费者；写出只会成为陈旧副本。
 
 ### 4.5 外观 TextObject（有 hints）
 
@@ -410,12 +406,12 @@ for i, line in hints[ann_id].iter().enumerate():
 1. **软折行（live 不改 content）**：删除/改宽自动重排；保存时逻辑文本进 `Remark`，外观进逐行 TextObject。
 2. **不引入 rword 的富文本格式**：rword 的是 OOXML 剪贴板 payload（`app:"rword"` JSON），跨仓耦合且 WPS 不识别；rofd 内部模型不变，持久化只用 OFD 标准字段 + WPS 既有约定。
 3. **`TextObject` 保留**：`Appearance` 仍是渲染缓存与样式来源；`Remark`/WPS 参数是旁路元数据，不是替代品。
-4. **只写不读 Qt HTML**：rofd 读取 `Remark`；`AllRichText` 仅为 WPS 编辑态生成，避免维护 HTML 解析器。
+4. **不写不读 Qt HTML**：`AllRichText` 无消费者（WPS 实测只透传），rofd 既不写也不读；逻辑文本只经 `Remark`。
 5. **框只增不减**：无法区分用户手动高度与自动增长，缩高会破坏用户意图。
 6. **富文本框不重排**：外来富外观是保真快照；首次编辑 collapse runs 后按普通 TextBox 处理。
 7. **行几何精确落盘**：hints 带 top/baseline/height/width/advances，外观与屏幕一致，不再用 1.2em 近似（旧 API 保留近似）。
 8. **不对齐 WPS 1mm 内边距**：rofd 文字从 rect 原点起排；WPS 编辑态从其 1mm 内边距起排，跨引擎断点可能有细微差异（格式/引擎固有，WPS 打开第三方文件同样存在）。
-9. **`Remark` 优先仅限带 WPS 参数的 FreeText**：避免把“备注文本”误当正文；无参数文件保持现有外观内容解析。
+9. **非空 `Remark` 无条件优先**：WPS 新建的 FreeText 框没有任何 `Parameter`，仍以 Remark 为逻辑文本并支持重开重排（行为测试 2026-11-09）；因此不再要求 WPS 参数存在。`Remark` 为空才回退外观。
 
 ## 6. 测试计划（TDD，先红后绿）
 
@@ -452,8 +448,8 @@ for i, line in hints[ann_id].iter().enumerate():
 ### rofd-io
 
 - 序列化：hints 逐行输出 TextObject（top/baseline/DeltaX 精确）；无 hints 走旧分行 + 1.2em。
-- FreeText 输出含 `Remark`/`AllRichText`/`ParagraphFormat`/`GrowMode`；`GrowMode` 按 border 区分。
-- 解析：带 `AllRichText`/`ParagraphFormat` + Remark 的文件 content = Remark；无参数文件保持外观解析；`\r\n` 归一化。
+- FreeText 输出含 `Remark`/`ParagraphFormat`/`GrowMode`，**不含 `AllRichText`**；`GrowMode` 按 border 区分。
+- 解析：非空 `Remark` 无条件作为 content（无参数文件同样如此）；空 Remark 回退外观；`\r\n` 归一化。
 - 现有 `annotation_roundtrip` / conformance 用例保持绿（必要时更新结构断言）。
 
 ### 集成（可选，真实样例 `#[ignore]`）

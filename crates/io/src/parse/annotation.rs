@@ -534,20 +534,14 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
                 }
             }
             let mut content = flat_content_from_runs(&runs);
-            if first {
-                // No TextObject found: fall back to Remark.
-                content = p.remark.clone();
-            }
-            // WPS writes the logical text into Remark + AllRichText/
-            // ParagraphFormat, keeping the wrapped lines only in the
-            // appearance. Prefer Remark so the reloaded content is still
-            // reflowable (spec 2026-11-09 §1.5). A bare Remark without those
-            // parameters may be a comment, so it is not trusted.
-            let has_wps_meta = p
-                .params
-                .iter()
-                .any(|(name, _)| name == "AllRichText" || name == "ParagraphFormat");
-            if has_wps_meta && !p.remark.is_empty() {
+            // WPS stores the logical FreeText body in Remark - both for boxes
+            // it creates (which carry no <ofd:Parameters> at all) and for
+            // edited boxes - and regenerates the appearance from it on edit.
+            // A non-empty Remark is therefore the source of truth; otherwise
+            // wrapped appearance lines would become hard breaks on reload
+            // (spec 2026-11-09 §1.5). An empty Remark falls back to the
+            // appearance-derived content.
+            if !p.remark.is_empty() {
                 content = p.remark.clone();
             }
             let content = normalize_newlines(&content);
@@ -952,9 +946,9 @@ mod tests {
 
     #[test]
     fn freetext_prefers_remark_when_wps_params_present() {
-        // WPS stores the logical text in Remark + AllRichText/ParagraphFormat
-        // and the wrapped lines in the appearance. Preferring Remark keeps the
-        // content reflowable after reload (spec 2026-11-09 §1.5).
+        // Legacy WPS files carry AllRichText/ParagraphFormat; the non-empty
+        // Remark is still the logical body. (Modern WPS-created boxes omit
+        // all Parameters and rely on Remark alone - covered below.)
         let xml = r#"<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016">
 <ofd:Annot Type="FreeText" ID="1" Subtype="FreeText">
   <ofd:Remark>逻辑文本</ofd:Remark>
@@ -982,12 +976,14 @@ mod tests {
     }
 
     #[test]
-    fn freetext_remark_without_wps_params_keeps_appearance_content() {
-        // A bare Remark without the WPS parameters may be a comment, not the
-        // text-body mirror: keep the appearance-derived content.
+    fn freetext_prefers_remark_without_wps_params() {
+        // WPS-created FreeText boxes carry no <ofd:Parameters> at all, yet
+        // WPS itself reopens them with flow layout: Remark is the logical
+        // body. A non-empty Remark therefore wins unconditionally; otherwise
+        // wrapped appearance lines would become hard breaks on reload.
         let xml = r#"<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016">
   <ofd:Annot Type="FreeText" ID="1" Subtype="FreeText">
-    <ofd:Remark>备注</ofd:Remark>
+    <ofd:Remark>逻辑文本</ofd:Remark>
     <ofd:Appearance Boundary="0 0 45 40">
       <ofd:TextObject ID="2" Boundary="0 0 22 14" Font="F1" Size="12">
         <ofd:TextCode X="0" Y="12">逻辑</ofd:TextCode>
@@ -1003,9 +999,67 @@ mod tests {
             panic!("expected TextBox");
         };
         assert_eq!(
-            content, "逻辑\n文本",
-            "no WPS params -> appearance is still the source"
+            content, "逻辑文本",
+            "non-empty Remark wins without any WPS parameters"
         );
+    }
+
+    #[test]
+    fn freetext_wps_created_box_keeps_rich_runs_and_logical_content() {
+        // Shape of a real WPS-inserted text box: Remark + Appearance only, no
+        // Parameters; per-fragment styles live in the TextObjects.
+        let xml = r#"<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016">
+<ofd:Annot Type="FreeText" ID="71" Subtype="FreeText">
+  <ofd:Remark>abc</ofd:Remark>
+  <ofd:Appearance Boundary="110.1127 22.0278 46.5667 9.7611">
+    <ofd:PathObject ID="87" Name="TextBorder" Boundary="0 0 46.5667 9.7611" LineWidth="0.3528" Fill="true">
+      <ofd:StrokeColor Value="255 0 0"/>
+      <ofd:FillColor Value="255 255 255"/>
+      <ofd:AbbreviatedData>M 0.1764 0.1764 L 46.3903 0.1764 L 46.3903 9.5847 L 0.1764 9.5847 C</ofd:AbbreviatedData>
+    </ofd:PathObject>
+    <ofd:TextObject ID="85" Boundary="1.3528 1.3528 2.993 4.3138" Font="76" Size="4.2333" Weight="700" Italic="true">
+      <ofd:FillColor Value="146 208 80"/>
+      <ofd:TextCode X="0" Y="3.6364">a</ofd:TextCode>
+    </ofd:TextObject>
+    <ofd:TextObject ID="86" Boundary="3.4694 1.3528 2.129 4.2644" Font="76" Size="1.7639" Weight="700" Italic="true">
+      <ofd:FillColor Value="146 208 80"/>
+      <ofd:TextCode X="0" Y="3.6364" DeltaX="0.8819">bc</ofd:TextCode>
+    </ofd:TextObject>
+  </ofd:Appearance>
+</ofd:Annot></ofd:PageAnnot>"#;
+        let anns = parse_page_annot(xml, &PageId::new("1")).unwrap();
+        let AnnotationPayload::TextBox {
+            content,
+            runs,
+            border,
+            ..
+        } = &anns[0].payload
+        else {
+            panic!("expected TextBox");
+        };
+        assert_eq!(content, "abc");
+        assert_eq!(runs.len(), 2, "per-fragment styles survive as rich runs");
+        assert!(runs[0].bold && runs[0].italic);
+        assert_eq!(border, &Some(Color::Rgb(255, 0, 0)));
+    }
+
+    #[test]
+    fn freetext_empty_remark_falls_back_to_appearance() {
+        let xml = r#"<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Annot Type="FreeText" ID="1" Subtype="FreeText">
+    <ofd:Remark></ofd:Remark>
+    <ofd:Appearance Boundary="0 0 45 40">
+      <ofd:TextObject ID="2" Boundary="0 0 22 14" Font="F1" Size="12">
+        <ofd:TextCode X="0" Y="12">xyz</ofd:TextCode>
+      </ofd:TextObject>
+    </ofd:Appearance>
+  </ofd:Annot>
+</ofd:PageAnnot>"#;
+        let anns = parse_page_annot(xml, &PageId::new("1")).unwrap();
+        let AnnotationPayload::TextBox { content, .. } = &anns[0].payload else {
+            panic!("expected TextBox");
+        };
+        assert_eq!(content, "xyz", "empty Remark -> appearance fallback");
     }
 
     #[test]
