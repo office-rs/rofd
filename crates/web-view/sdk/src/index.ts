@@ -128,9 +128,9 @@ interface WasmOfd {
   hasTextSelection(): boolean;
   setOnTextSelectionChange(cb: (() => void) | null): void;
   /** Annotation text format panel (Task 7): target, style, geometry, fonts. */
-  selectedTextAnnotation(): string | null;
-  annotationTextStyle(id: string): string[] | null;
-  annotationFormatAnchor(id: string): number[] | null;
+  selectedTextAnnotation(): string | null | undefined;
+  annotationTextStyle(id: string): string[] | null | undefined;
+  annotationFormatAnchor(id: string): number[] | null | undefined;
   fontFamilies(): string[][];
   setAvailableFontFamilies(pairs: string[][]): void;
   textSizes(): (string | number)[][];

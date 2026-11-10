@@ -6,10 +6,12 @@
 // input, so every pointerdown inside it calls preventDefault().
 
 /** Kernel surface the panel reads/writes (the `WasmOfd` raw object). */
+// wasm-bindgen maps a Rust `Option::None` to `undefined` (not `null`), so every
+// Option-returning export is typed with both and normalized below.
 export interface FormatPanelHost {
-  selectedTextAnnotation(): string | null;
-  annotationTextStyle(id: string): string[] | null;
-  annotationFormatAnchor(id: string): number[] | null;
+  selectedTextAnnotation(): string | null | undefined;
+  annotationTextStyle(id: string): string[] | null | undefined;
+  annotationFormatAnchor(id: string): number[] | null | undefined;
   fontFamilies(): string[][];
   textSizes(): (string | number)[][];
   textColorStandard(): string[];
@@ -228,9 +230,9 @@ export function createFormatPanel(
   }
 
   function refresh(): void {
-    const id = host.selectedTextAnnotation();
-    const nextStyle = id === null ? null : host.annotationTextStyle(id);
-    const anchor = id === null ? null : host.annotationFormatAnchor(id);
+    const id = host.selectedTextAnnotation() ?? null;
+    const nextStyle = id === null ? null : (host.annotationTextStyle(id) ?? null);
+    const anchor = id === null ? null : (host.annotationFormatAnchor(id) ?? null);
     // Visibility is judged in kernel (device) space: the viewport callback is
     // CSS px, so scale it back.
     const deviceViewport = {

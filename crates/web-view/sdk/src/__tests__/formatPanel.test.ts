@@ -119,6 +119,35 @@ describe("format panel", () => {
     expect(root.querySelector(".rofd-fp-family-item")).toBe(first);
   });
 
+  it("treats undefined wasm Options as 'no target'", () => {
+    // wasm-bindgen maps Rust `Option::None` to `undefined`, not `null`.
+    const root = document.createElement("div");
+    createFormatPanel(
+      root,
+      host({ selectedTextAnnotation: () => undefined }) as never,
+      vp,
+    );
+    expect(
+      (root.querySelector(".rofd-format-panel") as HTMLElement).style.display,
+    ).toBe("none");
+  });
+
+  it("treats an undefined style/anchor as 'no target'", () => {
+    const root = document.createElement("div");
+    const panel = createFormatPanel(
+      root,
+      host({
+        annotationTextStyle: () => undefined,
+        annotationFormatAnchor: () => undefined,
+      }) as never,
+      vp,
+    );
+    panel.refresh();
+    expect(
+      (root.querySelector(".rofd-format-panel") as HTMLElement).style.display,
+    ).toBe("none");
+  });
+
   it("hides when the box is outside the viewport", () => {
     const root = document.createElement("div");
     createFormatPanel(
