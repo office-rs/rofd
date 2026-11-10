@@ -106,6 +106,8 @@
 - 每次"选一项" = 一个 Transaction：一次 undo 恢复一次修改。
 - 富文本框（`runs` 非空）第一次改字体/字号/颜色时在同一 Transaction 内塌缩为首个
   run 的平铺样式（`collapse_runs` 既有语义），一次 undo 还原完整富外观。
+  **（2026-11-10 后续设计取代本条：见 [`2026-11-10-annotation-rich-text-design.md`](2026-11-10-annotation-rich-text-design.md)——
+  框内有选中文字时只改选区，`runs` 升级为可编辑流式 `spans`，不再塌缩。）**
 
 ## 2. 分层结论
 
