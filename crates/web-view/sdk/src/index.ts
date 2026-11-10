@@ -121,7 +121,7 @@ interface WasmOfd {
   setOnZoomModeChange(cb: ((mode: string) => void) | null): void;
   setOnPointerCursor(cb: ((shape: string) => void) | null): void;
   setOnCopy(cb: ((text: string) => void) | null): void;
-  getSelectedText(): string | null;
+  getSelectedText(): string | null | undefined;
   applyMarkup(
     kind: "highlight" | "underline" | "strikeout" | "squiggly",
   ): string | null;
@@ -1176,7 +1176,8 @@ export class Ofd {
   /** The current body-text selection's text (Text tool), or null when
    * there is no selection. */
   getSelectedText(): string | null {
-    return this.wasm.getSelectedText();
+    // wasm-bindgen maps `Option::None` to undefined; the SDK speaks null.
+    return this.wasm.getSelectedText() ?? null;
   }
 
   /** Convert the current body-text selection into a markup annotation of the
@@ -1184,7 +1185,7 @@ export class Ofd {
    * new annotation's id, or null when there is no selection. The selection is
    * kept so further markups can stack on the same range. */
   applyMarkup(kind: MarkupKind): string | null {
-    return this.wasm.applyMarkup(kind);
+    return this.wasm.applyMarkup(kind) ?? null;
   }
 
   /** Whether a body-text selection currently exists (markup buttons' enabled
