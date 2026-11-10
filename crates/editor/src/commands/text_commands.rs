@@ -1,4 +1,4 @@
-use rofd_dom::{AnnotationId, AnnotationKind, AnnotationPayload, Color, NoteIcon, Rect};
+use rofd_dom::{AnnotationId, AnnotationKind, AnnotationPayload, Color, FontId, NoteIcon, Rect};
 
 use crate::editor::Editor;
 use crate::payload_util::{set_color, set_width};
@@ -62,6 +62,66 @@ impl Editor {
         };
         let mut after = before.clone();
         set_width(&mut after.payload, width);
+        after.modified = self.current_ts;
+        self.execute_transaction(self.replace_txn(id.clone(), before, after));
+    }
+
+    /// Set the font size (millimetres) of a TextBox in ONE transaction.
+    /// `measure` follows the [`Self::insert_text_measured`] contract and is
+    /// applied inside the same transaction (grow-only callers pass `None`
+    /// when the box does not need to grow).
+    pub fn set_annotation_font_size_measured<F>(
+        &mut self,
+        id: &AnnotationId,
+        size_mm: f64,
+        measure: F,
+    ) where
+        F: FnOnce(&AnnotationPayload) -> Option<f64>,
+    {
+        let before = match self.document.annotations.find(id).cloned() {
+            Some(a) => a,
+            None => return,
+        };
+        let mut after = before.clone();
+        collapse_runs(&mut after.payload);
+        let AnnotationPayload::TextBox { size, .. } = &mut after.payload else {
+            return;
+        };
+        *size = size_mm;
+        if let Some(height) = measure(&after.payload) {
+            if let AnnotationPayload::TextBox { rect, .. } = &mut after.payload {
+                rect.h = height;
+            }
+        }
+        after.modified = self.current_ts;
+        self.execute_transaction(self.replace_txn(id.clone(), before, after));
+    }
+
+    /// Set the font family of a TextBox (`font = FontId::new(family)`) in ONE
+    /// transaction. Collapses rich runs like any other text edit.
+    pub fn set_annotation_font_family_measured<F>(
+        &mut self,
+        id: &AnnotationId,
+        family: &str,
+        measure: F,
+    ) where
+        F: FnOnce(&AnnotationPayload) -> Option<f64>,
+    {
+        let before = match self.document.annotations.find(id).cloned() {
+            Some(a) => a,
+            None => return,
+        };
+        let mut after = before.clone();
+        collapse_runs(&mut after.payload);
+        let AnnotationPayload::TextBox { font, .. } = &mut after.payload else {
+            return;
+        };
+        *font = FontId::new(family);
+        if let Some(height) = measure(&after.payload) {
+            if let AnnotationPayload::TextBox { rect, .. } = &mut after.payload {
+                rect.h = height;
+            }
+        }
         after.modified = self.current_ts;
         self.execute_transaction(self.replace_txn(id.clone(), before, after));
     }
@@ -603,5 +663,69 @@ mod tests {
             ),
             "one undo restores runs AND height"
         );
+    }
+
+    #[test]
+    fn set_font_size_is_one_transaction_and_restores_on_undo() {
+        let (mut e, id) = flat_textbox_editor_with("hello", 20.0);
+        let before = textbox_payload(&e, &id).clone();
+        let history = e.history_len();
+        e.set_annotation_font_size_measured(&id, 20.0, |_| Some(80.0));
+        assert_eq!(e.history_len(), history + 1, "one transaction");
+        let AnnotationPayload::TextBox { rect, size, .. } = textbox_payload(&e, &id) else {
+            panic!("expected TextBox");
+        };
+        assert_eq!(*size, 20.0);
+        assert_eq!(rect.h, 80.0, "measure result is applied in the same txn");
+        assert!(e.undo());
+        assert_eq!(textbox_payload(&e, &id), &before);
+    }
+
+    #[test]
+    fn set_font_size_never_shrinks_the_box() {
+        let (mut e, id) = flat_textbox_editor_with("hello", 40.0);
+        e.set_annotation_font_size_measured(&id, 6.0, |_| None);
+        let AnnotationPayload::TextBox { rect, size, .. } = textbox_payload(&e, &id) else {
+            panic!("expected TextBox");
+        };
+        assert_eq!(*size, 6.0);
+        assert_eq!(rect.h, 40.0, "grow-only");
+    }
+
+    #[test]
+    fn set_font_family_writes_the_font_id_and_collapses_runs() {
+        let (mut e, id) = rich_textbox_editor();
+        e.set_annotation_font_family_measured(&id, "宋体", |_| Some(24.0));
+        let AnnotationPayload::TextBox {
+            font, runs, rect, ..
+        } = textbox_payload(&e, &id)
+        else {
+            panic!("expected TextBox");
+        };
+        assert_eq!(font.0, "宋体");
+        assert!(
+            runs.is_empty(),
+            "rich runs collapse on the first style edit"
+        );
+        assert_eq!(rect.h, 24.0);
+        assert!(e.undo());
+        assert!(
+            matches!(
+                textbox_payload(&e, &id),
+                AnnotationPayload::TextBox { runs, font, .. }
+                    if !runs.is_empty() && font.0 == "118"
+            ),
+            "undo restores the rich appearance"
+        );
+    }
+
+    #[test]
+    fn unknown_family_still_updates_the_payload() {
+        let (mut e, id) = flat_textbox_editor_with("hi", 20.0);
+        e.set_annotation_font_family_measured(&id, "No Such Family", |_| None);
+        let AnnotationPayload::TextBox { font, .. } = textbox_payload(&e, &id) else {
+            panic!("expected TextBox");
+        };
+        assert_eq!(font.0, "No Such Family");
     }
 }

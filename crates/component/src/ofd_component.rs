@@ -690,6 +690,39 @@ impl OfdComponent {
         out
     }
 
+    /// Change the font family of a TextBox. The family name becomes the
+    /// payload's `FontId` (session-only in v1; no Font resource is written).
+    /// One transaction; rich runs collapse like any text edit.
+    pub fn set_annotation_font_family(&mut self, id: &AnnotationId, family: &str) {
+        self.ensure_font_store();
+        let store = self
+            .font_store
+            .clone()
+            .expect("font_store initialized above");
+        self.editor
+            .set_annotation_font_family_measured(id, family, |p| measure_textbox_growth(&store, p));
+        self.after_annotation_change();
+    }
+
+    /// Change the font size (millimetres) of a TextBox. Growth-only: the
+    /// measure closure returns a height only when the box must grow.
+    pub fn set_annotation_font_size(&mut self, id: &AnnotationId, size_mm: f64) {
+        self.ensure_font_store();
+        let store = self
+            .font_store
+            .clone()
+            .expect("font_store initialized above");
+        self.editor
+            .set_annotation_font_size_measured(id, size_mm, |p| measure_textbox_growth(&store, p));
+        self.after_annotation_change();
+    }
+
+    /// Change the text color of an annotation (no layout effect).
+    pub fn set_annotation_color(&mut self, id: &AnnotationId, color: Color) {
+        self.editor.set_annotation_color(id, color);
+        self.after_annotation_change();
+    }
+
     /// Replace the host-supplied available families (web manifest / native
     /// system font index). Duplicate keys keep the first entry.
     pub fn set_available_font_families(&mut self, families: Vec<rofd_render::FamilyEntry>) {
@@ -9640,7 +9673,7 @@ mod tests {
 
     #[test]
     fn annotation_format_anchor_matches_the_viewport_rect() {
-        let mut c = component_with_textbox();
+        let c = component_with_textbox();
         let id = textbox_id(&c);
         let anchor = c.annotation_format_anchor(&id).expect("anchor");
         let ann = c.document().annotations.find(&id).unwrap();
@@ -9649,6 +9682,31 @@ mod tests {
         assert_eq!(
             (anchor.x, anchor.y, anchor.w, anchor.h),
             (vp_rect.x, vp_rect.y, vp_rect.w, vp_rect.h)
+        );
+    }
+
+    #[test]
+    fn format_setters_keep_selection_and_cursor_and_dirty_the_document() {
+        let mut c = component_with_textbox();
+        let id = textbox_id(&c);
+        c.editor
+            .set_selection(AnnotationSelection::Single(id.clone()));
+        c.clear_modified();
+        c.set_annotation_font_size(&id, 20.0);
+        assert_eq!(c.selection(), &AnnotationSelection::Single(id.clone()));
+        assert_eq!(c.text_cursor().unwrap().offset, 2);
+        assert!(c.is_modified(), "a style change dirties the document");
+        assert!((c.annotation_text_style(&id).unwrap().size_mm - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn color_setter_writes_the_payload() {
+        let mut c = component_with_textbox();
+        let id = textbox_id(&c);
+        c.set_annotation_color(&id, rofd_dom::Color::Rgb(255, 0, 0));
+        assert_eq!(
+            c.annotation_text_style(&id).unwrap().color,
+            rofd_dom::Color::Rgb(255, 0, 0)
         );
     }
 
