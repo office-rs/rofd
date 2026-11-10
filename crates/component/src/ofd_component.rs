@@ -825,15 +825,6 @@ impl OfdComponent {
         Some(content.chars().skip(start).take(end - start).collect())
     }
 
-    /// Whether `id` is a flat (runs-empty) TextBox: the only text payload that
-    /// reflows and supports in-box text selection.
-    fn is_flat_textbox(&self, id: &AnnotationId) -> bool {
-        matches!(
-            self.editor.document().annotations.find(id).map(|a| &a.payload),
-            Some(AnnotationPayload::TextBox { spans, .. }) if spans.is_empty()
-        )
-    }
-
     /// Replace the active annotation text selection at `cursor` with `text`
     /// (one Transaction). Returns the new caret offset, or `None` when no
     /// selection targets the cursor's annotation.
@@ -1260,7 +1251,7 @@ impl OfdComponent {
 
     /// Apply the wrapped-text height floor to a TextBox rect (spec 2026-11-09
     /// §1.4): content is unchanged during a resize, so the required height is
-    /// computed up front. Rich boxes are left alone.
+    /// computed up front from the span-aware layout.
     fn with_text_height(&mut self, id: &rofd_dom::AnnotationId, mut rect: Rect) -> Rect {
         let payload = self
             .editor
@@ -1272,20 +1263,20 @@ impl OfdComponent {
             content,
             font,
             size,
+            color,
             spans,
             ..
         }) = payload
         else {
             return rect;
         };
-        if !spans.is_empty() {
-            return rect;
-        }
         self.ensure_font_store();
         let Some(store) = self.font_store.as_ref() else {
             return rect;
         };
-        let wrapped = store.shape_wrapped(&font, &content, size, rect.w.max(size));
+        let runs = rofd_render::layout_runs(&content, &spans, &font, size, color);
+        let max_size = runs.iter().map(|r| r.size).fold(0.0_f64, f64::max);
+        let wrapped = store.shape_wrapped_runs(&content, &runs, rect.w.max(max_size));
         let required = wrapped.height();
         if required > rect.h {
             rect.h = required;
@@ -1728,15 +1719,13 @@ impl OfdComponent {
             content,
             font,
             size,
+            color,
             spans,
             ..
         } = payload
         else {
             return None;
         };
-        if !spans.is_empty() {
-            return None;
-        }
         self.ensure_font_store();
         let store = self.font_store.as_ref()?;
         let direction = if up {
@@ -1748,11 +1737,12 @@ impl OfdComponent {
             .caret_line
             .filter(|(offset, _)| *offset == cursor.offset)
             .map(|(_, line)| line);
-        let (offset, x, line) = rofd_render::caret_offset_vertical(
+        let runs = rofd_render::layout_runs(&content, &spans, &font, size, color);
+        let max_size = runs.iter().map(|r| r.size).fold(0.0_f64, f64::max);
+        let (offset, x, line) = rofd_render::caret_offset_vertical_runs(
             &content,
-            &font,
-            size,
-            rect.w.max(size),
+            &runs,
+            rect.w.max(max_size),
             store,
             cursor.offset,
             direction,
@@ -2825,10 +2815,10 @@ impl OfdComponent {
                 self.set_annot_text_selection(None);
                 self.fire_selection_change();
                 self.fire_cursor_change();
-                // Text tool on an editing flat TextBox: dragging selects the
+                // Text tool on an editing TextBox: dragging selects the
                 // box's text (and never moves the box - that is the Hand
-                // tool's job).
-                if matches!(self.tool, Tool::Text) && was_editing && self.is_flat_textbox(&id) {
+                // tool's job). Span-bearing boxes behave identically.
+                if matches!(self.tool, Tool::Text) && was_editing {
                     if let Some(anchor) = caret_offset {
                         self.drag = Some(DragState::AnnotTextSelect {
                             annotation: id.clone(),
@@ -2945,28 +2935,20 @@ impl OfdComponent {
                 content,
                 font,
                 size,
+                color,
                 spans,
                 ..
             } => {
-                if spans.is_empty() {
-                    Some(rofd_render::caret_offset_at_point(
-                        content,
-                        font,
-                        *size,
-                        rect.w.max(*size),
-                        store,
-                        local_x - rect.x,
-                        local_y - rect.y,
-                    ))
-                } else {
-                    Some(rofd_render::caret_offset_at_x(
-                        content,
-                        font,
-                        *size,
-                        store,
-                        local_x - rect.x,
-                    ))
-                }
+                let runs = rofd_render::layout_runs(content, spans, font, *size, *color);
+                let max_size = runs.iter().map(|r| r.size).fold(0.0_f64, f64::max);
+                Some(rofd_render::caret_offset_at_point_runs(
+                    content,
+                    &runs,
+                    rect.w.max(max_size),
+                    store,
+                    local_x - rect.x,
+                    local_y - rect.y,
+                ))
             }
             AnnotationPayload::Note { rect, content, .. } => Some(rofd_render::caret_offset_at_x(
                 content,
@@ -9628,6 +9610,129 @@ mod tests {
         let mut c = test_component();
         c.update_scene();
         assert!(!c.register_font_slice(vec![1, 2, 3], "simsun", "s0"));
+    }
+
+    /// Span-bearing TextBox: the content is split in half, each half styled
+    /// differently (color), so `spans` is non-empty.
+    fn component_with_span_textbox(content: &str, w: f64, h: f64) -> OfdComponent {
+        let bytes = include_bytes!("../../render/tests/fixtures/fonts/TestFont.ttf").to_vec();
+        let mut c = OfdComponent::new(OfdConfig::new(Arc::new(bytes)));
+        c.set_clock("t".into(), 1);
+        let mut doc = OfdDocument::default();
+        doc.pages.push(Page {
+            id: PageId::new("P0"),
+            physical_box: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 200.0,
+            },
+            layers: vec![Layer::default()],
+            template: None,
+        });
+        c.load_document(doc);
+        let chars: Vec<char> = content.chars().collect();
+        let mid = chars.len() / 2;
+        let first: String = chars[..mid].iter().collect();
+        let second: String = chars[mid..].iter().collect();
+        let mut spans = Vec::new();
+        if !first.is_empty() {
+            spans.push(rofd_dom::TextSpan {
+                text: first,
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Some(Color::Rgb(255, 0, 0)),
+                bold: false,
+                italic: false,
+            });
+        }
+        if !second.is_empty() {
+            spans.push(rofd_dom::TextSpan {
+                text: second,
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Some(Color::Rgb(0, 0, 255)),
+                bold: false,
+                italic: false,
+            });
+        }
+        let id = c.create_annotation(
+            AnnotationKind::TextBox,
+            PageId::new("P0"),
+            AnnotationPayload::TextBox {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w,
+                    h,
+                },
+                content: content.into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                spans,
+            },
+        );
+        c.editor.set_cursor(id, content.chars().count());
+        c.viewport = rofd_render::Viewport {
+            scroll: (0.0, 0.0),
+            zoom: 1.0,
+            size: (200.0, 200.0),
+            page_gap: 0.0,
+        };
+        c
+    }
+
+    fn component_with_narrow_span_textbox(content: &str, w: f64, h: f64) -> OfdComponent {
+        component_with_span_textbox(content, w, h)
+    }
+
+    #[test]
+    fn span_textbox_supports_drag_selection() {
+        let mut c = component_with_span_textbox("hello", 100.0, 40.0);
+        drag_hello(&mut c, 0, 3);
+        let id = textbox_id(&c);
+        assert!(
+            c.annot_selection_range(&id).is_some(),
+            "span boxes must support text-selection drag"
+        );
+    }
+
+    #[test]
+    fn span_textbox_arrow_down_moves_to_the_next_visual_line() {
+        let mut c = component_with_narrow_span_textbox("abcdef ghijkl mn", 45.0, 60.0);
+        let id = textbox_id(&c);
+        c.editor.set_cursor(id, 6);
+        c.handle_event(&ViewEvent::KeyDown {
+            key: Key::ArrowDown,
+            modifiers: Modifiers::default(),
+        });
+        assert_eq!(
+            c.caret_line.map(|(_, line)| line),
+            Some(1),
+            "vertical caret movement works for span boxes"
+        );
+    }
+
+    #[test]
+    fn resizing_a_span_textbox_grows_it_to_fit() {
+        let mut c = component_with_span_textbox("abcdef ghijkl mn", 100.0, 40.0);
+        let id = textbox_id(&c);
+        c.resize_annotation(
+            &id,
+            rofd_dom::Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 20.0,
+                h: 10.0,
+            },
+        );
+        let h = match textbox_payload(&c, &id) {
+            AnnotationPayload::TextBox { rect, .. } => rect.h,
+            _ => panic!("expected TextBox"),
+        };
+        assert!(h > 10.0, "span box grows to fit the reflowed text: {h}");
     }
 
     // ---- print_direct (spec 2026-10-31 print phase 2 Task 2) ----

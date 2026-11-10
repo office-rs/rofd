@@ -33,8 +33,9 @@ pub use body_text::{
     word_range_at, BodyTextRange, BodyTextSelection, TextHit,
 };
 pub use caret_rect::{
-    annotation_text_selection_rects, caret_offset_at_point, caret_offset_at_x,
-    caret_offset_vertical, caret_rect, caret_rect_on_line, paint_caret, VerticalMove,
+    annotation_text_selection_rects, caret_offset_at_point, caret_offset_at_point_runs,
+    caret_offset_at_x, caret_offset_vertical, caret_offset_vertical_runs, caret_rect,
+    caret_rect_on_line, paint_caret, VerticalMove,
 };
 pub use composite::{page_origin, page_origins, DragPreview, RenderEngine, TEXT_SELECTION_COLOR};
 pub use ctm::{compose_transform, ctm_to_affine};
