@@ -24,8 +24,20 @@ use imaging::kurbo::{Rect as KurboRect, Shape};
 use imaging::{record::Scene, Painter};
 use rofd_dom::{AnnotationId, AnnotationPayload, FontId, OfdDocument, Rect};
 
-use crate::text::{FontStore, WrappedLine, WrappedText};
+use crate::text::{FontStore, LayoutRun, WrappedLine, WrappedText};
 use crate::viewport::Viewport;
+
+/// One style run covering the whole content (flat annotation strings).
+fn flat_run(content: &str, font_id: &FontId, size: f64) -> [LayoutRun; 1] {
+    [LayoutRun {
+        byte_range: 0..content.len(),
+        font: font_id.clone(),
+        size,
+        color: None,
+        bold: false,
+        italic: false,
+    }]
+}
 
 /// Caret rect (viewport space) for a text annotation at char `offset`.
 ///
@@ -36,10 +48,10 @@ use crate::viewport::Viewport;
 /// page-stacking helper: centering + scroll on both axes + `page_gap` +
 /// `zoom`).
 ///
-/// `spans`-empty TextBoxes use the wrapped layout: x is the line-relative
-/// glyph pen at `offset`, y is `rect.y + line.top`, height is the visual line
-/// box height. Rich TextBoxes and Note/Watermark keep the legacy flat-content
-/// geometry (spec 2026-11-09 §1.2.2, §1.3).
+/// TextBox caret uses the wrapped span layout: x is the line-relative glyph
+/// pen at `offset`, y is `rect.y + line.top`, height is the visual line box
+/// height (the tallest style run on that line). Note/Watermark keep the legacy
+/// flat-content geometry (spec 2026-11-09 §1.2.2, §1.3).
 pub fn caret_rect(
     doc: &OfdDocument,
     vp: &Viewport,
@@ -79,39 +91,33 @@ pub fn caret_rect_on_line(
         content,
         font,
         size,
+        color,
         spans,
         ..
     } = &ann.payload
     {
-        if spans.is_empty() {
-            let wrapped = fonts.shape_wrapped(font, content, *size, rect.w.max(*size));
-            let (line_idx, local) = line_and_local(&wrapped, offset, line_hint);
-            let line = wrapped.lines.get(line_idx)?;
-            let x_local = caret_x_on_line(&wrapped, line, local);
-            let vx = origin_x + (rect.x + x_local) * vp.zoom;
-            let vy = origin_y + (rect.y + line.top) * vp.zoom;
-            return Some(Rect {
-                x: vx,
-                y: vy,
-                w: 1.0 * vp.zoom,
-                // The bar spans the full visual line box (ascent + descent +
-                // leading), not just the font size: a size-high bar starting
-                // at the line top stops at the baseline and reads as floating
-                // ABOVE the text (2026-11-10 fix).
-                h: line.height * vp.zoom,
-            });
-        }
+        let runs = crate::text::layout_runs(content, spans, font, *size, *color);
+        let max_size = runs.iter().map(|r| r.size).fold(0.0_f64, f64::max);
+        let wrapped = fonts.shape_wrapped_runs(content, &runs, rect.w.max(max_size));
+        let (line_idx, local) = line_and_local(&wrapped, offset, line_hint);
+        let line = wrapped.lines.get(line_idx)?;
+        let x_local = caret_x_on_line(&wrapped, line, local);
+        let vx = origin_x + (rect.x + x_local) * vp.zoom;
+        let vy = origin_y + (rect.y + line.top) * vp.zoom;
+        return Some(Rect {
+            x: vx,
+            y: vy,
+            w: 1.0 * vp.zoom,
+            // The bar spans the full visual line box (ascent + descent +
+            // leading), not just the font size: a size-high bar starting
+            // at the line top stops at the baseline and reads as floating
+            // ABOVE the text (2026-11-10 fix).
+            h: line.height * vp.zoom,
+        });
     }
 
-    // Legacy path: rich TextBox, Note, Watermark.
+    // Legacy path: Note and Watermark (flat single-style strings).
     let (content, font_id, size, rect) = match &ann.payload {
-        AnnotationPayload::TextBox {
-            rect,
-            content,
-            font,
-            size,
-            ..
-        } => (content.as_str(), font, *size, *rect),
         AnnotationPayload::Note { rect, content, .. } => {
             // Notes: caret placed inside the popup rect using the note's text.
             (content.as_str(), &rofd_dom::FontId::default(), 12.0, *rect)
@@ -218,7 +224,20 @@ pub fn caret_offset_at_point(
     x_in_rect: f64,
     y_in_rect: f64,
 ) -> usize {
-    let wrapped = fonts.shape_wrapped(font_id, content, size, max_width);
+    let runs = flat_run(content, font_id, size);
+    caret_offset_at_point_runs(content, &runs, max_width, fonts, x_in_rect, y_in_rect)
+}
+
+/// Like [`caret_offset_at_point`], with per-run styles.
+pub fn caret_offset_at_point_runs(
+    content: &str,
+    runs: &[LayoutRun],
+    max_width: f64,
+    fonts: &FontStore,
+    x_in_rect: f64,
+    y_in_rect: f64,
+) -> usize {
+    let wrapped = fonts.shape_wrapped_runs(content, runs, max_width);
     if wrapped.lines.is_empty() {
         return 0;
     }
@@ -227,10 +246,9 @@ pub fn caret_offset_at_point(
 }
 
 /// Viewport-space highlight rectangles for a char range selected inside a
-/// flat TextBox (`spans` empty): one rect per visual line the range covers,
-/// spanning the line box height. Returns an empty vec for a zero-width range,
-/// non-text payloads, rich boxes (no reflow, no text selection) and
-/// unresolvable geometry.
+/// TextBox: one rect per visual line the range covers, spanning the line box
+/// height. Returns an empty vec for a zero-width range, non-TextBox payloads
+/// and unresolvable geometry.
 ///
 /// `start`/`end` are char offsets; they are clamped and may be swapped.
 pub fn annotation_text_selection_rects(
@@ -263,22 +281,22 @@ pub fn annotation_text_selection_rects(
         content,
         font,
         size,
+        color,
         spans,
         ..
     } = &ann.payload
     else {
         return Vec::new();
     };
-    if !spans.is_empty() {
-        return Vec::new();
-    }
     let Some(page_idx) = doc.pages.iter().position(|p| p.id == ann.page) else {
         return Vec::new();
     };
     let Some((origin_x, origin_y)) = crate::composite::page_origin(doc, vp, page_idx) else {
         return Vec::new();
     };
-    let wrapped = fonts.shape_wrapped(font, content, *size, rect.w.max(*size));
+    let runs = crate::text::layout_runs(content, spans, font, *size, *color);
+    let max_size = runs.iter().map(|r| r.size).fold(0.0_f64, f64::max);
+    let wrapped = fonts.shape_wrapped_runs(content, &runs, rect.w.max(max_size));
     let end = end.min(wrapped.total_chars);
     let mut out = Vec::new();
     for line in wrapped.lines.iter() {
@@ -332,7 +350,32 @@ pub fn caret_offset_vertical(
     preferred_x: Option<f64>,
     current_line: Option<usize>,
 ) -> (usize, f64, usize) {
-    let wrapped = fonts.shape_wrapped(font_id, content, size, max_width);
+    let runs = flat_run(content, font_id, size);
+    caret_offset_vertical_runs(
+        content,
+        &runs,
+        max_width,
+        fonts,
+        offset,
+        direction,
+        preferred_x,
+        current_line,
+    )
+}
+
+/// Like [`caret_offset_vertical`], with per-run styles.
+#[allow(clippy::too_many_arguments)] // all parameters describe one caret move
+pub fn caret_offset_vertical_runs(
+    content: &str,
+    runs: &[LayoutRun],
+    max_width: f64,
+    fonts: &FontStore,
+    offset: usize,
+    direction: VerticalMove,
+    preferred_x: Option<f64>,
+    current_line: Option<usize>,
+) -> (usize, f64, usize) {
+    let wrapped = fonts.shape_wrapped_runs(content, runs, max_width);
     if wrapped.lines.is_empty() {
         return (0, 0.0, 0);
     }
@@ -461,6 +504,79 @@ mod tests {
             size: (800.0, 600.0),
             page_gap: 20.0,
         }
+    }
+
+    fn base_span() -> rofd_dom::TextSpan {
+        rofd_dom::TextSpan {
+            text: String::new(),
+            font: FontId::new("F1"),
+            size: 12.0,
+            color: None,
+            bold: false,
+            italic: false,
+        }
+    }
+
+    fn textbox_with_spans(spans: Vec<rofd_dom::TextSpan>) -> AnnotationPayload {
+        let content: String = spans.iter().map(|s| s.text.as_str()).collect();
+        AnnotationPayload::TextBox {
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 40.0,
+            },
+            content,
+            font: FontId::new("F1"),
+            size: 12.0,
+            color: Color::Rgb(0, 0, 0),
+            border: None,
+            spans,
+        }
+    }
+
+    #[test]
+    fn caret_rect_uses_span_layout_height_for_a_mixed_size_line() {
+        let (mut doc, fonts) = doc_with_font();
+        let id = push_ann(
+            &mut doc,
+            textbox_with_spans(vec![
+                rofd_dom::TextSpan {
+                    text: "ab".into(),
+                    size: 6.0,
+                    ..base_span()
+                },
+                rofd_dom::TextSpan {
+                    text: "cd".into(),
+                    size: 24.0,
+                    ..base_span()
+                },
+            ]),
+            AnnotationKind::TextBox,
+        );
+        let r = caret_rect(&doc, &vp(), &fonts, &id, 0).expect("caret");
+        assert!(r.h >= 24.0, "caret spans the tallest span's line box: {r:?}");
+    }
+
+    #[test]
+    fn selection_rects_are_non_empty_for_a_span_box() {
+        let (mut doc, fonts) = doc_with_font();
+        let id = push_ann(
+            &mut doc,
+            textbox_with_spans(vec![
+                rofd_dom::TextSpan {
+                    text: "ab".into(),
+                    ..base_span()
+                },
+                rofd_dom::TextSpan {
+                    text: "cd".into(),
+                    ..base_span()
+                },
+            ]),
+            AnnotationKind::TextBox,
+        );
+        let rects = annotation_text_selection_rects(&doc, &vp(), &fonts, &id, 0, 3);
+        assert!(!rects.is_empty(), "span boxes must highlight their selection");
     }
 
     #[test]
@@ -912,7 +1028,7 @@ mod tests {
     }
 
     #[test]
-    fn selection_rects_ignore_empty_reversed_rich_and_missing() {
+    fn selection_rects_ignore_empty_and_missing_but_cover_span_boxes() {
         let (mut doc, fonts) = doc_with_font();
         let id = push_ann(
             &mut doc,
@@ -983,8 +1099,8 @@ mod tests {
                 },
             });
         assert!(
-            annotation_text_selection_rects(&doc, &vp(), &fonts, &rich, 0, 2).is_empty(),
-            "rich boxes do not support text selection"
+            !annotation_text_selection_rects(&doc, &vp(), &fonts, &rich, 0, 2).is_empty(),
+            "span boxes now support text selection"
         );
     }
 
