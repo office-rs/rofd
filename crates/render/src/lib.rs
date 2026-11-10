@@ -25,7 +25,7 @@ pub mod text;
 pub mod tooltip;
 pub mod viewport;
 
-pub use annotation_scene::draw_annotations;
+pub use annotation_scene::{draw_annotations, PreeditPreview};
 pub use body_scene::draw_body;
 pub use body_text::{
     body_text_ranges_between, hit_test_body_text, paragraph_range_at, text_selection_rects,

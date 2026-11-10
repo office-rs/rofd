@@ -1175,6 +1175,13 @@ impl OfdComponent {
         // Overlay：render 覆盖层（per-page 文本选区/批注、选框 handle、拖拽
         // 预览）+ 组件自有覆盖物（原 compose_scene 尾段原样平移，绘制顺序
         // 不变：scrollbars → caret → preedit → tooltip）。
+        // 活动 IME 组合串经 PreeditPreview 参与 TextBox 内联排版（平铺框），
+        // 否则会叠在既有文字上；富文本框仍走下方 detached overlay。
+        let preedit_preview = self.preedit.as_ref().map(|s| rofd_render::PreeditPreview {
+            annotation: &s.annotation,
+            offset: s.offset,
+            text: s.text.as_str(),
+        });
         let mut overlay = rofd_render::overlay_scene(&rofd_render::OverlayInput {
             doc,
             vp: &vp,
@@ -1182,6 +1189,7 @@ impl OfdComponent {
             selection: self.editor.selection(),
             text_selection: self.text_selection.as_ref(),
             drag: drag_preview.as_ref(),
+            preedit: preedit_preview.as_ref(),
         });
         let layout = rofd_render::scrollbar_layout(doc, &vp);
         let active = match &self.drag {
@@ -3854,6 +3862,23 @@ mod tests {
         c.mark_scene_dirty();
         c.update_scene();
         c.scene().commands().len()
+    }
+
+    /// Glyph count across the scene's glyph runs (composing text joins the
+    /// box text flow, so the count - not the command count - is the signal).
+    fn recomposed_glyphs(c: &mut OfdComponent) -> usize {
+        c.mark_scene_dirty();
+        c.update_scene();
+        let scene = c.scene();
+        let mut n = 0usize;
+        for cmd in scene.commands() {
+            if let imaging::record::Command::Draw(id) = cmd {
+                if let imaging::record::Draw::GlyphRun(gr) = scene.draw_op(*id) {
+                    n += gr.glyphs.len();
+                }
+            }
+        }
+        n
     }
 
     use crate::event::{Key, Modifiers, MouseButton, ScrollDirection, ViewEvent};
@@ -8870,22 +8895,26 @@ mod tests {
     }
 
     #[test]
-    fn preedit_overlay_adds_commands_then_removes_on_commit() {
+    fn preedit_preview_draws_inline_then_commits() {
         let mut c = component_with_textbox();
-        let idle = recomposed_len(&mut c);
+        let idle = recomposed_glyphs(&mut c);
         c.handle_event(&ViewEvent::ImePreedit {
-            text: "你好".into(),
+            text: "ab".into(),
             caret: None,
         });
-        let composing = recomposed_len(&mut c);
-        assert!(composing > idle, "overlay paints during composition");
-        c.handle_event(&ViewEvent::ImeCommit {
-            text: "你好".into(),
-        });
-        let committed = recomposed_len(&mut c);
-        // Overlay gone (committed text now draws as a normal annotation:
-        // it may add glyph commands, but fewer than overlay+old content).
-        assert!(committed < composing);
+        assert!(c.preedit.is_some());
+        let composing = recomposed_glyphs(&mut c);
+        assert_eq!(
+            composing,
+            idle + 2,
+            "composition glyphs join the box text (inline preview)"
+        );
+        assert_eq!(textbox_content(&c), "hi", "composition is preview-only");
+        c.handle_event(&ViewEvent::ImeCommit { text: "ab".into() });
+        assert!(c.preedit.is_none());
+        assert_eq!(textbox_content(&c), "hiab");
+        let committed = recomposed_glyphs(&mut c);
+        assert_eq!(committed, composing, "commit replaces the preview");
     }
 
     #[test]

@@ -198,6 +198,7 @@ impl PrintSession {
                 &self.fonts,
                 (0.0, 0.0),
                 PRINT_ZOOM,
+                None,
             );
         }
         self.page_cache.insert(n, scene);

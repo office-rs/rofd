@@ -66,6 +66,7 @@ fn annotation_scene_draws_for_fixture() {
         &fonts,
         (0.0, 0.0),
         1.0,
+        None,
     );
     let _ = scene;
 }

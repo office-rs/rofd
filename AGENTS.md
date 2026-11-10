@@ -207,7 +207,7 @@ converter hosts（CLI/未来绑定）只碰 rofd-convert，与"编辑器宿主�
 - 唯一入口 `OfdComponent`：`new_native()`/`new_wasm()`（`#[cfg(target_arch = "wasm32")]` 门控，非 feature）、`handle_event`。
 - `OfdConfig`：`default_font_bytes`、`page_gap`（默认 20）、`zoom`（初始 PX_PER_MM，`with_zoom` 可覆盖）。
 - 场景脏缓存（终态公共 API）：`update_scene()` 按脏标志重合成、`scene() -> &Scene`、`set_viewport_size(f64,f64)`、`mark_scene_dirty`（pub(crate)）。
-- 文本编辑：`paste_text`、`delete_annotation`、`tick_blink`（两目标统一，wasm 由 `renderFrame` 驱动，见 §4.4）、preedit 状态机（组件自持 `Option<PreeditState>`，简化 caret overlay，不做 ghost-document 回流）。
+- 文本编辑：`paste_text`、`delete_annotation`、`tick_blink`（两目标统一，wasm 由 `renderFrame` 驱动，见 §4.4）、preedit 状态机（组件自持 `Option<PreeditState>`）。组合串的屏幕预览：平铺 TextBox 把它内联插进内容流参与折行/重排（`draw_annotations` 的 `PreeditPreview`，组合点之后的文字随之后移，不重叠）；`runs` 非空的富 TextBox 保持旧的 detached overlay 单行定位。组合串不入 dom、不进保存/打印。
 - 创建工具含文字两件套（2026-11-07）：`CreateKind::Typewriter`（点击放置无边框空框即落光标）与 `CreateKind::TextBox`（拖拽画带边框框）；富文本框（解析自外来文件的逐段样式 `TextBox.runs`）渲染按段保真（合成粗体/斜体），首次文本编辑在同一 Transaction 内塌缩为平铺样式（一次 undo 还原富外观）。
 - 批注文字流式排版（spec 2026-11-09）：`runs` 空的 TextBox 按 rect 宽折行、框只向下增高；Enter 插入硬换行、上下键按视觉行移动光标。保存经 `save_snapshot()` 产出 `TextLayoutHints`，io 用其写逐行 TextObject（真实行几何/字距）+ `Remark` + `GrowMode`（不写 `AllRichText`/`ParagraphFormat`：两者都不是流式重排来源，rofd 也不读）；重开从 `Remark` 恢复逻辑文本，拖宽仍重排。
 - 打印内核缝（spec 2026-10-31）：`begin_print(PrintContent) -> PrintSession`，内容三开关（水印/批注/图章，默认**全开 ✔✔✔**——spec 2026-11-06 D17 翻转，commit 052f528；`PrintContent::default()` 三项皆 true，宿主与 convert 均经 default 派生）；页场景/纸型/页计划全经 session（`page_scene`/`page_parameters`/`plan`，`1-3,5` 范围语法由 office-rs-print 解析，宿主不重写）；native 一键直打 `print_direct`（begin_print→plan→payload→`print_pages`）。

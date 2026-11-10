@@ -102,8 +102,9 @@ parley 0.8 把 `\r\n` 拆成**两个**换行簇（`a\r\nb` → 三行，中间�
 
 preedit：
 
-- 按 offset 的行/列定位组合串起点（x = 行内 pen，y = 行 top），继续裁剪到 TextBox rect。
-- `runs` 非空的富 TextBox 保持现有单行定位。
+- 平铺 TextBox（`runs` 空）把组合串**内联**插进内容流：按 `content[..offset] + 组合串 + content[offset..]` 走同一份折行排版，组合点之后的文字随之下移/换行。组合串因此出现在它将要提交的位置，且不会叠在既有文字上（2026-11-10 修订：此前的 detached overlay 画在组合点，会与之后的文字重叠）。
+- 组合串只用于屏幕预览：不写 dom、不进保存快照、不参与打印/PDF 导出（那些路径 `draw_annotations(..., preedit: None)`）。
+- `runs` 非空的富 TextBox 保持现有单行 detached overlay 定位（§1.2.2）。
 
 ### 1.4 改宽
 
@@ -187,7 +188,7 @@ OFD 的 `Appearance` 是版式缓存，不是可编辑源。WPS 的 FreeText 批
                 │  (parley break_all_lines(Some(width)), OverflowWrap::Anywhere)
                 ├── draw_text_in_rect（屏幕/打印/PDF 导出/convert 共用）
                 ├── caret_rect / caret_offset_at_point / caret_offset_vertical
-                ├── preedit_overlay
+                ├── draw_annotations 的 preedit 内联预览（富 TextBox 仍走 preedit_overlay）
                 └── save_snapshot（行几何 + 字距 hints）
                         │
                         ▼
@@ -261,7 +262,9 @@ OFD 的 `Appearance` 是版式缓存，不是可编辑源。WPS 的 FreeText 批
                             line_hint: Option<usize>) -> Option<Rect>;
   // caret_rect(...) = caret_rect_on_line(..., None)
   ```
-- `preedit_overlay.rs`：`runs` 空的 TextBox 按 offset 的行/列定位；富 TextBox 保持现状。
+- `annotation_scene.rs`：`draw_annotations` 增加 `preedit: Option<&PreeditPreview>`；平铺 TextBox 用组合后的内容走 `draw_text_in_rect`（内联预览）。
+- `preedit_overlay.rs`：只服务 `runs` 非空的富 TextBox（单行前缀宽度定位）；平铺 TextBox 直接返回（由内联预览绘制）。
+- `layers.rs`：`OverlayInput` 增加 `preedit` 字段，透传给 `draw_annotations`。
 - `lib.rs` 导出新类型/函数。
 
 ### 3.3 `rofd-editor`
@@ -410,7 +413,7 @@ for i, line in hints[ann_id].iter().enumerate():
 - `caret_rect`：第二行 offset 的 y = rect.y + line.top；软折行边界；单行行为与现值一致（现有测试保持绿）。
 - `caret_offset_at_point`：点第二行返回第二行 offset；点行首/行尾；y 夹紧。
 - `caret_offset_vertical`：软折行上/下移；显式 `\n` 上/下移；连续下移保留 preferred_x（长行→短行→长行）；短行夹到行尾；首行 Up → 0、末行 Down → 文末。
-- `preedit_overlay`：offset 在第二行时画在第二行位置。
+- `preedit` 内联预览：组合点在文本中间时组合串之后的字符 x 后移（不与组合串重叠）；折行边界处组合串落到下一行；目标以外批注不受影响；平铺 TextBox 的 detached overlay 不再绘制；富 TextBox 仍走 overlay。
 - 绘制：折行后各行 baseline 落在 rect 内；`to_layout_hints` 的 top/baseline/width/advances 与 glyph 位置一致。
 - 富 TextBox（`runs` 非空）：绘制仍走 `draw_text_runs`；`caret_rect` / preedit 保持旧单行定位。
 

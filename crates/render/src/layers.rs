@@ -12,7 +12,7 @@ use imaging::record::Scene;
 use imaging::Painter;
 use rofd_dom::{AnnotationSelection, OfdDocument, Page, Resources};
 
-use crate::annotation_scene::draw_annotations;
+use crate::annotation_scene::{draw_annotations, PreeditPreview};
 use crate::body_scene::draw_body;
 use crate::body_text::{text_selection_rects, BodyTextSelection};
 use crate::composite::{
@@ -47,6 +47,8 @@ pub fn page_body_scene(page: &Page, res: &Resources, fonts: &FontStore, zoom: f6
 
 /// 覆盖层输入。滚动条/caret/preedit/tooltip 不在此层——它们由组件在
 /// 自己的 overlay Scene 里追加（见 ofd_component compose 流程）。
+/// `preedit` 是例外：活动 IME 组合串要按内容流参与 TextBox 排版（否则会
+/// 直接叠在既有文字上），故经此传入 `draw_annotations` 内联绘制。
 pub struct OverlayInput<'a> {
     pub doc: &'a OfdDocument,
     pub vp: &'a Viewport,
@@ -54,6 +56,8 @@ pub struct OverlayInput<'a> {
     pub selection: &'a AnnotationSelection,
     pub text_selection: Option<&'a BodyTextSelection>,
     pub drag: Option<&'a DragPreview>,
+    /// Active IME composition previewed inline in its TextBox.
+    pub preedit: Option<&'a PreeditPreview<'a>>,
 }
 
 /// 动态覆盖层（视口坐标）：每可见页 [文本选区高亮 + 批注]（页序），
@@ -71,6 +75,7 @@ pub fn overlay_scene(input: &OverlayInput<'_>) -> Scene {
         selection,
         text_selection,
         drag,
+        preedit,
     } = input;
     let mut scene = Scene::new();
     let mut painter = Painter::new(&mut scene);
@@ -97,7 +102,15 @@ pub fn overlay_scene(input: &OverlayInput<'_>) -> Scene {
             }
         }
         let anns = doc.annotations.for_page(&page.id);
-        draw_annotations(&mut painter, anns, &doc.resources, fonts, origin, vp.zoom);
+        draw_annotations(
+            &mut painter,
+            anns,
+            &doc.resources,
+            fonts,
+            origin,
+            vp.zoom,
+            *preedit,
+        );
     }
 
     if let AnnotationSelection::Single(id) = selection {

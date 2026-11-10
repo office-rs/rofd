@@ -121,6 +121,7 @@ fn layered_split_matches_composite_counts() {
         selection: &sel,
         text_selection: Some(&text_sel),
         drag: None,
+        preedit: None,
     });
     imaging::record::replay(&overlay, &mut merged);
 

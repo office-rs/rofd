@@ -249,7 +249,15 @@ impl RenderEngine {
             }
 
             let anns = doc.annotations.for_page(&page.id);
-            draw_annotations(&mut painter, anns, &doc.resources, fonts, origin, vp.zoom);
+            draw_annotations(
+                &mut painter,
+                anns,
+                &doc.resources,
+                fonts,
+                origin,
+                vp.zoom,
+                None,
+            );
         }
 
         // Selection overlay: draw the selection frame + handles on the selected
