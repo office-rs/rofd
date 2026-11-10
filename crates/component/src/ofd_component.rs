@@ -584,8 +584,7 @@ impl OfdComponent {
     /// for every flat TextBox compute the wrapped visual lines with the same
     /// layout the renderer uses, raise `rect.h` to fit them, and return the
     /// line hints for the OFD appearance writer. `content` is never rewritten
-    /// with soft breaks; rich TextBoxes / Note / Watermark / empty boxes are
-    /// left untouched.
+    /// with soft breaks; Note / Watermark / empty boxes are left untouched.
     pub fn save_snapshot(&self) -> SaveSnapshot {
         let mut document = self.editor.document().clone();
         let store = self
@@ -599,16 +598,19 @@ impl OfdComponent {
                 content,
                 font,
                 size,
+                color,
                 spans,
                 ..
             } = &mut ann.payload
             else {
                 continue;
             };
-            if !spans.is_empty() || content.chars().count() == 0 {
+            if content.chars().count() == 0 {
                 continue;
             }
-            let wrapped = store.shape_wrapped(font, content, *size, rect.w.max(*size));
+            let runs = rofd_render::layout_runs(content, spans, font, *size, *color);
+            let max_size = runs.iter().map(|r| r.size).fold(0.0_f64, f64::max);
+            let wrapped = store.shape_wrapped_runs(content, &runs, rect.w.max(max_size));
             if wrapped.lines.is_empty() {
                 continue;
             }
@@ -631,8 +633,10 @@ impl OfdComponent {
     }
 
     /// Style snapshot for the floating format panel: family display name,
-    /// size (mm), color and whether the box is a rich (runs) box. `None` for
-    /// non-text annotations and missing ids.
+    /// size (mm), color and whether the box is a rich (spans) box. With an
+    /// active text selection inside `id`, reports the style at the selection's
+    /// first char; otherwise the flat style. `None` for non-text annotations
+    /// and missing ids.
     pub fn annotation_text_style(&mut self, id: &AnnotationId) -> Option<AnnotationTextStyle> {
         let ann = self.editor.document().annotations.find(id)?.clone();
         let AnnotationPayload::TextBox {
@@ -645,6 +649,13 @@ impl OfdComponent {
         else {
             return None;
         };
+        let rich = !spans.is_empty();
+        let selected = self
+            .annot_selection_range(id)
+            .and_then(|(start, _)| rofd_editor::text_spans::style_at(&ann.payload, start))
+            .map(|s| (s.font, s.size, s.color))
+            .unwrap_or_else(|| (font.clone(), *size, *color));
+        let (style_font, style_size, style_color) = selected;
         if self.font_store.is_none() {
             self.font_store = Some(self.build_font_store());
         }
@@ -652,21 +663,21 @@ impl OfdComponent {
             .font_store
             .as_ref()
             .expect("font_store initialized above")
-            .family_display_name(font)
+            .family_display_name(&style_font)
             // SDK-listed families are stored by key (web manifest); show the
             // host's display name instead of the normalized key.
             .or_else(|| {
                 self.available_font_families
                     .iter()
-                    .find(|e| e.key == font.0)
+                    .find(|e| e.key == style_font.0)
                     .map(|e| e.display.clone())
             })
-            .unwrap_or_else(|| font.0.clone());
+            .unwrap_or_else(|| style_font.0.clone());
         Some(AnnotationTextStyle {
             family,
-            size_mm: *size,
-            color: *color,
-            rich: !spans.is_empty(),
+            size_mm: style_size,
+            color: style_color,
+            rich,
         })
     }
 
@@ -698,20 +709,24 @@ impl OfdComponent {
 
     /// Change the font family of a TextBox. The family name becomes the
     /// payload's `FontId` (session-only in v1; no Font resource is written).
-    /// One transaction; rich runs collapse like any text edit.
+    /// With an active text selection inside the box, only the selected chars
+    /// change; otherwise the whole box does.
     pub fn set_annotation_font_family(&mut self, id: &AnnotationId, family: &str) {
         self.ensure_font_store();
         let store = self
             .font_store
             .clone()
             .expect("font_store initialized above");
-        self.editor
-            .set_annotation_font_family_measured(id, None, family, |p| measure_textbox_growth(&store, p));
+        let range = self.annot_selection_range(id);
+        self.editor.set_annotation_font_family_measured(id, range, family, |p| {
+            measure_textbox_growth(&store, p)
+        });
         self.after_annotation_change();
     }
 
     /// Change the font size (millimetres) of a TextBox. Growth-only: the
-    /// measure closure returns a height only when the box must grow.
+    /// measure closure returns a height only when the box must grow. With an
+    /// active text selection inside the box, only the selected chars change.
     pub fn set_annotation_font_size(&mut self, id: &AnnotationId, size_mm: f64) {
         if !size_mm.is_finite() || size_mm <= 0.0 {
             return; // boundary validation: NaN/negative would poison layout
@@ -721,14 +736,19 @@ impl OfdComponent {
             .font_store
             .clone()
             .expect("font_store initialized above");
+        let range = self.annot_selection_range(id);
         self.editor
-            .set_annotation_font_size_measured(id, None, size_mm, |p| measure_textbox_growth(&store, p));
+            .set_annotation_font_size_measured(id, range, size_mm, |p| {
+                measure_textbox_growth(&store, p)
+            });
         self.after_annotation_change();
     }
 
-    /// Change the text color of an annotation (no layout effect).
+    /// Change the text color of an annotation (no layout effect). With an
+    /// active text selection inside a TextBox, only the selected chars change.
     pub fn set_annotation_color(&mut self, id: &AnnotationId, color: Color) {
-        self.editor.set_annotation_color(id, None, color);
+        let range = self.annot_selection_range(id);
+        self.editor.set_annotation_color(id, range, color);
         self.after_annotation_change();
     }
 
@@ -3936,27 +3956,29 @@ fn compute_resize(handle: &HandlePos, anchor: (f64, f64), orig: Rect, point: (f6
 ///   position) is preserved - the bbox alone loses which diagonal was drawn.
 ///   Rect/Ellipse store empty `points` (no endpoint direction).
 ///
-/// Height growth for a flat TextBox after a text edit (spec 2026-11-09
-/// §1.2): shape the post-edit content at the box width and return the
-/// required height only when it exceeds the current rect. `None` for rich
-/// boxes (their appearance is a foreign fidelity snapshot), other payloads,
-/// empty content and no-grow cases.
+/// Height growth for a TextBox after a text/style edit (spec 2026-11-09 §1.2,
+/// 2026-11-10 rich text): shape the post-edit content with its span styles at
+/// the box width and return the required height only when it exceeds the
+/// current rect. `None` for other payloads, empty content and no-grow cases.
 fn measure_textbox_growth(store: &FontStore, payload: &AnnotationPayload) -> Option<f64> {
     let AnnotationPayload::TextBox {
         rect,
         content,
         font,
         size,
+        color,
         spans,
         ..
     } = payload
     else {
         return None;
     };
-    if !spans.is_empty() || content.chars().count() == 0 {
+    if content.chars().count() == 0 {
         return None;
     }
-    let wrapped = store.shape_wrapped(font, content, *size, rect.w.max(*size));
+    let runs = rofd_render::layout_runs(content, spans, font, *size, *color);
+    let max_size = runs.iter().map(|r| r.size).fold(0.0_f64, f64::max);
+    let wrapped = store.shape_wrapped_runs(content, &runs, rect.w.max(max_size));
     let required = wrapped.height();
     (required > rect.h + 1e-9).then_some(required)
 }
@@ -4374,6 +4396,60 @@ mod tests {
             AnnotationPayload::TextBox { content, .. } => content.clone(),
             other => panic!("expected textbox, got {other:?}"),
         }
+    }
+
+    fn textbox_payload(c: &OfdComponent, id: &AnnotationId) -> AnnotationPayload {
+        c.document()
+            .annotations
+            .find(id)
+            .expect("annotation")
+            .payload
+            .clone()
+    }
+
+    #[test]
+    fn style_setter_targets_only_the_text_selection() {
+        let mut c = component_with_narrow_textbox("hello", 100.0, 8.0);
+        let id = textbox_id(&c);
+        c.set_annot_text_selection(Some(AnnotTextSelection {
+            annotation: id.clone(),
+            anchor: 1,
+            focus: 3,
+        }));
+        c.set_annotation_font_size(&id, 24.0);
+        let sizes: Vec<f64> = match &textbox_payload(&c, &id) {
+            AnnotationPayload::TextBox { spans, .. } => spans.iter().map(|s| s.size).collect(),
+            _ => panic!("expected TextBox"),
+        };
+        assert_eq!(sizes, vec![12.0, 24.0, 12.0], "only chars 1..3 changed");
+        let s = c.annotation_text_style(&id).expect("style");
+        assert!(
+            (s.size_mm - 24.0).abs() < 1e-9,
+            "panel shows the selection's first-char style"
+        );
+    }
+
+    #[test]
+    fn save_snapshot_emits_fragments_for_span_boxes_and_grows() {
+        let mut c = component_with_narrow_textbox("hello", 100.0, 8.0);
+        let id = textbox_id(&c);
+        c.set_annot_text_selection(Some(AnnotTextSelection {
+            annotation: id.clone(),
+            anchor: 1,
+            focus: 3,
+        }));
+        c.set_annotation_font_size(&id, 24.0);
+        let snap = c.save_snapshot();
+        let hints = snap.text_layout.get(&id).expect("hints for a span box");
+        assert!(
+            hints.iter().any(|h| h.fragments.len() == 3),
+            "three styled fragments on one line"
+        );
+        let h = match &snap.document.annotations.find(&id).unwrap().payload {
+            AnnotationPayload::TextBox { rect, .. } => rect.h,
+            _ => panic!("expected TextBox"),
+        };
+        assert!(h > 8.0, "grows to fit the taller span");
     }
 
     #[test]
@@ -10213,8 +10289,7 @@ mod tests {
     }
 
     #[test]
-    fn save_snapshot_skips_rich_note_and_empty_boxes() {
-        // Rich TextBox (runs non-empty): no layout hints, no reflow.
+    fn save_snapshot_covers_span_boxes_but_skips_note_and_empty_boxes() {
         let mut c = component_with_narrow_textbox("flat", 45.0, 10.0);
         let flat = textbox_id(&c);
         let rich = c.create_annotation(
@@ -10245,8 +10320,8 @@ mod tests {
         c.delete_annotation(&flat);
         let snap = c.save_snapshot();
         assert!(
-            !snap.text_layout.contains_key(&rich),
-            "rich boxes keep their foreign appearance (no reflow)"
+            snap.text_layout.contains_key(&rich),
+            "span boxes get line hints like flat boxes"
         );
 
         // Note: no hints, rect unchanged.
