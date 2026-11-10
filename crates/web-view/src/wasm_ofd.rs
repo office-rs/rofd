@@ -527,6 +527,133 @@ mod wasm_impl {
             *self.callbacks.on_text_selection_change.borrow_mut() = callback;
         }
 
+        // ─── Annotation text format panel ───────────────────────────────────
+
+        /// The id of the single selected text annotation (TextBox /
+        /// Typewriter) - the format panel's target; null otherwise.
+        #[wasm_bindgen(js_name = selectedTextAnnotation)]
+        pub fn selected_text_annotation(&self) -> Option<String> {
+            let rofd_component::AnnotationSelection::Single(id) = self.component.selection() else {
+                return None;
+            };
+            let ann = self.component.document().annotations.find(id)?;
+            matches!(ann.payload, rofd_dom::AnnotationPayload::TextBox { .. }).then(|| id.0.clone())
+        }
+
+        /// Format-panel style snapshot: `[family, sizeMm, "#rrggbb", rich]`.
+        #[wasm_bindgen(js_name = annotationTextStyle)]
+        pub fn annotation_text_style(&mut self, id: &str) -> Option<js_sys::Array> {
+            let style = self
+                .component
+                .annotation_text_style(&rofd_component::AnnotationId::new(id))?;
+            let out = js_sys::Array::new();
+            out.push(&JsValue::from_str(&style.family));
+            out.push(&JsValue::from_f64(style.size_mm));
+            out.push(&JsValue::from_str(&rofd_component::color_hex(style.color)));
+            out.push(&JsValue::from_f64(if style.rich { 1.0 } else { 0.0 }));
+            Some(out)
+        }
+
+        /// Viewport-space annotation rect `[x, y, w, h]` for panel anchoring.
+        #[wasm_bindgen(js_name = annotationFormatAnchor)]
+        pub fn annotation_format_anchor(&mut self, id: &str) -> Option<Vec<f64>> {
+            let r = self
+                .component
+                .annotation_format_anchor(&rofd_component::AnnotationId::new(id))?;
+            Some(vec![r.x, r.y, r.w, r.h])
+        }
+
+        /// Selectable font families as `[[key, display], ...]`.
+        #[wasm_bindgen(js_name = fontFamilies)]
+        pub fn font_families(&mut self) -> js_sys::Array {
+            let out = js_sys::Array::new();
+            for entry in self.component.font_families() {
+                let pair = js_sys::Array::new();
+                pair.push(&JsValue::from_str(&entry.key));
+                pair.push(&JsValue::from_str(&entry.display));
+                out.push(&pair);
+            }
+            out
+        }
+
+        /// Host-supplied available families (`[[key, display], ...]`) - the web
+        /// font runtime manifest, pushed once it is ready.
+        #[wasm_bindgen(js_name = setAvailableFontFamilies)]
+        pub fn set_available_font_families(&mut self, pairs: js_sys::Array) {
+            let mut families = Vec::new();
+            for pair in pairs.iter() {
+                let Some(pair) = pair.dyn_ref::<js_sys::Array>() else {
+                    continue;
+                };
+                let (Some(key), Some(display)) = (pair.get(0).as_string(), pair.get(1).as_string())
+                else {
+                    continue;
+                };
+                families.push(rofd_component::FamilyEntry { key, display });
+            }
+            self.component.set_available_font_families(families);
+        }
+
+        /// Font size dropdown entries as `[[label, pt], ...]` (label may be
+        /// empty for numeric sizes).
+        #[wasm_bindgen(js_name = textSizes)]
+        pub fn text_sizes(&self) -> js_sys::Array {
+            let out = js_sys::Array::new();
+            for entry in rofd_component::TEXT_SIZES {
+                let pair = js_sys::Array::new();
+                pair.push(&JsValue::from_str(entry.label));
+                pair.push(&JsValue::from_f64(entry.pt));
+                out.push(&pair);
+            }
+            out
+        }
+
+        /// WPS standard color row (`#rrggbb` strings).
+        #[wasm_bindgen(js_name = textColorStandard)]
+        pub fn text_color_standard(&self) -> js_sys::Array {
+            let out = js_sys::Array::new();
+            for hex in rofd_component::TEXT_COLOR_STANDARD {
+                out.push(&JsValue::from_str(hex));
+            }
+            out
+        }
+
+        /// WPS-like theme color grid (60 `#rrggbb` strings).
+        #[wasm_bindgen(js_name = textColorPalette)]
+        pub fn text_color_palette(&self) -> js_sys::Array {
+            let out = js_sys::Array::new();
+            for row in rofd_component::TEXT_COLOR_PALETTE {
+                for hex in row {
+                    out.push(&JsValue::from_str(hex));
+                }
+            }
+            out
+        }
+
+        /// Applied by the format panel's font-family dropdown.
+        #[wasm_bindgen(js_name = setAnnotationFontFamily)]
+        pub fn set_annotation_font_family(&mut self, id: &str, family: &str) {
+            self.component
+                .set_annotation_font_family(&rofd_component::AnnotationId::new(id), family);
+        }
+
+        /// Applied by the format panel's font-size dropdown (millimetres).
+        #[wasm_bindgen(js_name = setAnnotationFontSize)]
+        pub fn set_annotation_font_size(&mut self, id: &str, size_mm: f64) {
+            self.component
+                .set_annotation_font_size(&rofd_component::AnnotationId::new(id), size_mm);
+        }
+
+        /// Applied by the format panel's color swatches.
+        #[wasm_bindgen(js_name = setTextAnnotationColor)]
+        pub fn set_text_annotation_color(&mut self, id: &str, hex: &str) {
+            let Some(color) = rofd_component::hex_color(hex) else {
+                return;
+            };
+            self.component
+                .set_annotation_color(&rofd_component::AnnotationId::new(id), color);
+        }
+
         // ─── Event Handlers ─────────────────────────────────────────────────
 
         #[wasm_bindgen(js_name = handleKeyDown)]

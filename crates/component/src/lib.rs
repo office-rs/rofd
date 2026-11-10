@@ -19,7 +19,10 @@ pub use font_req::FontRequirements;
 pub use ofd_component::{CreateKind, FrameNeed, OfdComponent, SaveSnapshot, Tool};
 pub use print_session::{PrintContent, PrintSession, PRINT_ZOOM};
 pub use render_target::RenderTarget;
-pub use text_format::{AnnotationTextStyle, SizeEntry, TEXT_SIZES};
+pub use text_format::{
+    color_hex, hex_color, mm_to_pt, pt_to_mm, size_display, AnnotationTextStyle, SizeEntry,
+    TEXT_COLOR_PALETTE, TEXT_COLOR_STANDARD, TEXT_SIZES,
+};
 pub use tooltip_text::{default_tooltip_lines, format_tooltip_datetime};
 pub use zoom_mode::ZoomMode;
 

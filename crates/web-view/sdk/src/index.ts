@@ -126,6 +126,18 @@ interface WasmOfd {
   ): string | null;
   hasTextSelection(): boolean;
   setOnTextSelectionChange(cb: (() => void) | null): void;
+  /** Annotation text format panel (Task 7): target, style, geometry, fonts. */
+  selectedTextAnnotation(): string | null;
+  annotationTextStyle(id: string): string[] | null;
+  annotationFormatAnchor(id: string): number[] | null;
+  fontFamilies(): string[][];
+  setAvailableFontFamilies(pairs: string[][]): void;
+  textSizes(): (string | number)[][];
+  textColorStandard(): string[];
+  textColorPalette(): string[];
+  setAnnotationFontFamily(id: string, family: string): void;
+  setAnnotationFontSize(id: string, sizeMm: number): void;
+  setTextAnnotationColor(id: string, hex: string): void;
   setTool(kind: string): void;
   setHighlightColor(color: string): void;
   setMarkupColor(kind: string, color: string): void;
