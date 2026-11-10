@@ -18,6 +18,7 @@ use crate::event::EventOutcome;
 use crate::font_req::{self, FontRequirements};
 use crate::print_session::{PrintContent, PrintSession};
 use crate::render_target::{PageSegment, RenderTarget, SceneLayers};
+use crate::text_format::AnnotationTextStyle;
 use crate::zoom_mode::ZoomMode;
 
 // Monotonic animation clock. `std::time::Instant::now()` is a hard panic on
@@ -259,6 +260,10 @@ pub struct OfdComponent {
     /// 经 [`Self::register_font_slice`] 注册的切片 (bytes, 归一前 family_key,
     /// slice_id)。FontStore 重建时重放（与 registered_font_bytes 同款模式）。
     pub(crate) registered_slices: Vec<(Arc<Vec<u8>>, String, String)>,
+    /// Families the host SDK can lazily load (web manifest / tauri system font
+    /// index). Merged into [`Self::font_families`] so the format panel lists
+    /// fonts that are not registered yet. Cleared on document swap.
+    pub(crate) available_font_families: Vec<rofd_render::FamilyEntry>,
     pub(crate) callbacks: Callbacks,
     pub(crate) modified: bool,
     /// Active editing tool (Select or Create{kind}). Defaults to `Select`.
@@ -396,6 +401,7 @@ impl OfdComponent {
             font_store: None,
             registered_font_bytes: Vec::new(),
             registered_slices: Vec::new(),
+            available_font_families: Vec::new(),
             callbacks: Callbacks::default(),
             modified: false,
             tool: Tool::Text,
@@ -504,6 +510,7 @@ impl OfdComponent {
         // Body-text selection belongs to the old document's pages.
         self.set_text_selection(None);
         self.annot_text_selection = None;
+        self.available_font_families.clear();
         self.editor.load_document(doc);
         self.body_font_req = font_req::body_requirements(self.editor.document());
         self.font_store = Some(self.build_font_store());
@@ -533,6 +540,7 @@ impl OfdComponent {
         self.hover = None;
         self.set_text_selection(None);
         self.annot_text_selection = None;
+        self.available_font_families.clear();
         self.editor.load_document(OfdDocument::default());
         self.body_font_req = font_req::body_requirements(self.editor.document());
         self.font_store = Some(self.build_font_store());
@@ -622,6 +630,77 @@ impl OfdComponent {
     }
     pub fn text_cursor(&self) -> Option<&TextCursor> {
         self.editor.text_cursor()
+    }
+
+    /// Style snapshot for the floating format panel: family display name,
+    /// size (mm), color and whether the box is a rich (runs) box. `None` for
+    /// non-text annotations and missing ids.
+    pub fn annotation_text_style(&mut self, id: &AnnotationId) -> Option<AnnotationTextStyle> {
+        let ann = self.editor.document().annotations.find(id)?.clone();
+        let AnnotationPayload::TextBox {
+            font,
+            size,
+            color,
+            runs,
+            ..
+        } = &ann.payload
+        else {
+            return None;
+        };
+        if self.font_store.is_none() {
+            self.font_store = Some(self.build_font_store());
+        }
+        let family = self
+            .font_store
+            .as_ref()
+            .expect("font_store initialized above")
+            .family_display_name(font)
+            .unwrap_or_else(|| font.0.clone());
+        Some(AnnotationTextStyle {
+            family,
+            size_mm: *size,
+            color: *color,
+            rich: !runs.is_empty(),
+        })
+    }
+
+    /// Viewport-space bounding rect of an annotation (format panel anchor).
+    pub fn annotation_format_anchor(&self, id: &AnnotationId) -> Option<rofd_dom::Rect> {
+        let ann = self.editor.document().annotations.find(id)?;
+        rofd_render::annotation_viewport_rect(self.editor.document(), ann, &self.viewport)
+    }
+
+    /// Families the user can pick: system + registered + declared, merged with
+    /// the host-supplied available list. Sorted by normalized key.
+    pub fn font_families(&mut self) -> Vec<rofd_render::FamilyEntry> {
+        if self.font_store.is_none() {
+            self.font_store = Some(self.build_font_store());
+        }
+        let mut out = self
+            .font_store
+            .as_ref()
+            .expect("font_store initialized above")
+            .family_entries();
+        for entry in &self.available_font_families {
+            if !out.iter().any(|e| e.key == entry.key) {
+                out.push(entry.clone());
+            }
+        }
+        out.sort_by(|a, b| a.key.cmp(&b.key));
+        out
+    }
+
+    /// Replace the host-supplied available families (web manifest / native
+    /// system font index). Duplicate keys keep the first entry.
+    pub fn set_available_font_families(&mut self, families: Vec<rofd_render::FamilyEntry>) {
+        let mut out: Vec<rofd_render::FamilyEntry> = Vec::with_capacity(families.len());
+        for entry in families {
+            if !out.iter().any(|e| e.key == entry.key) {
+                out.push(entry);
+            }
+        }
+        out.sort_by(|a, b| a.key.cmp(&b.key));
+        self.available_font_families = out;
     }
     /// The current body-text selection (TextSelect tool), if any (spec §5.1).
     pub fn text_selection(&self) -> Option<&rofd_render::BodyTextSelection> {
@@ -9539,6 +9618,50 @@ mod tests {
             .expect("one annotation")
             .id
             .clone()
+    }
+
+    #[test]
+    fn annotation_text_style_reads_the_flat_textbox() {
+        let mut c = component_with_textbox();
+        let id = textbox_id(&c);
+        let s = c.annotation_text_style(&id).expect("textbox style");
+        assert!((s.size_mm - 10.0).abs() < 1e-9);
+        assert_eq!(s.color, rofd_dom::Color::Rgb(0, 0, 0));
+        assert!(!s.rich);
+    }
+
+    #[test]
+    fn annotation_text_style_is_none_for_other_annotations_and_missing_ids() {
+        let mut c = component_with_page();
+        assert!(c
+            .annotation_text_style(&AnnotationId::from_int(999))
+            .is_none());
+    }
+
+    #[test]
+    fn annotation_format_anchor_matches_the_viewport_rect() {
+        let mut c = component_with_textbox();
+        let id = textbox_id(&c);
+        let anchor = c.annotation_format_anchor(&id).expect("anchor");
+        let ann = c.document().annotations.find(&id).unwrap();
+        let vp_rect =
+            rofd_render::annotation_viewport_rect(c.document(), ann, &c.viewport).unwrap();
+        assert_eq!(
+            (anchor.x, anchor.y, anchor.w, anchor.h),
+            (vp_rect.x, vp_rect.y, vp_rect.w, vp_rect.h)
+        );
+    }
+
+    #[test]
+    fn available_font_families_are_merged_into_the_list() {
+        let mut c = component_with_page();
+        c.set_available_font_families(vec![rofd_render::FamilyEntry {
+            key: "rofd-test-family".into(),
+            display: "测试族".into(),
+        }]);
+        assert!(c.font_families().iter().any(|e| e.display == "测试族"));
+        c.new_document();
+        assert!(!c.font_families().iter().any(|e| e.display == "测试族"));
     }
 
     #[test]
