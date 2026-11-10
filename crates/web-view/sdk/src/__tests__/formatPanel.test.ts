@@ -18,9 +18,12 @@ function host(overrides: Partial<Record<string, unknown>> = {}) {
     ],
     textColorStandard: () => ["#000000", "#FF0000"],
     textColorPalette: () => ["#FFFFFF", "#000000"],
-    setAnnotationFontFamily: (id: string, f: string) => calls.push(`family:${id}:${f}`),
-    setAnnotationFontSize: (id: string, s: number) => calls.push(`size:${id}:${s}`),
-    setTextAnnotationColor: (id: string, c: string) => calls.push(`color:${id}:${c}`),
+    setAnnotationFontFamily: (id: string, f: string) =>
+      calls.push(`family:${id}:${f}`),
+    setAnnotationFontSize: (id: string, s: number) =>
+      calls.push(`size:${id}:${s}`),
+    setTextAnnotationColor: (id: string, c: string) =>
+      calls.push(`color:${id}:${c}`),
     ...overrides,
   };
 }
@@ -86,7 +89,10 @@ describe("format panel", () => {
   it("pointerdown on the panel does not reach the canvas or steal focus", () => {
     const root = document.createElement("div");
     createFormatPanel(root, host() as never, vp);
-    const ev = new MouseEvent("pointerdown", { bubbles: true, cancelable: true });
+    const ev = new MouseEvent("pointerdown", {
+      bubbles: true,
+      cancelable: true,
+    });
     (root.querySelector(".rofd-fp-family") as HTMLElement).dispatchEvent(ev);
     expect(ev.defaultPrevented).toBe(true);
   });
@@ -165,6 +171,23 @@ describe("format panel", () => {
       top: 68,
     });
     expect(panelAnchor([700, 300, 60, 20], { w: 800, h: 600 }).left).toBe(552);
+  });
+
+  it("shows the style at the start of the text selection", () => {
+    const root = document.createElement("div");
+    let styled = ["宋体", "4.23", "#000000", "1"];
+    const h = host({ annotationTextStyle: () => styled });
+    const panel = createFormatPanel(root, h as never, vp);
+    expect(
+      (root.querySelector(".rofd-fp-color") as HTMLElement).style.borderBottom,
+    ).toContain("rgb(0, 0, 0)");
+    styled = ["黑体", "7.06", "#FF0000", "1"]; // selection moved inside the box
+    panel.refresh();
+    const el = root.querySelector(".rofd-format-panel") as HTMLElement;
+    expect(el.textContent).toContain("黑体");
+    expect(
+      (root.querySelector(".rofd-fp-color") as HTMLElement).style.borderBottom,
+    ).toContain("rgb(255, 0, 0)");
   });
 
   it("size labels prefer the Chinese name and fall back to points", () => {

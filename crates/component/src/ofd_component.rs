@@ -718,9 +718,10 @@ impl OfdComponent {
             .clone()
             .expect("font_store initialized above");
         let range = self.annot_selection_range(id);
-        self.editor.set_annotation_font_family_measured(id, range, family, |p| {
-            measure_textbox_growth(&store, p)
-        });
+        self.editor
+            .set_annotation_font_family_measured(id, range, family, |p| {
+                measure_textbox_growth(&store, p)
+            });
         self.after_annotation_change();
     }
 

@@ -264,9 +264,7 @@ pub(crate) fn shape_layout_runs(
                 .collect();
             glyph_count += shaped.len();
             match groups.last_mut() {
-                Some((prev, glyphs))
-                    if prev.style_index == style_index && prev.font == font =>
-                {
+                Some((prev, glyphs)) if prev.style_index == style_index && prev.font == font => {
                     glyphs.extend(shaped);
                 }
                 _ => groups.push((

@@ -88,16 +88,16 @@ fn boundary_span(spans: &[TextSpan], offset: usize) -> (usize, usize) {
         start += len;
     }
     let last = spans.len().saturating_sub(1);
-    (last, spans.get(last).map(|s| char_count(&s.text)).unwrap_or(0))
+    (
+        last,
+        spans.get(last).map(|s| char_count(&s.text)).unwrap_or(0),
+    )
 }
 
 /// Insert `text` at `offset`, inheriting the style of the preceding char (or
 /// the following char at offset 0). Updates `content` too.
 pub fn spans_insert(payload: &mut AnnotationPayload, offset: usize, text: &str) {
-    let AnnotationPayload::TextBox {
-        content, spans, ..
-    } = payload
-    else {
+    let AnnotationPayload::TextBox { content, spans, .. } = payload else {
         return;
     };
     if text.is_empty() {
@@ -122,10 +122,7 @@ pub fn spans_insert(payload: &mut AnnotationPayload, offset: usize, text: &str) 
 
 /// Delete `len` chars at `offset`. Updates `content` too.
 pub fn spans_delete(payload: &mut AnnotationPayload, offset: usize, len: usize) {
-    let AnnotationPayload::TextBox {
-        content, spans, ..
-    } = payload
-    else {
+    let AnnotationPayload::TextBox { content, spans, .. } = payload else {
         return;
     };
     let total = char_count(content);
@@ -348,10 +345,7 @@ mod tests {
     }
 
     fn parts(p: &AnnotationPayload) -> (&str, &[TextSpan]) {
-        let AnnotationPayload::TextBox {
-            content, spans, ..
-        } = p
-        else {
+        let AnnotationPayload::TextBox { content, spans, .. } = p else {
             panic!("expected TextBox");
         };
         (content, spans)

@@ -1,7 +1,7 @@
 # 批注文本框的分段样式（选区格式化）设计
 
 - 日期：2026-11-10
-- 状态：已设计（待实现）
+- 状态：已实现（内核 + io + web SDK 面板联动；§8 回归门已跑绿）
 - 关联：[`2026-11-10-annotation-format-panel-design.md`](2026-11-10-annotation-format-panel-design.md)（本设计**取代**其 §1.6 的"富 runs 一律塌缩"行为）、[`2026-11-09-annotation-text-wrap-design.md`](2026-11-09-annotation-text-wrap-design.md)（流式排版的基线）
 
 ---

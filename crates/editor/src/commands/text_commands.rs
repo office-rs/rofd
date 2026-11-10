@@ -28,7 +28,9 @@ impl Editor {
         };
         let mut after = before.clone();
         if matches!(after.payload, AnnotationPayload::TextBox { .. }) {
-            spans_apply(&mut after.payload, range, &mut |span| span.color = Some(color));
+            spans_apply(&mut after.payload, range, &mut |span| {
+                span.color = Some(color)
+            });
         } else {
             set_color(&mut after.payload, color);
         }

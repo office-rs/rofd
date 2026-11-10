@@ -586,7 +586,7 @@ fn text_object_xml_from_hints(
 }
 
 /// The span covering `char_offset` in the content (spans concatenate to it).
-fn span_covering<'a>(spans: &'a [rofd_dom::TextSpan], char_offset: usize) -> &'a rofd_dom::TextSpan {
+fn span_covering(spans: &[rofd_dom::TextSpan], char_offset: usize) -> &rofd_dom::TextSpan {
     let mut cursor = 0usize;
     for span in spans {
         cursor += span.text.chars().count();
@@ -1437,7 +1437,13 @@ mod tests {
             ann.id.clone(),
             vec![
                 hint(0, "ab", 0.0, 11.14, vec![frag(0, 1, 0.0), frag(1, 1, 10.0)]),
-                hint(2, "cd", 13.97, 25.11, vec![frag(0, 1, 0.0), frag(1, 1, 10.0)]),
+                hint(
+                    2,
+                    "cd",
+                    13.97,
+                    25.11,
+                    vec![frag(0, 1, 0.0), frag(1, 1, 10.0)],
+                ),
             ],
         );
         let mut next_id = 10;

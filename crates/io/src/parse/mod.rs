@@ -208,7 +208,11 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
                 if let Some(page) = doc.pages.iter().find(|p| p.id.0 == pref.page_id) {
                     if let Some(fe) = entries.iter().find(|e| e.name == page_path) {
                         let xml = String::from_utf8_lossy(&fe.bytes).into_owned();
-                        let anns = annotation::parse_page_annot_with_warnings(&xml, &page.id, &mut warnings)?;
+                        let anns = annotation::parse_page_annot_with_warnings(
+                            &xml,
+                            &page.id,
+                            &mut warnings,
+                        )?;
                         if !anns.is_empty() {
                             doc.annotations
                                 .by_page
@@ -237,7 +241,11 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
                 if let Some(idx) = page_idx {
                     if let Some(page) = doc.pages.get(idx) {
                         let xml = String::from_utf8_lossy(&e.bytes).into_owned();
-                        let anns = annotation::parse_page_annot_with_warnings(&xml, &page.id, &mut warnings)?;
+                        let anns = annotation::parse_page_annot_with_warnings(
+                            &xml,
+                            &page.id,
+                            &mut warnings,
+                        )?;
                         if !anns.is_empty() {
                             doc.annotations
                                 .by_page

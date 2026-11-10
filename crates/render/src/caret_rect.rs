@@ -555,7 +555,10 @@ mod tests {
             AnnotationKind::TextBox,
         );
         let r = caret_rect(&doc, &vp(), &fonts, &id, 0).expect("caret");
-        assert!(r.h >= 24.0, "caret spans the tallest span's line box: {r:?}");
+        assert!(
+            r.h >= 24.0,
+            "caret spans the tallest span's line box: {r:?}"
+        );
     }
 
     #[test]
@@ -576,7 +579,10 @@ mod tests {
             AnnotationKind::TextBox,
         );
         let rects = annotation_text_selection_rects(&doc, &vp(), &fonts, &id, 0, 3);
-        assert!(!rects.is_empty(), "span boxes must highlight their selection");
+        assert!(
+            !rects.is_empty(),
+            "span boxes must highlight their selection"
+        );
     }
 
     #[test]

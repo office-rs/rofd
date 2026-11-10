@@ -1336,10 +1336,7 @@ cd</ofd:Remark>
     #[test]
     fn remark_text_aligns_to_appearance_without_soft_breaks() {
         let anns = parse_page_annot(SOFT_WRAP_XML, &PageId::new("1")).unwrap();
-        let AnnotationPayload::TextBox {
-            content, spans, ..
-        } = &anns[0].payload
-        else {
+        let AnnotationPayload::TextBox { content, spans, .. } = &anns[0].payload else {
             panic!("expected TextBox");
         };
         assert_eq!(content, "abcdef");
@@ -1358,10 +1355,12 @@ cd</ofd:Remark>
     #[test]
     fn unalignable_remark_degrades_to_flat_with_a_warning() {
         let mut warnings = Vec::new();
-        let anns =
-            parse_page_annot_with_warnings(MISALIGNED_XML, &PageId::new("1"), &mut warnings).unwrap();
+        let anns = parse_page_annot_with_warnings(MISALIGNED_XML, &PageId::new("1"), &mut warnings)
+            .unwrap();
         assert!(spans_of(&anns[0]).is_empty());
-        assert!(warnings.iter().any(|w| matches!(w, OfdWarning::SkippedObject { reason, .. }
+        assert!(warnings
+            .iter()
+            .any(|w| matches!(w, OfdWarning::SkippedObject { reason, .. }
             if reason.contains("style"))));
     }
 

@@ -132,13 +132,7 @@ mod tests {
 
     #[test]
     fn flat_box_yields_one_run_over_the_whole_content() {
-        let runs = layout_runs(
-            "abc",
-            &[],
-            &FontId::new("F1"),
-            12.0,
-            Color::Rgb(1, 2, 3),
-        );
+        let runs = layout_runs("abc", &[], &FontId::new("F1"), 12.0, Color::Rgb(1, 2, 3));
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].byte_range, 0..3);
         assert_eq!(runs[0].color, Some(Color::Rgb(1, 2, 3)));

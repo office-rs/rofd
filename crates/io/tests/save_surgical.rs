@@ -73,8 +73,8 @@ fn strip_max_unit_id(xml: &str) -> String {
 #[test]
 fn surgical_save_preserves_textbox_runs() {
     use rofd_dom::{
-        Annotation, AnnotationId, AnnotationKind, AnnotationPayload, FontId, PageId, TextLayoutHints,
-        TextLineFragmentHint, TextLineHint, TextSpan,
+        Annotation, AnnotationId, AnnotationKind, AnnotationPayload, FontId, PageId,
+        TextLayoutHints, TextLineFragmentHint, TextLineHint, TextSpan,
     };
     let original = fixtures::build_minimal_ofd();
     let report = rofd_io::parse_ofd(&original).unwrap();

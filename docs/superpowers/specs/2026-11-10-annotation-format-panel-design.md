@@ -1,7 +1,7 @@
 # 批注文字格式面板（字体 / 字号 / 颜色）设计
 
 日期：2026-11-10
-状态：已实现（内核 + gpui-view + web SDK；xilem-view 面板待补，见 §5.3）
+状态：已实现（内核 + gpui-view + web SDK；xilem-view 面板待补，见 §5.3；§1.6 的"富 runs 塌缩"已由 [`2026-11-10-annotation-rich-text-design.md`](2026-11-10-annotation-rich-text-design.md) 取代并实现）
 关联：[2026-11-09 批注文字流式排版](2026-11-09-annotation-text-wrap-design.md)
 
 ## 0. 问题与目标

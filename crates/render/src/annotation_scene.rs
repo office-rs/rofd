@@ -571,11 +571,7 @@ fn draw_text_in_rect(
     fonts: &FontStore,
     base: Affine,
 ) {
-    let max_size = runs
-        .iter()
-        .map(|r| r.size)
-        .fold(0.0_f64, f64::max)
-        .max(0.0);
+    let max_size = runs.iter().map(|r| r.size).fold(0.0_f64, f64::max).max(0.0);
     let wrapped = fonts.shape_wrapped_runs(content, runs, rect.w.max(max_size));
     let translate = base * Affine::translate((rect.x, rect.y));
     for span in wrapped.spans.iter() {
@@ -1281,16 +1277,15 @@ mod tests {
             w: 46.0,
             h: 10.0,
         };
-        let span = |text: &str, italic: bool, bold: bool, color: Option<Color>| {
-            rofd_dom::TextSpan {
+        let span =
+            |text: &str, italic: bool, bold: bool, color: Option<Color>| rofd_dom::TextSpan {
                 text: text.into(),
                 font: FontId::new("F1"),
                 size: 12.0,
                 color,
                 bold,
                 italic,
-            }
-        };
+            };
         let ann = ann(
             AnnotationPayload::TextBox {
                 rect,

@@ -284,7 +284,10 @@ mod tests {
         b[0].color = Some(Color::Rgb(0, 0, 255));
         let wa = s.shape_wrapped_runs("abcd", &a, 1000.0);
         let wb = s.shape_wrapped_runs("abcd", &b, 1000.0);
-        assert!(Rc::ptr_eq(&wa, &wb), "color must not split the layout cache");
+        assert!(
+            Rc::ptr_eq(&wa, &wb),
+            "color must not split the layout cache"
+        );
     }
 
     #[test]
