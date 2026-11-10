@@ -8,8 +8,8 @@
 //! `tests/annotation_roundtrip.rs`).
 
 use rofd_dom::{
-    Annotation, AnnotationKind, AnnotationPayload, Color, FontId, OfdDocument, PageId, PathData,
-    Rect, Resources, ShapeKind, TextLayoutHints, TextLineHint,
+    Annotation, AnnotationKind, AnnotationPayload, Color, OfdDocument, PageId, PathData, Rect,
+    ShapeKind, TextLayoutHints, TextLineHint,
 };
 
 use crate::annotation_geom::{
@@ -33,13 +33,12 @@ pub fn serialize_page_annot(
     _page: &PageId,
     anns: &[Annotation],
     next_id: &mut u64,
-    res: &Resources,
     hints: &TextLayoutHints,
 ) -> String {
     let mut s = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     s.push_str("<ofd:PageAnnot xmlns:ofd=\"http://www.ofdspec.org/2016\">");
     for a in anns {
-        s.push_str(&serialize_one(a, next_id, res, hints));
+        s.push_str(&serialize_one(a, next_id, hints));
     }
     s.push_str("</ofd:PageAnnot>");
     s
@@ -68,12 +67,7 @@ fn mint_object_id(next_id: &mut u64) -> u64 {
 }
 
 /// Serialize a single `<Annot>` element.
-fn serialize_one(
-    a: &Annotation,
-    next_id: &mut u64,
-    res: &Resources,
-    hints: &TextLayoutHints,
-) -> String {
+fn serialize_one(a: &Annotation, next_id: &mut u64, hints: &TextLayoutHints) -> String {
     let (ty, sub) = kind_to_type_subtype(&a.kind);
     let mut s = format!(
         "<ofd:Annot ID=\"{}\" Type=\"{}\" Creator=\"{}\" LastModDate=\"{}\" ReadOnly=\"false\"",
@@ -128,37 +122,14 @@ fn serialize_one(
             ));
         }
     }
-    // WPS/Suwell-compatible FreeText metadata (spec 2026-11-09 §1.5/§4.4):
-    // Qt rich text mirror + paragraph style + grow mode. The logical text
-    // itself goes into Remark below; the appearance stays the standard render
-    // carrier (including per-run styles in its TextObjects).
-    if let AnnotationPayload::TextBox {
-        content,
-        font,
-        size,
-        color,
-        border,
-        runs,
-        ..
-    } = &a.payload
-    {
-        let (flat_name, bold, italic) = paragraph_style(res, font, runs);
-        // AllRichText: Suwell (the producer of this Qt dialect) may consume it
-        // for edit-mode rich text; WPS passes it through opaquely. rofd never
-        // reads it (Remark is the logical source), so for rofd-authored files
-        // it is an accurate mirror, not a second truth.
-        s.push_str(&format!(
-            "<ofd:Parameter Name=\"AllRichText\">{}</ofd:Parameter>",
-            xml_escape(&all_rich_text_html(
-                content, &flat_name, *size, *color, runs, res
-            ))
-        ));
-        s.push_str(&format!(
-            "<ofd:Parameter Name=\"ParagraphFormat\">{}</ofd:Parameter>",
-            xml_escape(&paragraph_format_json(
-                &flat_name, *size, *color, bold, italic
-            ))
-        ));
+    // FreeText metadata (spec 2026-11-09 §1.5/§4.4): only GrowMode. The
+    // logical text goes into Remark below; the appearance is the standard
+    // render carrier (including per-run styles in its TextObjects).
+    // AllRichText/ParagraphFormat are deliberately not written: neither WPS
+    // nor Suwell's editor uses them for flow layout, rofd never reads them,
+    // and they would only duplicate the appearance (behavior analyses
+    // 2026-11-09/10).
+    if let AnnotationPayload::TextBox { border, .. } = &a.payload {
         let grow = if border.is_some() { "FixWidth" } else { "None" };
         s.push_str(&format!(
             "<ofd:Parameter Name=\"GrowMode\">{}</ofd:Parameter>",
@@ -600,125 +571,6 @@ fn text_object_xml_from_hints(
     s
 }
 
-/// Family name for a font resource id, falling back to the raw id.
-fn font_name(res: &Resources, id: &FontId) -> String {
-    res.fonts
-        .get(id)
-        .and_then(|f| f.family_name.clone())
-        .unwrap_or_else(|| id.0.clone())
-}
-
-/// Flat style for `ParagraphFormat`: the first rich run's style, or the
-/// payload's flat style for runs-empty boxes.
-fn paragraph_style(
-    res: &Resources,
-    font: &FontId,
-    runs: &[rofd_dom::TextRun],
-) -> (String, bool, bool) {
-    match runs.first() {
-        Some(run) => (font_name(res, &run.font), run.bold, run.italic),
-        None => (font_name(res, font), false, false),
-    }
-}
-
-fn color_hex(c: Color) -> String {
-    let Color::Rgb(r, g, b) = c;
-    format!("#{r:02x}{g:02x}{b:02x}")
-}
-
-fn json_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('\'', "&#39;")
-}
-
-/// HTML text body: escaped, hard newlines as `<br />`.
-fn html_text(s: &str) -> String {
-    html_escape(s).replace('\n', "<br />")
-}
-
-/// One Qt-rich-text span (the WPS/Suwell `AllRichText` dialect).
-fn span_html(
-    text: &str,
-    family: &str,
-    size_mm: f64,
-    color: Color,
-    bold: bool,
-    italic: bool,
-) -> String {
-    let pt = (size_mm * 72.0 / 25.4 * 100.0).round() / 100.0;
-    format!(
-        "<span style=\" font-family:'{}'; font-size:{}pt; font-weight:{}; font-style:{}; color:{};\">{}</span>",
-        html_escape(family),
-        pt,
-        if bold { "700" } else { "400" },
-        if italic { "italic" } else { "normal" },
-        color_hex(color),
-        html_text(text)
-    )
-}
-
-/// Qt RichText HTML mirror (WPS/Suwell `AllRichText`): one span for flat
-/// boxes, one per rich run. rofd writes but never reads it; the appearance
-/// remains the standard render carrier.
-fn all_rich_text_html(
-    content: &str,
-    flat_font_name: &str,
-    size: f64,
-    color: Color,
-    runs: &[rofd_dom::TextRun],
-    res: &Resources,
-) -> String {
-    let header = "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0//EN\" \"http://www.w3.org/TR/REC-html40/strict.dtd\">\n<html><head><meta name=\"qrichtext\" content=\"1\" /><meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\" /><style type=\"text/css\">\n</style></head><body>";
-    let mut body = String::new();
-    if runs.is_empty() {
-        body.push_str(&span_html(
-            content,
-            flat_font_name,
-            size,
-            color,
-            false,
-            false,
-        ));
-    } else {
-        for run in runs {
-            let family = font_name(res, &run.font);
-            body.push_str(&span_html(
-                &run.text,
-                &family,
-                run.size,
-                run.color.unwrap_or(color),
-                run.bold,
-                run.italic,
-            ));
-        }
-    }
-    format!("{header}{body}</body></html>")
-}
-
-/// WPS-compatible `ParagraphFormat` JSON (spec 2026-11-09 §4.4).
-fn paragraph_format_json(
-    font_name: &str,
-    size: f64,
-    color: Color,
-    bold: bool,
-    italic: bool,
-) -> String {
-    format!(
-        "{{\"FontName\":\"{}\",\"FontSize\":{},\"FontColor\":\"{}\",\"Bold\":{},\"Italic\":{},\"Underline\":false,\"Indent\":0.0,\"LineSpace\":1.0,\"CharSpace\":0.0}}",
-        json_escape(font_name),
-        size,
-        color_hex(color),
-        bold,
-        italic
-    )
-}
-
 /// Build a `<TextObject>` element for one rich [`TextRun`]: the fragment's
 /// own font/size/color/bold/italic at its own pen position
 /// (`Boundary = (x, baseline - size, w, size*1.2)`, `TextCode X=0 Y=size` —
@@ -1128,9 +980,7 @@ fn xml_escape_preserving_edges(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rofd_dom::{
-        AnnotationId, FontId, PathCommand, Point, Resources, TextLayoutHints, TextLineHint,
-    };
+    use rofd_dom::{AnnotationId, FontId, PathCommand, Point, TextLayoutHints, TextLineHint};
 
     #[test]
     fn color_str_formats_rgb() {
@@ -1306,7 +1156,6 @@ mod tests {
             &PageId::new("1"),
             &[],
             &mut next_id,
-            &Resources::default(),
             &TextLayoutHints::new(),
         );
         assert!(xml.contains("<ofd:PageAnnot"));
@@ -1371,13 +1220,7 @@ mod tests {
     fn textbox_hints_emit_one_textobject_per_line_with_real_geometry() {
         let (ann, hints) = textbox_with_hints();
         let mut next_id = 10;
-        let xml = serialize_page_annot(
-            &PageId::new("1"),
-            &[ann],
-            &mut next_id,
-            &Resources::default(),
-            &hints,
-        );
+        let xml = serialize_page_annot(&PageId::new("1"), &[ann], &mut next_id, &hints);
         assert_eq!(xml.matches("<ofd:TextObject").count(), 2, "{xml}");
         assert!(xml.contains("Boundary=\"0 13.97 35.99 13.97\""), "{xml}");
         assert!(
@@ -1398,7 +1241,6 @@ mod tests {
             &PageId::new("1"),
             &[ann],
             &mut next_id,
-            &Resources::default(),
             &TextLayoutHints::new(),
         );
         assert_eq!(xml.matches("<ofd:TextObject").count(), 2, "{xml}");
@@ -1410,26 +1252,24 @@ mod tests {
     }
 
     #[test]
-    fn textbox_writes_wps_metadata() {
+    fn textbox_writes_remark_and_grow_mode() {
         let (ann, _) = textbox_with_hints(); // border: Some(red)
         let mut next_id = 10;
         let xml = serialize_page_annot(
             &PageId::new("1"),
             &[ann],
             &mut next_id,
-            &Resources::default(),
             &TextLayoutHints::new(),
         );
         assert!(
             xml.contains("<ofd:Remark>abc def ghi jkl</ofd:Remark>"),
             "{xml}"
         );
-        // AllRichText is written for Suwell-style Qt editors; WPS passes it
-        // through and rofd never reads it.
-        assert!(xml.contains("Name=\"AllRichText\""), "{xml}");
-        assert!(xml.contains("Name=\"ParagraphFormat\""), "{xml}");
+        // Only GrowMode remains: AllRichText/ParagraphFormat are not written
+        // (no flow-layout consumer; the appearance carries the style).
+        assert!(!xml.contains("Name=\"AllRichText\""), "{xml}");
+        assert!(!xml.contains("Name=\"ParagraphFormat\""), "{xml}");
         assert!(xml.contains("Name=\"GrowMode\">FixWidth"), "{xml}");
-        assert!(xml.contains("\"CharSpace\":0.0"), "{xml}");
     }
 
     #[test]
@@ -1443,14 +1283,13 @@ mod tests {
             &PageId::new("1"),
             &[ann],
             &mut next_id,
-            &Resources::default(),
             &TextLayoutHints::new(),
         );
         assert!(xml.contains("Name=\"GrowMode\">None"), "{xml}");
     }
 
     #[test]
-    fn rich_textbox_emits_run_textobjects_and_allrichtext_spans() {
+    fn rich_textbox_emits_run_textobjects_only() {
         let (mut ann, _) = textbox_with_hints();
         if let AnnotationPayload::TextBox { runs, .. } = &mut ann.payload {
             runs.push(rofd_dom::TextRun {
@@ -1479,20 +1318,16 @@ mod tests {
             &PageId::new("1"),
             &[ann],
             &mut next_id,
-            &Resources::default(),
             &TextLayoutHints::new(),
         );
-        // Rich runs still serialize as per-fragment TextObjects (the render
-        // carrier)...
+        // Rich runs serialize as per-fragment TextObjects (the render
+        // carrier) with their own style...
         assert_eq!(xml.matches("<ofd:TextObject").count(), 2, "{xml}");
         assert!(xml.contains("Weight=\"700\""), "{xml}");
         assert!(xml.contains("Italic=\"true\""), "{xml}");
-        // ...and the Qt rich-text mirror carries the same runs.
-        assert_eq!(xml.matches("&lt;span").count(), 2, "{xml}");
-        assert!(xml.contains("font-weight:700"), "{xml}");
-        assert!(xml.contains("font-style:italic"), "{xml}");
-        assert!(xml.contains("#4bacc6"), "{xml}");
-        assert!(xml.contains("&lt;br /&gt;"), "{xml}");
+        // ...and no rich-text/paragraph JSON sidecar is written.
+        assert!(!xml.contains("Name=\"AllRichText\""), "{xml}");
+        assert!(!xml.contains("Name=\"ParagraphFormat\""), "{xml}");
     }
 
     #[test]

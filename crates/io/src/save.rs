@@ -64,13 +64,7 @@ pub fn save_ofd_with_text_layout(
                         // longer has annotations (empty <PageAnnot>: they were
                         // all deleted), never resurrecting original bytes.
                         let anns = doc.annotations.for_page(&page.id);
-                        let xml = serialize_page_annot(
-                            &page.id,
-                            anns,
-                            &mut next_id,
-                            &doc.resources,
-                            text_layout,
-                        );
+                        let xml = serialize_page_annot(&page.id, anns, &mut next_id, text_layout);
                         out.push((entry.name.clone(), xml.into_bytes()));
                     } else {
                         // Page index out of range - preserve original bytes.
@@ -266,7 +260,7 @@ fn ensure_annotation_entries(
         let name = format!("{doc_root}/Annots/Page_{idx}/Annotation.xml");
         if !out.iter().any(|(n, _)| n == &name) {
             let anns = doc.annotations.for_page(pid);
-            let xml = serialize_page_annot(pid, anns, next_id, &doc.resources, text_layout);
+            let xml = serialize_page_annot(pid, anns, next_id, text_layout);
             out.push((name, xml.into_bytes()));
         }
     }

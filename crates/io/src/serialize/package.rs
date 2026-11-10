@@ -51,7 +51,7 @@ pub fn write_ofd_with_text_layout(
         if !anns.is_empty() {
             page_annot_xml.insert(
                 i,
-                serialize_page_annot(&page.id, anns, &mut next_id, &doc.resources, text_layout),
+                serialize_page_annot(&page.id, anns, &mut next_id, text_layout),
             );
         }
     }

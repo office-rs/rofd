@@ -6,7 +6,7 @@
 
 use rofd_dom::{
     Annotation, AnnotationId, AnnotationKind, AnnotationPayload, Color, PageId, Point, Rect,
-    Resources, TextLayoutHints,
+    TextLayoutHints,
 };
 use rofd_io::serialize::annotation::serialize_page_annot;
 use rofd_io::zip_util::read_all_entries;
@@ -99,7 +99,6 @@ fn serialized_object_ids_are_unique_integers() {
         &PageId::new("1"),
         &anns,
         &mut next_id,
-        &Resources::default(),
         &TextLayoutHints::new(),
     );
     // Every ID in the file (annotation + appearance objects) shares the
@@ -145,7 +144,6 @@ fn highlight_appearance_is_filled_not_stroked() {
         &PageId::new("1"),
         &anns,
         &mut next_id,
-        &Resources::default(),
         &TextLayoutHints::new(),
     );
     assert!(xml.contains("Fill=\"true\""), "highlight must fill: {xml}");
@@ -173,7 +171,6 @@ fn markup_line_kinds_stay_stroked() {
         &PageId::new("1"),
         &anns,
         &mut next_id,
-        &Resources::default(),
         &TextLayoutHints::new(),
     );
     assert!(xml.contains("<ofd:StrokeColor"));
@@ -195,7 +192,6 @@ fn path_object_geometry_is_appearance_relative() {
         &PageId::new("1"),
         &anns,
         &mut next_id,
-        &Resources::default(),
         &TextLayoutHints::new(),
     );
     // Highlight: appearance stays page-absolute; PathObject relative + local.
@@ -347,7 +343,6 @@ fn paths_close_with_explicit_segment_not_a_close_operator() {
         &PageId::new("1"),
         &anns,
         &mut next_id,
-        &Resources::default(),
         &TextLayoutHints::new(),
     );
     assert!(!xml.contains(" Z "), "no close operator on the wire: {xml}");
@@ -381,7 +376,6 @@ fn squiggly_wave_stays_inside_boundary_and_is_dense() {
         &PageId::new("1"),
         &anns,
         &mut next_id,
-        &Resources::default(),
         &TextLayoutHints::new(),
     );
     let data = xml
@@ -453,7 +447,6 @@ fn stroked_shapes_inset_by_half_line_width() {
             &PageId::new("1"),
             &anns,
             &mut next_id,
-            &Resources::default(),
             &TextLayoutHints::new(),
         );
         let data = xml
@@ -535,7 +528,6 @@ fn textbox_textcode_carries_per_char_advances() {
         &PageId::new("1"),
         &anns,
         &mut next_id,
-        &Resources::default(),
         &TextLayoutHints::new(),
     );
     // Line 1 "文字ab": advances of 文/字/a = full/full/half.
@@ -558,7 +550,6 @@ fn stamp_imageobject_scales_to_boundary_via_ctm() {
         &PageId::new("1"),
         &[stamp],
         &mut next_id,
-        &Resources::default(),
         &TextLayoutHints::new(),
     );
     assert!(
@@ -599,7 +590,6 @@ fn textbox_border_round_trips() {
         &PageId::new("1"),
         &anns,
         &mut next_id,
-        &Resources::default(),
         &TextLayoutHints::new(),
     );
     assert_eq!(
