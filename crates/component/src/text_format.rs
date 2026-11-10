@@ -24,38 +24,128 @@ pub struct SizeEntry {
 
 /// Word Chinese sizes followed by the numeric point sizes (rword parity).
 pub const TEXT_SIZES: &[SizeEntry] = &[
-    SizeEntry { label: "初号", pt: 42.0 },
-    SizeEntry { label: "小初", pt: 36.0 },
-    SizeEntry { label: "一号", pt: 26.0 },
-    SizeEntry { label: "小一", pt: 24.0 },
-    SizeEntry { label: "二号", pt: 22.0 },
-    SizeEntry { label: "小二", pt: 18.0 },
-    SizeEntry { label: "三号", pt: 16.0 },
-    SizeEntry { label: "小三", pt: 15.0 },
-    SizeEntry { label: "四号", pt: 14.0 },
-    SizeEntry { label: "小四", pt: 12.0 },
-    SizeEntry { label: "五号", pt: 10.5 },
-    SizeEntry { label: "小五", pt: 9.0 },
-    SizeEntry { label: "六号", pt: 7.5 },
-    SizeEntry { label: "小六", pt: 6.5 },
-    SizeEntry { label: "七号", pt: 5.5 },
-    SizeEntry { label: "八号", pt: 5.0 },
+    SizeEntry {
+        label: "初号",
+        pt: 42.0,
+    },
+    SizeEntry {
+        label: "小初",
+        pt: 36.0,
+    },
+    SizeEntry {
+        label: "一号",
+        pt: 26.0,
+    },
+    SizeEntry {
+        label: "小一",
+        pt: 24.0,
+    },
+    SizeEntry {
+        label: "二号",
+        pt: 22.0,
+    },
+    SizeEntry {
+        label: "小二",
+        pt: 18.0,
+    },
+    SizeEntry {
+        label: "三号",
+        pt: 16.0,
+    },
+    SizeEntry {
+        label: "小三",
+        pt: 15.0,
+    },
+    SizeEntry {
+        label: "四号",
+        pt: 14.0,
+    },
+    SizeEntry {
+        label: "小四",
+        pt: 12.0,
+    },
+    SizeEntry {
+        label: "五号",
+        pt: 10.5,
+    },
+    SizeEntry {
+        label: "小五",
+        pt: 9.0,
+    },
+    SizeEntry {
+        label: "六号",
+        pt: 7.5,
+    },
+    SizeEntry {
+        label: "小六",
+        pt: 6.5,
+    },
+    SizeEntry {
+        label: "七号",
+        pt: 5.5,
+    },
+    SizeEntry {
+        label: "八号",
+        pt: 5.0,
+    },
     SizeEntry { label: "", pt: 8.0 },
     SizeEntry { label: "", pt: 9.0 },
-    SizeEntry { label: "", pt: 10.0 },
-    SizeEntry { label: "", pt: 11.0 },
-    SizeEntry { label: "", pt: 12.0 },
-    SizeEntry { label: "", pt: 14.0 },
-    SizeEntry { label: "", pt: 16.0 },
-    SizeEntry { label: "", pt: 18.0 },
-    SizeEntry { label: "", pt: 20.0 },
-    SizeEntry { label: "", pt: 22.0 },
-    SizeEntry { label: "", pt: 24.0 },
-    SizeEntry { label: "", pt: 26.0 },
-    SizeEntry { label: "", pt: 28.0 },
-    SizeEntry { label: "", pt: 36.0 },
-    SizeEntry { label: "", pt: 48.0 },
-    SizeEntry { label: "", pt: 72.0 },
+    SizeEntry {
+        label: "",
+        pt: 10.0,
+    },
+    SizeEntry {
+        label: "",
+        pt: 11.0,
+    },
+    SizeEntry {
+        label: "",
+        pt: 12.0,
+    },
+    SizeEntry {
+        label: "",
+        pt: 14.0,
+    },
+    SizeEntry {
+        label: "",
+        pt: 16.0,
+    },
+    SizeEntry {
+        label: "",
+        pt: 18.0,
+    },
+    SizeEntry {
+        label: "",
+        pt: 20.0,
+    },
+    SizeEntry {
+        label: "",
+        pt: 22.0,
+    },
+    SizeEntry {
+        label: "",
+        pt: 24.0,
+    },
+    SizeEntry {
+        label: "",
+        pt: 26.0,
+    },
+    SizeEntry {
+        label: "",
+        pt: 28.0,
+    },
+    SizeEntry {
+        label: "",
+        pt: 36.0,
+    },
+    SizeEntry {
+        label: "",
+        pt: 48.0,
+    },
+    SizeEntry {
+        label: "",
+        pt: 72.0,
+    },
 ];
 
 /// WPS standard color row (10 swatches).
@@ -171,10 +261,10 @@ mod tests {
 
     #[test]
     fn text_sizes_contains_chinese_and_numeric_entries() {
+        assert!(TEXT_SIZES.iter().any(|e| e.label == "初号" && e.pt == 42.0));
         assert!(TEXT_SIZES
             .iter()
-            .any(|e| e.label == "初号" && e.pt == 42.0));
-        assert!(TEXT_SIZES.iter().any(|e| e.label.is_empty() && e.pt == 72.0));
+            .any(|e| e.label.is_empty() && e.pt == 72.0));
         assert_eq!(TEXT_SIZES.len(), 16 + 16);
         // Chinese entries descend (初号 is the largest).
         assert!(TEXT_SIZES[..16].windows(2).all(|w| w[0].pt >= w[1].pt));

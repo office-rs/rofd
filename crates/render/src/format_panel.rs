@@ -68,13 +68,12 @@ mod tests {
             viewport(),
             8.0,
         );
-        assert_eq!(x, 552.0, "right edge is clamped to viewport - panel - margin");
-        let (x, _) = format_panel_anchor(
-            rect(0.0, 300.0, 60.0, 20.0),
-            (240.0, 28.0),
-            viewport(),
-            8.0,
+        assert_eq!(
+            x, 552.0,
+            "right edge is clamped to viewport - panel - margin"
         );
+        let (x, _) =
+            format_panel_anchor(rect(0.0, 300.0, 60.0, 20.0), (240.0, 28.0), viewport(), 8.0);
         assert_eq!(x, 8.0, "left edge is clamped to the margin");
     }
 
