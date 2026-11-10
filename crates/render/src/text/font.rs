@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -15,6 +15,14 @@ use super::shape::{
     shape_with_family, ShapedGlyph,
 };
 use super::wrap::WrappedText;
+
+/// One selectable font family: `key` is the normalized key used for matching
+/// and requirement collection; `display` is what the UI shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FamilyEntry {
+    pub key: String,
+    pub display: String,
+}
 
 /// Holds document fonts (from `Resources.font_data`) + a default fallback font,
 /// resolved to `peniko::FontData` for Vello `draw_glyphs`.
@@ -83,15 +91,12 @@ impl FontStore {
         let mut fonts = HashMap::new();
         let mut families = HashMap::new();
         let mut font_cx = parley::FontContext::new();
-        // 声明族映射（spec §2.3-1）：FontRef.family_name 归一化后按 FontId 记录。
+        // 声明族映射（spec §2.3-1）：FontRef.family_name 原样按 FontId 记录
+        // （解析时再归一化探切片链；无切片时按原族名交给 fontique 匹配系统字体）。
         let declared_families = res
             .fonts
             .iter()
-            .filter_map(|(id, fr)| {
-                fr.family_name
-                    .as_ref()
-                    .map(|n| (id.clone(), super::family::normalize_family_key(n)))
-            })
+            .filter_map(|(id, fr)| fr.family_name.as_ref().map(|n| (id.clone(), n.clone())))
             .collect();
         // 整只字体（嵌入/default）的 FamilyId 记账：Task 3 链重建时排在切片后。
         let mut whole_family_ids = Vec::new();
@@ -166,6 +171,56 @@ impl FontStore {
             names.push(family.clone());
         }
         names
+    }
+
+    /// Display name for a document font id: the family the font bytes
+    /// registered under, else the declared `FontRef.family_name`.
+    pub fn family_display_name(&self, id: &FontId) -> Option<String> {
+        self.families
+            .get(id)
+            .or_else(|| self.declared_families.get(id))
+            .cloned()
+    }
+
+    /// Families the user can pick in the format panel: every family fontique
+    /// knows (system fonts on native, registered families everywhere) plus the
+    /// document's declared families. Internal slice names (`__rofs_*`) are
+    /// filtered; entries are deduped by normalized key and sorted by key.
+    pub fn family_entries(&self) -> Vec<FamilyEntry> {
+        let mut out: Vec<FamilyEntry> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        let names: Vec<String> = self
+            .font_cx
+            .borrow_mut()
+            .collection
+            .family_names()
+            .map(|n| n.to_owned())
+            .collect();
+        for display in names {
+            if display.starts_with("__rofs_") {
+                continue;
+            }
+            let key = super::family::normalize_family_key(&display);
+            if key.is_empty() || !seen.insert(key.clone()) {
+                continue;
+            }
+            out.push(FamilyEntry { key, display });
+        }
+        // Declared families not already covered by a system/registered entry.
+        let mut declared: Vec<(&FontId, &String)> = self.declared_families.iter().collect();
+        declared.sort_by(|a, b| a.0 .0.cmp(&b.0 .0));
+        for (_, display) in declared {
+            let key = super::family::normalize_family_key(display);
+            if key.is_empty() || !seen.insert(key.clone()) {
+                continue;
+            }
+            out.push(FamilyEntry {
+                key,
+                display: display.clone(),
+            });
+        }
+        out.sort_by(|a, b| a.key.cmp(&b.key));
+        out
     }
 
     /// Register an additional font (raw bytes) at runtime - e.g. a CJK font
@@ -453,7 +508,22 @@ impl FontStore {
         }
         let mut names: Vec<FontFamilyName> = Vec::new();
         if let Some(declared) = self.declared_families.get(font_id) {
-            names.extend(chain_names(&self.slice_chains, declared));
+            // Slice chain first (wasm); otherwise the declared name is a real
+            // family for fontique to match on native (simsun/宋体/SimSun).
+            let key = super::family::normalize_family_key(declared);
+            names.extend(chain_names(&self.slice_chains, &key));
+            if names.is_empty() && !declared.trim().is_empty() {
+                names.push(FontFamilyName::Named(Cow::Owned(declared.clone())));
+            }
+        }
+        if names.is_empty() && !font_id.0.trim().is_empty() {
+            // Unknown font id: the id itself is the family name we wrote when
+            // the user picked a family in the format panel (spec §4.2).
+            let key = super::family::normalize_family_key(&font_id.0);
+            names.extend(chain_names(&self.slice_chains, &key));
+            if names.is_empty() {
+                names.push(FontFamilyName::Named(Cow::Owned(font_id.0.clone())));
+            }
         }
         if names.is_empty() {
             names.extend(self.default_names());
@@ -848,8 +918,8 @@ mod tests {
 
     #[test]
     fn from_resources_records_declared_family_names() {
-        // Resources.fonts 的 FontRef.family_name（归一化后）进入 declared_families，
-        // 供声明族 -> 切片链解析（spec §2.3-1）。
+        // Resources.fonts 的 FontRef.family_name 原样进入 declared_families，
+        // 解析时再归一化探切片链、无切片则按名交给 fontique（spec §2.3-1）。
         let mut res = Resources::default();
         res.fonts.insert(
             FontId::new("F1"),
@@ -864,13 +934,13 @@ mod tests {
                 .declared_families
                 .get(&FontId::new("F1"))
                 .map(String::as_str),
-            Some("simsun")
+            Some("宋体")
         );
     }
 
     #[test]
-    fn shape_declared_family_without_slices_falls_to_default() {
-        // 声明族尚无片：解析落 default/SansSerif（现状行为），不 panic。
+    fn shape_declared_family_without_slices_uses_the_named_family() {
+        // 声明族尚无片：按族名交给 fontique（原生命中系统字体），不 panic。
         let font_bytes = include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
         let mut res = Resources::default();
         res.fonts.insert(
@@ -1033,5 +1103,72 @@ mod tests {
             loaded.as_secs_f64() < base.as_secs_f64() * 10.0 + 0.05,
             "120-slice shaping blew past the gate"
         );
+    }
+
+    fn declared_font(id: &str, family: &str) -> (Resources, Arc<Vec<u8>>) {
+        let font_bytes = include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        let mut res = Resources::default();
+        res.fonts.insert(
+            FontId::new(id),
+            rofd_dom::FontRef {
+                id: FontId::new(id),
+                family_name: Some(family.into()),
+            },
+        );
+        (res, Arc::new(font_bytes.to_vec()))
+    }
+
+    #[test]
+    fn declared_family_without_slices_resolves_to_the_named_family() {
+        let (res, default_bytes) = declared_font("F1", "SimSun");
+        let store = FontStore::from_resources(&res, default_bytes);
+        match store.family_list_for(&FontId::new("F1")) {
+            FontFamily::List(names) => assert!(
+                names
+                    .iter()
+                    .any(|n| matches!(n, FontFamilyName::Named(n) if n.as_ref() == "SimSun")),
+                "declared family must be looked up by name, got {names:?}"
+            ),
+            other => panic!("expected a named family list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn family_display_name_prefers_the_registered_then_declared_family() {
+        let (res, default_bytes) = declared_font("F1", "SimSun");
+        let mut store = FontStore::from_resources(&res, default_bytes);
+        assert_eq!(
+            store.family_display_name(&FontId::new("F1")).as_deref(),
+            Some("SimSun")
+        );
+        let test_bytes = include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        store.register_font(Arc::new(test_bytes.to_vec()));
+        assert!(
+            store.family_display_name(&FontId::new("nope")).is_none(),
+            "unknown ids have no display name"
+        );
+    }
+
+    #[test]
+    fn family_entries_filter_internal_slice_names_and_dedup() {
+        let (res, default_bytes) = declared_font("F1", "SimSun");
+        let mut store = FontStore::from_resources(&res, default_bytes);
+        let test_bytes = include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
+        assert!(store.register_font_slice(Arc::new(test_bytes.to_vec()), "simsun", "0"));
+
+        let entries = store.family_entries();
+        assert!(
+            entries.iter().all(|e| !e.display.starts_with("__rofs_")),
+            "internal slice names must not surface: {entries:?}"
+        );
+        assert!(
+            entries.iter().any(|e| e.key == "simsun"),
+            "declared family surfaces under its normalized key: {entries:?}"
+        );
+        let keys: Vec<&str> = entries.iter().map(|e| e.key.as_str()).collect();
+        let mut deduped = keys.clone();
+        deduped.sort_unstable();
+        deduped.dedup();
+        assert_eq!(keys.len(), deduped.len(), "keys must be unique: {keys:?}");
     }
 }

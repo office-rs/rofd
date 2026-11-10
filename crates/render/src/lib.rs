@@ -52,7 +52,7 @@ pub use scrollbar::{
     TRACK_PAGE_RATIO,
 };
 pub use text::normalize_family_key;
-pub use text::{shape_text, FontStore, ShapedGlyph, WrappedLine, WrappedText};
+pub use text::{shape_text, FamilyEntry, FontStore, ShapedGlyph, WrappedLine, WrappedText};
 pub use tooltip::{paint_tooltip, tooltip_anchor};
 pub use viewport::{clamp_scroll, Viewport, FIT_MIN_ZOOM, MAX_ZOOM, MIN_ZOOM, PX_PER_MM};
 
