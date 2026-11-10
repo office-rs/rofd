@@ -57,14 +57,11 @@ pub enum AnnotationPayload {
         /// TextObjects.
         #[serde(default)]
         border: Option<Color>,
-        /// Rich appearance runs parsed from the FreeText Appearance: one entry
-        /// per styled TextObject/TextCode fragment with its own font/size/
-        /// color/bold/italic and pen position (appearance-local mm, relative
-        /// to the annotation's Appearance/@Boundary origin). Empty for
-        /// rofd-created boxes (flat single-style layout). Rendering prefers
-        /// runs; the first text edit collapses them to the flat style.
+        /// Styled fragments of the box's content, in reading order. Their texts
+        /// concatenate to `content` exactly; empty for flat boxes (one style for
+        /// the whole box). Positions are computed by flow layout, never stored.
         #[serde(default)]
-        runs: Vec<TextRun>,
+        spans: Vec<TextSpan>,
     },
     Stamp {
         rect: Rect,
@@ -93,24 +90,21 @@ pub struct Annotation {
     pub payload: AnnotationPayload,
 }
 
-/// One styled fragment of a TextBox's FreeText appearance (a run). Producers
-/// that support per-fragment styling (bold/italic/color/size within one box)
-/// emit one TextObject per fragment on a shared line; the parse flattens the
-/// plain text into `content` and keeps the styled fragments here.
+/// One styled fragment of a TextBox's content. Spans are ordered and their
+/// texts concatenate to the box content (the editor maintains that invariant
+/// when inserting/deleting/styling text).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TextRun {
+pub struct TextSpan {
     pub text: String,
     pub font: FontId,
     pub size: f64,
+    /// `None` means "inherit the box's flat `color`" (source TextObject had no
+    /// FillColor).
     pub color: Option<Color>,
     /// `Weight >= 600` on the source TextObject.
     pub bold: bool,
     /// `Italic="true"` on the source TextObject.
     pub italic: bool,
-    /// Pen x and baseline y, appearance-local mm (relative to the
-    /// annotation's Appearance/@Boundary origin).
-    pub x: f64,
-    pub baseline: f64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -337,7 +331,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
-                runs: vec![],
+                spans: vec![],
             },
             AnnotationKind::TextBox,
         );
@@ -345,8 +339,8 @@ mod tests {
     }
 
     #[test]
-    fn annotation_payload_textbox_runs_round_trips() {
-        // Rich appearance runs (per-run style + position, appearance-local mm).
+    fn textbox_spans_round_trip_without_positions() {
+        // Styled fragments carry style only; positions are computed by flow layout.
         let ann = base_ann(
             AnnotationPayload::TextBox {
                 rect: Rect {
@@ -360,26 +354,22 @@ mod tests {
                 size: 4.2333,
                 color: Color::Rgb(13, 13, 13),
                 border: Some(Color::Rgb(255, 0, 0)),
-                runs: vec![
-                    TextRun {
+                spans: vec![
+                    TextSpan {
                         text: "发的古".into(),
                         font: FontId::new("118"),
                         size: 4.2333,
                         color: None,
                         bold: false,
                         italic: false,
-                        x: 1.1764,
-                        baseline: 6.631,
                     },
-                    TextRun {
+                    TextSpan {
                         text: "格".into(),
                         font: FontId::new("157"),
                         size: 4.2333,
                         color: Some(Color::Rgb(75, 172, 198)),
                         bold: true,
                         italic: false,
-                        x: 24.4596,
-                        baseline: 6.631,
                     },
                 ],
             },
@@ -389,37 +379,13 @@ mod tests {
     }
 
     #[test]
-    fn textbox_runs_default_empty_for_legacy_json() {
-        // Payloads serialized before `runs` existed carry no runs field; the
-        // serde default keeps them loadable with runs == [].
-        let ann = base_ann(
-            AnnotationPayload::TextBox {
-                rect: Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    w: 100.0,
-                    h: 30.0,
-                },
-                content: "hi".into(),
-                font: FontId::new("F1"),
-                size: 12.0,
-                color: Color::Rgb(0, 0, 0),
-                border: None,
-                runs: vec![],
-            },
-            AnnotationKind::TextBox,
-        );
-        let json = serde_json::to_string(&ann).unwrap();
-        let legacy = json.replace(",\"runs\":[]", "");
-        assert!(!legacy.contains("runs"), "legacy JSON has no runs field");
-        let back: Annotation = serde_json::from_str(&legacy).unwrap();
-        match back.payload {
-            AnnotationPayload::TextBox { content, runs, .. } => {
-                assert_eq!(content, "hi");
-                assert!(runs.is_empty(), "missing runs field -> default []");
-            }
-            other => panic!("expected TextBox, got {other:?}"),
-        }
+    fn textbox_spans_default_empty_for_legacy_json() {
+        // Payloads serialized before `spans` existed carry no spans field; the
+        // serde default keeps them loadable with spans == [].
+        let json = r#"{"TextBox":{"rect":{"x":0.0,"y":0.0,"w":10.0,"h":10.0},
+            "content":"a","font":"F1","size":12.0,"color":{"Rgb":[0,0,0]},"border":null}}"#;
+        let payload: AnnotationPayload = serde_json::from_str(json).unwrap();
+        assert!(matches!(payload, AnnotationPayload::TextBox { spans, .. } if spans.is_empty()));
     }
 
     #[test]

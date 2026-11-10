@@ -42,7 +42,7 @@ pub fn paint_preedit_overlay(
             size,
             color,
             content,
-            runs,
+            spans,
             ..
         } => (
             rect,
@@ -50,7 +50,7 @@ pub fn paint_preedit_overlay(
             *size,
             *color,
             content.as_str(),
-            !runs.is_empty(),
+            !spans.is_empty(),
         ),
         _ => return,
     };

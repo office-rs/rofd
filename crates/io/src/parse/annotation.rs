@@ -319,27 +319,53 @@ fn normalize_newlines(s: &str) -> String {
     s.replace("\r\n", "\n").replace('\r', "\n")
 }
 
-fn flat_content_from_runs(runs: &[rofd_dom::TextRun]) -> String {
-    let mut sorted: Vec<&rofd_dom::TextRun> = runs.iter().collect();
+/// TEMP(rich-text): a parsed appearance fragment with its pen position. Task 7
+/// replaces this with Remark-aligned normalization.
+struct ParsedRun {
+    text: String,
+    font: rofd_dom::FontId,
+    size: f64,
+    color: Option<rofd_dom::Color>,
+    bold: bool,
+    italic: bool,
+    x: f64,
+    baseline: f64,
+}
+
+/// Reading order for parsed fragments: sort by (baseline, x); a baseline jump
+/// beyond 30% of the smaller size appends a `\n` to the preceding fragment so
+/// the fragment texts still concatenate to the flattened content.
+fn ordered_runs(runs: &[ParsedRun]) -> Vec<ParsedRun> {
+    let mut sorted: Vec<&ParsedRun> = runs.iter().collect();
     sorted.sort_by(|a, b| {
         a.baseline
             .partial_cmp(&b.baseline)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
     });
-    let mut content = String::new();
-    let mut prev: Option<&rofd_dom::TextRun> = None;
+    let mut out: Vec<ParsedRun> = Vec::with_capacity(sorted.len());
     for run in sorted {
-        if let Some(p) = prev {
-            let threshold = 0.3 * p.size.min(run.size);
-            if (run.baseline - p.baseline).abs() > threshold {
-                content.push('\n');
+        let run = ParsedRun {
+            text: run.text.clone(),
+            font: run.font.clone(),
+            size: run.size,
+            color: run.color,
+            bold: run.bold,
+            italic: run.italic,
+            x: run.x,
+            baseline: run.baseline,
+        };
+        if let Some(prev) = out.last() {
+            let threshold = 0.3 * prev.size.min(run.size);
+            if (run.baseline - prev.baseline).abs() > threshold {
+                if let Some(last) = out.last_mut() {
+                    last.text.push('\n');
+                }
             }
         }
-        content.push_str(&run.text);
-        prev = Some(run);
+        out.push(run);
     }
-    content
+    out
 }
 
 /// Map GB/T 33190 Annot Type+Subtype to [`AnnotationKind`]. Unknown combos
@@ -484,18 +510,9 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
             }
         }
         AnnotationKind::TextBox => {
-            // FreeText: content/font/size/color come from the Appearance
-            // TextObject(s). Producers split text two ways: one TextObject
-            // per LINE (all sharing one style) or one TextObject per styled
-            // FRAGMENT on a shared line (per-fragment Font/Size/Italic/
-            // Weight/FillColor). Both flatten into `content` (same-line
-            // fragments concatenated, different baselines newline-joined)
-            // while the styled fragments survive in `runs` with appearance-
-            // local pen positions for faithful rendering. Flat fallback
-            // style = first TextObject's (producers keep one style per
-            // annotation unless they fragment). When no TextObject is
-            // present, fall back to the Remark text.
-            let mut runs: Vec<rofd_dom::TextRun> = Vec::new();
+            // TEMP(rich-text): positions are still collected locally to derive
+            // reading order; Task 7 replaces this with Remark-aligned spans.
+            let mut parsed: Vec<ParsedRun> = Vec::new();
             let mut flat_font = String::new();
             let mut flat_size = 0.0;
             let mut flat_color = None;
@@ -518,7 +535,7 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
                         first = false;
                     }
                     for (text, cx, cy) in codes {
-                        runs.push(rofd_dom::TextRun {
+                        parsed.push(ParsedRun {
                             text: normalize_newlines(text),
                             font: rofd_dom::FontId::new(font.clone()),
                             size: *size,
@@ -533,7 +550,8 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
                     }
                 }
             }
-            let mut content = flat_content_from_runs(&runs);
+            let mut ordered = ordered_runs(&parsed);
+            let mut content: String = ordered.iter().map(|r| r.text.as_str()).collect();
             // WPS stores the logical FreeText body in Remark - both for boxes
             // it creates (which carry no <ofd:Parameters> at all) and for
             // edited boxes - and regenerates the appearance from it on edit.
@@ -545,20 +563,32 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
                 content = p.remark.clone();
             }
             let content = normalize_newlines(&content);
-            // Runs are the RICH-fidelity carrier only: keep them when the
+            // Spans are the rich-fidelity carrier only: keep them when the
             // appearance actually fragments styling (a bold/italic flag, or
-            // adjacent runs differing in font/size/color). Uniform layouts
-            // (one style per line - what rofd itself serializes) stay
-            // runs-empty so flat boxes round-trip unchanged.
-            let rich = runs.iter().any(|r| r.bold || r.italic)
-                || runs.windows(2).any(|w| {
+            // adjacent fragments differing in font/size/color). Uniform
+            // layouts (one style per line - what rofd itself serializes) stay
+            // spans-empty so flat boxes round-trip unchanged.
+            let rich = ordered.iter().any(|r| r.bold || r.italic)
+                || ordered.windows(2).any(|w| {
                     w[0].font != w[1].font
                         || (w[0].size - w[1].size).abs() > 1e-9
                         || w[0].color != w[1].color
                 });
-            if !rich {
-                runs.clear();
-            }
+            let spans: Vec<rofd_dom::TextSpan> = if rich {
+                ordered
+                    .drain(..)
+                    .map(|r| rofd_dom::TextSpan {
+                        text: r.text,
+                        font: r.font,
+                        size: r.size,
+                        color: r.color,
+                        bold: r.bold,
+                        italic: r.italic,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
             // A bordered text box (文本框) carries a stroke-only border
             // PathObject ahead of the text; keep its color or the frame
             // silently disappears on the next save.
@@ -573,7 +603,7 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
                 size: flat_size,
                 color: flat_color.unwrap_or_default(),
                 border,
-                runs,
+                spans,
             }
         }
         AnnotationKind::Stamp => {
@@ -833,17 +863,17 @@ mod tests {
                 content,
                 font,
                 size,
-                runs,
+                spans,
                 ..
             } => {
                 // Both lines must be present, joined by a newline.
                 assert_eq!(content, "first line\nsecond line");
                 assert_eq!(font.0, "F1");
                 assert!((size - 12.0).abs() < 1e-10);
-                // Uniform one-style-per-line layout: NOT rich -> no runs
-                // (flat boxes round-trip unchanged; runs are the rich
+                // Uniform one-style-per-line layout: NOT rich -> no spans
+                // (flat boxes round-trip unchanged; spans are the rich
                 // fidelity carrier only).
-                assert!(runs.is_empty(), "uniform layout stays runs-empty");
+                assert!(spans.is_empty(), "uniform layout stays spans-empty");
             }
             other => panic!("expected TextBox, got {other:?}"),
         }
@@ -861,7 +891,7 @@ mod tests {
             AnnotationPayload::TextBox {
                 content,
                 border,
-                runs,
+                spans,
                 ..
             } => {
                 // All four fragments sit on ONE line (same baseline) - the
@@ -869,33 +899,26 @@ mod tests {
                 // stacking bug joined them with '\n').
                 assert_eq!(content, "发的古典风格");
                 assert_eq!(border, &Some(Color::Rgb(255, 0, 0)));
-                assert_eq!(runs.len(), 4, "one run per TextObject");
-                let r0 = &runs[0];
+                assert_eq!(spans.len(), 4, "one span per TextObject");
+                let r0 = &spans[0];
                 assert_eq!(r0.text, "发的古");
                 assert_eq!(r0.font.0, "118");
                 assert!((r0.size - 4.2333).abs() < 1e-9);
                 assert_eq!(r0.color, None);
                 assert!(!r0.bold && !r0.italic);
-                assert!((r0.x - 1.1764).abs() < 1e-9, "x = boundary.x + code.X");
-                assert!(
-                    (r0.baseline - (1.1764 + 5.4546)).abs() < 1e-9,
-                    "baseline = boundary.y + code.Y"
-                );
-                let r1 = &runs[1];
+                let r1 = &spans[1];
                 assert_eq!(r1.text, "典");
                 assert_eq!(r1.font.0, "154");
-                assert!((r1.size - 6.35).abs() < 1e-9, "per-run size");
-                assert!((r1.x - 13.8763).abs() < 1e-9);
-                let r2 = &runs[2];
+                assert!((r1.size - 6.35).abs() < 1e-9, "per-span size");
+                let r2 = &spans[2];
                 assert_eq!(r2.text, "风");
-                assert!(r2.italic, "Italic=\"true\" -> run.italic");
+                assert!(r2.italic, "Italic=\"true\" -> span.italic");
                 assert!(!r2.bold);
-                let r3 = &runs[3];
+                let r3 = &spans[3];
                 assert_eq!(r3.text, "格");
                 assert_eq!(r3.font.0, "157");
-                assert!(r3.bold, "Weight=\"700\" -> run.bold");
+                assert!(r3.bold, "Weight=\"700\" -> span.bold");
                 assert_eq!(r3.color, Some(Color::Rgb(75, 172, 198)));
-                assert!((r3.x - 24.4596).abs() < 1e-9);
             }
             other => panic!("expected TextBox, got {other:?}"),
         }
@@ -918,10 +941,10 @@ mod tests {
 </ofd:PageAnnot>"#;
         let anns = parse_page_annot(xml, &PageId::new("1")).unwrap();
         match &anns[0].payload {
-            AnnotationPayload::TextBox { content, runs, .. } => {
+            AnnotationPayload::TextBox { content, spans, .. } => {
                 assert_eq!(content, "first\nsecond", "both codes kept, lines split");
-                // Uniform style across codes: not rich -> runs stay empty.
-                assert!(runs.is_empty());
+                // Uniform style across codes: not rich -> spans stay empty.
+                assert!(spans.is_empty());
             }
             other => panic!("expected TextBox, got {other:?}"),
         }
@@ -1030,7 +1053,7 @@ mod tests {
         let anns = parse_page_annot(xml, &PageId::new("1")).unwrap();
         let AnnotationPayload::TextBox {
             content,
-            runs,
+            spans,
             border,
             ..
         } = &anns[0].payload
@@ -1038,8 +1061,8 @@ mod tests {
             panic!("expected TextBox");
         };
         assert_eq!(content, "abc");
-        assert_eq!(runs.len(), 2, "per-fragment styles survive as rich runs");
-        assert!(runs[0].bold && runs[0].italic);
+        assert_eq!(spans.len(), 2, "per-fragment styles survive as rich spans");
+        assert!(spans[0].bold && spans[0].italic);
         assert_eq!(border, &Some(Color::Rgb(255, 0, 0)));
     }
 

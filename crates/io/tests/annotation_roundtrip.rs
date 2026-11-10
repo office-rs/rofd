@@ -4,7 +4,7 @@
 
 use rofd_dom::{
     Annotation, AnnotationId, AnnotationKind, AnnotationPayload, Color, FontId, ImageId, NoteIcon,
-    PageId, PathCommand, PathData, Point, Rect, ShapeKind, TextLayoutHints, TextRun,
+    PageId, PathCommand, PathData, Point, Rect, ShapeKind, TextLayoutHints, TextSpan,
 };
 
 fn ann(
@@ -165,7 +165,7 @@ fn textbox_roundtrips() {
             size: 12.0,
             color: Color::Rgb(0, 0, 0),
             border: None,
-            runs: Vec::new(),
+            spans: Vec::new(),
         },
         None,
     );
@@ -193,7 +193,7 @@ fn stamp_roundtrips() {
 
 #[test]
 fn textbox_empty_content_roundtrips() {
-    // A freshly created box (new tools): empty content, no runs, no border.
+    // A freshly created box (new tools): empty content, no spans, no border.
     let tb = ann(
         30,
         AnnotationKind::TextBox,
@@ -209,7 +209,7 @@ fn textbox_empty_content_roundtrips() {
             size: 3.5,
             color: Color::Rgb(0, 0, 0),
             border: None,
-            runs: Vec::new(),
+            spans: Vec::new(),
         },
         None,
     );
@@ -218,7 +218,7 @@ fn textbox_empty_content_roundtrips() {
 
 #[test]
 fn textbox_rich_runs_roundtrip() {
-    // Rich runs: serialize -> parse preserves every styled fragment's
+    // Rich spans: serialize -> parse preserves every styled fragment's
     // font/size/color/bold/italic and appearance-local pen position.
     let tb = ann(
         31,
@@ -235,46 +235,38 @@ fn textbox_rich_runs_roundtrip() {
             size: 4.2333,
             color: Color::Rgb(0, 0, 0),
             border: Some(Color::Rgb(255, 0, 0)),
-            runs: vec![
-                TextRun {
+            spans: vec![
+                TextSpan {
                     text: "发的古".into(),
                     font: FontId::new("118"),
                     size: 4.2333,
                     color: None,
                     bold: false,
                     italic: false,
-                    x: 1.1764,
-                    baseline: 6.631,
                 },
-                TextRun {
+                TextSpan {
                     text: "典".into(),
                     font: FontId::new("154"),
                     size: 6.35,
                     color: None,
                     bold: false,
                     italic: false,
-                    x: 13.8763,
-                    baseline: 6.631,
                 },
-                TextRun {
+                TextSpan {
                     text: "风".into(),
                     font: FontId::new("118"),
                     size: 4.2333,
                     color: None,
                     bold: false,
                     italic: true,
-                    x: 20.2263,
-                    baseline: 6.631,
                 },
-                TextRun {
+                TextSpan {
                     text: "格".into(),
                     font: FontId::new("157"),
                     size: 4.2333,
                     color: Some(Color::Rgb(75, 172, 198)),
                     bold: true,
                     italic: false,
-                    x: 24.4596,
-                    baseline: 6.631,
                 },
             ],
         },
@@ -286,33 +278,26 @@ fn textbox_rich_runs_roundtrip() {
             AnnotationPayload::TextBox {
                 content: ca,
                 border: ba,
-                runs: ra,
+                spans: ra,
                 ..
             },
             AnnotationPayload::TextBox {
                 content: cb,
                 border: bb,
-                runs: rb,
+                spans: rb,
                 ..
             },
         ) => {
             assert_eq!(ca, cb, "flat content preserved");
             assert_eq!(ba, bb, "border preserved");
-            assert_eq!(ra.len(), rb.len(), "run count preserved");
+            assert_eq!(ra.len(), rb.len(), "span count preserved");
             for (x, y) in ra.iter().zip(rb.iter()) {
-                assert_eq!(x.text, y.text, "run text");
-                assert_eq!(x.font, y.font, "run font");
-                assert!((x.size - y.size).abs() < 1e-6, "run size");
-                assert_eq!(x.color, y.color, "run color");
-                assert_eq!(x.bold, y.bold, "run bold");
-                assert_eq!(x.italic, y.italic, "run italic");
-                assert!((x.x - y.x).abs() < 1e-6, "pen x: {} vs {}", x.x, y.x);
-                assert!(
-                    (x.baseline - y.baseline).abs() < 1e-6,
-                    "baseline: {} vs {}",
-                    x.baseline,
-                    y.baseline
-                );
+                assert_eq!(x.text, y.text, "span text");
+                assert_eq!(x.font, y.font, "span font");
+                assert!((x.size - y.size).abs() < 1e-6, "span size");
+                assert_eq!(x.color, y.color, "span color");
+                assert_eq!(x.bold, y.bold, "span bold");
+                assert_eq!(x.italic, y.italic, "span italic");
             }
         }
         _ => panic!("expected TextBox on both sides"),
@@ -368,7 +353,7 @@ fn textbox_edge_whitespace_roundtrips() {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
-                runs: Vec::new(),
+                spans: Vec::new(),
             },
             None,
         );
@@ -397,7 +382,7 @@ fn freetext_textbox_roundtrips() {
             size: 5.0,
             color: Color::Rgb(13, 13, 13),
             border: None,
-            runs: Vec::new(),
+            spans: Vec::new(),
         },
         None,
     );

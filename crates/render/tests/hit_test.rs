@@ -590,7 +590,7 @@ fn hit_test_textbox_annotation_bbox() {
             size: 12.0,
             color: Color::Rgb(0, 0, 0),
             border: None,
-            runs: vec![],
+            spans: vec![],
         },
         AnnotationKind::TextBox,
     );

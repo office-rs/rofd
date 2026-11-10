@@ -2,11 +2,11 @@
 // rofd divergences: the test corpus is built through rofd-dom types +
 // the OfdComponent pass-throughs (rword loaded an rword-dom Document
 // directly), and the IME/undo/clipboard scenarios drive a TextBox
-// annotation and body text instead of paragraph runs.
+// annotation and body text instead of paragraph spans.
 
 //! Input-channel tests for the completed view surface.
 //!
-//! Everything runs headless (TestAppContext/VisualTestContext) and
+//! Everything spans headless (TestAppContext/VisualTestContext) and
 //! asserts on kernel state — selection, document content, clipboard —
 //! never pixels:
 //! - mouse listeners translate window coords into viewport coords by
@@ -39,7 +39,7 @@ const PAD_X: f32 = 40.0;
 const PAD_Y: f32 = 24.0;
 const WIN_W: f32 = 800.0;
 const WIN_H: f32 = 600.0;
-/// Page size in mm; every test runs at zoom 1.0 (1 px per mm).
+/// Page size in mm; every test spans at zoom 1.0 (1 px per mm).
 const PAGE_MM: f64 = 200.0;
 /// Default `OfdConfig` page gap (px).
 const PAGE_GAP: f64 = 20.0;
@@ -155,7 +155,7 @@ fn add_textbox(view: &mut OfdGpuiView) {
             size: 10.0,
             color: Color::Rgb(0, 0, 0),
             border: None,
-            runs: Vec::new(),
+            spans: Vec::new(),
         },
     );
 }
@@ -435,7 +435,7 @@ fn ctrl_x_copies_without_deleting(cx: &mut TestAppContext) {
                 size: 10.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
-                runs: Vec::new(),
+                spans: Vec::new(),
             },
         );
     });

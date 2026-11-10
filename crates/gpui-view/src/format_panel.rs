@@ -119,7 +119,7 @@ mod tests {
                 size: 10.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
-                runs: vec![],
+                spans: vec![],
             },
         );
         // The component zooms by PX_PER_MM by default; mm -> viewport px.

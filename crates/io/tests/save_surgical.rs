@@ -66,14 +66,14 @@ fn strip_max_unit_id(xml: &str) -> String {
     format!("{}{}", &xml[..open_start], &xml[close_end..])
 }
 
-/// Rich runs through the FULL surgical save path: the annotation entry is
+/// Rich spans through the FULL surgical save path: the annotation entry is
 /// re-serialized from the AnnotationModel; re-parsing must give every styled
 /// fragment back (font/size/color/bold/italic + pen positions), and body
 /// entries stay byte-identical (§4.3).
 #[test]
 fn surgical_save_preserves_textbox_runs() {
     use rofd_dom::{
-        Annotation, AnnotationId, AnnotationKind, AnnotationPayload, FontId, PageId, TextRun,
+        Annotation, AnnotationId, AnnotationKind, AnnotationPayload, FontId, PageId, TextSpan,
     };
     let original = fixtures::build_minimal_ofd();
     let report = rofd_io::parse_ofd(&original).unwrap();
@@ -102,26 +102,22 @@ fn surgical_save_preserves_textbox_runs() {
                 size: 4.2333,
                 color: rofd_dom::Color::Rgb(0, 0, 0),
                 border: Some(rofd_dom::Color::Rgb(255, 0, 0)),
-                runs: vec![
-                    TextRun {
+                spans: vec![
+                    TextSpan {
                         text: "发的古".into(),
                         font: FontId::new("118"),
                         size: 4.2333,
                         color: None,
                         bold: false,
                         italic: false,
-                        x: 1.1764,
-                        baseline: 6.631,
                     },
-                    TextRun {
+                    TextSpan {
                         text: "格".into(),
                         font: FontId::new("157"),
                         size: 4.2333,
                         color: Some(rofd_dom::Color::Rgb(75, 172, 198)),
                         bold: true,
                         italic: false,
-                        x: 24.4596,
-                        baseline: 6.631,
                     },
                 ],
             },
@@ -139,7 +135,7 @@ fn surgical_save_preserves_textbox_runs() {
         assert_eq!(by_name(&orig_entries, name), by_name(&saved_entries, name));
     }
 
-    // The rich annotation parses back with both runs intact.
+    // The rich annotation parses back with both spans intact.
     let reparsed = rofd_io::parse_ofd(&saved).unwrap();
     let anns = reparsed
         .document
@@ -151,15 +147,13 @@ fn surgical_save_preserves_textbox_runs() {
         .find(|a| a.id == AnnotationId::from_int(149))
         .expect("inserted rich annotation survived the save");
     match &ann.payload {
-        AnnotationPayload::TextBox { content, runs, .. } => {
+        AnnotationPayload::TextBox { content, spans, .. } => {
             // The Remark mirror (written for WPS compatibility) preserves the
             // model's logical content across save+reparse.
             assert_eq!(content, "发的古典风格");
-            assert_eq!(runs.len(), 2, "both runs survived the save");
-            assert!(runs[1].bold, "bold flag survived");
-            assert_eq!(runs[1].color, Some(rofd_dom::Color::Rgb(75, 172, 198)));
-            assert!((runs[1].x - 24.4596).abs() < 1e-6, "pen x survived");
-            assert!((runs[1].baseline - 6.631).abs() < 1e-6, "baseline survived");
+            assert_eq!(spans.len(), 2, "both spans survived the save");
+            assert!(spans[1].bold, "bold flag survived");
+            assert_eq!(spans[1].color, Some(rofd_dom::Color::Rgb(75, 172, 198)));
         }
         other => panic!("expected TextBox, got {other:?}"),
     }

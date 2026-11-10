@@ -36,7 +36,7 @@ use crate::viewport::Viewport;
 /// page-stacking helper: centering + scroll on both axes + `page_gap` +
 /// `zoom`).
 ///
-/// `runs`-empty TextBoxes use the wrapped layout: x is the line-relative
+/// `spans`-empty TextBoxes use the wrapped layout: x is the line-relative
 /// glyph pen at `offset`, y is `rect.y + line.top`, height is the visual line
 /// box height. Rich TextBoxes and Note/Watermark keep the legacy flat-content
 /// geometry (spec 2026-11-09 §1.2.2, §1.3).
@@ -79,11 +79,11 @@ pub fn caret_rect_on_line(
         content,
         font,
         size,
-        runs,
+        spans,
         ..
     } = &ann.payload
     {
-        if runs.is_empty() {
+        if spans.is_empty() {
             let wrapped = fonts.shape_wrapped(font, content, *size, rect.w.max(*size));
             let (line_idx, local) = line_and_local(&wrapped, offset, line_hint);
             let line = wrapped.lines.get(line_idx)?;
@@ -227,7 +227,7 @@ pub fn caret_offset_at_point(
 }
 
 /// Viewport-space highlight rectangles for a char range selected inside a
-/// flat TextBox (`runs` empty): one rect per visual line the range covers,
+/// flat TextBox (`spans` empty): one rect per visual line the range covers,
 /// spanning the line box height. Returns an empty vec for a zero-width range,
 /// non-text payloads, rich boxes (no reflow, no text selection) and
 /// unresolvable geometry.
@@ -263,13 +263,13 @@ pub fn annotation_text_selection_rects(
         content,
         font,
         size,
-        runs,
+        spans,
         ..
     } = &ann.payload
     else {
         return Vec::new();
     };
-    if !runs.is_empty() {
+    if !spans.is_empty() {
         return Vec::new();
     }
     let Some(page_idx) = doc.pages.iter().position(|p| p.id == ann.page) else {
@@ -536,7 +536,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
-                runs: Vec::new(),
+                spans: Vec::new(),
             },
             AnnotationKind::TextBox,
         );
@@ -585,7 +585,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
-                runs: Vec::new(),
+                spans: Vec::new(),
             },
             AnnotationKind::TextBox,
         );
@@ -640,7 +640,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
-                runs: Vec::new(),
+                spans: Vec::new(),
             },
             AnnotationKind::TextBox,
         );
@@ -685,7 +685,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
-                runs: Vec::new(),
+                spans: Vec::new(),
             },
             AnnotationKind::TextBox,
         );
@@ -795,7 +795,7 @@ mod tests {
                     size: 12.0,
                     color: Color::Rgb(0, 0, 0),
                     border: None,
-                    runs: Vec::new(),
+                    spans: Vec::new(),
                 },
             });
         let fonts = FontStore::from_resources(&doc.resources, Arc::new(font_bytes.to_vec()));
@@ -823,7 +823,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
-                runs: Vec::new(),
+                spans: Vec::new(),
             },
             AnnotationKind::TextBox,
         );
@@ -853,7 +853,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
-                runs: Vec::new(),
+                spans: Vec::new(),
             },
             AnnotationKind::TextBox,
         );
@@ -889,7 +889,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
-                runs: Vec::new(),
+                spans: Vec::new(),
             },
             AnnotationKind::TextBox,
         );
@@ -928,7 +928,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
-                runs: Vec::new(),
+                spans: Vec::new(),
             },
             AnnotationKind::TextBox,
         );
@@ -972,15 +972,13 @@ mod tests {
                     size: 12.0,
                     color: Color::Rgb(0, 0, 0),
                     border: None,
-                    runs: vec![rofd_dom::TextRun {
+                    spans: vec![rofd_dom::TextSpan {
                         text: "ab".into(),
                         font: FontId::new("F1"),
                         size: 12.0,
                         color: None,
                         bold: false,
                         italic: false,
-                        x: 0.0,
-                        baseline: 12.0,
                     }],
                 },
             });
@@ -1059,7 +1057,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
-                runs: Vec::new(),
+                spans: Vec::new(),
             },
             AnnotationKind::TextBox,
         );

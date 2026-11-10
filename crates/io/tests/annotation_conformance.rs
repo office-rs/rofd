@@ -72,7 +72,7 @@ fn one_of_each_kind() -> Vec<Annotation> {
                 size: 5.6,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
-                runs: Vec::new(),
+                spans: Vec::new(),
             },
         ),
         ann(
@@ -520,7 +520,7 @@ fn textbox_textcode_carries_per_char_advances() {
             size: 5.6,
             color: Color::Rgb(0, 0, 0),
             border: None,
-            runs: Vec::new(),
+            spans: Vec::new(),
         },
     )];
     let mut next_id = 200u64;

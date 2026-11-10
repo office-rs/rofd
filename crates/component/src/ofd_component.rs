@@ -599,13 +599,13 @@ impl OfdComponent {
                 content,
                 font,
                 size,
-                runs,
+                spans,
                 ..
             } = &mut ann.payload
             else {
                 continue;
             };
-            if !runs.is_empty() || content.chars().count() == 0 {
+            if !spans.is_empty() || content.chars().count() == 0 {
                 continue;
             }
             let wrapped = store.shape_wrapped(font, content, *size, rect.w.max(*size));
@@ -639,7 +639,7 @@ impl OfdComponent {
             font,
             size,
             color,
-            runs,
+            spans,
             ..
         } = &ann.payload
         else {
@@ -666,7 +666,7 @@ impl OfdComponent {
             family,
             size_mm: *size,
             color: *color,
-            rich: !runs.is_empty(),
+            rich: !spans.is_empty(),
         })
     }
 
@@ -810,7 +810,7 @@ impl OfdComponent {
     fn is_flat_textbox(&self, id: &AnnotationId) -> bool {
         matches!(
             self.editor.document().annotations.find(id).map(|a| &a.payload),
-            Some(AnnotationPayload::TextBox { runs, .. }) if runs.is_empty()
+            Some(AnnotationPayload::TextBox { spans, .. }) if spans.is_empty()
         )
     }
 
@@ -1252,13 +1252,13 @@ impl OfdComponent {
             content,
             font,
             size,
-            runs,
+            spans,
             ..
         }) = payload
         else {
             return rect;
         };
-        if !runs.is_empty() {
+        if !spans.is_empty() {
             return rect;
         }
         self.ensure_font_store();
@@ -1708,13 +1708,13 @@ impl OfdComponent {
             content,
             font,
             size,
-            runs,
+            spans,
             ..
         } = payload
         else {
             return None;
         };
-        if !runs.is_empty() {
+        if !spans.is_empty() {
             return None;
         }
         self.ensure_font_store();
@@ -2925,10 +2925,10 @@ impl OfdComponent {
                 content,
                 font,
                 size,
-                runs,
+                spans,
                 ..
             } => {
-                if runs.is_empty() {
+                if spans.is_empty() {
                     Some(rofd_render::caret_offset_at_point(
                         content,
                         font,
@@ -3947,13 +3947,13 @@ fn measure_textbox_growth(store: &FontStore, payload: &AnnotationPayload) -> Opt
         content,
         font,
         size,
-        runs,
+        spans,
         ..
     } = payload
     else {
         return None;
     };
-    if !runs.is_empty() || content.chars().count() == 0 {
+    if !spans.is_empty() || content.chars().count() == 0 {
         return None;
     }
     let wrapped = store.shape_wrapped(font, content, *size, rect.w.max(*size));
@@ -4027,7 +4027,7 @@ fn build_create_payload(
             size: DEFAULT_TEXTBOX_SIZE,
             color: Color::Rgb(0, 0, 0),
             border: Some(DEFAULT_TEXTBOX_BORDER),
-            runs: Vec::new(),
+            spans: Vec::new(),
         },
         // 文字批注 (TypeWriter): placed at the PRESS point with a
         // one-line frame (the release point is irrelevant - click or drag
@@ -4044,7 +4044,7 @@ fn build_create_payload(
             size: DEFAULT_TEXTBOX_SIZE,
             color: Color::Rgb(0, 0, 0),
             border: None,
-            runs: Vec::new(),
+            spans: Vec::new(),
         },
     }
 }
@@ -4355,7 +4355,7 @@ mod tests {
                 size: 10.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
-                runs: Vec::new(),
+                spans: Vec::new(),
             },
         );
         c.editor.set_cursor(id, 2);
@@ -5258,7 +5258,7 @@ mod tests {
                 size: 10.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
-                runs: Vec::new(),
+                spans: Vec::new(),
             },
         );
         c.editor.set_cursor(id, 11);
@@ -5444,11 +5444,11 @@ mod tests {
                 rect,
                 content,
                 border,
-                runs,
+                spans,
                 ..
             } => {
                 assert_eq!(content, "");
-                assert!(runs.is_empty());
+                assert!(spans.is_empty());
                 assert_eq!(border, &None, "typewriter text has no frame");
                 assert!((rect.x - 50.0).abs() < 1e-9, "placed at the click");
                 assert!((rect.y - 50.0).abs() < 1e-9);
@@ -9469,7 +9469,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
-                runs: Vec::new(),
+                spans: Vec::new(),
             },
         });
         c.load_document(doc);
@@ -9518,7 +9518,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
-                runs: Vec::new(),
+                spans: Vec::new(),
             },
         });
         c.load_document(doc);
@@ -9626,7 +9626,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
-                runs: Vec::new(),
+                spans: Vec::new(),
             },
         );
         c.editor.set_cursor(id, content.chars().count());
@@ -10232,15 +10232,13 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
-                runs: vec![rofd_dom::TextRun {
+                spans: vec![rofd_dom::TextSpan {
                     text: "rich".into(),
                     font: FontId::new("F1"),
                     size: 12.0,
                     color: None,
                     bold: true,
                     italic: false,
-                    x: 0.0,
-                    baseline: 12.0,
                 }],
             },
         );

@@ -352,7 +352,7 @@ fn appearance_xml(
                 size,
                 color,
                 border,
-                runs,
+                spans,
             },
         ) => {
             // A bordered text box re-emits its frame ahead of the text (the
@@ -371,7 +371,7 @@ fn appearance_xml(
                     next_id,
                 ));
             }
-            if runs.is_empty() {
+            if spans.is_empty() {
                 match line_hint {
                     Some(lines) if !lines.is_empty() => inner.push_str(
                         &text_object_xml_from_hints(&font.0, *size, *color, lines, next_id),
@@ -381,11 +381,14 @@ fn appearance_xml(
                     )),
                 }
             } else {
-                // Rich runs: one TextObject per styled fragment at its own
-                // pen position. Boundary.y + TextCode Y round-trips the
-                // baseline exactly: y = (baseline - size), Y = size.
-                for run in runs {
-                    inner.push_str(&text_run_object_xml(run, next_id));
+                // TEMP(rich-text): sequential pen approximation until Task 8
+                // supplies hint-driven per-fragment geometry. A shared baseline
+                // keeps parse's (baseline, x) ordering stable across reloads.
+                let baseline = spans.iter().map(|s| s.size).fold(0.0, f64::max);
+                let mut pen_x = 0.0;
+                for span in spans {
+                    inner.push_str(&text_span_object_xml(span, pen_x, baseline, next_id));
+                    pen_x += span.text.chars().count() as f64 * span.size;
                 }
             }
             format!(
@@ -571,39 +574,41 @@ fn text_object_xml_from_hints(
     s
 }
 
-/// Build a `<TextObject>` element for one rich [`TextRun`]: the fragment's
-/// own font/size/color/bold/italic at its own pen position
-/// (`Boundary = (x, baseline - size, w, size*1.2)`, `TextCode X=0 Y=size` —
-/// the parse inverse reads `x = boundary.x` and
-/// `baseline = boundary.y + size` exactly).
-fn text_run_object_xml(run: &rofd_dom::TextRun, next_id: &mut u64) -> String {
+/// TEMP(rich-text): build a `<TextObject>` for one span at a caller-supplied
+/// pen position. Task 8 replaces this with hint-driven per-fragment geometry.
+fn text_span_object_xml(
+    span: &rofd_dom::TextSpan,
+    x: f64,
+    baseline: f64,
+    next_id: &mut u64,
+) -> String {
     let id = mint_object_id(next_id);
-    let chars = run.text.chars().count().max(1);
-    let w = chars as f64 * run.size;
-    let h = run.size * 1.2;
+    let chars = span.text.chars().count().max(1);
+    let w = chars as f64 * span.size;
+    let h = span.size * 1.2;
     let mut style = String::new();
-    if run.italic {
+    if span.italic {
         style.push_str(" Italic=\"true\"");
     }
-    if run.bold {
+    if span.bold {
         style.push_str(" Weight=\"700\"");
     }
-    let fill = match run.color {
+    let fill = match span.color {
         Some(c) => format!("<ofd:FillColor Value=\"{}\"/>", color_str(c)),
         None => String::new(),
     };
     format!(
         "<ofd:TextObject ID=\"{}\" Boundary=\"{} {} {} {}\" Font=\"{}\" Size=\"{}\"{}>{}{}</ofd:TextObject>",
         id,
-        run.x,
-        run.baseline - run.size,
+        x,
+        baseline - span.size,
         w,
         h,
-        xml_escape(&run.font.0),
-        run.size,
+        xml_escape(&span.font.0),
+        span.size,
         style,
         fill,
-        text_code_xml(&run.text, run.size)
+        text_code_xml(&span.text, span.size)
     )
 }
 
@@ -1188,7 +1193,7 @@ mod tests {
                 size: 12.0,
                 color: Color::Rgb(0, 0, 0),
                 border: Some(Color::Rgb(255, 0, 0)),
-                runs: Vec::new(),
+                spans: Vec::new(),
             },
         };
         let mut hints = TextLayoutHints::new();
@@ -1289,28 +1294,24 @@ mod tests {
     }
 
     #[test]
-    fn rich_textbox_emits_run_textobjects_only() {
+    fn rich_textbox_emits_span_textobjects_only() {
         let (mut ann, _) = textbox_with_hints();
-        if let AnnotationPayload::TextBox { runs, .. } = &mut ann.payload {
-            runs.push(rofd_dom::TextRun {
+        if let AnnotationPayload::TextBox { spans, .. } = &mut ann.payload {
+            spans.push(rofd_dom::TextSpan {
                 text: "粗\n".into(),
                 font: FontId::new("F1"),
                 size: 12.0,
                 color: Some(Color::Rgb(75, 172, 198)),
                 bold: true,
                 italic: true,
-                x: 0.0,
-                baseline: 12.0,
             });
-            runs.push(rofd_dom::TextRun {
+            spans.push(rofd_dom::TextSpan {
                 text: "体".into(),
                 font: FontId::new("F1"),
                 size: 12.0,
                 color: None,
                 bold: false,
                 italic: false,
-                x: 12.0,
-                baseline: 12.0,
             });
         }
         let mut next_id = 10;

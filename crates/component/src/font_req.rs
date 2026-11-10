@@ -31,7 +31,7 @@ pub fn body_requirements(doc: &OfdDocument) -> FontRequirements {
 }
 
 /// 批注动态文本需求：TextBox/Watermark content + 引用族（排除嵌入）。
-/// 富 runs 逐段渲染：每段的字体族与文本码点同样进需求。
+/// 富 spans 逐段渲染：每段的字体族与文本码点同样进需求。
 pub fn annotation_requirements(doc: &OfdDocument) -> (Vec<String>, Vec<u32>) {
     let mut families: Vec<String> = Vec::new();
     let mut cps: Vec<u32> = Vec::new();
@@ -41,8 +41,8 @@ pub fn annotation_requirements(doc: &OfdDocument) -> (Vec<String>, Vec<u32>) {
             | AnnotationPayload::Watermark { content, font, .. } => {
                 collect_family(doc, font, &mut families, true);
                 cps.extend(content.chars().map(u32::from));
-                if let AnnotationPayload::TextBox { runs, .. } = &ann.payload {
-                    for run in runs {
+                if let AnnotationPayload::TextBox { spans, .. } = &ann.payload {
+                    for run in spans {
                         collect_family(doc, &run.font, &mut families, true);
                         cps.extend(run.text.chars().map(u32::from));
                     }
@@ -110,7 +110,7 @@ fn finish(mut families: Vec<String>, mut cps: Vec<u32>) -> FontRequirements {
 mod tests {
     use super::*;
     use rofd_dom::{
-        Annotation, AnnotationId, AnnotationKind, Color, FontRef, PageId, Rect, TextRun,
+        Annotation, AnnotationId, AnnotationKind, Color, FontRef, PageId, Rect, TextSpan,
     };
 
     #[test]
@@ -147,15 +147,13 @@ mod tests {
                 size: 4.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
-                runs: vec![TextRun {
+                spans: vec![TextSpan {
                     text: "a字".into(),
                     font: FontId::new("F9"),
                     size: 4.0,
                     color: None,
                     bold: false,
                     italic: false,
-                    x: 0.0,
-                    baseline: 4.0,
                 }],
             },
         });
@@ -197,7 +195,7 @@ mod tests {
                 size: 4.0,
                 color: Color::Rgb(0, 0, 0),
                 border: None,
-                runs: vec![],
+                spans: vec![],
             },
         });
         let (families, _) = annotation_requirements(&doc);

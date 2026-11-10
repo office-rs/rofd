@@ -47,7 +47,7 @@ fn textbox_component(content: &str, w: f64, h: f64) -> (OfdComponent, Annotation
             size: 12.0,
             color: Color::Rgb(0, 0, 0),
             border: None,
-            runs: Vec::new(),
+            spans: Vec::new(),
         },
     );
     (c, id)
