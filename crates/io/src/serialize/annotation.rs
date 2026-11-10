@@ -1201,20 +1201,24 @@ mod tests {
             id,
             vec![
                 TextLineHint {
+                    char_start: 0,
                     text: "abc def ".into(),
                     top: 0.0,
                     baseline: 11.14,
                     height: 13.97,
                     width: 48.42,
                     advances: vec![7.4; 8],
+                    fragments: vec![],
                 },
                 TextLineHint {
+                    char_start: 8,
                     text: "ghi jkl".into(),
                     top: 13.97,
                     baseline: 25.11,
                     height: 13.97,
                     width: 35.99,
                     advances: vec![7.6; 7],
+                    fragments: vec![],
                 },
             ],
         );

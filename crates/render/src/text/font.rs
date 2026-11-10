@@ -11,10 +11,42 @@ use rofd_dom::{FontId, Resources};
 use swash::{FontRef, StringId};
 
 use super::shape::{
-    register_font_with_ids, shape_grouped_with_family, shape_grouped_wrapped_with_family,
-    shape_with_family, ShapedGlyph,
+    register_font_with_ids, shape_grouped_with_family, shape_layout_runs, shape_with_family,
+    ShapedGlyph,
 };
+use super::spans::LayoutRun;
 use super::wrap::WrappedText;
+
+/// Cache key for a wrapped annotation layout: max width (bits), text, and the
+/// shaping-relevant style signature. Color is deliberately absent.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct WrappedKey {
+    width_bits: u64,
+    text: String,
+    sig: String,
+}
+
+impl WrappedKey {
+    fn new(text: &str, runs: &[LayoutRun], max_width: f64) -> Self {
+        let mut sig = String::new();
+        for run in runs {
+            sig.push_str(&format!(
+                "{}:{}:{}:{}:{}{};",
+                run.byte_range.start,
+                run.byte_range.end,
+                run.font.0,
+                run.size.to_bits(),
+                run.bold as u8,
+                run.italic as u8,
+            ));
+        }
+        Self {
+            width_bits: max_width.to_bits(),
+            text: text.to_string(),
+            sig,
+        }
+    }
+}
 
 /// One selectable font family: `key` is the normalized key used for matching
 /// and requirement collection; `display` is what the UI shows.
@@ -77,12 +109,11 @@ pub struct FontStore {
     glyph_cache: RefCell<
         HashMap<FontId, HashMap<u64, HashMap<String, (Option<FontData>, Rc<Vec<ShapedGlyph>>)>>>,
     >,
-    /// Wrapped annotation-text cache:
-    /// `font_id -> (size_bits -> (width_bits -> (text -> layout)))`.
-    /// Cleared whenever the font set changes (same rule as `glyph_cache`).
-    #[allow(clippy::type_complexity)]
-    wrapped_cache:
-        RefCell<HashMap<FontId, HashMap<u64, HashMap<u64, HashMap<String, Rc<WrappedText>>>>>>,
+    /// Wrapped annotation-text cache, keyed by width + text + a style
+    /// signature (span ranges/fonts/sizes/weight/italic). Color is excluded:
+    /// it does not affect shaping. Cleared whenever the font set changes (same
+    /// rule as `glyph_cache`).
+    wrapped_cache: RefCell<HashMap<WrappedKey, Rc<WrappedText>>>,
 }
 
 impl FontStore {
@@ -413,13 +444,7 @@ impl FontStore {
         cached
     }
 
-    /// Shape `text` and wrap it at `max_width` (millimetres at the given
-    /// font size): parley greedy UAX #14 breaks, `OverflowWrap::Anywhere`
-    /// for over-long words. Returns per-line geometry plus the flat glyph
-    /// list (line-relative x, layout-relative y) for drawing.
-    ///
-    /// Cached by `(font_id, size, max_width, text)`; the cache is cleared
-    /// whenever the font set changes.
+    /// Flat convenience: wrap a single-style text (one `LayoutRun`).
     pub fn shape_wrapped(
         &self,
         font_id: &FontId,
@@ -427,40 +452,50 @@ impl FontStore {
         size: f64,
         max_width: f64,
     ) -> Rc<WrappedText> {
-        let size_key = size.to_bits();
-        let width_key = max_width.to_bits();
-        if let Some(cached) = self
-            .wrapped_cache
-            .borrow()
-            .get(font_id)
-            .and_then(|m1| m1.get(&size_key))
-            .and_then(|m2| m2.get(&width_key))
-            .and_then(|m3| m3.get(text))
-            .cloned()
-        {
+        let runs = [LayoutRun {
+            byte_range: 0..text.len(),
+            font: font_id.clone(),
+            size,
+            color: None,
+            bold: false,
+            italic: false,
+        }];
+        self.shape_wrapped_runs(text, &runs, max_width)
+    }
+
+    /// Shape `text` and wrap it at `max_width`, with per-run styles (parley
+    /// greedy UAX #14 breaks, `OverflowWrap::Anywhere` for over-long words).
+    /// Returns per-line geometry plus style glyph groups for drawing.
+    ///
+    /// Cached by `(max_width, text, style signature)`; the signature excludes
+    /// color (it does not affect shaping). The cache is cleared whenever the
+    /// font set changes.
+    pub fn shape_wrapped_runs(
+        &self,
+        text: &str,
+        runs: &[LayoutRun],
+        max_width: f64,
+    ) -> Rc<WrappedText> {
+        let key = WrappedKey::new(text, runs, max_width);
+        if let Some(cached) = self.wrapped_cache.borrow().get(&key).cloned() {
             return cached;
         }
-        let family = self.family_list_for(font_id);
+        let families: Vec<FontFamily<'_>> = runs
+            .iter()
+            .map(|run| self.family_list_for(&run.font))
+            .collect();
         let (groups, raw_lines) = {
             let mut fcx = self.font_cx.borrow_mut();
-            shape_grouped_wrapped_with_family(
+            shape_layout_runs(
                 &mut fcx,
                 text,
-                size,
-                family,
-                max_width.max(0.0) as f32,
+                runs,
+                &families,
+                Some(max_width.max(0.0) as f32),
             )
         };
         let wrapped = Rc::new(WrappedText::from_layout(text, groups, raw_lines));
-        self.wrapped_cache
-            .borrow_mut()
-            .entry(font_id.clone())
-            .or_default()
-            .entry(size_key)
-            .or_default()
-            .entry(width_key)
-            .or_default()
-            .insert(text.to_string(), wrapped.clone());
+        self.wrapped_cache.borrow_mut().insert(key, wrapped.clone());
         wrapped
     }
 

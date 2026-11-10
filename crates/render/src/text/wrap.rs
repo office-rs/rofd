@@ -5,9 +5,9 @@
 use std::rc::Rc;
 
 use peniko::FontData;
-use rofd_dom::TextLineHint;
+use rofd_dom::{TextLineFragmentHint, TextLineHint};
 
-use super::shape::{RawLine, ShapedGlyph};
+use super::shape::{RawLine, ShapedGlyph, ShapedSpanMeta};
 
 /// One visual line of shaped annotation text.
 #[derive(Debug, Clone)]
@@ -33,11 +33,28 @@ pub struct WrappedLine {
     pub text: String,
 }
 
-/// A flat annotation text shaped and wrapped at a maximum width.
+/// One contiguous glyph group sharing a style run and a resolved font. A style
+/// span crossing a line boundary produces one `ShapedSpan` per line.
+#[derive(Debug, Clone)]
+pub struct ShapedSpan {
+    /// Index into the `LayoutRun` slice the layout was shaped from.
+    pub style_index: usize,
+    /// The font parley actually shaped these glyphs with (fallback included).
+    pub font: FontData,
+    pub size: f64,
+    pub bold: bool,
+    pub italic: bool,
+    /// Glyph index range in [`WrappedText::glyphs`].
+    pub glyph_start: usize,
+    pub glyph_end: usize,
+}
+
+/// Annotation text shaped and wrapped at a maximum width.
 #[derive(Debug, Clone)]
 pub struct WrappedText {
-    /// Draw handle (the first font group's font, mirroring `FontStore::shape`).
-    pub font: Option<FontData>,
+    /// Style groups with their resolved font, in draw order. Color is NOT
+    /// stored here: it does not affect shaping, so it stays out of the cache.
+    pub spans: Rc<Vec<ShapedSpan>>,
     /// Glyphs with line-relative x and layout-relative y.
     pub glyphs: Rc<Vec<ShapedGlyph>>,
     /// Visual lines in reading order.
@@ -49,13 +66,26 @@ pub struct WrappedText {
 impl WrappedText {
     pub(crate) fn from_layout(
         text: &str,
-        groups: Vec<(FontData, Vec<ShapedGlyph>)>,
+        groups: Vec<(ShapedSpanMeta, Vec<ShapedGlyph>)>,
         raw_lines: Vec<RawLine>,
     ) -> Self {
         let total_chars = text.chars().count();
         let len = text.len();
-        let font = groups.first().map(|(font, _)| font.clone());
-        let glyphs: Vec<ShapedGlyph> = groups.into_iter().flat_map(|(_, gs)| gs).collect();
+        let mut spans = Vec::with_capacity(groups.len());
+        let mut glyphs: Vec<ShapedGlyph> = Vec::new();
+        for (meta, gs) in groups {
+            let glyph_start = glyphs.len();
+            glyphs.extend(gs);
+            spans.push(ShapedSpan {
+                style_index: meta.style_index,
+                font: meta.font,
+                size: meta.size,
+                bold: meta.bold,
+                italic: meta.italic,
+                glyph_start,
+                glyph_end: glyphs.len(),
+            });
+        }
         let glyph_count = glyphs.len();
 
         let mut lines = Vec::with_capacity(raw_lines.len());
@@ -85,7 +115,7 @@ impl WrappedText {
         }
 
         Self {
-            font,
+            spans: Rc::new(spans),
             glyphs: Rc::new(glyphs),
             lines: Rc::new(lines),
             total_chars,
@@ -141,6 +171,8 @@ impl WrappedText {
     }
 
     /// Convert to the serializer-facing per-line hints (spec §1.5, §4.5).
+    /// Fragments are the line's intersections with the shaped style spans; a
+    /// flat box yields one fragment covering the line.
     pub fn to_layout_hints(&self) -> Vec<TextLineHint> {
         self.lines
             .iter()
@@ -155,13 +187,39 @@ impl WrappedText {
                     };
                     advances.push((next_x - x).max(0.0));
                 }
+                let mut fragments = Vec::new();
+                for span in self.spans.iter() {
+                    let start = span.glyph_start.max(line.glyph_start);
+                    let end = span.glyph_end.min(line.glyph_end);
+                    if start >= end {
+                        continue;
+                    }
+                    let mut frag_advances = Vec::with_capacity(end - start);
+                    for i in start..end {
+                        let x = self.glyphs[i].x as f64;
+                        let next_x = if i + 1 < end {
+                            self.glyphs[i + 1].x as f64
+                        } else {
+                            line.width
+                        };
+                        frag_advances.push((next_x - x).max(0.0));
+                    }
+                    fragments.push(TextLineFragmentHint {
+                        char_start: start - line.glyph_start,
+                        char_len: end - start,
+                        x: self.glyphs[start].x as f64,
+                        advances: frag_advances,
+                    });
+                }
                 TextLineHint {
+                    char_start: line.char_start,
                     text: line.text.clone(),
                     top: line.top,
                     baseline: line.baseline,
                     height: line.height,
                     width: line.width,
                     advances,
+                    fragments,
                 }
             })
             .collect()
@@ -170,15 +228,63 @@ impl WrappedText {
 
 #[cfg(test)]
 mod tests {
+    use std::rc::Rc;
     use std::sync::Arc;
 
-    use rofd_dom::{FontId, Resources};
+    use rofd_dom::{Color, FontId, Resources};
 
+    use crate::text::spans::LayoutRun;
     use crate::text::FontStore;
 
     fn store() -> FontStore {
         let bytes = include_bytes!("../../tests/fixtures/fonts/TestFont.ttf") as &[u8];
         FontStore::from_resources(&Resources::default(), Arc::new(bytes.to_vec()))
+    }
+
+    #[test]
+    fn wraps_two_sizes_and_uses_the_tallest_line_height() {
+        let s = store();
+        let runs = [
+            LayoutRun {
+                byte_range: 0..2,
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Some(Color::Rgb(255, 0, 0)),
+                bold: false,
+                italic: false,
+            },
+            LayoutRun {
+                byte_range: 2..4,
+                font: FontId::new("F1"),
+                size: 24.0,
+                color: Some(Color::Rgb(0, 0, 255)),
+                bold: false,
+                italic: false,
+            },
+        ];
+        let w = s.shape_wrapped_runs("abcd", &runs, 1000.0);
+        assert_eq!(w.spans.len(), 2);
+        assert_eq!(w.spans[0].style_index, 0);
+        assert_eq!(w.spans[1].style_index, 1);
+        assert!(w.lines[0].height >= 24.0);
+    }
+
+    #[test]
+    fn layout_cache_is_color_agnostic() {
+        let s = store();
+        let a = [LayoutRun {
+            byte_range: 0..4,
+            font: FontId::new("F1"),
+            size: 12.0,
+            color: Some(Color::Rgb(255, 0, 0)),
+            bold: false,
+            italic: false,
+        }];
+        let mut b = a.clone();
+        b[0].color = Some(Color::Rgb(0, 0, 255));
+        let wa = s.shape_wrapped_runs("abcd", &a, 1000.0);
+        let wb = s.shape_wrapped_runs("abcd", &b, 1000.0);
+        assert!(Rc::ptr_eq(&wa, &wb), "color must not split the layout cache");
     }
 
     #[test]

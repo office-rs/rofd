@@ -153,6 +153,8 @@ pub const TEXTBOX_LINE_PITCH_RATIO: f64 = 1.2;
 /// box origin.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextLineHint {
+    /// Line's first char offset in the annotation content.
+    pub char_start: usize,
     /// Line text (trailing spaces kept; no line break characters).
     pub text: String,
     /// Line box top (first line is 0).
@@ -166,6 +168,22 @@ pub struct TextLineHint {
     pub width: f64,
     /// Per-character advances; the serializer writes the first `n - 1` as
     /// `TextCode DeltaX`.
+    pub advances: Vec<f64>,
+    /// Style fragments of this line in reading order. Present for every box
+    /// (flat boxes have a single fragment); only the span serialization path
+    /// consumes them.
+    pub fragments: Vec<TextLineFragmentHint>,
+}
+
+/// One style fragment within a visual line: the geometry the span serializer
+/// needs for its `<TextObject>`. `char_start` is line-relative.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextLineFragmentHint {
+    pub char_start: usize,
+    pub char_len: usize,
+    /// Pen x relative to the line start (mm).
+    pub x: f64,
+    /// Per-character advances within the fragment.
     pub advances: Vec<f64>,
 }
 

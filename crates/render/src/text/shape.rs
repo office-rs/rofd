@@ -173,6 +173,126 @@ pub(crate) fn shape_grouped_with_family(
     (groups, width)
 }
 
+/// Style metadata for one shaped glyph group.
+#[derive(Debug, Clone)]
+pub(crate) struct ShapedSpanMeta {
+    pub style_index: usize,
+    pub font: FontData,
+    pub size: f64,
+    pub bold: bool,
+    pub italic: bool,
+}
+
+/// Shape `text` with per-run styles (the annotation span layout). `families[i]`
+/// is the resolved family list for `runs[i]`; the resolved style index of each
+/// parley glyph run is the `LayoutRun` covering its text range.
+///
+/// Keeps the same defaults as the flat path: `liga=0`, greedy UAX #14 breaking
+/// with `OverflowWrap::Anywhere`, and the first run's family as the default.
+pub(crate) fn shape_layout_runs(
+    fcx: &mut FontContext,
+    text: &str,
+    runs: &[super::spans::LayoutRun],
+    families: &[FontFamily<'_>],
+    max_advance: Option<f32>,
+) -> (Vec<(ShapedSpanMeta, Vec<ShapedGlyph>)>, Vec<RawLine>) {
+    let mut lcx: LayoutContext = LayoutContext::new();
+    let mut builder = lcx.ranged_builder(fcx, text, 1.0, false);
+    builder.push_default(StyleProperty::FontSize(
+        runs.first().map(|r| r.size as f32).unwrap_or(12.0),
+    ));
+    builder.push_default(StyleProperty::FontWeight(FontWeight::NORMAL));
+    builder.push_default(StyleProperty::FontStyle(ParleyFontStyle::Normal));
+    if let Some(first) = families.first() {
+        builder.push_default(StyleProperty::FontFamily(first.clone()));
+    }
+    let liga_off = [FontFeature::new(Tag::from_bytes(*b"liga"), 0)];
+    builder.push_default(StyleProperty::FontFeatures(liga_off.as_slice().into()));
+    builder.push_default(StyleProperty::OverflowWrap(
+        parley::style::OverflowWrap::Anywhere,
+    ));
+    for (run, family) in runs.iter().zip(families.iter()) {
+        let range = run.byte_range.clone();
+        builder.push(StyleProperty::FontSize(run.size as f32), range.clone());
+        builder.push(StyleProperty::FontFamily(family.clone()), range.clone());
+        builder.push(
+            StyleProperty::FontWeight(if run.bold {
+                FontWeight::BOLD
+            } else {
+                FontWeight::NORMAL
+            }),
+            range.clone(),
+        );
+        builder.push(
+            StyleProperty::FontStyle(if run.italic {
+                ParleyFontStyle::Italic
+            } else {
+                ParleyFontStyle::Normal
+            }),
+            range,
+        );
+    }
+
+    let mut layout = builder.build(text);
+    layout.break_all_lines(max_advance);
+
+    let mut groups: Vec<(ShapedSpanMeta, Vec<ShapedGlyph>)> = Vec::new();
+    let mut lines: Vec<RawLine> = Vec::new();
+    for line in layout.lines() {
+        let metrics = line.metrics();
+        let mut glyph_count = 0usize;
+        for item in line.items() {
+            let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
+                continue;
+            };
+            if runs.is_empty() {
+                continue;
+            }
+            let range = glyph_run.run().text_range();
+            let style_index = runs
+                .partition_point(|r| r.byte_range.end <= range.start)
+                .min(runs.len() - 1);
+            let spec = &runs[style_index];
+            let font = glyph_run.run().font().clone();
+            let shaped: Vec<ShapedGlyph> = glyph_run
+                .positioned_glyphs()
+                .map(|g| ShapedGlyph {
+                    glyph_id: g.id,
+                    x: g.x,
+                    y: g.y,
+                })
+                .collect();
+            glyph_count += shaped.len();
+            match groups.last_mut() {
+                Some((prev, glyphs))
+                    if prev.style_index == style_index && prev.font == font =>
+                {
+                    glyphs.extend(shaped);
+                }
+                _ => groups.push((
+                    ShapedSpanMeta {
+                        style_index,
+                        font,
+                        size: spec.size,
+                        bold: spec.bold,
+                        italic: spec.italic,
+                    },
+                    shaped,
+                )),
+            }
+        }
+        lines.push(RawLine {
+            byte_range: line.text_range(),
+            glyph_count,
+            width: metrics.advance as f64,
+            top: metrics.min_coord as f64,
+            baseline: metrics.baseline as f64,
+            height: metrics.line_height as f64,
+        });
+    }
+    (groups, lines)
+}
+
 /// One visual line's raw parley geometry, before char offsets are resolved.
 pub(crate) struct RawLine {
     pub byte_range: std::ops::Range<usize>,
@@ -181,19 +301,6 @@ pub(crate) struct RawLine {
     pub top: f64,
     pub baseline: f64,
     pub height: f64,
-}
-
-/// Shape `text` at `size` using `family`, wrapping at `max_advance`
-/// (parley greedy UAX #14 breaking). `OverflowWrap::Anywhere` lets an
-/// unbreakable word break at an arbitrary point instead of overflowing.
-pub(crate) fn shape_grouped_wrapped_with_family(
-    fcx: &mut FontContext,
-    text: &str,
-    size: f64,
-    family: FontFamily<'_>,
-    max_advance: f32,
-) -> (Vec<(FontData, Vec<ShapedGlyph>)>, Vec<RawLine>) {
-    shape_layout(fcx, text, size, family, Some(max_advance))
 }
 
 fn shape_layout(

@@ -156,6 +156,7 @@ pub fn draw_annotations(
                         .transform(base)
                         .draw();
                 }
+                let runs = crate::text::layout_runs(content, spans, font, *size, *color);
                 if spans.is_empty() {
                     // Inline composition preview: shape the text WITH the
                     // composition inserted, so the following text wraps/shifts
@@ -163,17 +164,14 @@ pub fn draw_annotations(
                     let composed = preedit
                         .filter(|p| p.annotation == &ann.id)
                         .map(|p| compose_preedit_text(content, p.offset, p.text));
-                    let text = TextParams {
-                        content: composed.as_deref().unwrap_or(content),
-                        font,
-                        size: *size,
-                        color: *color,
+                    let layout = match composed.as_deref() {
+                        Some(text) => crate::text::layout_runs(text, &[], font, *size, *color),
+                        None => runs,
                     };
-                    draw_text_in_rect(painter, &text, rect, fonts, base);
+                    let text = composed.as_deref().unwrap_or(content);
+                    draw_text_in_rect(painter, rect, text, &layout, *color, fonts, base);
                 } else {
-                    // Rich appearance: draw each styled fragment at its own
-                    // parsed pen position (foreign-file fidelity).
-                    draw_text_spans(painter, rect, spans, fonts, base);
+                    draw_text_in_rect(painter, rect, content, &runs, *color, fonts, base);
                 }
             }
             AnnotationPayload::Stamp { rect, image } => {
@@ -556,41 +554,56 @@ struct TextParams<'a> {
     color: Color,
 }
 
-/// Shape `content`, wrap it at the rect width, and draw the glyphs into
-/// `rect` (non-rotated, opaque). Glyph y positions are layout-relative, so
-/// the first line's ink top sits at `rect.y` and wrapped lines stack below
-/// it (spec 2026-11-09 §1.1).
+/// Shape `content` with per-run styles, wrap it at the rect width, and draw
+/// each style span's glyphs into `rect` with its own font/size/color, synthetic
+/// bold (second draw) and italic (skew). Glyph y positions are layout-relative,
+/// so the first line's ink top sits at `rect.y` and wrapped lines stack below.
 ///
-/// Skips silently if the font can't be resolved or shaping yields no glyphs.
+/// `flat_color` is the box's color, used by spans whose `color` is `None`.
+/// Skips a span silently if its font can't be resolved or shaping yields no
+/// glyphs (same degradation contract as the flat path).
 fn draw_text_in_rect(
     painter: &mut Painter<Scene>,
-    text: &TextParams,
     rect: &Rect,
+    content: &str,
+    runs: &[crate::text::LayoutRun],
+    flat_color: Color,
     fonts: &FontStore,
     base: Affine,
 ) {
-    let wrapped = fonts.shape_wrapped(text.font, text.content, text.size, rect.w.max(text.size));
-    let Some(font) = wrapped.font.clone() else {
-        return;
-    };
-    let glyphs: Vec<Glyph> = wrapped
-        .glyphs
+    let max_size = runs
         .iter()
-        .map(|g| Glyph {
-            id: g.glyph_id,
-            x: g.x,
-            y: g.y,
-        })
-        .collect();
-    let affine = base * Affine::translate((rect.x, rect.y));
-    draw_glyph_run(
-        painter,
-        &font,
-        &glyphs,
-        affine,
-        to_peniko(text.color),
-        text.size,
-    );
+        .map(|r| r.size)
+        .fold(0.0_f64, f64::max)
+        .max(0.0);
+    let wrapped = fonts.shape_wrapped_runs(content, runs, rect.w.max(max_size));
+    let translate = base * Affine::translate((rect.x, rect.y));
+    for span in wrapped.spans.iter() {
+        let glyphs: Vec<Glyph> = wrapped.glyphs[span.glyph_start..span.glyph_end]
+            .iter()
+            .map(|g| Glyph {
+                id: g.glyph_id,
+                x: g.x,
+                y: g.y,
+            })
+            .collect();
+        if glyphs.is_empty() {
+            continue;
+        }
+        let mut affine = translate;
+        if span.italic {
+            affine *= Affine::new([1.0, 0.0, -ITALIC_SKEW, 1.0, 0.0, 0.0]);
+        }
+        let color = runs[span.style_index].color.unwrap_or(flat_color);
+        let brush = to_peniko(color);
+        draw_glyph_run(painter, &span.font, &glyphs, affine, brush, span.size);
+        if span.bold {
+            // Second pass shifted along x: the overlapping fills fatten stems
+            // (no downstream sink applies `font_embolden`).
+            let bold = affine * Affine::translate((span.size * BOLD_EMBOLDEN_RATIO, 0.0));
+            draw_glyph_run(painter, &span.font, &glyphs, bold, brush, span.size);
+        }
+    }
 }
 
 /// Italic slant for rich spans: x' = x - 0.25*y (glyph space, baseline at
@@ -600,51 +613,6 @@ const ITALIC_SKEW: f64 = 0.25;
 /// Synthetic bold amount as a fraction of the run's font size, applied via
 /// `GlyphRun::font_embolden` (outlines fattened in X).
 const BOLD_EMBOLDEN_RATIO: f64 = 0.022;
-
-/// TEMP(rich-text) TextBox drawing: spans are drawn left-to-right from the box
-/// origin with an accumulating pen. Task 2 replaces this with flow layout.
-/// Synthetic bold is a SECOND glyph draw offset by [`BOLD_EMBOLDEN_RATIO`] em
-/// (no downstream sink applies `font_embolden`); italic is a skew.
-///
-/// Skips a span silently when its font can't be resolved or shaping yields
-/// no glyphs (same degradation contract as the flat path).
-pub(crate) fn draw_text_spans(
-    painter: &mut Painter<Scene>,
-    rect: &Rect,
-    spans: &[rofd_dom::TextSpan],
-    fonts: &FontStore,
-    base: Affine,
-) {
-    let mut pen_x = 0.0f64;
-    for span in spans {
-        let (font, glyphs) = shape_positioned(&span.text, &span.font, span.size, fonts);
-        if let Some(font) = font {
-            if let Some(first) = glyphs.first() {
-                let ascent = first.y as f64;
-                let pen = (rect.x + pen_x, rect.y + span.size - ascent);
-                let mut affine = base * Affine::translate(pen);
-                if span.italic {
-                    affine *= Affine::new([1.0, 0.0, -ITALIC_SKEW, 1.0, 0.0, 0.0]);
-                }
-                let brush = to_peniko(span.color.unwrap_or(Color::Rgb(0, 0, 0)));
-                painter
-                    .glyphs(&font, brush)
-                    .font_size(span.size as f32)
-                    .transform(affine)
-                    .draw(&Style::Fill(Fill::NonZero), &glyphs);
-                if span.bold {
-                    let bold = affine * Affine::translate((span.size * BOLD_EMBOLDEN_RATIO, 0.0));
-                    painter
-                        .glyphs(&font, brush)
-                        .font_size(span.size as f32)
-                        .transform(bold)
-                        .draw(&Style::Fill(Fill::NonZero), &glyphs);
-                }
-            }
-        }
-        pen_x += span.text.chars().count() as f64 * span.size;
-    }
-}
 
 /// Watermark text: shaped, drawn translucent (`opacity`) and rotated by `angle`
 /// about the rect center.
@@ -1217,6 +1185,77 @@ mod tests {
         let _ = build(&[ann]);
     }
 
+    #[test]
+    fn span_textbox_flows_at_the_box_width_and_keeps_each_color() {
+        let spans = vec![
+            rofd_dom::TextSpan {
+                text: "abc ".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Some(Color::Rgb(255, 0, 0)),
+                bold: false,
+                italic: false,
+            },
+            rofd_dom::TextSpan {
+                text: "def ghi".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Some(Color::Rgb(0, 0, 255)),
+                bold: false,
+                italic: false,
+            },
+        ];
+        let ann = ann(
+            AnnotationPayload::TextBox {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 45.0,
+                    h: 40.0,
+                },
+                content: "abc def ghi".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                spans,
+            },
+            AnnotationKind::TextBox,
+        );
+        let scene = build(&[ann]);
+        let mut ys: Vec<i64> = glyph_baselines(&scene)
+            .into_iter()
+            .map(|y| (y * 1000.0).round() as i64)
+            .collect();
+        ys.sort_unstable();
+        ys.dedup();
+        assert!(ys.len() >= 2, "span text flows onto multiple lines: {ys:?}");
+        let brushes = glyph_brushes(&scene);
+        assert!(
+            brushes
+                .iter()
+                .any(|c| c.to_rgba8().to_u8_array() == [255, 0, 0, 255]),
+            "first span keeps its red brush"
+        );
+        assert!(
+            brushes
+                .iter()
+                .any(|c| c.to_rgba8().to_u8_array() == [0, 0, 255, 255]),
+            "second span keeps its blue brush"
+        );
+    }
+
+    /// Collect the solid brush color of every glyph run in the scene.
+    fn glyph_brushes(scene: &Scene) -> Vec<peniko::Color> {
+        scene_glyph_runs(scene)
+            .into_iter()
+            .filter_map(|gr| match gr.brush {
+                peniko::Brush::Solid(c) => Some(c),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Collect the scene's glyph spans (transform + embolden + brush + glyph
     /// count per run) for the rich-spans assertions.
     fn scene_glyph_runs(scene: &Scene) -> Vec<imaging::record::GlyphRun> {
@@ -1232,11 +1271,10 @@ mod tests {
     }
 
     #[test]
-    fn textbox_spans_draw_each_fragment_with_style_and_sequential_pen() {
-        // TEMP(rich-text): sequential pen until flow layout lands in Task 2.
-        // Three fragments: plain, italic, bold+colored. Each draws at its own
-        // accumulated pen; italic carries the skew coefficient; bold is drawn
-        // twice; color lands on the brush.
+    fn textbox_spans_apply_italic_skew_bold_and_color_in_flow_layout() {
+        // Three fragments: plain, italic, bold+colored. Flow layout puts them
+        // on one line starting at rect.x; italic carries the skew coefficient;
+        // bold is drawn twice; color lands on the brush.
         let rect = Rect {
             x: 10.0,
             y: 20.0,
@@ -1270,61 +1308,37 @@ mod tests {
             AnnotationKind::TextBox,
         );
         let scene = build(&[ann]);
-        let spans = scene_glyph_runs(&scene);
-        assert!(spans.len() >= 3, "at least 3 glyph spans, got {}", spans.len());
-        // Pen x = rect.x + accumulated span advances (one em per char).
-        let txs: Vec<f64> = spans.iter().map(|g| g.transform.as_coeffs()[4]).collect();
-        for expected in [10.0, 22.0, 34.0] {
-            assert!(
-                txs.iter().any(|t| (*t - expected).abs() < 1e-6),
-                "pen x {expected} missing from span transforms: {txs:?}"
-            );
-        }
-        // Italic: skew coefficient c == -0.25 exactly on ONE run.
-        let skewed = spans
+        let runs = scene_glyph_runs(&scene);
+        assert!(runs.len() >= 4, "3 base draws + bold second pass");
+        // Italic: skew coefficient c == -0.25 exactly on ONE draw.
+        let skewed = runs
             .iter()
             .filter(|g| (g.transform.as_coeffs()[2] + 0.25).abs() < 1e-9)
             .count();
-        assert_eq!(skewed, 1, "exactly one skewed (italic) run");
-        // Bold = DOUBLE-DRAW: the bold run's glyphs must be drawn twice
-        // (the second pass offset by 0.022 em along x). GlyphRun::
-        // font_embolden is NOT used: no downstream sink (vello GPU/CPU,
-        // PDF encoder, gpui) applies that field, while a second ordinary
-        // glyph draw renders everywhere.
-        let bold_pen_x = 34.0; // rect.x + bold span pen
-        let bold_draws = spans
+        assert_eq!(skewed, 1, "exactly one skewed (italic) draw");
+        // Bold = DOUBLE-DRAW: the second pass is offset by 0.022 em along x.
+        let second_pass = runs
             .iter()
             .filter(|g| {
                 let tx = g.transform.as_coeffs()[4];
-                (tx - bold_pen_x).abs() < 0.5 || (tx - (bold_pen_x + 0.022 * 12.0)).abs() < 0.5
+                (tx - (10.0 + 0.022 * 12.0)).abs() < 1e-6
             })
             .count();
-        assert_eq!(
-            bold_draws, 2,
-            "bold span drawn twice (base + 0.022em offset), got {bold_draws}"
-        );
-        // Non-bold spans draw exactly once at their pens.
-        for pen in [10.0, 22.0] {
-            let count = spans
-                .iter()
-                .filter(|g| (g.transform.as_coeffs()[4] - pen).abs() < 0.2)
-                .count();
-            assert_eq!(count, 1, "pen {pen} drawn exactly once, got {count}");
-        }
+        assert_eq!(second_pass, 1, "bold span's second pass at +0.022em");
         assert!(
-            spans.iter().all(|g| g.font_embolden.x.abs() < 1e-12),
+            runs.iter().all(|g| g.font_embolden.x.abs() < 1e-12),
             "font_embolden must stay unused (no sink applies it)"
         );
-        // Colored run: the teal brush is present.
-        let teal = spans.iter().any(|g| {
+        // Colored span: the teal brush is present.
+        let teal = runs.iter().any(|g| {
             matches!(
                 &g.brush,
                 peniko::Brush::Solid(c) if c.to_rgba8().to_u8_array() == [75, 172, 198, 255]
             )
         });
-        assert!(teal, "teal brush for the colored run");
-        // Same baseline + same font -> all run transforms share one ty.
-        let tys: Vec<f64> = spans.iter().map(|g| g.transform.as_coeffs()[5]).collect();
+        assert!(teal, "teal brush for the colored span");
+        // Same baseline: every draw transform shares one ty.
+        let tys: Vec<f64> = runs.iter().map(|g| g.transform.as_coeffs()[5]).collect();
         assert!(
             tys.iter().all(|t| (t - tys[0]).abs() < 1e-6),
             "same baseline -> same ty: {tys:?}"
