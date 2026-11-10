@@ -6,6 +6,7 @@ pub mod editor;
 pub mod payload_util;
 pub mod selection;
 pub mod steps;
+pub mod text_spans;
 
 pub use commands::text_commands::normalize_newlines;
 pub use cursor::TextCursor;

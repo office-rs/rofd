@@ -2,31 +2,7 @@ use rofd_dom::{AnnotationId, AnnotationKind, AnnotationPayload, Color, FontId, N
 
 use crate::editor::Editor;
 use crate::payload_util::{set_color, set_width};
-
-/// Collapse a span-bearing TextBox to its flat fallback style.
-/// TEMP(rich-text): Task 4 replaces this with span-preserving edits.
-fn collapse_runs(payload: &mut AnnotationPayload) {
-    if let AnnotationPayload::TextBox {
-        font,
-        size,
-        color,
-        spans,
-        ..
-    } = payload
-    {
-        if let Some(first) = spans.first() {
-            let run_font = first.font.clone();
-            let run_size = first.size;
-            let run_color = first.color;
-            *font = run_font;
-            *size = run_size;
-            if let Some(c) = run_color {
-                *color = c;
-            }
-            spans.clear();
-        }
-    }
-}
+use crate::text_spans::{spans_apply, spans_delete, spans_insert};
 
 /// Normalize line endings to `\n` (`\r\n` and lone `\r`).
 ///
@@ -38,17 +14,24 @@ pub fn normalize_newlines(s: &str) -> String {
 }
 
 impl Editor {
-    /// Set the primary color. Rich TextBoxes collapse their spans in the same
-    /// transaction (spec 2026-11-10 §1.6): spans draw with their own colors, so
-    /// without the collapse the picked color would be invisible.
-    pub fn set_annotation_color(&mut self, id: &AnnotationId, color: Color) {
+    /// Set the primary color. For a TextBox, `range` scopes the change to the
+    /// selected chars (see [`spans_apply`]); other payload kinds ignore it.
+    pub fn set_annotation_color(
+        &mut self,
+        id: &AnnotationId,
+        range: Option<(usize, usize)>,
+        color: Color,
+    ) {
         let before = match self.document.annotations.find(id).cloned() {
             Some(a) => a,
             None => return,
         };
         let mut after = before.clone();
-        collapse_runs(&mut after.payload);
-        set_color(&mut after.payload, color);
+        if matches!(after.payload, AnnotationPayload::TextBox { .. }) {
+            spans_apply(&mut after.payload, range, &mut |span| span.color = Some(color));
+        } else {
+            set_color(&mut after.payload, color);
+        }
         after.modified = self.current_ts;
         self.execute_transaction(self.replace_txn(id.clone(), before, after));
     }
@@ -66,12 +49,14 @@ impl Editor {
     }
 
     /// Set the font size (millimetres) of a TextBox in ONE transaction.
+    /// `range` scopes the change to the selected chars (see [`spans_apply`]).
     /// `measure` follows the [`Self::insert_text_measured`] contract and is
     /// applied inside the same transaction (grow-only callers pass `None`
     /// when the box does not need to grow).
     pub fn set_annotation_font_size_measured<F>(
         &mut self,
         id: &AnnotationId,
+        range: Option<(usize, usize)>,
         size_mm: f64,
         measure: F,
     ) where
@@ -81,12 +66,11 @@ impl Editor {
             Some(a) => a,
             None => return,
         };
-        let mut after = before.clone();
-        collapse_runs(&mut after.payload);
-        let AnnotationPayload::TextBox { size, .. } = &mut after.payload else {
+        if !matches!(before.payload, AnnotationPayload::TextBox { .. }) {
             return;
-        };
-        *size = size_mm;
+        }
+        let mut after = before.clone();
+        spans_apply(&mut after.payload, range, &mut |span| span.size = size_mm);
         if let Some(height) = measure(&after.payload) {
             if let AnnotationPayload::TextBox { rect, .. } = &mut after.payload {
                 rect.h = height;
@@ -97,10 +81,11 @@ impl Editor {
     }
 
     /// Set the font family of a TextBox (`font = FontId::new(family)`) in ONE
-    /// transaction. Collapses rich spans like any other text edit.
+    /// transaction. `range` scopes the change to the selected chars.
     pub fn set_annotation_font_family_measured<F>(
         &mut self,
         id: &AnnotationId,
+        range: Option<(usize, usize)>,
         family: &str,
         measure: F,
     ) where
@@ -110,12 +95,13 @@ impl Editor {
             Some(a) => a,
             None => return,
         };
-        let mut after = before.clone();
-        collapse_runs(&mut after.payload);
-        let AnnotationPayload::TextBox { font, .. } = &mut after.payload else {
+        if !matches!(before.payload, AnnotationPayload::TextBox { .. }) {
             return;
-        };
-        *font = FontId::new(family);
+        }
+        let mut after = before.clone();
+        spans_apply(&mut after.payload, range, &mut |span| {
+            span.font = FontId::new(family)
+        });
         if let Some(height) = measure(&after.payload) {
             if let AnnotationPayload::TextBox { rect, .. } = &mut after.payload {
                 rect.h = height;
@@ -131,10 +117,10 @@ impl Editor {
     }
 
     /// Insert text and let `measure` suggest a new annotation height. The
-    /// closure sees the post-edit payload (after `collapse_runs`), so the
-    /// component can shape the exact text with its font store; a `Some(h)`
-    /// is applied in the SAME transaction (one undo restores text + height).
-    /// `measure` must return `Some` only when growth is needed.
+    /// closure sees the post-edit payload, so the component can shape the exact
+    /// text with its font store; a `Some(h)` is applied in the SAME transaction
+    /// (one undo restores text + height). `measure` must return `Some` only
+    /// when growth is needed.
     pub fn insert_text_measured<F>(
         &mut self,
         id: &AnnotationId,
@@ -149,9 +135,10 @@ impl Editor {
             None => return,
         };
         let mut after = before.clone();
-        collapse_runs(&mut after.payload);
         let chars = normalize_newlines(chars);
-        if let Some(content) = text_content_mut(&mut after.payload) {
+        if matches!(after.payload, AnnotationPayload::TextBox { .. }) {
+            spans_insert(&mut after.payload, offset, &chars);
+        } else if let Some(content) = text_content_mut(&mut after.payload) {
             let off = offset.min(content.chars().count());
             let mut new = content.chars().take(off).collect::<String>();
             new.push_str(&chars);
@@ -186,9 +173,17 @@ impl Editor {
             None => return,
         };
         let mut after = before.clone();
-        collapse_runs(&mut after.payload);
         let chars = normalize_newlines(chars);
-        if let Some(content) = text_content_mut(&mut after.payload) {
+        if matches!(after.payload, AnnotationPayload::TextBox { .. }) {
+            let total = match &after.payload {
+                AnnotationPayload::TextBox { content, .. } => content.chars().count(),
+                _ => 0,
+            };
+            let s = start.min(total);
+            let e = end.min(total).max(s);
+            spans_delete(&mut after.payload, s, e - s);
+            spans_insert(&mut after.payload, s, &chars);
+        } else if let Some(content) = text_content_mut(&mut after.payload) {
             let total = content.chars().count();
             let s = start.min(total);
             let e = end.min(total).max(s);
@@ -227,8 +222,15 @@ impl Editor {
             None => return,
         };
         let mut after = before.clone();
-        collapse_runs(&mut after.payload);
-        if let Some(content) = text_content_mut(&mut after.payload) {
+        if matches!(after.payload, AnnotationPayload::TextBox { .. }) {
+            let total = match &after.payload {
+                AnnotationPayload::TextBox { content, .. } => content.chars().count(),
+                _ => 0,
+            };
+            let start = offset.min(total);
+            let end = (offset + len).min(total);
+            spans_delete(&mut after.payload, start, end.saturating_sub(start));
+        } else if let Some(content) = text_content_mut(&mut after.payload) {
             let total = content.chars().count();
             let start = offset.min(total);
             let end = (offset + len).min(total);
@@ -249,14 +251,17 @@ impl Editor {
         self.execute_transaction(self.replace_txn(id.clone(), before, after));
     }
 
-    /// Replace the whole text content.
+    /// Replace the whole text content. The old span styles do not map onto the
+    /// new text, so they are dropped (the box falls back to its flat style).
     pub fn set_annotation_text(&mut self, id: &AnnotationId, text: &str) {
         let before = match self.document.annotations.find(id).cloned() {
             Some(a) => a,
             None => return,
         };
         let mut after = before.clone();
-        collapse_runs(&mut after.payload);
+        if let AnnotationPayload::TextBox { spans, .. } = &mut after.payload {
+            spans.clear();
+        }
         if let Some(content) = text_content_mut(&mut after.payload) {
             *content = normalize_newlines(text);
         }
@@ -355,6 +360,88 @@ mod tests {
         (e, id)
     }
 
+    fn span_textbox_editor() -> (Editor, AnnotationId) {
+        let mut e = Editor::new();
+        e.set_clock("t".into(), 1);
+        let id = e.create_annotation(
+            AnnotationKind::TextBox,
+            PageId::new("P0"),
+            AnnotationPayload::TextBox {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 100.0,
+                    h: 30.0,
+                },
+                content: "abcd".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                spans: vec![
+                    TextSpan {
+                        text: "ab".into(),
+                        font: FontId::new("F1"),
+                        size: 12.0,
+                        color: Some(Color::Rgb(255, 0, 0)),
+                        bold: false,
+                        italic: false,
+                    },
+                    TextSpan {
+                        text: "cd".into(),
+                        font: FontId::new("F1"),
+                        size: 12.0,
+                        color: Some(Color::Rgb(0, 0, 255)),
+                        bold: false,
+                        italic: false,
+                    },
+                ],
+            },
+        );
+        (e, id)
+    }
+
+    fn style_sizes(e: &Editor, id: &AnnotationId) -> Vec<(usize, usize, f64)> {
+        let AnnotationPayload::TextBox { spans, .. } = textbox_payload(e, id) else {
+            panic!("expected TextBox");
+        };
+        let mut out = Vec::new();
+        let mut cursor = 0usize;
+        for span in spans {
+            let len = span.text.chars().count();
+            out.push((cursor, len, span.size));
+            cursor += len;
+        }
+        out
+    }
+
+    #[test]
+    fn set_font_size_on_a_selection_changes_only_that_range() {
+        let (mut e, id) = flat_textbox_editor_with("hello", 20.0);
+        e.set_annotation_font_size_measured(&id, Some((1, 3)), 30.0, |_| None);
+        assert_eq!(
+            style_sizes(&e, &id),
+            vec![(0, 1, 3.5), (1, 2, 30.0), (3, 2, 3.5)]
+        );
+    }
+
+    #[test]
+    fn text_edit_preserves_spans_and_undo_restores_once() {
+        let (mut e, id) = span_textbox_editor();
+        let before = textbox_payload(&e, &id).clone();
+        e.insert_text(&id, 2, "XY");
+        assert_eq!(
+            match textbox_payload(&e, &id) {
+                AnnotationPayload::TextBox { spans, .. } => spans.len(),
+                _ => 0,
+            },
+            2,
+            "insert does not collapse"
+        );
+        assert!(e.undo());
+        assert_eq!(textbox_payload(&e, &id), &before);
+    }
+
     fn rich_textbox_editor() -> (Editor, AnnotationId) {
         let mut e = Editor::new();
         e.set_clock("t".into(), 1);
@@ -416,10 +503,9 @@ mod tests {
     }
 
     #[test]
-    fn text_edit_collapses_rich_spans_to_flat_style() {
-        // The first text edit makes the parse-time spans stale; the SAME
-        // transaction collapses the box to the flat fallback style
-        // (spans[0]) so caret/hit geometry and rendering stay consistent.
+    fn text_edit_keeps_span_styles_in_place() {
+        // Rich spans are editable now: inserting inside the last span keeps
+        // both styles and does not change the flat fields.
         let (mut e, id) = rich_textbox_editor();
         e.insert_text(&id, 4, "!");
         match textbox_payload(&e, &id) {
@@ -431,8 +517,9 @@ mod tests {
                 ..
             } => {
                 assert_eq!(content, "发的古格!");
-                assert!(spans.is_empty(), "spans collapsed on first edit (TEMP until Task 4)");
-                assert_eq!(font.0, "118", "flat style <- spans[0]");
+                assert_eq!(spans.len(), 2, "styles survive the edit");
+                assert_eq!(spans[1].text, "格!");
+                assert_eq!(font.0, "118", "flat style unchanged");
                 assert!((size - 4.2333).abs() < 1e-9);
             }
             other => panic!("expected TextBox, got {other:?}"),
@@ -440,16 +527,17 @@ mod tests {
     }
 
     #[test]
-    fn text_edit_collapse_undo_restores_spans() {
-        // One undo restores the rich appearance wholesale (the collapse
-        // lives inside the edit's transaction, not a separate step).
+    fn text_edit_undo_restores_spans() {
         let (mut e, id) = rich_textbox_editor();
         let before = textbox_payload(&e, &id).clone();
         e.delete_text(&id, 0, 1);
-        assert!(matches!(
-            textbox_payload(&e, &id),
-            AnnotationPayload::TextBox { spans, .. } if spans.is_empty()
-        ));
+        assert!(
+            matches!(
+                textbox_payload(&e, &id),
+                AnnotationPayload::TextBox { spans, .. } if !spans.is_empty()
+            ),
+            "delete edits the span, it does not clear it"
+        );
         assert!(e.undo());
         assert_eq!(textbox_payload(&e, &id), &before, "undo restores spans");
     }
@@ -630,7 +718,7 @@ mod tests {
     }
 
     #[test]
-    fn rich_textbox_first_edit_collapses_and_grows_atomically() {
+    fn rich_textbox_edit_and_growth_are_atomic() {
         let (mut e, id) = rich_textbox_editor(); // rect h = 10.0, spans non-empty
         e.insert_text_measured(&id, 4, "x", |payload| {
             let AnnotationPayload::TextBox {
@@ -639,14 +727,14 @@ mod tests {
             else {
                 panic!("expected TextBox");
             };
-            assert!(spans.is_empty(), "measure sees the post-collapse payload");
-            assert_eq!(font.0, "118", "collapsed to spans[0]");
+            assert_eq!(spans.len(), 2, "measure sees the span-preserving payload");
+            assert_eq!(font.0, "118", "flat style unchanged");
             Some(rect.h + 5.0)
         });
         match textbox_payload(&e, &id) {
             AnnotationPayload::TextBox { rect, spans, .. } => {
                 assert_eq!(rect.h, 15.0);
-                assert!(spans.is_empty());
+                assert_eq!(spans.len(), 2);
             }
             other => panic!("expected TextBox, got {other:?}"),
         }
@@ -665,7 +753,7 @@ mod tests {
         let (mut e, id) = flat_textbox_editor_with("hello", 20.0);
         let before = textbox_payload(&e, &id).clone();
         let history = e.history_len();
-        e.set_annotation_font_size_measured(&id, 20.0, |_| Some(80.0));
+        e.set_annotation_font_size_measured(&id, None, 20.0, |_| Some(80.0));
         assert_eq!(e.history_len(), history + 1, "one transaction");
         let AnnotationPayload::TextBox { rect, size, .. } = textbox_payload(&e, &id) else {
             panic!("expected TextBox");
@@ -679,7 +767,7 @@ mod tests {
     #[test]
     fn set_font_size_never_shrinks_the_box() {
         let (mut e, id) = flat_textbox_editor_with("hello", 40.0);
-        e.set_annotation_font_size_measured(&id, 6.0, |_| None);
+        e.set_annotation_font_size_measured(&id, None, 6.0, |_| None);
         let AnnotationPayload::TextBox { rect, size, .. } = textbox_payload(&e, &id) else {
             panic!("expected TextBox");
         };
@@ -690,7 +778,7 @@ mod tests {
     #[test]
     fn set_font_family_writes_the_font_id_and_collapses_spans() {
         let (mut e, id) = rich_textbox_editor();
-        e.set_annotation_font_family_measured(&id, "宋体", |_| Some(24.0));
+        e.set_annotation_font_family_measured(&id, None, "宋体", |_| Some(24.0));
         let AnnotationPayload::TextBox {
             font, spans, rect, ..
         } = textbox_payload(&e, &id)
@@ -718,7 +806,7 @@ mod tests {
     fn set_color_collapses_spans_so_the_pick_is_visible() {
         let (mut e, id) = rich_textbox_editor();
         let before = textbox_payload(&e, &id).clone();
-        e.set_annotation_color(&id, Color::Rgb(0, 0, 255));
+        e.set_annotation_color(&id, None, Color::Rgb(0, 0, 255));
         let AnnotationPayload::TextBox { spans, color, .. } = textbox_payload(&e, &id) else {
             panic!("expected TextBox");
         };
@@ -731,7 +819,7 @@ mod tests {
     #[test]
     fn unknown_family_still_updates_the_payload() {
         let (mut e, id) = flat_textbox_editor_with("hi", 20.0);
-        e.set_annotation_font_family_measured(&id, "No Such Family", |_| None);
+        e.set_annotation_font_family_measured(&id, None, "No Such Family", |_| None);
         let AnnotationPayload::TextBox { font, .. } = textbox_payload(&e, &id) else {
             panic!("expected TextBox");
         };

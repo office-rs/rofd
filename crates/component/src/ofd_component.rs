@@ -706,7 +706,7 @@ impl OfdComponent {
             .clone()
             .expect("font_store initialized above");
         self.editor
-            .set_annotation_font_family_measured(id, family, |p| measure_textbox_growth(&store, p));
+            .set_annotation_font_family_measured(id, None, family, |p| measure_textbox_growth(&store, p));
         self.after_annotation_change();
     }
 
@@ -722,13 +722,13 @@ impl OfdComponent {
             .clone()
             .expect("font_store initialized above");
         self.editor
-            .set_annotation_font_size_measured(id, size_mm, |p| measure_textbox_growth(&store, p));
+            .set_annotation_font_size_measured(id, None, size_mm, |p| measure_textbox_growth(&store, p));
         self.after_annotation_change();
     }
 
     /// Change the text color of an annotation (no layout effect).
     pub fn set_annotation_color(&mut self, id: &AnnotationId, color: Color) {
-        self.editor.set_annotation_color(id, color);
+        self.editor.set_annotation_color(id, None, color);
         self.after_annotation_change();
     }
 
