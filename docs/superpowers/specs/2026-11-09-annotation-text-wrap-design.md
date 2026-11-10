@@ -92,13 +92,23 @@ parley 0.8 把 `\r\n` 拆成**两个**换行簇（`a\r\nb` → 三行，中间�
 
 `caret_rect`：
 
-- y = `rect.y + line.top`，x = `rect.x + line_relative_x`，宽 `1px * zoom`，高 `size * zoom`（保持现契约）。
-- 首行 `line.top == 0`，与现有单行行为逐值一致。
+- y = `rect.y + line.top`，x = `rect.x + line_relative_x`，宽 `1px * zoom`，高 `line.height * zoom`（视觉行框：ascent + descent + leading）。2026-11-10 修订：此前高 `size * zoom` 且从行框顶起，光标止于 baseline，视觉重心偏上（"光标靠文字上方"）；改为覆盖整行框后与文字光学居中对齐。
+- 首行 `line.top == 0`，与现有单行行为逐值一致（仅高度变化）。
+- 富 TextBox / Note / Watermark 的 legacy 路径仍用 `size * zoom`。
 
 点击定位：
 
 - 先按 y 选行（`line.top ≤ y < line.top + line.height`，夹紧到首/末行），再在该行内取离 x 最近的字符边界。
 - Note 与 `runs` 非空的富 TextBox 无折行，仍走旧 `caret_offset_at_x`。
+
+框内文字拖选（2026-11-10 新增）：
+
+- 编辑态（文本框已持有文字光标）下用 Text 工具在平铺 TextBox 内按下并拖动：锚点 = 按下处 char offset，拖动逐帧按 `caret_offset_at_point` 更新 focus（y 选行、x 选列，出框夹紧到首/末边界），选区 = `[min(anchor,focus), max(...))`。
+- 未聚焦框的第一次按下仍走移动拖拽（"先点进框、再拖动选字"）；创建文字工具的框天然处于编辑态，首次拖动即选字。移动框用 Hand 工具。
+- 选区是纯 UI 状态（`AnnotTextSelection`，不入 dom/历史/保存）：半透明蓝色逐行矩形（`annotation_text_selection_rects`，行框高）画在文字之上、caret 之下。
+- 选区被编辑消费（均为一个 Transaction）：键入/Enter/粘贴/IME 提交替换选区；Backspace/Delete 删除选区；IME 组合开始时先删除选区（独立 undo step）再在塌缩后的光标处组合；←/→ 折叠到选区首/尾；↑/↓ 与普通点击清除选区。
+- `selected_text()` / `copy_selection()` 优先返回框内选区文本（其次正文拖选，顺序同 2026-09-22 §2.8）。
+- 富 TextBox（`runs` 非空）不参与（不重排、无行几何）。
 
 preedit：
 
@@ -413,6 +423,8 @@ for i, line in hints[ann_id].iter().enumerate():
 - `caret_rect`：第二行 offset 的 y = rect.y + line.top；软折行边界；单行行为与现值一致（现有测试保持绿）。
 - `caret_offset_at_point`：点第二行返回第二行 offset；点行首/行尾；y 夹紧。
 - `caret_offset_vertical`：软折行上/下移；显式 `\n` 上/下移；连续下移保留 preferred_x（长行→短行→长行）；短行夹到行尾；首行 Up → 0、末行 Down → 文末。
+- `caret_rect` 高度 = 行框高（`line.height`），光学重心随之下移；legacy 路径仍 `size`。
+- `annotation_text_selection_rects`：单行部分区间（x/宽取字形 pen 与行尾）、跨行两矩形（第二矩形 y = 第二行 top）、空区间/反向区间/未知批注/富 TextBox。
 - `preedit` 内联预览：组合点在文本中间时组合串之后的字符 x 后移（不与组合串重叠）；折行边界处组合串落到下一行；目标以外批注不受影响；平铺 TextBox 的 detached overlay 不再绘制；富 TextBox 仍走 overlay。
 - 绘制：折行后各行 baseline 落在 rect 内；`to_layout_hints` 的 top/baseline/width/advances 与 glyph 位置一致。
 - 富 TextBox（`runs` 非空）：绘制仍走 `draw_text_runs`；`caret_rect` / preedit 保持旧单行定位。
@@ -421,11 +433,14 @@ for i, line in hints[ann_id].iter().enumerate():
 
 - `insert_text_measured` 返回 `Some(h)` → 同一 Transaction 内 content + rect.h 都变；一次 undo 同时还原。
 - `delete_text_measured` 同理；`None` 时行为与旧命令一致。
+- `replace_text_measured`：区间替换 + measure 同事务；一次 undo 还原文本与高度；越界/反向区间夹紧；空文本即删除。
 - 换行符归一化：插入/替换 `\r\n`、孤立 `\r` 后 content 只含 `\n`。
 - `set_cursor_with_preferred_x` 往返：`preferred_x` 保留，旧 `set_cursor` 置 `None`。
 
 ### rofd-component
 
+- 框内拖选：编辑态 Text 工具在框内按下→拖动形成选区（anchor/focus 正确）、释放保留、不移动框、不改 modified；首拖未聚焦框仍是移动、Hand 工具仍是移动；普通点击清除；←/→ 折叠到首/尾。
+- 选区消费：键入/Enter/粘贴/IME 替换（单 Transaction、光标落在插入末尾）、Backspace/Delete 删除、IME 组合开始先删选区；undo 还原；高亮矩形随选区绘制。
 - 窄文本框逐字输入：content 不含 `\n`、rect.h 按折行增长；继续输入到第二行、第三行。
 - Enter：插入 `\n`、光标 offset +1、框高按显式行数增长；行首 Backspace 回并。
 - ArrowUp/ArrowDown：跨行移动；连续下移保留列偏好，上移回原列；首行/末行边界；点击/左右键/键入后 preferred_x 清空；Note 与富 TextBox 不响应。

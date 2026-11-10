@@ -163,6 +163,35 @@ pub(crate) enum DragState {
         start: (f64, f64),
         anchor: Option<rofd_render::TextHit>,
     },
+    /// Dragging inside a flat TextBox with the Text tool (or the text create
+    /// tool that owns the editing cursor): `anchor` is the press-time char
+    /// offset, PointerMove recomputes the focus offset and updates
+    /// [`OfdComponent::annot_text_selection`]. Preview-only UI state - no
+    /// document change, no history.
+    AnnotTextSelect {
+        annotation: AnnotationId,
+        anchor: usize,
+    },
+}
+
+/// Selected char range inside one text annotation (anchor = drag origin,
+/// focus = caret). Preview-only UI state: never enters the dom or history.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AnnotTextSelection {
+    pub annotation: AnnotationId,
+    pub anchor: usize,
+    pub focus: usize,
+}
+
+impl AnnotTextSelection {
+    /// Half-open min/max range (the drag may go backwards).
+    fn range(&self) -> (usize, usize) {
+        (self.anchor.min(self.focus), self.anchor.max(self.focus))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.anchor == self.focus
+    }
 }
 
 /// Annotation under the pointer for the hover tooltip (spec
@@ -254,6 +283,10 @@ pub struct OfdComponent {
     /// enters dom/editor history (spec §5.1). Cleared on tool switch, page
     /// change, and document change.
     pub(crate) text_selection: Option<rofd_render::BodyTextSelection>,
+    /// Selected char range inside the text annotation being edited (mouse
+    /// drag in the Text tool / text create tools). Pure UI state, mutually
+    /// exclusive with `text_selection`; typing/Backspace/Delete consume it.
+    pub(crate) annot_text_selection: Option<AnnotTextSelection>,
     /// The index of the currently visible page (the page containing the
     /// viewport's vertical center), or `None` if no page is visible / no
     /// document loaded. Updated after Scroll/Resize; when it changes,
@@ -371,6 +404,7 @@ impl OfdComponent {
             drag: None,
             hover: None,
             text_selection: None,
+            annot_text_selection: None,
             current_page: None,
             zoom_mode: config.zoom_mode,
             highlight_color: DEFAULT_HIGHLIGHT_COLOR,
@@ -469,6 +503,7 @@ impl OfdComponent {
         self.hover = None;
         // Body-text selection belongs to the old document's pages.
         self.set_text_selection(None);
+        self.annot_text_selection = None;
         self.editor.load_document(doc);
         self.body_font_req = font_req::body_requirements(self.editor.document());
         self.font_store = Some(self.build_font_store());
@@ -497,6 +532,7 @@ impl OfdComponent {
         self.scrollbar_hover = None;
         self.hover = None;
         self.set_text_selection(None);
+        self.annot_text_selection = None;
         self.editor.load_document(OfdDocument::default());
         self.body_font_req = font_req::body_requirements(self.editor.document());
         self.font_store = Some(self.build_font_store());
@@ -611,6 +647,79 @@ impl OfdComponent {
             cb(self.text_selection.as_ref());
         }
     }
+
+    /// Replace the annotation text selection, repainting only on change.
+    fn set_annot_text_selection(&mut self, sel: Option<AnnotTextSelection>) {
+        if self.annot_text_selection == sel {
+            return;
+        }
+        self.annot_text_selection = sel;
+        self.mark_scene_dirty();
+    }
+
+    /// The non-empty char range selected inside `annotation`, if any.
+    fn annot_selection_range(&self, annotation: &AnnotationId) -> Option<(usize, usize)> {
+        let sel = self.annot_text_selection.as_ref()?;
+        if &sel.annotation != annotation || sel.is_empty() {
+            return None;
+        }
+        Some(sel.range())
+    }
+
+    /// The selected text of an annotation text selection (annotation selection
+    /// wins over body text in [`Self::selected_text`]).
+    fn selected_annot_text(&self) -> Option<String> {
+        let sel = self.annot_text_selection.as_ref()?;
+        let (start, end) = sel.range();
+        if start == end {
+            return None;
+        }
+        let ann = self.editor.document().annotations.find(&sel.annotation)?;
+        let content = match &ann.payload {
+            AnnotationPayload::TextBox { content, .. }
+            | AnnotationPayload::Note { content, .. }
+            | AnnotationPayload::Watermark { content, .. } => content,
+            _ => return None,
+        };
+        Some(content.chars().skip(start).take(end - start).collect())
+    }
+
+    /// Whether `id` is a flat (runs-empty) TextBox: the only text payload that
+    /// reflows and supports in-box text selection.
+    fn is_flat_textbox(&self, id: &AnnotationId) -> bool {
+        matches!(
+            self.editor.document().annotations.find(id).map(|a| &a.payload),
+            Some(AnnotationPayload::TextBox { runs, .. }) if runs.is_empty()
+        )
+    }
+
+    /// Replace the active annotation text selection at `cursor` with `text`
+    /// (one Transaction). Returns the new caret offset, or `None` when no
+    /// selection targets the cursor's annotation.
+    fn replace_selection_with(
+        &mut self,
+        cursor: &rofd_editor::TextCursor,
+        text: &str,
+    ) -> Option<usize> {
+        let (start, end) = self.annot_selection_range(&cursor.annotation)?;
+        self.annot_text_selection = None;
+        self.caret_line = None;
+        let text = rofd_editor::normalize_newlines(text);
+        let new_off = start + text.chars().count();
+        self.ensure_font_store();
+        let store = self
+            .font_store
+            .as_ref()
+            .expect("font_store initialized above");
+        self.editor
+            .replace_text_measured(&cursor.annotation, start, end, &text, |payload| {
+                measure_textbox_growth(store, payload)
+            });
+        self.editor.set_cursor(cursor.annotation.clone(), new_off);
+        self.after_annotation_change();
+        self.fire_cursor_change();
+        Some(new_off)
+    }
     /// The selected body text, joined with `\n` between TextCodes (same code
     /// never spans a newline; different codes are different lines).
     ///
@@ -621,6 +730,11 @@ impl OfdComponent {
     /// `None` and partial skips leave no stray trailing newlines. Returns
     /// `None` when there is no selection or no range is representable.
     pub fn selected_text(&self) -> Option<String> {
+        // Annotation text selection wins over body text (spec 2026-09-22 §2.8
+        // copy order); only one of the two is ever active.
+        if let Some(t) = self.selected_annot_text() {
+            return Some(t);
+        }
         let sel = self.text_selection.as_ref()?;
         let page = self
             .editor
@@ -680,6 +794,8 @@ impl OfdComponent {
     /// was undone; on success the annotation caches are invalidated and the
     /// host should request a repaint.
     pub fn undo(&mut self) -> bool {
+        // A selection's offsets belong to the pre-undo text; drop it.
+        self.annot_text_selection = None;
         if self.editor.undo() {
             // undo/redo 不触碰正文（body 只读），选区仍然有效（spec
             // 2026-09-10 §6.1）——不走清选区的 after_annotation_change，
@@ -692,6 +808,7 @@ impl OfdComponent {
     }
     /// Redo the last undone command (same path as Ctrl+Y / Ctrl+Shift+Z).
     pub fn redo(&mut self) -> bool {
+        self.annot_text_selection = None;
         if self.editor.redo() {
             self.notify_document_change();
             true
@@ -771,6 +888,7 @@ impl OfdComponent {
         self.scrollbar_hover = None;
         self.hover = None;
         self.set_text_selection(None);
+        self.annot_text_selection = None;
         self.set_tool_pointer_cursor();
         self.mark_scene_dirty();
     }
@@ -1191,6 +1309,28 @@ impl OfdComponent {
             drag: drag_preview.as_ref(),
             preedit: preedit_preview.as_ref(),
         });
+        // In-box text selection highlight: translucent line-box rects behind
+        // the caret (the caret paints after this, as in a plain editor).
+        if let Some(sel) = self.annot_text_selection.as_ref().filter(|s| !s.is_empty()) {
+            let (start, end) = sel.range();
+            let rects = rofd_render::annotation_text_selection_rects(
+                doc,
+                &vp,
+                &fonts,
+                &sel.annotation,
+                start,
+                end,
+            );
+            if !rects.is_empty() {
+                let mut painter = imaging::Painter::new(&mut overlay);
+                for r in rects {
+                    painter.fill_rect(
+                        imaging::kurbo::Rect::new(r.x, r.y, r.x + r.w, r.y + r.h),
+                        rofd_render::TEXT_SELECTION_COLOR,
+                    );
+                }
+            }
+        }
         let layout = rofd_render::scrollbar_layout(doc, &vp);
         let active = match &self.drag {
             Some(DragState::ScrollThumb { axis, .. }) => Some(*axis),
@@ -1522,6 +1662,13 @@ impl OfdComponent {
             return changed;
         }
         if let Some(cursor) = self.editor.text_cursor().cloned() {
+            // A composition started over a text selection collapses the
+            // selection first (its own undo step, as rword did): the IME then
+            // composes at the collapsed caret.
+            self.replace_selection_with(&cursor, "");
+            let Some(cursor) = self.editor.text_cursor().cloned() else {
+                return false;
+            };
             self.preedit = Some(crate::preedit::PreeditState {
                 text: text.to_string(),
                 caret,
@@ -1543,6 +1690,7 @@ impl OfdComponent {
         let Some(state) = self.preedit.take() else {
             return false;
         };
+        self.annot_text_selection = None;
         self.caret_line = None;
         let text = rofd_editor::normalize_newlines(&state.text);
         let new_off = state.offset + text.chars().count();
@@ -1573,10 +1721,16 @@ impl OfdComponent {
     }
 
     /// Insert committed text at the current text cursor, then advance the
-    /// cursor and broadcast the change. Shared by `ViewEvent::ImeCommit`
-    /// and paste. Returns `false` (no repaint) when no cursor is set.
+    /// cursor and broadcast the change. An active annotation text selection is
+    /// replaced by `text` (one Transaction). Shared by `ViewEvent::ImeCommit`,
+    /// paste and char input. Returns `false` (no repaint) when no cursor is set.
     fn insert_at_cursor(&mut self, text: &str) -> bool {
         if let Some(cursor) = self.editor.text_cursor().cloned() {
+            if self.replace_selection_with(&cursor, text).is_some() {
+                return true;
+            }
+            // No selection for this annotation: drop any stale one.
+            self.annot_text_selection = None;
             self.caret_line = None;
             // LF-only content invariant (spec 2026-11-09 §1.2.1): normalize
             // BEFORE counting chars so the cursor advance matches.
@@ -1657,6 +1811,15 @@ impl OfdComponent {
                                             });
                                         self.caret_line = None;
                                         self.editor.set_cursor(cursor.annotation.clone(), offset);
+                                        // Drag inside the box being edited
+                                        // selects its text (press-release
+                                        // without motion collapses to the
+                                        // click caret).
+                                        self.set_annot_text_selection(None);
+                                        self.drag = Some(DragState::AnnotTextSelect {
+                                            annotation: cursor.annotation.clone(),
+                                            anchor: offset,
+                                        });
                                         self.fire_cursor_change();
                                         self.mark_scene_dirty();
                                         return EventOutcome {
@@ -1779,6 +1942,33 @@ impl OfdComponent {
                     let axis = *axis;
                     let grab = *grab;
                     self.scroll_thumb_drag(axis, grab, p);
+                    return EventOutcome {
+                        needs_repaint: true,
+                    };
+                }
+                if let Some(DragState::AnnotTextSelect { annotation, anchor }) = self.drag.as_ref()
+                {
+                    // Live text-selection drag inside a TextBox: the pointer
+                    // maps to the nearest char boundary (y selects the line,
+                    // x the column), so dragging past the box clamps to its
+                    // first/last boundary. Preview-only UI state.
+                    let annotation = annotation.clone();
+                    let anchor = *anchor;
+                    let len = self.text_content_len(&annotation).unwrap_or(0);
+                    let offset = self.click_caret_offset(&annotation, p).unwrap_or(len);
+                    self.caret_line = None;
+                    self.editor.set_cursor(annotation.clone(), offset);
+                    let sel = if offset == anchor {
+                        None
+                    } else {
+                        Some(AnnotTextSelection {
+                            annotation,
+                            anchor,
+                            focus: offset,
+                        })
+                    };
+                    self.set_annot_text_selection(sel);
+                    self.fire_cursor_change();
                     return EventOutcome {
                         needs_repaint: true,
                     };
@@ -1967,6 +2157,10 @@ impl OfdComponent {
                         // Unreachable: ScrollThumb moves return at the top of
                         // PointerMove before this match. Required for
                         // exhaustiveness.
+                    }
+                    Some(DragState::AnnotTextSelect { .. }) => {
+                        // Unreachable: handled at the top of PointerMove
+                        // (needs &mut self for the caret mapping).
                     }
                     None => {
                         // Tooltip hover (spec 2026-09-18 §3.1): the annotation
@@ -2195,6 +2389,10 @@ impl OfdComponent {
                         // Text-select drag: the selection was updated live on
                         // each PointerMove; nothing to commit (pure UI state).
                         DragState::TextSelect { .. } => {}
+                        // Same for an in-box text-selection drag; the
+                        // selection (possibly empty after a plain click) is
+                        // already in `annot_text_selection`.
+                        DragState::AnnotTextSelect { .. } => {}
                         // Markup click (never dragged past the threshold):
                         // the markup stays selected - nothing to commit.
                         DragState::MarkupPress { .. } => {}
@@ -2465,13 +2663,39 @@ impl OfdComponent {
                 // For text annotations, position the caret AT THE CLICKED
                 // CHARACTER (entering edit on the first click, repositioning
                 // while editing) - not a fixed jump to the content end.
+                // A press on the box that ALREADY owns the text cursor arms a
+                // text-selection drag (edit mode); the first press on an
+                // unfocused box keeps the move drag, so boxes stay movable.
+                let was_editing = self
+                    .editor
+                    .text_cursor()
+                    .map(|c| c.annotation == id)
+                    .unwrap_or(false);
+                let mut caret_offset = None;
                 if let Some(len) = self.text_content_len(&id) {
                     let offset = self.click_caret_offset(&id, p).unwrap_or(len);
                     self.caret_line = None;
                     self.editor.set_cursor(id.clone(), offset);
+                    caret_offset = Some(offset);
                 }
+                // Mutual exclusivity: the annotation selection replaces the
+                // body-text selection (spec §5.2).
+                self.set_text_selection(None);
+                self.set_annot_text_selection(None);
                 self.fire_selection_change();
                 self.fire_cursor_change();
+                // Text tool on an editing flat TextBox: dragging selects the
+                // box's text (and never moves the box - that is the Hand
+                // tool's job).
+                if matches!(self.tool, Tool::Text) && was_editing && self.is_flat_textbox(&id) {
+                    if let Some(anchor) = caret_offset {
+                        self.drag = Some(DragState::AnnotTextSelect {
+                            annotation: id.clone(),
+                            anchor,
+                        });
+                        return true;
+                    }
+                }
                 // Capture the annotation's page-local rect at
                 // drag start for the preview-based move.
                 let Some(ann) = self.editor.document().annotations.find(&id) else {
@@ -2536,6 +2760,7 @@ impl OfdComponent {
     fn clear_selection_and_cursor(&mut self) {
         self.editor.clear_selection();
         self.editor.clear_cursor();
+        self.annot_text_selection = None;
         self.fire_selection_change();
         self.fire_cursor_change();
     }
@@ -2689,6 +2914,13 @@ impl OfdComponent {
                     };
                 }
                 Key::Backspace => {
+                    if self.annot_selection_range(&cursor.annotation).is_some() {
+                        self.replace_selection_with(&cursor, "");
+                        return EventOutcome {
+                            needs_repaint: true,
+                        };
+                    }
+                    self.annot_text_selection = None;
                     if cursor.offset > 0 {
                         self.caret_line = None;
                         self.ensure_font_store();
@@ -2712,6 +2944,13 @@ impl OfdComponent {
                     }
                 }
                 Key::Delete => {
+                    if self.annot_selection_range(&cursor.annotation).is_some() {
+                        self.replace_selection_with(&cursor, "");
+                        return EventOutcome {
+                            needs_repaint: true,
+                        };
+                    }
+                    self.annot_text_selection = None;
                     self.caret_line = None;
                     self.ensure_font_store();
                     let store = self
@@ -2730,6 +2969,16 @@ impl OfdComponent {
                     };
                 }
                 Key::ArrowLeft => {
+                    // A selection collapses to its start before moving.
+                    if let Some((start, _)) = self.annot_selection_range(&cursor.annotation) {
+                        self.annot_text_selection = None;
+                        self.caret_line = None;
+                        self.editor.set_cursor(cursor.annotation.clone(), start);
+                        self.fire_cursor_change();
+                        return EventOutcome {
+                            needs_repaint: true,
+                        };
+                    }
                     if cursor.offset > 0 {
                         self.caret_line = None;
                         self.editor
@@ -2741,6 +2990,17 @@ impl OfdComponent {
                     }
                 }
                 Key::ArrowRight => {
+                    // A selection collapses to its end before moving.
+                    if let Some((_, end)) = self.annot_selection_range(&cursor.annotation) {
+                        self.annot_text_selection = None;
+                        self.caret_line = None;
+                        self.editor.set_cursor(cursor.annotation.clone(), end);
+                        self.fire_cursor_change();
+                        return EventOutcome {
+                            needs_repaint: true,
+                        };
+                    }
+                    self.annot_text_selection = None;
                     self.caret_line = None;
                     self.editor
                         .set_cursor(cursor.annotation.clone(), cursor.offset + 1);
@@ -2751,6 +3011,7 @@ impl OfdComponent {
                 }
                 Key::ArrowUp | Key::ArrowDown => {
                     let up = matches!(key, Key::ArrowUp);
+                    self.annot_text_selection = None;
                     if let Some((offset, preferred_x, line)) =
                         self.vertical_caret_offset(&cursor, up)
                     {
@@ -2768,6 +3029,7 @@ impl OfdComponent {
                 }
                 Key::Escape => {
                     self.caret_line = None;
+                    self.annot_text_selection = None;
                     self.editor.clear_cursor();
                     self.editor.clear_selection();
                     self.fire_cursor_change();
@@ -3436,7 +3698,8 @@ fn drag_to_preview(doc: &OfdDocument, d: &DragState, vp: &Viewport) -> Option<Dr
         DragState::Pan { .. }
         | DragState::TextSelect { .. }
         | DragState::MarkupPress { .. }
-        | DragState::ScrollThumb { .. } => None,
+        | DragState::ScrollThumb { .. }
+        | DragState::AnnotTextSelect { .. } => None,
     }
 }
 
@@ -9405,6 +9668,234 @@ mod tests {
         let wrapped = store.shape_wrapped(&FontId::new("F1"), "abc def ghi jkl", 12.0, 45.0);
         let y = wrapped.lines[1].top + 1.0;
         assert_eq!(c.click_caret_offset(&id, (1.0, y)), Some(8));
+    }
+
+    /// x just inside the glyph pen of char `i` in a "hello" box (fixture:
+    /// zoom 1, page_gap 0, rect at the page origin).
+    fn hello_x(c: &OfdComponent, i: usize) -> f64 {
+        let store = c.font_store.as_ref().expect("font store");
+        let w = store.shape_wrapped(&FontId::new("F1"), "hello", 12.0, 100.0);
+        w.glyphs[i].x as f64 + 0.1
+    }
+
+    /// Press at `from` and drag to `to` inside a "hello" TextBox (Text tool).
+    fn drag_hello(c: &mut OfdComponent, from: usize, to: usize) {
+        c.set_tool(Tool::Text);
+        c.handle_event(&pd(hello_x(c, from), 10.0));
+        c.handle_event(&ViewEvent::PointerMove {
+            x: hello_x(c, to),
+            y: 10.0,
+        });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: hello_x(c, to),
+            y: 10.0,
+        });
+    }
+
+    #[test]
+    fn text_tool_drag_selects_text_inside_textbox() {
+        let mut c = component_with_narrow_textbox("hello", 100.0, 40.0);
+        let id = textbox_id(&c);
+        c.clear_modified();
+        c.handle_event(&pd(hello_x(&c, 1), 10.0));
+        assert!(
+            matches!(c.drag, Some(DragState::AnnotTextSelect { .. })),
+            "Text tool press on a flat TextBox arms a text-selection drag"
+        );
+        c.handle_event(&ViewEvent::PointerMove {
+            x: hello_x(&c, 4),
+            y: 10.0,
+        });
+        let sel = c.annot_text_selection.clone().expect("drag selection");
+        assert_eq!(sel.annotation, id);
+        assert_eq!(sel.range(), (1, 4));
+        assert_eq!(c.selected_text().as_deref(), Some("ell"));
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: hello_x(&c, 4),
+            y: 10.0,
+        });
+        assert!(c.drag.is_none());
+        assert_eq!(
+            c.annot_text_selection.as_ref().map(|s| s.range()),
+            Some((1, 4)),
+            "selection survives pointer release"
+        );
+        assert_eq!(
+            textbox_rect(&c),
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 40.0
+            },
+            "text drag must not move the box"
+        );
+        assert!(!c.is_modified(), "selection is UI state only");
+    }
+
+    #[test]
+    fn typing_replaces_textbox_selection_in_one_transaction() {
+        let mut c = component_with_narrow_textbox("hello", 100.0, 40.0);
+        drag_hello(&mut c, 1, 4);
+        let history = c.editor.history_len();
+        c.handle_event(&ViewEvent::KeyDown {
+            key: Key::Char('X'),
+            modifiers: Modifiers::default(),
+        });
+        assert_eq!(textbox_content(&c), "hXo");
+        assert!(
+            c.annot_text_selection.is_none(),
+            "typing consumes the selection"
+        );
+        assert_eq!(
+            c.editor.history_len(),
+            history + 1,
+            "replace is one transaction"
+        );
+        assert_eq!(
+            c.editor.text_cursor().expect("cursor").offset,
+            2,
+            "caret lands after the inserted text"
+        );
+        assert!(c.undo());
+        assert_eq!(textbox_content(&c), "hello");
+    }
+
+    #[test]
+    fn backspace_and_delete_consume_textbox_selection() {
+        let mut c = component_with_narrow_textbox("hello", 100.0, 40.0);
+        drag_hello(&mut c, 1, 4);
+        c.handle_event(&ViewEvent::KeyDown {
+            key: Key::Backspace,
+            modifiers: Modifiers::default(),
+        });
+        assert_eq!(textbox_content(&c), "ho");
+        assert!(c.annot_text_selection.is_none());
+        assert_eq!(c.editor.text_cursor().expect("cursor").offset, 1);
+
+        // Delete removes the same range the same way.
+        c.editor.set_annotation_text(&textbox_id(&c), "hello");
+        c.editor.set_cursor(textbox_id(&c), 0);
+        drag_hello(&mut c, 1, 4);
+        c.handle_event(&ViewEvent::KeyDown {
+            key: Key::Delete,
+            modifiers: Modifiers::default(),
+        });
+        assert_eq!(textbox_content(&c), "ho");
+        assert!(c.annot_text_selection.is_none());
+    }
+
+    #[test]
+    fn plain_click_clears_textbox_selection_and_arrow_collapses_it() {
+        let mut c = component_with_narrow_textbox("hello", 100.0, 40.0);
+        drag_hello(&mut c, 1, 4);
+        assert!(c.annot_text_selection.is_some());
+
+        // Press-and-release inside the box (no motion) collapses to a caret.
+        c.handle_event(&pd(hello_x(&c, 0), 10.0));
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: hello_x(&c, 0),
+            y: 10.0,
+        });
+        assert!(
+            c.annot_text_selection.is_none(),
+            "plain click drops the selection"
+        );
+        assert_eq!(c.editor.text_cursor().expect("cursor").offset, 0);
+
+        // ArrowLeft on a selection collapses to its start (no movement).
+        drag_hello(&mut c, 1, 4);
+        c.handle_event(&ViewEvent::KeyDown {
+            key: Key::ArrowLeft,
+            modifiers: Modifiers::default(),
+        });
+        assert!(c.annot_text_selection.is_none());
+        assert_eq!(c.editor.text_cursor().expect("cursor").offset, 1);
+    }
+
+    #[test]
+    fn hand_tool_drag_still_moves_the_textbox() {
+        let mut c = component_with_narrow_textbox("hello", 100.0, 40.0);
+        c.set_tool(Tool::Hand);
+        c.handle_event(&pd(20.0, 20.0));
+        c.handle_event(&ViewEvent::PointerMove { x: 30.0, y: 20.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 30.0,
+            y: 20.0,
+        });
+        assert!(
+            c.annot_text_selection.is_none(),
+            "Hand-tool drag moves instead of selecting"
+        );
+        let r = textbox_rect(&c);
+        assert!((r.x - 10.0).abs() < 1e-6, "box moved by the drag delta");
+        assert!((r.w - 100.0).abs() < 1e-6, "move keeps the size");
+    }
+
+    #[test]
+    fn first_drag_on_unfocused_textbox_moves_it() {
+        // The first press enters edit mode but keeps the move drag; only a
+        // press while the cursor is already in the box selects text.
+        let mut c = component_with_narrow_textbox("hello", 100.0, 40.0);
+        c.set_tool(Tool::Text);
+        c.editor.clear_cursor();
+        c.handle_event(&pd(20.0, 20.0));
+        c.handle_event(&ViewEvent::PointerMove { x: 30.0, y: 20.0 });
+        c.handle_event(&ViewEvent::PointerUp {
+            button: MouseButton::Left,
+            x: 30.0,
+            y: 20.0,
+        });
+        assert!(c.annot_text_selection.is_none());
+        assert!(
+            (textbox_rect(&c).x - 10.0).abs() < 1e-6,
+            "first drag moved the box"
+        );
+        assert!(c.editor.text_cursor().is_some(), "and entered edit mode");
+    }
+
+    #[test]
+    fn ime_composition_collapses_textbox_selection_first() {
+        let mut c = component_with_narrow_textbox("hello", 100.0, 40.0);
+        drag_hello(&mut c, 1, 4);
+        c.handle_event(&ViewEvent::ImePreedit {
+            text: "ab".into(),
+            caret: None,
+        });
+        assert_eq!(
+            textbox_content(&c),
+            "ho",
+            "composition start deletes the selection"
+        );
+        assert!(c.annot_text_selection.is_none());
+        c.handle_event(&ViewEvent::ImeCommit { text: "ab".into() });
+        assert_eq!(textbox_content(&c), "habo", "then composes at the caret");
+    }
+
+    #[test]
+    fn drag_selection_paints_highlight_rects() {
+        let mut c = component_with_narrow_textbox("hello", 100.0, 40.0);
+        let count_fills = |c: &mut OfdComponent| {
+            c.mark_scene_dirty();
+            c.update_scene();
+            let mut fills = 0usize;
+            for cmd in c.scene().commands() {
+                if let imaging::record::Command::Draw(id) = cmd {
+                    if let imaging::record::Draw::Fill { .. } = c.scene().draw_op(*id) {
+                        fills += 1;
+                    }
+                }
+            }
+            fills
+        };
+        let without = count_fills(&mut c);
+        drag_hello(&mut c, 1, 4);
+        let with = count_fills(&mut c);
+        assert_eq!(with, without + 1, "one selection highlight rect is painted");
     }
 
     #[test]

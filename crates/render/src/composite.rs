@@ -148,7 +148,7 @@ const PREVIEW_COLOR: Color = Color::from_rgba8(0x00, 0x72, 0xC6, 0x80);
 
 /// Color for body-text selection highlights (semi-transparent selection blue,
 /// rgba(68, 132, 255, 0.3)).
-pub(crate) const TEXT_SELECTION_COLOR: Color = Color::from_rgba8(68, 132, 255, 77);
+pub const TEXT_SELECTION_COLOR: Color = Color::from_rgba8(68, 132, 255, 77);
 
 /// Stroke width for the selection frame (screen pixels).
 const FRAME_STROKE_WIDTH: f64 = 1.0;

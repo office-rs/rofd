@@ -108,6 +108,45 @@ impl Editor {
         self.execute_transaction(self.replace_txn(id.clone(), before, after));
     }
 
+    /// Replace the char range `[start, end)` with `chars` in ONE transaction.
+    /// Typing / Backspace / Delete / Enter / paste / IME commit over an active
+    /// text selection all route here, so the edit is a single undo step.
+    /// `measure` follows the same contract as [`Self::insert_text_measured`].
+    pub fn replace_text_measured<F>(
+        &mut self,
+        id: &AnnotationId,
+        start: usize,
+        end: usize,
+        chars: &str,
+        measure: F,
+    ) where
+        F: FnOnce(&AnnotationPayload) -> Option<f64>,
+    {
+        let before = match self.document.annotations.find(id).cloned() {
+            Some(a) => a,
+            None => return,
+        };
+        let mut after = before.clone();
+        collapse_runs(&mut after.payload);
+        let chars = normalize_newlines(chars);
+        if let Some(content) = text_content_mut(&mut after.payload) {
+            let total = content.chars().count();
+            let s = start.min(total);
+            let e = end.min(total).max(s);
+            let mut new: String = content.chars().take(s).collect();
+            new.push_str(&chars);
+            new.extend(content.chars().skip(e));
+            *content = new;
+        }
+        if let Some(height) = measure(&after.payload) {
+            if let AnnotationPayload::TextBox { rect, .. } = &mut after.payload {
+                rect.h = height;
+            }
+        }
+        after.modified = self.current_ts;
+        self.execute_transaction(self.replace_txn(id.clone(), before, after));
+    }
+
     /// Delete `len` chars from a text annotation at char offset.
     pub fn delete_text(&mut self, id: &AnnotationId, offset: usize, len: usize) {
         self.delete_text_measured(id, offset, len, |_| None);
@@ -504,6 +543,35 @@ mod tests {
         let (mut e, id) = flat_textbox_editor();
         e.set_annotation_text(&id, "a\r\nb");
         assert_eq!(textbox_content(&e, &id), "a\nb");
+    }
+
+    #[test]
+    fn replace_text_range_is_one_transaction() {
+        let (mut e, id) = flat_textbox_editor_with("hello world", 10.0);
+        // Replace "lo wo" (chars 3..8) with "XY".
+        e.replace_text_measured(&id, 3, 8, "XY", |_| Some(42.0));
+        assert_eq!(textbox_content(&e, &id), "helXYrld");
+        assert_eq!(
+            textbox_rect(&e, &id).h,
+            42.0,
+            "measure applied in-transaction"
+        );
+        assert_eq!(e.history_len(), 2, "create + one replace transaction");
+        assert!(e.undo());
+        assert_eq!(textbox_content(&e, &id), "hello world");
+        assert_eq!(textbox_rect(&e, &id).h, 10.0, "undo restores text + height");
+        assert_eq!(e.history_len(), 1);
+    }
+
+    #[test]
+    fn replace_text_range_clamps_and_handles_empty_insert() {
+        let (mut e, id) = flat_textbox_editor_with("abc", 10.0);
+        // Out-of-range end clamps to the content end; empty text = delete.
+        e.replace_text_measured(&id, 1, 99, "", |_| None);
+        assert_eq!(textbox_content(&e, &id), "a");
+        // Reversed range collapses at `start` (defensive).
+        e.replace_text_measured(&id, 1, 0, "Z", |_| None);
+        assert_eq!(textbox_content(&e, &id), "aZ");
     }
 
     #[test]

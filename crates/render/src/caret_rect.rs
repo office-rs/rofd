@@ -9,7 +9,7 @@
 //! page-stacking helper: centering + scroll on both axes + `page_gap` +
 //! `zoom`), so the caret aligns with the rendered glyph run. Glyph x positions
 //! come from [`FontStore::shape`] (the shaper's natural advances); the caret
-//! height is the font `size` scaled by `zoom`.
+//! spans the visual line box (ascent + descent + leading) scaled by `zoom`.
 //!
 //! Non-text annotations ([`Markup`] / [`Freehand`] / [`Shape`] / [`Stamp`])
 //! return `None` - they have no caret.
@@ -37,9 +37,9 @@ use crate::viewport::Viewport;
 /// `zoom`).
 ///
 /// `runs`-empty TextBoxes use the wrapped layout: x is the line-relative
-/// glyph pen at `offset`, y is `rect.y + line.top`. Rich TextBoxes and
-/// Note/Watermark keep the legacy flat-content geometry (spec 2026-11-09
-/// §1.2.2, §1.3).
+/// glyph pen at `offset`, y is `rect.y + line.top`, height is the visual line
+/// box height. Rich TextBoxes and Note/Watermark keep the legacy flat-content
+/// geometry (spec 2026-11-09 §1.2.2, §1.3).
 pub fn caret_rect(
     doc: &OfdDocument,
     vp: &Viewport,
@@ -94,7 +94,11 @@ pub fn caret_rect_on_line(
                 x: vx,
                 y: vy,
                 w: 1.0 * vp.zoom,
-                h: size * vp.zoom,
+                // The bar spans the full visual line box (ascent + descent +
+                // leading), not just the font size: a size-high bar starting
+                // at the line top stops at the baseline and reads as floating
+                // ABOVE the text (2026-11-10 fix).
+                h: line.height * vp.zoom,
             });
         }
     }
@@ -220,6 +224,84 @@ pub fn caret_offset_at_point(
     }
     let line_idx = line_index_at_y(&wrapped, y_in_rect);
     nearest_offset_on_line(&wrapped, &wrapped.lines[line_idx], x_in_rect)
+}
+
+/// Viewport-space highlight rectangles for a char range selected inside a
+/// flat TextBox (`runs` empty): one rect per visual line the range covers,
+/// spanning the line box height. Returns an empty vec for a zero-width range,
+/// non-text payloads, rich boxes (no reflow, no text selection) and
+/// unresolvable geometry.
+///
+/// `start`/`end` are char offsets; they are clamped and may be swapped.
+pub fn annotation_text_selection_rects(
+    doc: &OfdDocument,
+    vp: &Viewport,
+    fonts: &FontStore,
+    ann_id: &AnnotationId,
+    start: usize,
+    end: usize,
+) -> Vec<Rect> {
+    let (start, end) = if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    };
+    if start == end {
+        return Vec::new();
+    }
+    let Some(ann) = doc
+        .annotations
+        .by_page
+        .values()
+        .flatten()
+        .find(|a| &a.id == ann_id)
+    else {
+        return Vec::new();
+    };
+    let AnnotationPayload::TextBox {
+        rect,
+        content,
+        font,
+        size,
+        runs,
+        ..
+    } = &ann.payload
+    else {
+        return Vec::new();
+    };
+    if !runs.is_empty() {
+        return Vec::new();
+    }
+    let Some(page_idx) = doc.pages.iter().position(|p| p.id == ann.page) else {
+        return Vec::new();
+    };
+    let Some((origin_x, origin_y)) = crate::composite::page_origin(doc, vp, page_idx) else {
+        return Vec::new();
+    };
+    let wrapped = fonts.shape_wrapped(font, content, *size, rect.w.max(*size));
+    let end = end.min(wrapped.total_chars);
+    let mut out = Vec::new();
+    for line in wrapped.lines.iter() {
+        let line_start = line.char_start;
+        let line_end = line_start + line.char_len;
+        if line_end <= start || line_start >= end {
+            continue;
+        }
+        let local_start = start.max(line_start) - line_start;
+        let local_end = end.min(line_end) - line_start;
+        let x0 = caret_x_on_line(&wrapped, line, local_start);
+        let x1 = caret_x_on_line(&wrapped, line, local_end);
+        if x1 <= x0 {
+            continue;
+        }
+        out.push(Rect {
+            x: origin_x + (rect.x + x0) * vp.zoom,
+            y: origin_y + (rect.y + line.top) * vp.zoom,
+            w: (x1 - x0) * vp.zoom,
+            h: line.height * vp.zoom,
+        });
+    }
+    out
 }
 
 /// Vertical caret movement direction.
@@ -438,7 +520,7 @@ mod tests {
     fn caret_rect_some_for_textbox_at_offset_zero() {
         // TextBox "Hi" at rect origin (10, 20). At offset 0 the caret sits at
         // the annotation rect's x (the first glyph's x is ~0 from the shaper),
-        // at the rect's y, with height = size.
+        // at the rect's y, spanning the visual line box.
         let (mut doc, fonts) = doc_with_font();
         let id = push_ann(
             &mut doc,
@@ -475,7 +557,64 @@ mod tests {
         );
         assert_eq!(r.y, expected_y, "caret y = page_origin_y + rect.y * zoom");
         assert_eq!(r.w, 1.0, "caret width = 1px * zoom");
-        assert_eq!(r.h, 12.0, "caret height = size * zoom");
+        let line_h = fonts
+            .shape_wrapped(&FontId::new("F1"), "Hi", 12.0, 100.0)
+            .lines[0]
+            .height;
+        assert_eq!(r.h, line_h, "caret height = visual line box * zoom");
+    }
+
+    #[test]
+    fn caret_height_covers_the_visual_line_box() {
+        // Regression (2026-11-10): the bar was `size` high and top-aligned at
+        // the line top, so it stopped at the baseline and read as floating
+        // above the text. It now spans the full line box (ascent + descent +
+        // leading), which is what makes its optical center match the glyphs.
+        let (mut doc, fonts) = doc_with_font();
+        let id = push_ann(
+            &mut doc,
+            AnnotationPayload::TextBox {
+                rect: Rect {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 100.0,
+                    h: 30.0,
+                },
+                content: "Hi".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                runs: Vec::new(),
+            },
+            AnnotationKind::TextBox,
+        );
+        let w = fonts.shape_wrapped(&FontId::new("F1"), "Hi", 12.0, 100.0);
+        let line = &w.lines[0];
+        let r = caret_rect(&doc, &vp(), &fonts, &id, 0).unwrap();
+        assert!(
+            (r.y - (40.0 + line.top)).abs() < 1e-6,
+            "caret starts at the line box top"
+        );
+        assert!(
+            (r.h - line.height).abs() < 1e-6,
+            "caret spans the line box: {} vs {}",
+            r.h,
+            line.height
+        );
+        // The old size-high bar's center sat above the line box center; the
+        // full-box bar re-centers the caret on the text.
+        let old_center = line.top + 12.0 / 2.0;
+        let new_center = line.top + line.height / 2.0;
+        assert!(
+            new_center > old_center,
+            "full line box moves the bar's center down ({new_center} vs {old_center})"
+        );
+        assert!(
+            line.height > 12.0,
+            "font line box ({}) is taller than the em size",
+            line.height
+        );
     }
 
     #[test]
@@ -569,7 +708,11 @@ mod tests {
         assert_eq!(r.x, expected_x, "caret x tracks scroll.0 + zoom");
         assert_eq!(r.y, expected_y, "caret y tracks scroll.1 + zoom");
         assert_eq!(r.w, 2.0, "caret width = 1px * zoom");
-        assert_eq!(r.h, 24.0, "caret height = size * zoom");
+        let line_h = fonts
+            .shape_wrapped(&FontId::new("F1"), "Hi", 12.0, 100.0)
+            .lines[0]
+            .height;
+        assert_eq!(r.h, 2.0 * line_h, "caret height = line box * zoom");
     }
 
     #[test]
@@ -691,6 +834,160 @@ mod tests {
         assert!((r.y - (40.0 + line1.top)).abs() < 1e-6, "second line y");
         let expected_x = 300.0 + 10.0 + w.glyphs[line1.glyph_start + 1].x as f64;
         assert!((r.x - expected_x).abs() < 1e-6);
+    }
+
+    #[test]
+    fn selection_rects_single_line_partial_range() {
+        let (mut doc, fonts) = doc_with_font();
+        let id = push_ann(
+            &mut doc,
+            AnnotationPayload::TextBox {
+                rect: Rect {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 100.0,
+                    h: 30.0,
+                },
+                content: "hello".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                runs: Vec::new(),
+            },
+            AnnotationKind::TextBox,
+        );
+        let w = fonts.shape_wrapped(&FontId::new("F1"), "hello", 12.0, 100.0);
+        let line = &w.lines[0];
+        let rects = annotation_text_selection_rects(&doc, &vp(), &fonts, &id, 1, 3);
+        assert_eq!(rects.len(), 1, "one visual line");
+        let r = &rects[0];
+        // Page origin x = 300 (page 200 wide, viewport 800), y = 20 (gap).
+        let expected_x = 300.0 + 10.0 + w.glyphs[1].x as f64;
+        let expected_w = w.glyphs[3].x as f64 - w.glyphs[1].x as f64;
+        assert!((r.x - expected_x).abs() < 1e-6);
+        assert!((r.w - expected_w).abs() < 1e-6);
+        assert!((r.y - (40.0 + line.top)).abs() < 1e-6);
+        assert!((r.h - line.height).abs() < 1e-6, "line-box height");
+    }
+
+    #[test]
+    fn selection_rects_span_two_wrapped_lines() {
+        let (mut doc, fonts) = doc_with_font();
+        let text = "abc def ghi jkl";
+        let id = push_ann(
+            &mut doc,
+            AnnotationPayload::TextBox {
+                rect: Rect {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 45.0,
+                    h: 60.0,
+                },
+                content: text.into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                runs: Vec::new(),
+            },
+            AnnotationKind::TextBox,
+        );
+        let w = fonts.shape_wrapped(&FontId::new("F1"), text, 12.0, 45.0);
+        let rects = annotation_text_selection_rects(&doc, &vp(), &fonts, &id, 2, 10);
+        assert_eq!(rects.len(), 2, "range covers the end of line 1 and line 2");
+        // Line 1: from char 2 to the line end (trailing space included).
+        let expected_x = 300.0 + 10.0 + w.glyphs[2].x as f64;
+        let expected_w = w.lines[0].width - w.glyphs[2].x as f64;
+        assert!((rects[0].x - expected_x).abs() < 1e-6);
+        assert!((rects[0].w - expected_w).abs() < 1e-6);
+        // Line 2: from its start to char 10.
+        assert!((rects[1].x - (300.0 + 10.0)).abs() < 1e-6);
+        let w1 = w.glyphs[w.lines[1].glyph_start + 2].x as f64;
+        assert!((rects[1].w - w1).abs() < 1e-6);
+        assert!(
+            (rects[1].y - (40.0 + w.lines[1].top)).abs() < 1e-6,
+            "second line y follows its line box"
+        );
+    }
+
+    #[test]
+    fn selection_rects_ignore_empty_reversed_rich_and_missing() {
+        let (mut doc, fonts) = doc_with_font();
+        let id = push_ann(
+            &mut doc,
+            AnnotationPayload::TextBox {
+                rect: Rect {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 100.0,
+                    h: 30.0,
+                },
+                content: "hello".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                runs: Vec::new(),
+            },
+            AnnotationKind::TextBox,
+        );
+        assert!(
+            annotation_text_selection_rects(&doc, &vp(), &fonts, &id, 2, 2).is_empty(),
+            "zero-width selection draws nothing"
+        );
+        // Reversed ranges are handled (anchor can be right of focus).
+        assert_eq!(
+            annotation_text_selection_rects(&doc, &vp(), &fonts, &id, 3, 1).len(),
+            1
+        );
+        assert!(
+            annotation_text_selection_rects(&doc, &vp(), &fonts, &AnnotationId::from_int(99), 0, 3)
+                .is_empty(),
+            "unknown annotation"
+        );
+
+        let rich = AnnotationId::from_int(7);
+        doc.annotations
+            .by_page
+            .entry(PageId::new("P0"))
+            .or_default()
+            .push(Annotation {
+                id: rich.clone(),
+                kind: AnnotationKind::TextBox,
+                page: PageId::new("P0"),
+                creator: "tester".into(),
+                created: 0,
+                modified: 0,
+                reply_to: None,
+                payload: AnnotationPayload::TextBox {
+                    rect: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 100.0,
+                        h: 30.0,
+                    },
+                    content: "ab".into(),
+                    font: FontId::new("F1"),
+                    size: 12.0,
+                    color: Color::Rgb(0, 0, 0),
+                    border: None,
+                    runs: vec![rofd_dom::TextRun {
+                        text: "ab".into(),
+                        font: FontId::new("F1"),
+                        size: 12.0,
+                        color: None,
+                        bold: false,
+                        italic: false,
+                        x: 0.0,
+                        baseline: 12.0,
+                    }],
+                },
+            });
+        assert!(
+            annotation_text_selection_rects(&doc, &vp(), &fonts, &rich, 0, 2).is_empty(),
+            "rich boxes do not support text selection"
+        );
     }
 
     #[test]
