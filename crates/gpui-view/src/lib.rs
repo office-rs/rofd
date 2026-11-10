@@ -11,6 +11,7 @@
 pub mod events;
 pub mod events_surface;
 pub mod font_cache;
+mod format_panel;
 pub mod gpui_sink;
 pub mod handle;
 pub mod ime;

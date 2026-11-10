@@ -33,15 +33,17 @@ use std::cell::RefCell;
 use std::sync::Arc;
 
 use gpui::{
-    div, prelude::*, relative, size, App, Bounds, ClipboardItem, Context, Element, ElementId,
-    Entity, FocusHandle, Focusable, GlobalElementId, InspectorElementId, KeyDownEvent, LayoutId,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollEvent, Style, Window,
+    div, prelude::*, px, relative, rgb, size, AnyElement, App, Bounds, ClipboardItem, Context,
+    Element, ElementId, Entity, FocusHandle, Focusable, GlobalElementId, InspectorElementId,
+    KeyDownEvent, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    ScrollEvent, Style, Window,
 };
 use rofd_component::{OfdComponent, OfdConfig, ViewEvent};
 
 use crate::events::{self, ScrollOutcome};
 use crate::events_surface::{EventQueue, OfdGpuiEvent};
 use crate::font_cache::FontCache;
+use crate::format_panel::{FormatPanelState, PanelMenu, PANEL_H};
 use crate::gpui_sink::{self, GpuiSink, ImageDecodeCache, PaintCmd};
 use crate::ime::ImeBridge;
 
@@ -78,6 +80,8 @@ pub struct OfdGpuiView {
     pub(crate) had_focus: std::cell::Cell<bool>,
     /// Previous element size — change detection only.
     pub(crate) last_size: std::cell::Cell<(f32, f32)>,
+    /// Floating annotation text-format panel state (selection-driven).
+    pub(crate) panel: FormatPanelState,
 }
 
 impl OfdGpuiView {
@@ -98,6 +102,7 @@ impl OfdGpuiView {
             last_mouse: std::cell::Cell::new((0.0, 0.0)),
             had_focus: std::cell::Cell::new(false),
             last_size: std::cell::Cell::new((0.0, 0.0)),
+            panel: FormatPanelState::default(),
         }
     }
 
@@ -127,6 +132,9 @@ impl OfdGpuiView {
     /// on_mouse_down body: click-to-focus first, then translate +
     /// forward.
     fn pressed(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // A press outside the panel closes an open dropdown (panel handlers
+        // stop propagation, so reaching here means the press was outside).
+        self.panel.open = None;
         window.focus(&self.focus_handle, cx);
         let (x, y) = self.to_viewport(event.position);
         self.handle_view_event(events::mouse_down_at(event, x, y), cx);
@@ -189,12 +197,242 @@ impl Focusable for OfdGpuiView {
     }
 }
 
+impl OfdGpuiView {
+    /// The floating format panel: one row of triggers plus the open dropdown.
+    /// Coordinates are viewport px (the element's local space).
+    fn format_panel_element(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.panel.show() {
+            return None;
+        }
+        let (x, y) = self.panel.anchor;
+        let family = self
+            .panel
+            .style
+            .as_ref()
+            .map(|s| {
+                if s.family.is_empty() {
+                    "字体".to_string()
+                } else {
+                    s.family.clone()
+                }
+            })
+            .unwrap_or_default();
+        let size = self
+            .panel
+            .style
+            .as_ref()
+            .map(|s| rofd_component::size_display(s.size_mm))
+            .unwrap_or_default();
+
+        let mut root = div()
+            .id("rofd-format-panel")
+            .absolute()
+            .left(px(x as f32))
+            .top(px(y as f32))
+            .flex()
+            .flex_col()
+            .bg(rgb(0xFFFFFF))
+            .border_1()
+            .border_color(rgb(0xC9_CD_D4))
+            .rounded(px(4.));
+        root = root.child(
+            div()
+                .flex()
+                .flex_row()
+                .child(Self::panel_field(
+                    "rofd-fp-family",
+                    family,
+                    PanelMenu::Family,
+                    cx,
+                ))
+                .child(Self::panel_field("rofd-fp-size", size, PanelMenu::Size, cx))
+                .child(Self::panel_field(
+                    "rofd-fp-color",
+                    "A".to_string(),
+                    PanelMenu::Color,
+                    cx,
+                )),
+        );
+        if let Some(menu) = self.panel.open {
+            root = root.child(self.panel_menu(menu, cx));
+        }
+        Some(root.into_any_element())
+    }
+
+    /// One trigger cell of the panel row.
+    fn panel_field(
+        id: &'static str,
+        text: String,
+        menu: PanelMenu,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .id(id)
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(80.))
+            .h(px(PANEL_H as f32))
+            .border_1()
+            .border_color(rgb(0xE0_E0_E0))
+            .cursor_pointer()
+            .text_size(px(12.))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _: &MouseDownEvent, _w, cx| {
+                    this.panel.open = if this.panel.open == Some(menu) {
+                        None
+                    } else {
+                        Some(menu)
+                    };
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
+            .child(text)
+            .into_any_element()
+    }
+
+    /// The open dropdown (family list / size list / color grid).
+    fn panel_menu(&self, menu: PanelMenu, cx: &mut Context<Self>) -> AnyElement {
+        let mut col = div()
+            .id("rofd-fp-menu")
+            .flex()
+            .flex_col()
+            .max_h(px(260.))
+            .overflow_y_scroll()
+            .bg(rgb(0xFFFFFF));
+        match menu {
+            PanelMenu::Family => {
+                for (i, entry) in self.panel.families.iter().enumerate() {
+                    let key = entry.display.clone();
+                    col = col.child(panel_item(
+                        ElementId::Name(format!("rofd-fp-fam-{i}").into()),
+                        entry.display.clone(),
+                        cx,
+                        move |this| {
+                            if let Some(id) = this.panel.target.clone() {
+                                this.component.set_annotation_font_family(&id, &key);
+                                return true;
+                            }
+                            false
+                        },
+                    ));
+                }
+            }
+            PanelMenu::Size => {
+                for (i, entry) in rofd_component::TEXT_SIZES.iter().enumerate() {
+                    let label = if entry.label.is_empty() {
+                        format!("{}", entry.pt)
+                    } else {
+                        entry.label.to_string()
+                    };
+                    let mm = rofd_component::pt_to_mm(entry.pt);
+                    col = col.child(panel_item(
+                        ElementId::Name(format!("rofd-fp-size-{i}").into()),
+                        label,
+                        cx,
+                        move |this| {
+                            if let Some(id) = this.panel.target.clone() {
+                                this.component.set_annotation_font_size(&id, mm);
+                                return true;
+                            }
+                            false
+                        },
+                    ));
+                }
+            }
+            PanelMenu::Color => {
+                for (row_idx, row) in rofd_component::TEXT_COLOR_PALETTE.iter().enumerate() {
+                    let mut r = div().flex().flex_row();
+                    for (i, hex) in row.iter().enumerate() {
+                        r = r.child(color_swatch(
+                            ElementId::Name(format!("rofd-fp-color-{row_idx}-{i}").into()),
+                            hex,
+                            cx,
+                        ));
+                    }
+                    col = col.child(r);
+                }
+                let mut r = div().flex().flex_row();
+                for (i, hex) in rofd_component::TEXT_COLOR_STANDARD.iter().enumerate() {
+                    r = r.child(color_swatch(
+                        ElementId::Name(format!("rofd-fp-std-{i}").into()),
+                        hex,
+                        cx,
+                    ));
+                }
+                col = col.child(r);
+            }
+        }
+        col.into_any_element()
+    }
+}
+
+/// One clickable text row in a panel dropdown.
+fn panel_item(
+    id: ElementId,
+    label: String,
+    cx: &mut Context<OfdGpuiView>,
+    apply: impl Fn(&mut OfdGpuiView) -> bool + 'static,
+) -> AnyElement {
+    div()
+        .id(id)
+        .px_3()
+        .py_1()
+        .text_size(px(12.))
+        .cursor_pointer()
+        .hover(|d| d.bg(rgb(0xEA_F1_FF)))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _: &MouseDownEvent, _w, cx| {
+                if apply(this) {
+                    this.panel.refresh(&mut this.component);
+                }
+                this.panel.open = None;
+                cx.stop_propagation();
+                cx.notify();
+            }),
+        )
+        .child(label)
+        .into_any_element()
+}
+
+/// One color swatch in the panel's color grid.
+fn color_swatch(id: ElementId, hex: &'static str, cx: &mut Context<OfdGpuiView>) -> AnyElement {
+    let color = rofd_component::hex_color(hex).unwrap_or(rofd_dom::Color::Rgb(0, 0, 0));
+    let rofd_dom::Color::Rgb(r, g, b) = color;
+    div()
+        .id(id)
+        .w(px(16.))
+        .h(px(16.))
+        .m(px(2.))
+        .rounded(px(2.))
+        .bg(rgb(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)))
+        .cursor_pointer()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _: &MouseDownEvent, _w, cx| {
+                if let Some(target) = this.panel.target.clone() {
+                    this.component.set_annotation_color(&target, color);
+                    this.panel.refresh(&mut this.component);
+                }
+                this.panel.open = None;
+                cx.stop_propagation();
+                cx.notify();
+            }),
+        )
+        .into_any_element()
+}
+
 impl Render for OfdGpuiView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.panel.refresh(&mut self.component);
+        let panel = self.format_panel_element(cx);
         // Only the three kernel-known buttons get listeners: Navigate /
         // Back / Forward (and any future button) are dropped entirely
         // instead of coercing to Left through the translator.
-        div()
+        let mut root = div()
             .id("rofd-editor")
             .size_full()
             .track_focus(&self.focus_handle)
@@ -280,7 +518,11 @@ impl Render for OfdGpuiView {
                     this.handle_view_event(ev, cx);
                 }
             }))
-            .child(OfdElement { view: cx.entity() })
+            .child(OfdElement { view: cx.entity() });
+        if let Some(panel) = panel {
+            root = root.child(panel);
+        }
+        root
     }
 }
 
