@@ -12,7 +12,7 @@ use quick_xml::Reader;
 
 use rofd_dom::{
     Annotation, AnnotationId, AnnotationKind, AnnotationPayload, Color, FontId, ImageId, NoteIcon,
-    PageId, PathCommand, PathData, Point, Rect, ShapeKind,
+    OfdWarning, PageId, PathCommand, PathData, Point, Rect, ShapeKind,
 };
 
 use crate::abbreviated::parse_abbreviated;
@@ -101,9 +101,9 @@ impl PendingAnnot {
         }
     }
 
-    fn finish(self) -> Annotation {
+    fn finish(self, warnings: &mut Vec<OfdWarning>) -> Annotation {
         let kind = map_type_subtype(&self.type_str, self.subtype.as_deref());
-        let payload = build_payload(kind.clone(), &self);
+        let payload = build_payload(kind.clone(), &self, warnings);
         let modified = parse_last_mod_date(&self.last_mod).unwrap_or(0);
         // CreationDate is optional in the wild - many authoring tools emit
         // only LastModDate. Fall back to it instead of the epoch (which would
@@ -135,7 +135,21 @@ impl PendingAnnot {
 /// Parse a per-page `Annotation.xml` (GB/T 33190 §15.2 `<PageAnnot>`) into
 /// annotations tagged with the given page id. Unrecognized Type/Subtype combos
 /// degrade to a sensible default payload (never fatal; spec §7.4).
+///
+/// Warnings are dropped; use [`parse_page_annot_with_warnings`] when the caller
+/// reports degraded loading to the host.
 pub fn parse_page_annot(xml: &str, page: &PageId) -> Result<Vec<Annotation>, OfdError> {
+    let mut warnings = Vec::new();
+    parse_page_annot_with_warnings(xml, page, &mut warnings)
+}
+
+/// Like [`parse_page_annot`], collecting non-fatal warnings (degraded style
+/// alignment, unmodelled objects) into `warnings`.
+pub fn parse_page_annot_with_warnings(
+    xml: &str,
+    page: &PageId,
+    warnings: &mut Vec<OfdWarning>,
+) -> Result<Vec<Annotation>, OfdError> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
@@ -152,7 +166,7 @@ pub fn parse_page_annot(xml: &str, page: &PageId) -> Result<Vec<Annotation>, Ofd
                 let p = PendingAnnot::from_attrs(&e2, page);
                 // Self-closing <Annot/> has no End event: finish immediately.
                 if matches!(ev, Ok(Event::Empty(_))) {
-                    out.push(p.finish());
+                    out.push(p.finish(warnings));
                 } else {
                     ann = Some(p);
                 }
@@ -160,7 +174,7 @@ pub fn parse_page_annot(xml: &str, page: &PageId) -> Result<Vec<Annotation>, Ofd
             }
             Ok(Event::End(e)) if e.name().local_name().as_ref() == b"Annot" => {
                 if let Some(p) = ann.take() {
-                    out.push(p.finish());
+                    out.push(p.finish(warnings));
                 }
                 continue;
             }
@@ -332,9 +346,9 @@ struct ParsedRun {
     baseline: f64,
 }
 
-/// Reading order for parsed fragments: sort by (baseline, x); a baseline jump
-/// beyond 30% of the smaller size appends a `\n` to the preceding fragment so
-/// the fragment texts still concatenate to the flattened content.
+/// Reading order for parsed fragments: sort by (baseline, x). Newlines are NOT
+/// inserted here - the caller either aligns the fragments against `Remark` or
+/// joins them with explicit line breaks.
 fn ordered_runs(runs: &[ParsedRun]) -> Vec<ParsedRun> {
     let mut sorted: Vec<&ParsedRun> = runs.iter().collect();
     sorted.sort_by(|a, b| {
@@ -343,9 +357,9 @@ fn ordered_runs(runs: &[ParsedRun]) -> Vec<ParsedRun> {
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
     });
-    let mut out: Vec<ParsedRun> = Vec::with_capacity(sorted.len());
-    for run in sorted {
-        let run = ParsedRun {
+    sorted
+        .into_iter()
+        .map(|run| ParsedRun {
             text: run.text.clone(),
             font: run.font.clone(),
             size: run.size,
@@ -354,18 +368,130 @@ fn ordered_runs(runs: &[ParsedRun]) -> Vec<ParsedRun> {
             italic: run.italic,
             x: run.x,
             baseline: run.baseline,
-        };
-        if let Some(prev) = out.last() {
-            let threshold = 0.3 * prev.size.min(run.size);
-            if (run.baseline - prev.baseline).abs() > threshold {
-                if let Some(last) = out.last_mut() {
+        })
+        .collect()
+}
+
+/// Join ordered fragments into `(content, spans)` for a box WITHOUT a Remark:
+/// a baseline jump beyond 30% of the smaller size appends `\n` to the
+/// preceding fragment, so the fragment texts concatenate to `content`.
+fn joined_fragments(ordered: &[ParsedRun]) -> (String, Vec<rofd_dom::TextSpan>) {
+    let mut content = String::new();
+    let mut spans: Vec<rofd_dom::TextSpan> = Vec::new();
+    let mut prev: Option<&ParsedRun> = None;
+    for run in ordered {
+        if let Some(p) = prev {
+            let threshold = 0.3 * p.size.min(run.size);
+            if (run.baseline - p.baseline).abs() > threshold {
+                content.push('\n');
+                if let Some(last) = spans.last_mut() {
                     last.text.push('\n');
                 }
             }
         }
-        out.push(run);
+        content.push_str(&run.text);
+        spans.push(rofd_dom::TextSpan {
+            text: run.text.clone(),
+            font: run.font.clone(),
+            size: run.size,
+            color: run.color,
+            bold: run.bold,
+            italic: run.italic,
+        });
+        prev = Some(run);
     }
-    out
+    (content, spans)
+}
+
+/// Map the ordered appearance fragments onto `content` char-for-char, skipping
+/// the newlines `content` carries (the appearance has visual lines only).
+/// Newlines are attributed to the preceding fragment. Returns `None` when the
+/// sequences disagree (unnormalizable).
+fn aligned_spans(content: &str, ordered: &[ParsedRun]) -> Option<Vec<rofd_dom::TextSpan>> {
+    // Fragment chars with their newlines removed (appearance carries no soft
+    // breaks; a genuine TextCode newline duplicates the Remark's newline).
+    let frags: Vec<(&ParsedRun, Vec<char>)> = ordered
+        .iter()
+        .filter_map(|run| {
+            let chars: Vec<char> = run.text.chars().filter(|c| *c != '\n').collect();
+            (!chars.is_empty()).then_some((run, chars))
+        })
+        .collect();
+
+    let mut out: Vec<rofd_dom::TextSpan> = Vec::new();
+    let mut pending = String::new();
+    let mut frag = 0usize;
+    let mut pos = 0usize;
+    let mut ok = true;
+    for ch in content.chars() {
+        if ch == '\n' {
+            if let Some(last) = out.last_mut() {
+                last.text.push('\n');
+            } else {
+                pending.push('\n');
+            }
+            continue;
+        }
+        while frag < frags.len() && pos >= frags[frag].1.len() {
+            frag += 1;
+            pos = 0;
+        }
+        let Some((run, chars)) = frags.get(frag) else {
+            ok = false;
+            break;
+        };
+        if chars[pos] != ch {
+            ok = false;
+            break;
+        }
+        if out.len() == frag {
+            out.push(rofd_dom::TextSpan {
+                text: std::mem::take(&mut pending),
+                font: run.font.clone(),
+                size: run.size,
+                color: run.color,
+                bold: run.bold,
+                italic: run.italic,
+            });
+        }
+        out.last_mut().expect("span pushed above").text.push(ch);
+        pos += 1;
+    }
+    if ok {
+        for (_, chars) in frags.iter().skip(frag) {
+            if pos < chars.len() {
+                ok = false;
+                break;
+            }
+            pos = 0;
+        }
+    }
+    if !ok {
+        return None;
+    }
+    // A box whose content is only newlines cannot carry a styled span.
+    if out.is_empty() {
+        return None;
+    }
+    Some(out)
+}
+
+/// True when every fragment (and the flat fallback) share one style and no
+/// bold/italic is involved: the box can stay flat.
+fn uniform_style(spans: &[rofd_dom::TextSpan]) -> bool {
+    let Some(first) = spans.first() else {
+        return true;
+    };
+    if first.bold || first.italic {
+        return false;
+    }
+    spans.windows(2).all(|w| {
+        w[0].font == w[1].font
+            && (w[0].size - w[1].size).abs() < 1e-9
+            && w[0].color == w[1].color
+            && !w[1].bold
+            && !w[1].italic
+    })
 }
 
 /// Map GB/T 33190 Annot Type+Subtype to [`AnnotationKind`]. Unknown combos
@@ -395,7 +521,11 @@ fn map_type_subtype(ty: &str, sub: Option<&str>) -> AnnotationKind {
 
 /// Build the typed payload from collected appearance objects, remark, and
 /// boundary. Each kind extracts the relevant fields from `p.objects`.
-fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
+fn build_payload(
+    kind: AnnotationKind,
+    p: &PendingAnnot,
+    warnings: &mut Vec<OfdWarning>,
+) -> AnnotationPayload {
     let boundary = p.appearance_boundary;
     match kind {
         AnnotationKind::Highlight
@@ -550,45 +680,36 @@ fn build_payload(kind: AnnotationKind, p: &PendingAnnot) -> AnnotationPayload {
                     }
                 }
             }
-            let mut ordered = ordered_runs(&parsed);
-            let mut content: String = ordered.iter().map(|r| r.text.as_str()).collect();
+            let ordered = ordered_runs(&parsed);
             // WPS stores the logical FreeText body in Remark - both for boxes
             // it creates (which carry no <ofd:Parameters> at all) and for
             // edited boxes - and regenerates the appearance from it on edit.
-            // A non-empty Remark is therefore the source of truth; otherwise
-            // wrapped appearance lines would become hard breaks on reload
-            // (spec 2026-11-09 §1.5). An empty Remark falls back to the
-            // appearance-derived content.
-            if !p.remark.is_empty() {
-                content = p.remark.clone();
-            }
-            let content = normalize_newlines(&content);
-            // Spans are the rich-fidelity carrier only: keep them when the
-            // appearance actually fragments styling (a bold/italic flag, or
-            // adjacent fragments differing in font/size/color). Uniform
-            // layouts (one style per line - what rofd itself serializes) stay
-            // spans-empty so flat boxes round-trip unchanged.
-            let rich = ordered.iter().any(|r| r.bold || r.italic)
-                || ordered.windows(2).any(|w| {
-                    w[0].font != w[1].font
-                        || (w[0].size - w[1].size).abs() > 1e-9
-                        || w[0].color != w[1].color
-                });
-            let spans: Vec<rofd_dom::TextSpan> = if rich {
-                ordered
-                    .drain(..)
-                    .map(|r| rofd_dom::TextSpan {
-                        text: r.text,
-                        font: r.font,
-                        size: r.size,
-                        color: r.color,
-                        bold: r.bold,
-                        italic: r.italic,
-                    })
-                    .collect()
+            // A non-empty Remark is therefore the source of truth: align the
+            // appearance fragments onto it (skipping newlines, which the
+            // appearance does not carry for soft wraps). An empty Remark falls
+            // back to the appearance-derived content.
+            let (content, mut spans) = if p.remark.is_empty() {
+                joined_fragments(&ordered)
             } else {
-                Vec::new()
+                let content = normalize_newlines(&p.remark);
+                match aligned_spans(&content, &ordered) {
+                    Some(spans) => (content, spans),
+                    None => {
+                        warnings.push(OfdWarning::SkippedObject {
+                            page: p.page.clone(),
+                            reason: "annotation text style could not be aligned \
+                                     with Remark (spans dropped)"
+                                .into(),
+                        });
+                        (content, Vec::new())
+                    }
+                }
             };
+            // Uniform layouts (one style per line - what rofd itself
+            // serializes) stay spans-empty so flat boxes round-trip unchanged.
+            if uniform_style(&spans) {
+                spans.clear();
+            }
             // A bordered text box (文本框) carries a stroke-only border
             // PathObject ahead of the text; keep its color or the frame
             // silently disappears on the next save.
@@ -1142,5 +1263,111 @@ mod tests {
             }
             other => panic!("expected Markup, got {other:?}"),
         }
+    }
+
+    fn spans_of(ann: &Annotation) -> &[rofd_dom::TextSpan] {
+        match &ann.payload {
+            AnnotationPayload::TextBox { spans, .. } => spans,
+            other => panic!("expected TextBox, got {other:?}"),
+        }
+    }
+
+    fn concat(spans: &[rofd_dom::TextSpan]) -> String {
+        spans.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    const SOFT_WRAP_XML: &str = r#"<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Annot Type="FreeText" ID="1" Subtype="FreeText">
+    <ofd:Remark>abcdef</ofd:Remark>
+    <ofd:Appearance Boundary="0 0 45 30">
+      <ofd:TextObject ID="t1" Boundary="0 0 48.42 13.97" Font="F1" Size="12">
+        <ofd:TextCode X="0" Y="11.14">abc</ofd:TextCode>
+      </ofd:TextObject>
+      <ofd:TextObject ID="t2" Boundary="0 13.97 35.99 13.97" Font="F1" Size="12">
+        <ofd:FillColor Value="255 0 0"/>
+        <ofd:TextCode X="0" Y="11.14">def</ofd:TextCode>
+      </ofd:TextObject>
+    </ofd:Appearance>
+  </ofd:Annot>
+</ofd:PageAnnot>"#;
+
+    const HARD_BREAK_XML: &str = r#"<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Annot Type="FreeText" ID="1" Subtype="FreeText">
+    <ofd:Remark>ab
+cd</ofd:Remark>
+    <ofd:Appearance Boundary="0 0 20 30">
+      <ofd:TextObject ID="t1" Boundary="0 0 12 13.97" Font="F1" Size="12">
+        <ofd:TextCode X="0" Y="11.14">ab</ofd:TextCode>
+      </ofd:TextObject>
+      <ofd:TextObject ID="t2" Boundary="0 13.97 12 13.97" Font="F1" Size="12">
+        <ofd:FillColor Value="0 0 255"/>
+        <ofd:TextCode X="0" Y="11.14">cd</ofd:TextCode>
+      </ofd:TextObject>
+    </ofd:Appearance>
+  </ofd:Annot>
+</ofd:PageAnnot>"#;
+
+    const MISALIGNED_XML: &str = r#"<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Annot Type="FreeText" ID="1" Subtype="FreeText">
+    <ofd:Remark>zz</ofd:Remark>
+    <ofd:Appearance Boundary="0 0 20 30">
+      <ofd:TextObject ID="t1" Boundary="0 0 12 13.97" Font="F1" Size="12">
+        <ofd:TextCode X="0" Y="11.14">ab</ofd:TextCode>
+      </ofd:TextObject>
+    </ofd:Appearance>
+  </ofd:Annot>
+</ofd:PageAnnot>"#;
+
+    const UNIFORM_TWO_LINES_XML: &str = r#"<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Annot Type="FreeText" ID="1" Subtype="FreeText">
+    <ofd:Remark>ab
+cd</ofd:Remark>
+    <ofd:Appearance Boundary="0 0 20 30">
+      <ofd:TextObject ID="t1" Boundary="0 0 12 13.97" Font="F1" Size="12">
+        <ofd:TextCode X="0" Y="11.14">ab</ofd:TextCode>
+      </ofd:TextObject>
+      <ofd:TextObject ID="t2" Boundary="0 13.97 12 13.97" Font="F1" Size="12">
+        <ofd:TextCode X="0" Y="11.14">cd</ofd:TextCode>
+      </ofd:TextObject>
+    </ofd:Appearance>
+  </ofd:Annot>
+</ofd:PageAnnot>"#;
+
+    #[test]
+    fn remark_text_aligns_to_appearance_without_soft_breaks() {
+        let anns = parse_page_annot(SOFT_WRAP_XML, &PageId::new("1")).unwrap();
+        let AnnotationPayload::TextBox {
+            content, spans, ..
+        } = &anns[0].payload
+        else {
+            panic!("expected TextBox");
+        };
+        assert_eq!(content, "abcdef");
+        assert_eq!(concat(spans), *content, "span texts cover content exactly");
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[1].color, Some(Color::Rgb(255, 0, 0)));
+    }
+
+    #[test]
+    fn hard_breaks_in_remark_are_attributed_to_the_preceding_span() {
+        let anns = parse_page_annot(HARD_BREAK_XML, &PageId::new("1")).unwrap();
+        assert_eq!(concat(spans_of(&anns[0])), "ab\ncd");
+        assert_eq!(spans_of(&anns[0])[0].text, "ab\n");
+    }
+
+    #[test]
+    fn unalignable_remark_degrades_to_flat_with_a_warning() {
+        let mut warnings = Vec::new();
+        let anns =
+            parse_page_annot_with_warnings(MISALIGNED_XML, &PageId::new("1"), &mut warnings).unwrap();
+        assert!(spans_of(&anns[0]).is_empty());
+        assert!(warnings.iter().any(|w| matches!(w, OfdWarning::SkippedObject { reason, .. }
+            if reason.contains("style"))));
+    }
+
+    #[test]
+    fn uniform_appearance_stays_flat() {
+        let anns = parse_page_annot(UNIFORM_TWO_LINES_XML, &PageId::new("1")).unwrap();
+        assert!(spans_of(&anns[0]).is_empty());
     }
 }

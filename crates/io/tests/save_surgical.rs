@@ -112,7 +112,7 @@ fn surgical_save_preserves_textbox_runs() {
                         italic: false,
                     },
                     TextSpan {
-                        text: "格".into(),
+                        text: "典风格".into(),
                         font: FontId::new("157"),
                         size: 4.2333,
                         color: Some(rofd_dom::Color::Rgb(75, 172, 198)),
