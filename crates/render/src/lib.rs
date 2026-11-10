@@ -13,6 +13,7 @@ pub mod color;
 pub mod composite;
 pub mod ctm;
 pub mod fit;
+pub mod format_panel;
 pub mod handles;
 pub mod hit_test;
 pub mod image;
@@ -38,8 +39,11 @@ pub use caret_rect::{
 pub use composite::{page_origin, page_origins, DragPreview, RenderEngine, TEXT_SELECTION_COLOR};
 pub use ctm::{compose_transform, ctm_to_affine};
 pub use fit::{fit_zoom, FitTarget};
+pub use format_panel::format_panel_anchor;
 pub use handles::{annotation_handle_positions, annotation_handles, handle_center_local};
-pub use hit_test::{annotation_local_rect, hit_test, HandlePos, HitTarget};
+pub use hit_test::{
+    annotation_local_rect, annotation_viewport_rect, hit_test, HandlePos, HitTarget,
+};
 pub use image::decode_image;
 pub use layers::{overlay_scene, page_body_scene, OverlayInput, DESK_BG};
 pub use page_raster_cache::{PageCacheKey, PageRasterCache};

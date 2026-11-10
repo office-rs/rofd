@@ -149,7 +149,7 @@ pub fn hit_test(
 /// The page origin is computed via [`crate::composite::page_origin`] (the
 /// shared page-stacking helper), so multi-page docs use the correct stacked Y
 /// origin for an annotation on page 1+.
-pub(crate) fn annotation_viewport_rect(
+pub fn annotation_viewport_rect(
     doc: &OfdDocument,
     ann: &Annotation,
     vp: &Viewport,
