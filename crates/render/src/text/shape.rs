@@ -236,10 +236,25 @@ pub(crate) fn shape_layout_runs(
     let mut layout = builder.build(text);
     layout.break_all_lines(max_advance);
 
+    // Char -> byte index for resolving each glyph's style run. Parley groups
+    // glyph runs by SHAPING style (font/size/weight/italic); color-only span
+    // boundaries do not split them, so the run's text_range cannot identify
+    // the span. Ligatures are disabled (liga=0): glyph i on a line is char i,
+    // which gives every glyph an exact content char offset.
+    let char_bytes: Vec<usize> = text.char_indices().map(|(b, _)| b).collect();
+    let style_at_char = |char_offset: usize| -> usize {
+        let byte = char_bytes.get(char_offset).copied().unwrap_or(text.len());
+        runs.partition_point(|r| r.byte_range.end <= byte)
+            .min(runs.len() - 1)
+    };
+
     let mut groups: Vec<(ShapedSpanMeta, Vec<ShapedGlyph>)> = Vec::new();
     let mut lines: Vec<RawLine> = Vec::new();
     for line in layout.lines() {
         let metrics = line.metrics();
+        let line_range = line.text_range();
+        let line_start_char = text[..line_range.start.min(text.len())].chars().count();
+        let mut glyph_in_line = 0usize;
         let mut glyph_count = 0usize;
         for item in line.items() {
             let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
@@ -248,39 +263,38 @@ pub(crate) fn shape_layout_runs(
             if runs.is_empty() {
                 continue;
             }
-            let range = glyph_run.run().text_range();
-            let style_index = runs
-                .partition_point(|r| r.byte_range.end <= range.start)
-                .min(runs.len() - 1);
-            let spec = &runs[style_index];
             let font = glyph_run.run().font().clone();
-            let shaped: Vec<ShapedGlyph> = glyph_run
-                .positioned_glyphs()
-                .map(|g| ShapedGlyph {
-                    glyph_id: g.id,
-                    x: g.x,
-                    y: g.y,
-                })
-                .collect();
-            glyph_count += shaped.len();
-            match groups.last_mut() {
-                Some((prev, glyphs)) if prev.style_index == style_index && prev.font == font => {
-                    glyphs.extend(shaped);
+            for positioned in glyph_run.positioned_glyphs() {
+                let style_index = style_at_char(line_start_char + glyph_in_line);
+                glyph_in_line += 1;
+                glyph_count += 1;
+                let spec = &runs[style_index];
+                let glyph = ShapedGlyph {
+                    glyph_id: positioned.id,
+                    x: positioned.x,
+                    y: positioned.y,
+                };
+                match groups.last_mut() {
+                    Some((prev, glyphs))
+                        if prev.style_index == style_index && prev.font == font =>
+                    {
+                        glyphs.push(glyph);
+                    }
+                    _ => groups.push((
+                        ShapedSpanMeta {
+                            style_index,
+                            font: font.clone(),
+                            size: spec.size,
+                            bold: spec.bold,
+                            italic: spec.italic,
+                        },
+                        vec![glyph],
+                    )),
                 }
-                _ => groups.push((
-                    ShapedSpanMeta {
-                        style_index,
-                        font,
-                        size: spec.size,
-                        bold: spec.bold,
-                        italic: spec.italic,
-                    },
-                    shaped,
-                )),
             }
         }
         lines.push(RawLine {
-            byte_range: line.text_range(),
+            byte_range: line_range,
             glyph_count,
             width: metrics.advance as f64,
             top: metrics.min_coord as f64,

@@ -6,7 +6,7 @@
 
 //! Input-channel tests for the completed view surface.
 //!
-//! Everything spans headless (TestAppContext/VisualTestContext) and
+//! Everything runs headless (TestAppContext/VisualTestContext) and
 //! asserts on kernel state — selection, document content, clipboard —
 //! never pixels:
 //! - mouse listeners translate window coords into viewport coords by
@@ -39,7 +39,7 @@ const PAD_X: f32 = 40.0;
 const PAD_Y: f32 = 24.0;
 const WIN_W: f32 = 800.0;
 const WIN_H: f32 = 600.0;
-/// Page size in mm; every test spans at zoom 1.0 (1 px per mm).
+/// Page size in mm; every test runs at zoom 1.0 (1 px per mm).
 const PAGE_MM: f64 = 200.0;
 /// Default `OfdConfig` page gap (px).
 const PAGE_GAP: f64 = 20.0;

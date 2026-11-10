@@ -11,7 +11,7 @@ pub struct AnnotationTextStyle {
     pub family: String,
     pub size_mm: f64,
     pub color: Color,
-    /// Rich (`TextBox.runs` non-empty): a style edit collapses the runs.
+    /// Rich (`TextBox.spans` non-empty): the box has per-range styles.
     pub rich: bool,
 }
 

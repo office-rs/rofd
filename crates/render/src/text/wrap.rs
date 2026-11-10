@@ -270,6 +270,47 @@ mod tests {
     }
 
     #[test]
+    fn to_layout_hints_splits_color_only_boundaries() {
+        let s = store();
+        let runs = [
+            LayoutRun {
+                byte_range: 0..3,
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Some(Color::Rgb(0, 0, 0)),
+                bold: false,
+                italic: false,
+            },
+            LayoutRun {
+                byte_range: 3..5,
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Some(Color::Rgb(255, 0, 0)),
+                bold: false,
+                italic: false,
+            },
+            LayoutRun {
+                byte_range: 5..8,
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Some(Color::Rgb(0, 0, 0)),
+                bold: false,
+                italic: false,
+            },
+        ];
+        let w = s.shape_wrapped_runs("ab cd ef", &runs, 1000.0);
+        let hints = w.to_layout_hints();
+        assert_eq!(hints.len(), 1, "one visual line");
+        assert_eq!(
+            hints[0].fragments.len(),
+            3,
+            "one fragment per style span on the line"
+        );
+        assert_eq!(hints[0].fragments[1].char_start, 3);
+        assert_eq!(hints[0].fragments[1].char_len, 2);
+    }
+
+    #[test]
     fn layout_cache_is_color_agnostic() {
         let s = store();
         let a = [LayoutRun {

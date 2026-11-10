@@ -93,3 +93,59 @@ fn saved_text_reopens_with_logical_content_and_reflows_on_resize() {
         "widening the box reflows back to one line"
     );
 }
+
+/// One line split into three color spans (only the middle carries a color).
+fn span_textbox_component() -> (OfdComponent, AnnotationId) {
+    let mut c = OfdComponent::new_native(OfdConfig::new(Arc::new(FONT.to_vec())));
+    c.load_document(page_doc());
+    let span = |text: &str, color: Option<Color>| rofd_dom::TextSpan {
+        text: text.into(),
+        font: FontId::new("F1"),
+        size: 12.0,
+        color,
+        bold: false,
+        italic: false,
+    };
+    let id = c.create_annotation(
+        AnnotationKind::TextBox,
+        PageId::new("P0"),
+        AnnotationPayload::TextBox {
+            rect: Rect {
+                x: 10.0,
+                y: 10.0,
+                w: 200.0,
+                h: 40.0,
+            },
+            content: "ab cd ef".into(),
+            font: FontId::new("F1"),
+            size: 12.0,
+            color: Color::Rgb(0, 0, 0),
+            border: None,
+            spans: vec![
+                span("ab ", None),
+                span("cd", Some(Color::Rgb(255, 0, 0))),
+                span(" ef", None),
+            ],
+        },
+    );
+    (c, id)
+}
+
+#[test]
+fn span_colors_survive_save_and_reload_through_the_real_layout() {
+    let (c, _id) = span_textbox_component();
+    let snap = c.save_snapshot();
+    let bytes = rofd_io::write_ofd_with_text_layout(&snap.document, &snap.text_layout).unwrap();
+    let report = rofd_io::parse_ofd(&bytes).unwrap();
+    let ann = &report.document.annotations.for_page(&PageId::new("P0"))[0];
+    let AnnotationPayload::TextBox { content, spans, .. } = &ann.payload else {
+        panic!("expected TextBox");
+    };
+    assert_eq!(content, "ab cd ef");
+    let colors: Vec<Option<Color>> = spans.iter().map(|s| s.color).collect();
+    assert_eq!(
+        colors,
+        vec![None, Some(Color::Rgb(255, 0, 0)), None],
+        "per-word color and the surrounding None colors survive the round trip"
+    );
+}

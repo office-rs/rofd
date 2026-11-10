@@ -33,7 +33,16 @@ pub fn layout_runs(
     flat_color: Color,
 ) -> Vec<LayoutRun> {
     if content.is_empty() {
-        return Vec::new();
+        // Keep one empty run so the shaper's default font size comes from the
+        // box, not parley's hard-coded fallback (empty-box caret/resize).
+        return vec![LayoutRun {
+            byte_range: 0..0,
+            font: flat_font.clone(),
+            size: flat_size,
+            color: Some(flat_color),
+            bold: false,
+            italic: false,
+        }];
     }
     if spans.is_empty() {
         return vec![LayoutRun {
@@ -52,7 +61,10 @@ pub fn layout_runs(
             byte_range,
             font: span.font.clone(),
             size: span.size,
-            color: span.color,
+            // Effective color: `None` inherits the flat color. Concrete colors
+            // let the shaper split style runs at color-only boundaries, so
+            // per-span colors survive layout (glyph runs merge by style).
+            color: Some(span.color.unwrap_or(flat_color)),
             bold: span.bold,
             italic: span.italic,
         }
@@ -139,8 +151,10 @@ mod tests {
     }
 
     #[test]
-    fn empty_content_yields_no_runs() {
-        let runs = layout_runs("", &[], &FontId::new("F1"), 12.0, Color::Rgb(0, 0, 0));
-        assert!(runs.is_empty());
+    fn empty_content_keeps_one_flat_run_for_metrics() {
+        let runs = layout_runs("", &[], &FontId::new("F1"), 4.2333, Color::Rgb(1, 2, 3));
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].byte_range, 0..0);
+        assert!((runs[0].size - 4.2333).abs() < 1e-9);
     }
 }

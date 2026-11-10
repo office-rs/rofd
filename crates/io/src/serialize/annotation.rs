@@ -385,7 +385,9 @@ fn appearance_xml(
                     Some(lines) if !lines.is_empty() => {
                         for line in lines {
                             if line.fragments.is_empty() {
-                                inner.push_str(&empty_line_object_xml(line, next_id));
+                                inner.push_str(&empty_line_object_xml(
+                                    line, &font.0, *size, *color, next_id,
+                                ));
                             } else {
                                 for fragment in &line.fragments {
                                     inner.push_str(&text_fragment_object_xml(
@@ -656,14 +658,26 @@ fn text_fragment_object_xml(
     )
 }
 
-/// Build an empty `<TextObject>` preserving a blank line's geometry.
-fn empty_line_object_xml(line: &TextLineHint, next_id: &mut u64) -> String {
+/// Build an empty `<TextObject>` preserving a blank line's geometry. The flat
+/// font/size/color are written so a leading blank line still gives the parser
+/// a usable flat fallback style (an empty object without them would reload as
+/// `FontId("")`, size 0).
+fn empty_line_object_xml(
+    line: &TextLineHint,
+    font: &str,
+    size: f64,
+    color: Color,
+    next_id: &mut u64,
+) -> String {
     let id = mint_object_id(next_id);
     format!(
-        "<ofd:TextObject ID=\"{}\" Boundary=\"0 {} 0 {}\"><ofd:TextCode X=\"0\" Y=\"{}\"/></ofd:TextObject>",
+        "<ofd:TextObject ID=\"{}\" Boundary=\"0 {} 0 {}\" Font=\"{}\" Size=\"{}\"><ofd:FillColor Value=\"{}\"/><ofd:TextCode X=\"0\" Y=\"{}\"/></ofd:TextObject>",
         id,
         line.top,
         line.height,
+        xml_escape(font),
+        size,
+        color_str(color),
         line.baseline - line.top
     )
 }
@@ -1355,6 +1369,90 @@ mod tests {
     }
 
     #[test]
+    fn span_crossing_a_line_merge_reloads_as_one_span() {
+        // One red span "abcd" crosses the soft-wrap boundary; the serializer
+        // emits two red fragments, the parser must merge them back.
+        let ann = span_ann(
+            "abcdef",
+            vec![
+                span("abcd", Some(Color::Rgb(255, 0, 0))),
+                span("ef", Some(Color::Rgb(0, 0, 255))),
+            ],
+        );
+        let mut hints = TextLayoutHints::new();
+        hints.insert(
+            ann.id.clone(),
+            vec![
+                hint(0, "ab", 0.0, 11.14, vec![frag(0, 2, 0.0)]),
+                hint(
+                    2,
+                    "cdef",
+                    13.97,
+                    25.11,
+                    vec![frag(0, 2, 0.0), frag(2, 2, 20.0)],
+                ),
+            ],
+        );
+        let mut next_id = 10;
+        let xml = serialize_page_annot(&PageId::new("1"), &[ann], &mut next_id, &hints);
+        let parsed = parse_page_annot(&xml, &PageId::new("1")).unwrap();
+        let AnnotationPayload::TextBox { spans, .. } = &parsed[0].payload else {
+            panic!("expected TextBox");
+        };
+        assert_eq!(spans.len(), 2, "adjacent same-style fragments merge: {xml}");
+        assert_eq!(spans[0].text, "abcd");
+        assert_eq!(spans[1].text, "ef");
+    }
+
+    #[test]
+    fn leading_blank_line_keeps_the_flat_style_on_reload() {
+        // Content starts with a hard newline: line 0 has no glyphs, so the
+        // serializer emits an empty TextObject. It must still carry the flat
+        // font/size/color or the parser reads FontId("") / size 0.
+        let ann = span_ann(
+            "\nabc",
+            vec![
+                span("\nab", Some(Color::Rgb(255, 0, 0))),
+                span("c", Some(Color::Rgb(0, 0, 255))),
+            ],
+        );
+        let mut hints = TextLayoutHints::new();
+        hints.insert(
+            ann.id.clone(),
+            vec![
+                hint(0, "", 0.0, 11.14, vec![]),
+                hint(
+                    1,
+                    "abc",
+                    13.97,
+                    25.11,
+                    vec![frag(0, 2, 0.0), frag(2, 1, 20.0)],
+                ),
+            ],
+        );
+        let mut next_id = 10;
+        let xml = serialize_page_annot(&PageId::new("1"), &[ann], &mut next_id, &hints);
+        let parsed = parse_page_annot(&xml, &PageId::new("1")).unwrap();
+        let AnnotationPayload::TextBox {
+            content,
+            font,
+            size,
+            spans,
+            ..
+        } = &parsed[0].payload
+        else {
+            panic!("expected TextBox");
+        };
+        assert_eq!(content, "\nabc");
+        assert_eq!(font.0, "F1", "flat font survives: {xml}");
+        assert!((size - 12.0).abs() < 1e-9, "flat size survives: {xml}");
+        assert_eq!(
+            spans.iter().map(|s| s.color).collect::<Vec<_>>(),
+            vec![Some(Color::Rgb(255, 0, 0)), Some(Color::Rgb(0, 0, 255))]
+        );
+    }
+
+    #[test]
     fn span_hints_emit_one_textobject_per_fragment_with_local_boundaries() {
         let ann = span_ann(
             "ab\ncd",
@@ -1451,13 +1549,8 @@ mod tests {
         let parsed = parse_page_annot(&xml, &PageId::new("1")).unwrap();
         assert_eq!(
             colors_of(&parsed[0]),
-            vec![
-                Some(Color::Rgb(255, 0, 0)),
-                Some(Color::Rgb(255, 0, 0)),
-                Some(Color::Rgb(0, 0, 255)),
-                Some(Color::Rgb(0, 0, 255)),
-            ],
-            "{xml}"
+            vec![Some(Color::Rgb(255, 0, 0)), Some(Color::Rgb(0, 0, 255)),],
+            "adjacent same-color fragments merge per line/span: {xml}"
         );
     }
     #[test]

@@ -1241,6 +1241,69 @@ mod tests {
         );
     }
 
+    #[test]
+    fn same_line_color_only_spans_draw_each_color() {
+        // Color does not affect shaping; parley would coalesce these runs into
+        // one glyph run unless the style layout keeps them apart.
+        let spans = vec![
+            rofd_dom::TextSpan {
+                text: "ab ".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: None,
+                bold: false,
+                italic: false,
+            },
+            rofd_dom::TextSpan {
+                text: "cd".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Some(Color::Rgb(255, 0, 0)),
+                bold: false,
+                italic: false,
+            },
+            rofd_dom::TextSpan {
+                text: " ef".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: None,
+                bold: false,
+                italic: false,
+            },
+        ];
+        let ann = ann(
+            AnnotationPayload::TextBox {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 200.0,
+                    h: 40.0,
+                },
+                content: "ab cd ef".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                spans,
+            },
+            AnnotationKind::TextBox,
+        );
+        let scene = build(&[ann]);
+        let brushes = glyph_brushes(&scene);
+        assert!(
+            brushes
+                .iter()
+                .any(|c| c.to_rgba8().to_u8_array() == [255, 0, 0, 255]),
+            "the middle word must draw red, got {brushes:?}"
+        );
+        assert!(
+            brushes
+                .iter()
+                .any(|c| c.to_rgba8().to_u8_array() == [0, 0, 0, 255]),
+            "the surrounding words stay black"
+        );
+    }
+
     /// Collect the solid brush color of every glyph run in the scene.
     fn glyph_brushes(scene: &Scene) -> Vec<peniko::Color> {
         scene_glyph_runs(scene)

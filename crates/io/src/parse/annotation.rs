@@ -476,6 +476,27 @@ fn aligned_spans(content: &str, ordered: &[ParsedRun]) -> Option<Vec<rofd_dom::T
     Some(out)
 }
 
+/// Merge adjacent spans with an identical style (a span crossing a soft-wrap
+/// line serializes as one fragment per line).
+fn merge_adjacent(spans: &mut Vec<rofd_dom::TextSpan>) {
+    let same = |a: &rofd_dom::TextSpan, b: &rofd_dom::TextSpan| {
+        a.font == b.font
+            && (a.size - b.size).abs() < 1e-9
+            && a.color == b.color
+            && a.bold == b.bold
+            && a.italic == b.italic
+    };
+    let mut i = 0usize;
+    while i + 1 < spans.len() {
+        if same(&spans[i], &spans[i + 1]) {
+            let next = spans.remove(i + 1);
+            spans[i].text.push_str(&next.text);
+        } else {
+            i += 1;
+        }
+    }
+}
+
 /// True when every fragment (and the flat fallback) share one style and no
 /// bold/italic is involved: the box can stay flat.
 fn uniform_style(spans: &[rofd_dom::TextSpan]) -> bool {
@@ -688,7 +709,16 @@ fn build_payload(
             // appearance fragments onto it (skipping newlines, which the
             // appearance does not carry for soft wraps). An empty Remark falls
             // back to the appearance-derived content.
-            let (content, mut spans) = if p.remark.is_empty() {
+            let (content, mut spans) = if parsed.is_empty() {
+                // No appearance text at all (Remark-only producer): nothing
+                // was degraded, so no style warning is warranted.
+                let content = if p.remark.is_empty() {
+                    String::new()
+                } else {
+                    normalize_newlines(&p.remark)
+                };
+                (content, Vec::new())
+            } else if p.remark.is_empty() {
                 joined_fragments(&ordered)
             } else {
                 let content = normalize_newlines(&p.remark);
@@ -705,6 +735,10 @@ fn build_payload(
                     }
                 }
             };
+            // A style span crossing a soft-wrap boundary serializes as one
+            // fragment per line; merge them back into one span so the
+            // "no adjacent equal-style spans" invariant holds after reload.
+            merge_adjacent(&mut spans);
             // Uniform layouts (one style per line - what rofd itself
             // serializes) stay spans-empty so flat boxes round-trip unchanged.
             if uniform_style(&spans) {
@@ -1362,6 +1396,25 @@ cd</ofd:Remark>
             .iter()
             .any(|w| matches!(w, OfdWarning::SkippedObject { reason, .. }
             if reason.contains("style"))));
+    }
+
+    #[test]
+    fn no_appearance_text_does_not_warn_about_style_alignment() {
+        // A Remark-only FreeText box (no TextObjects) is a legitimate producer
+        // style: nothing was degraded, so no style warning may be emitted.
+        let xml = r#"<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Annot Type="FreeText" ID="1" Subtype="FreeText">
+    <ofd:Remark>fallback text</ofd:Remark>
+    <ofd:Appearance Boundary="0 0 100 30"/>
+  </ofd:Annot>
+</ofd:PageAnnot>"#;
+        let mut warnings = Vec::new();
+        let anns = parse_page_annot_with_warnings(xml, &PageId::new("1"), &mut warnings).unwrap();
+        assert!(spans_of(&anns[0]).is_empty());
+        assert!(
+            warnings.is_empty(),
+            "no appearance text is not a degraded style: {warnings:?}"
+        );
     }
 
     #[test]
