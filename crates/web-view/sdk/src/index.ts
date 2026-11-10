@@ -10,6 +10,7 @@ import { FontRuntime } from "@office-rs/font-runtime";
 import { RenderScheduler } from "./scheduler";
 import { withKick } from "./with-kick";
 import { printViaIframe } from "./print";
+import { createFormatPanel, type FormatPanel } from "./formatPanel";
 import * as fontFlow from "./fontFlow";
 import type { FontSlicesConfig, SystemFontProvider } from "./fontFlow";
 
@@ -218,6 +219,10 @@ export interface OfdConfig {
   /** 系统字体流的默认族（桌面 D5：'宋体'——恒入补载遍，首个注册即锚定
    * 内核 default）。仅在有 `systemFonts` 时生效。 */
   defaultFontFamily?: string;
+  /** Built-in annotation text-format panel (font family / size / color) that
+   * floats above the selected text box. Defaults to true; hosts that render
+   * their own formatting UI can disable it. */
+  formatPanel?: boolean;
   /** Fired when the document changes (signal-only; on-demand rendering repaints). */
   onChange?: () => void;
   onSelectionChange?: () => void;
@@ -330,6 +335,8 @@ export class Ofd {
   private systemFontsCfg?: fontFlow.SystemFontProvider;
   private defaultFontFamilyCfg?: string;
   private wasmFontSurface?: fontFlow.WasmFontSurface;
+  /** Built-in annotation format panel (null when disabled). */
+  private formatPanel?: FormatPanel;
   /** 呈现目标是否 CPU 软渲染回退（wire 时从 wasm 表面读一次定格；
    * 实例生命周期内不变——模式由工厂选择决定）。 */
   readonly isCpuFallback: boolean;
@@ -342,7 +349,12 @@ export class Ofd {
     this.wasm = wasm;
     this.canvas = canvas;
     this.isCpuFallback = isCpuFallback;
-    this.scheduler = new RenderScheduler(() => this.wasm.renderFrame());
+    this.scheduler = new RenderScheduler(() => {
+      const need = this.wasm.renderFrame();
+      // Follow selection/scroll/zoom: the panel re-reads the kernel each frame.
+      this.formatPanel?.refresh();
+      return need;
+    });
     this.abortController = new AbortController();
   }
 
@@ -518,6 +530,22 @@ export class Ofd {
     // Prevent the browser's native context menu on the canvas (right-click).
     canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
+    // 6b. Built-in annotation format panel (spec 2026-11-10). Anchors are
+    // kernel device px: convert with DPR and the canvas' container offset.
+    if (config?.formatPanel !== false) {
+      const dpr = () => window.devicePixelRatio || 1;
+      ofd.formatPanel = createFormatPanel(
+        container,
+        wasmOfd as unknown as Parameters<typeof createFormatPanel>[1],
+        () => ({ w: canvas.clientWidth, h: canvas.clientHeight }),
+        {
+          scale: 1 / dpr(),
+          offsetX: canvas.offsetLeft,
+          offsetY: canvas.offsetTop,
+        },
+      );
+    }
+
     // 7. Initial resize (eager direct render) + first frame kick.
     ofd.resize();
     ofd.kick();
@@ -560,6 +588,7 @@ export class Ofd {
     this.fontWatch?.cancel();
     this.scheduler.dispose();
     this.abortController.abort();
+    this.formatPanel?.destroy();
     if (this.imeInput?.parentNode) {
       this.imeInput.parentNode.removeChild(this.imeInput);
     }
@@ -674,6 +703,25 @@ export class Ofd {
     if (!ok) {
       this.fontFlowState = "off";
       return;
+    }
+    // Font panel data face: manifest families (key + displayName) plus the
+    // desktop system-font names, so the dropdown lists what CAN be loaded,
+    // not only what is already registered.
+    try {
+      const manifest = await runtime.ready();
+      const pairs: string[][] = Object.entries(manifest.families).map(([k, f]) => [
+        k,
+        (f as { displayName: string }).displayName,
+      ]);
+      for (const name of this.systemFlow?.familiesRaw ?? []) {
+        pairs.push([name, name]);
+      }
+      const surface = this.wasm as unknown as {
+        setAvailableFontFamilies?: (pairs: string[][]) => void;
+      };
+      surface.setAvailableFontFamilies?.(pairs);
+    } catch {
+      // Best-effort: the panel still lists declared/registered families.
     }
     this.fontWatch = fontFlow.scheduleFontWatch(wasmFont, runtime, {
       onError,
