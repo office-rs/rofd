@@ -381,14 +381,25 @@ fn appearance_xml(
                     )),
                 }
             } else {
-                // TEMP(rich-text): sequential pen approximation until Task 8
-                // supplies hint-driven per-fragment geometry. A shared baseline
-                // keeps parse's (baseline, x) ordering stable across reloads.
-                let baseline = spans.iter().map(|s| s.size).fold(0.0, f64::max);
-                let mut pen_x = 0.0;
-                for span in spans {
-                    inner.push_str(&text_span_object_xml(span, pen_x, baseline, next_id));
-                    pen_x += span.text.chars().count() as f64 * span.size;
+                match line_hint {
+                    Some(lines) if !lines.is_empty() => {
+                        for line in lines {
+                            if line.fragments.is_empty() {
+                                inner.push_str(&empty_line_object_xml(line, next_id));
+                            } else {
+                                for fragment in &line.fragments {
+                                    inner.push_str(&text_fragment_object_xml(
+                                        fragment, line, spans, next_id,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    // No layout hints (bare save_ofd): degrade to the flat
+                    // appearance of the logical content (styles are lost).
+                    _ => inner.push_str(&text_object_xml(
+                        rect, &font.0, *size, *color, content, next_id,
+                    )),
                 }
             }
             format!(
@@ -574,41 +585,86 @@ fn text_object_xml_from_hints(
     s
 }
 
-/// TEMP(rich-text): build a `<TextObject>` for one span at a caller-supplied
-/// pen position. Task 8 replaces this with hint-driven per-fragment geometry.
-fn text_span_object_xml(
-    span: &rofd_dom::TextSpan,
-    x: f64,
-    baseline: f64,
+/// The span covering `char_offset` in the content (spans concatenate to it).
+fn span_covering<'a>(spans: &'a [rofd_dom::TextSpan], char_offset: usize) -> &'a rofd_dom::TextSpan {
+    let mut cursor = 0usize;
+    for span in spans {
+        cursor += span.text.chars().count();
+        if char_offset < cursor {
+            return span;
+        }
+    }
+    spans.last().expect("non-empty span list")
+}
+
+/// Build a `<TextObject>` for one style fragment of a line. Coordinates are
+/// appearance-local (`Boundary` is relative to `Appearance/@Boundary`), matching
+/// the flat hints path and the parser's inverse (`x = boundary.x + code.X`).
+fn text_fragment_object_xml(
+    fragment: &rofd_dom::TextLineFragmentHint,
+    line: &TextLineHint,
+    spans: &[rofd_dom::TextSpan],
     next_id: &mut u64,
 ) -> String {
     let id = mint_object_id(next_id);
-    let chars = span.text.chars().count().max(1);
-    let w = chars as f64 * span.size;
-    let h = span.size * 1.2;
-    let mut style = String::new();
-    if span.italic {
-        style.push_str(" Italic=\"true\"");
+    let style = span_covering(spans, line.char_start + fragment.char_start);
+    let width: f64 = fragment.advances.iter().sum();
+    let n = fragment.char_len;
+    let deltas: Vec<String> = fragment
+        .advances
+        .iter()
+        .take(n.saturating_sub(1))
+        .map(|a| format!("{a}"))
+        .collect();
+    let delta_attr = if deltas.is_empty() {
+        String::new()
+    } else {
+        format!(" DeltaX=\"{}\"", deltas.join(" "))
+    };
+    let text: String = line
+        .text
+        .chars()
+        .skip(fragment.char_start)
+        .take(fragment.char_len)
+        .collect();
+    let mut attrs = String::new();
+    if style.italic {
+        attrs.push_str(" Italic=\"true\"");
     }
-    if span.bold {
-        style.push_str(" Weight=\"700\"");
+    if style.bold {
+        attrs.push_str(" Weight=\"700\"");
     }
-    let fill = match span.color {
+    let fill = match style.color {
         Some(c) => format!("<ofd:FillColor Value=\"{}\"/>", color_str(c)),
         None => String::new(),
     };
     format!(
-        "<ofd:TextObject ID=\"{}\" Boundary=\"{} {} {} {}\" Font=\"{}\" Size=\"{}\"{}>{}{}</ofd:TextObject>",
+        "<ofd:TextObject ID=\"{}\" Boundary=\"{} {} {} {}\" Font=\"{}\" Size=\"{}\"{}>{}\
+         <ofd:TextCode X=\"0\" Y=\"{}\"{}>{}</ofd:TextCode></ofd:TextObject>",
         id,
-        x,
-        baseline - span.size,
-        w,
-        h,
-        xml_escape(&span.font.0),
-        span.size,
-        style,
+        fragment.x,
+        line.top,
+        width,
+        line.height,
+        xml_escape(&style.font.0),
+        style.size,
+        attrs,
         fill,
-        text_code_xml(&span.text, span.size)
+        line.baseline - line.top,
+        delta_attr,
+        xml_escape_preserving_edges(&text)
+    )
+}
+
+/// Build an empty `<TextObject>` preserving a blank line's geometry.
+fn empty_line_object_xml(line: &TextLineHint, next_id: &mut u64) -> String {
+    let id = mint_object_id(next_id);
+    format!(
+        "<ofd:TextObject ID=\"{}\" Boundary=\"0 {} 0 {}\"><ofd:TextCode X=\"0\" Y=\"{}\"/></ofd:TextObject>",
+        id,
+        line.top,
+        line.height,
+        line.baseline - line.top
     )
 }
 
@@ -985,6 +1041,7 @@ fn xml_escape_preserving_edges(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parse::annotation::parse_page_annot;
     use rofd_dom::{AnnotationId, FontId, PathCommand, Point, TextLayoutHints, TextLineHint};
 
     #[test]
@@ -1225,6 +1282,178 @@ mod tests {
         (ann, hints)
     }
 
+    fn hint(
+        char_start: usize,
+        text: &str,
+        top: f64,
+        baseline: f64,
+        fragments: Vec<rofd_dom::TextLineFragmentHint>,
+    ) -> TextLineHint {
+        TextLineHint {
+            char_start,
+            text: text.into(),
+            top,
+            baseline,
+            height: 13.97,
+            width: 20.0,
+            advances: vec![10.0; text.chars().count()],
+            fragments,
+        }
+    }
+
+    fn frag(char_start: usize, char_len: usize, x: f64) -> rofd_dom::TextLineFragmentHint {
+        rofd_dom::TextLineFragmentHint {
+            char_start,
+            char_len,
+            x,
+            advances: vec![10.0; char_len],
+        }
+    }
+
+    fn span_ann(content: &str, spans: Vec<rofd_dom::TextSpan>) -> Annotation {
+        Annotation {
+            id: AnnotationId::from_int(9),
+            kind: AnnotationKind::TextBox,
+            page: PageId::new("1"),
+            creator: "t".into(),
+            created: 0,
+            modified: 1,
+            reply_to: None,
+            payload: AnnotationPayload::TextBox {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 60.0,
+                    h: 40.0,
+                },
+                content: content.into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Color::Rgb(0, 0, 0),
+                border: None,
+                spans,
+            },
+        }
+    }
+
+    fn span(text: &str, color: Option<Color>) -> rofd_dom::TextSpan {
+        rofd_dom::TextSpan {
+            text: text.into(),
+            font: FontId::new("F1"),
+            size: 12.0,
+            color,
+            bold: false,
+            italic: false,
+        }
+    }
+
+    fn colors_of(ann: &Annotation) -> Vec<Option<Color>> {
+        match &ann.payload {
+            AnnotationPayload::TextBox { spans, .. } => spans.iter().map(|s| s.color).collect(),
+            other => panic!("expected TextBox, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn span_hints_emit_one_textobject_per_fragment_with_local_boundaries() {
+        let ann = span_ann(
+            "ab\ncd",
+            vec![
+                span("ab\n", Some(Color::Rgb(255, 0, 0))),
+                span("cd", Some(Color::Rgb(0, 0, 255))),
+            ],
+        );
+        let mut hints = TextLayoutHints::new();
+        hints.insert(
+            ann.id.clone(),
+            vec![
+                hint(0, "ab", 0.0, 11.14, vec![frag(0, 2, 0.0)]),
+                hint(3, "cd", 13.97, 25.11, vec![frag(0, 2, 5.0)]),
+            ],
+        );
+        let mut next_id = 10;
+        let xml = serialize_page_annot(&PageId::new("1"), &[ann], &mut next_id, &hints);
+        assert_eq!(xml.matches("<ofd:TextObject").count(), 2, "{xml}");
+        assert!(xml.contains("Boundary=\"0 0 "), "{xml}");
+        assert!(xml.contains("Boundary=\"5 13.97 "), "{xml}");
+        assert!(xml.contains("<ofd:FillColor Value=\"255 0 0\"/>"), "{xml}");
+        assert!(xml.contains("<ofd:FillColor Value=\"0 0 255\"/>"), "{xml}");
+    }
+
+    #[test]
+    fn none_color_fragment_writes_no_fillcolor_and_reloads_as_none() {
+        // Two spans differing in font so the rich layout survives; both carry
+        // no FillColor, which must round-trip as `color: None`.
+        let ann = span_ann(
+            "abcd",
+            vec![
+                span("ab", None),
+                rofd_dom::TextSpan {
+                    text: "cd".into(),
+                    font: FontId::new("F2"),
+                    size: 12.0,
+                    color: None,
+                    bold: false,
+                    italic: false,
+                },
+            ],
+        );
+        let mut hints = TextLayoutHints::new();
+        hints.insert(
+            ann.id.clone(),
+            vec![hint(
+                0,
+                "abcd",
+                0.0,
+                11.14,
+                vec![frag(0, 2, 0.0), frag(2, 2, 20.0)],
+            )],
+        );
+        let mut next_id = 10;
+        let xml = serialize_page_annot(&PageId::new("1"), &[ann], &mut next_id, &hints);
+        assert!(!xml.contains("<ofd:FillColor"), "{xml}");
+        let parsed = parse_page_annot(&xml, &PageId::new("1")).unwrap();
+        let colors = colors_of(&parsed[0]);
+        assert_eq!(colors.len(), 2, "rich layout survives: {xml}");
+        assert!(
+            colors.iter().all(|c| c.is_none()),
+            "no FillColor -> None survives the round trip: {xml}"
+        );
+    }
+
+    #[test]
+    fn wrapped_span_round_trip_keeps_both_colors() {
+        let ann = span_ann(
+            "abcd",
+            vec![
+                span("a", Some(Color::Rgb(255, 0, 0))),
+                span("b", Some(Color::Rgb(255, 0, 0))),
+                span("c", Some(Color::Rgb(0, 0, 255))),
+                span("d", Some(Color::Rgb(0, 0, 255))),
+            ],
+        );
+        let mut hints = TextLayoutHints::new();
+        hints.insert(
+            ann.id.clone(),
+            vec![
+                hint(0, "ab", 0.0, 11.14, vec![frag(0, 1, 0.0), frag(1, 1, 10.0)]),
+                hint(2, "cd", 13.97, 25.11, vec![frag(0, 1, 0.0), frag(1, 1, 10.0)]),
+            ],
+        );
+        let mut next_id = 10;
+        let xml = serialize_page_annot(&PageId::new("1"), &[ann], &mut next_id, &hints);
+        let parsed = parse_page_annot(&xml, &PageId::new("1")).unwrap();
+        assert_eq!(
+            colors_of(&parsed[0]),
+            vec![
+                Some(Color::Rgb(255, 0, 0)),
+                Some(Color::Rgb(255, 0, 0)),
+                Some(Color::Rgb(0, 0, 255)),
+                Some(Color::Rgb(0, 0, 255)),
+            ],
+            "{xml}"
+        );
+    }
     #[test]
     fn textbox_hints_emit_one_textobject_per_line_with_real_geometry() {
         let (ann, hints) = textbox_with_hints();
@@ -1298,7 +1527,11 @@ mod tests {
     }
 
     #[test]
-    fn rich_textbox_emits_span_textobjects_only() {
+    fn span_textbox_without_hints_degrades_to_flat_textobject() {
+        // A bare save without the component's layout hints cannot place styled
+        // fragments: the styles are dropped and the logical content is written
+        // as one flat TextObject (documented degradation; hosts always pass
+        // save_snapshot hints).
         let (mut ann, _) = textbox_with_hints();
         if let AnnotationPayload::TextBox { spans, .. } = &mut ann.payload {
             spans.push(rofd_dom::TextSpan {
@@ -1325,12 +1558,9 @@ mod tests {
             &mut next_id,
             &TextLayoutHints::new(),
         );
-        // Rich runs serialize as per-fragment TextObjects (the render
-        // carrier) with their own style...
-        assert_eq!(xml.matches("<ofd:TextObject").count(), 2, "{xml}");
-        assert!(xml.contains("Weight=\"700\""), "{xml}");
-        assert!(xml.contains("Italic=\"true\""), "{xml}");
-        // ...and no rich-text/paragraph JSON sidecar is written.
+        assert_eq!(xml.matches("<ofd:TextObject").count(), 1, "{xml}");
+        assert!(!xml.contains("Weight=\"700\""), "{xml}");
+        assert!(!xml.contains("Italic=\"true\""), "{xml}");
         assert!(!xml.contains("Name=\"AllRichText\""), "{xml}");
         assert!(!xml.contains("Name=\"ParagraphFormat\""), "{xml}");
     }

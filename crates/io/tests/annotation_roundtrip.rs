@@ -4,7 +4,8 @@
 
 use rofd_dom::{
     Annotation, AnnotationId, AnnotationKind, AnnotationPayload, Color, FontId, ImageId, NoteIcon,
-    PageId, PathCommand, PathData, Point, Rect, ShapeKind, TextLayoutHints, TextSpan,
+    PageId, PathCommand, PathData, Point, Rect, ShapeKind, TextLayoutHints, TextLineFragmentHint,
+    TextLineHint, TextSpan,
 };
 
 fn ann(
@@ -26,6 +27,10 @@ fn ann(
 }
 
 fn roundtrip(a: &Annotation) -> Annotation {
+    roundtrip_with_hints(a, &TextLayoutHints::new())
+}
+
+fn roundtrip_with_hints(a: &Annotation, hints: &TextLayoutHints) -> Annotation {
     // Seed above the annotation's own ID so minted appearance object IDs
     // never collide with it (mirrors save_ofd's object_id_seed).
     let mut next_id = 1000u64;
@@ -33,7 +38,7 @@ fn roundtrip(a: &Annotation) -> Annotation {
         &a.page,
         std::slice::from_ref(a),
         &mut next_id,
-        &TextLayoutHints::new(),
+        hints,
     );
     let parsed = rofd_io::parse::annotation::parse_page_annot(&xml, &a.page).unwrap();
     parsed.into_iter().next().expect("one annot")
@@ -272,7 +277,46 @@ fn textbox_rich_runs_roundtrip() {
         },
         None,
     );
-    let back = roundtrip(&tb);
+    let mut hints = TextLayoutHints::new();
+    hints.insert(
+        tb.id.clone(),
+        vec![TextLineHint {
+            char_start: 0,
+            text: "发的古典风格".into(),
+            top: 0.0,
+            baseline: 6.0,
+            height: 8.0,
+            width: 46.0,
+            advances: vec![4.0; 6],
+            fragments: vec![
+                TextLineFragmentHint {
+                    char_start: 0,
+                    char_len: 3,
+                    x: 0.0,
+                    advances: vec![4.0; 3],
+                },
+                TextLineFragmentHint {
+                    char_start: 3,
+                    char_len: 1,
+                    x: 12.0,
+                    advances: vec![4.0],
+                },
+                TextLineFragmentHint {
+                    char_start: 4,
+                    char_len: 1,
+                    x: 18.0,
+                    advances: vec![4.0],
+                },
+                TextLineFragmentHint {
+                    char_start: 5,
+                    char_len: 1,
+                    x: 22.0,
+                    advances: vec![4.0],
+                },
+            ],
+        }],
+    );
+    let back = roundtrip_with_hints(&tb, &hints);
     match (&tb.payload, &back.payload) {
         (
             AnnotationPayload::TextBox {

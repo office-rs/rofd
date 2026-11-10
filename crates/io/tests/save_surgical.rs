@@ -73,7 +73,8 @@ fn strip_max_unit_id(xml: &str) -> String {
 #[test]
 fn surgical_save_preserves_textbox_runs() {
     use rofd_dom::{
-        Annotation, AnnotationId, AnnotationKind, AnnotationPayload, FontId, PageId, TextSpan,
+        Annotation, AnnotationId, AnnotationKind, AnnotationPayload, FontId, PageId, TextLayoutHints,
+        TextLineFragmentHint, TextLineHint, TextSpan,
     };
     let original = fixtures::build_minimal_ofd();
     let report = rofd_io::parse_ofd(&original).unwrap();
@@ -122,7 +123,34 @@ fn surgical_save_preserves_textbox_runs() {
                 ],
             },
         });
-    let saved = rofd_io::save_ofd(&doc, &report.package).unwrap();
+    let mut hints = TextLayoutHints::new();
+    hints.insert(
+        AnnotationId::from_int(149),
+        vec![TextLineHint {
+            char_start: 0,
+            text: "发的古典风格".into(),
+            top: 0.0,
+            baseline: 6.0,
+            height: 8.0,
+            width: 46.0,
+            advances: vec![4.0; 6],
+            fragments: vec![
+                TextLineFragmentHint {
+                    char_start: 0,
+                    char_len: 3,
+                    x: 0.0,
+                    advances: vec![4.0; 3],
+                },
+                TextLineFragmentHint {
+                    char_start: 3,
+                    char_len: 3,
+                    x: 12.0,
+                    advances: vec![4.0; 3],
+                },
+            ],
+        }],
+    );
+    let saved = rofd_io::save_ofd_with_text_layout(&doc, &report.package, &hints).unwrap();
 
     // Body entries byte-identical (the surgical invariant).
     let orig_entries = rofd_io::zip_util::read_all_entries(&original).unwrap();
