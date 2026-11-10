@@ -236,7 +236,7 @@ TextBox 解析改为"规范化成流式 spans"。关键点：外观里只有**�
 1. 收集外观 `TextObject` → 按 `(baseline, x)` 排序 → 逐段文本（v1 的 reading-order 规则）。
 2. `appearance_text` = 各段文本直接拼接（不含任何换行；解析器不插入软换行）。
 3. 选 `content` 并按需对齐：
-   - `Remark` 非空：`content = Remark`（现状）。双指针遍历 `content`（跳过 `\n`）与 `appearance_text`；每段外观文本映射为 `content` 的一段连续字符。**夹在两段之间的 `\n` 归前一段**（使其 text 覆盖这些字符）。全部字符合上 → `spans` 成立且满足 §2.2 不变量；任一字符对不上 → `spans.clear()`（降级平坦，首段样式当平坦样式）并发 `OfdWarning`。
+   - `Remark` 非空：`content = Remark`（现状）。双指针遍历 `content`（跳过 `\n`）与 `appearance_text`；每段外观文本映射为 `content` 的一段连续字符。**夹在两段之间的 `\n` 归前一段**（使其 text 覆盖这些字符）。全部字符合上 → `spans` 成立且满足 §2.2 不变量；任一字符对不上 → `spans.clear()`（降级平坦，首段样式当平坦样式）并发警告（`OfdWarning::SkippedObject`，reason 注明样式对齐失败）。为避免改动 `parse_page_annot` 的公开签名：保留原函数（丢警告），新增 `parse_page_annot_with_warnings(xml, page, &mut Vec<OfdWarning>)` 供 `parse/mod.rs` 收集。
    - `Remark` 为空（无逻辑文本可依）：`content = flatten`，即 baseline 跳变 > 0.3×较小字号时在**前一段文本尾部**追加 `\n`（v1 规则）；这样构造出的段文本天然拼接 === `content`，直接作为 `spans`。
 4. 样式完全一致（无 bold/italic、相邻段 font/size/color 相等）→ `spans.clear()`（v1 的 flat 优化保留）。
 5. 否则 `spans` = 规范化后的段列表。
@@ -263,7 +263,7 @@ pub struct TextLineHint {
     pub height: f64,
     pub width: f64,
     pub advances: Vec<f64>,           // 平坦路径沿用
-    pub fragments: Vec<TextLineFragmentHint>, // span 路径使用；平坦框为空
+    pub fragments: Vec<TextLineFragmentHint>, // 每行按样式切段；平坦框也有（序列化平坦分支不消费）
 }
 ```
 
