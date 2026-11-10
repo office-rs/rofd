@@ -49,12 +49,19 @@ impl FormatPanelState {
             return;
         };
         if let Some(rect) = component.annotation_format_anchor(&id) {
-            self.anchor = format_panel_anchor(
-                rect,
-                (PANEL_W, PANEL_H),
-                component.viewport_size(),
-                ANCHOR_MARGIN,
-            );
+            let viewport = component.viewport_size();
+            // Spec §1.1: hide when the box itself is not visible (scrolled or
+            // paged away) - a panel pinned to an edge would edit an invisible
+            // annotation.
+            let visible = rect.x + rect.w > 0.0
+                && rect.y + rect.h > 0.0
+                && rect.x < viewport.0
+                && rect.y < viewport.1;
+            if !visible {
+                self.dismiss();
+                return;
+            }
+            self.anchor = format_panel_anchor(rect, (PANEL_W, PANEL_H), viewport, ANCHOR_MARGIN);
         }
         if self.target.as_ref() != Some(&id) || self.families.is_empty() {
             self.families = component.font_families();
@@ -158,6 +165,26 @@ mod tests {
         assert!(s.target.is_none());
         assert!(!s.show());
         assert_eq!(s.open, None);
+    }
+
+    #[test]
+    fn hides_when_the_box_scrolls_out_of_the_viewport() {
+        let (mut c, _) = component_with_textbox(
+            (200.0, 400.0),
+            Rect {
+                x: 20.0,
+                y: 60.0,
+                w: 100.0,
+                h: 40.0,
+            },
+        );
+        let mut s = FormatPanelState::default();
+        s.refresh(&mut c);
+        assert!(s.show());
+        // Shrinking the viewport pushes the box below it (scroll clamps at 0).
+        c.set_viewport_size(200.0, 100.0);
+        s.refresh(&mut c);
+        assert!(!s.show(), "box out of the viewport -> panel hides: {s:?}");
     }
 
     #[test]

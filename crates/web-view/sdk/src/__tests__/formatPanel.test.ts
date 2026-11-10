@@ -91,6 +91,45 @@ describe("format panel", () => {
     expect(ev.defaultPrevented).toBe(true);
   });
 
+  it("schedules a frame after a mutation", () => {
+    const root = document.createElement("div");
+    let kicks = 0;
+    createFormatPanel(root, host() as never, vp, {}, () => {
+      kicks += 1;
+    });
+    (root.querySelector(".rofd-fp-size") as HTMLElement).dispatchEvent(
+      new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
+    );
+    const item = [...root.querySelectorAll(".rofd-fp-size-item")].find(
+      (n) => n.textContent === "一号",
+    ) as HTMLElement;
+    item.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(kicks).toBe(1);
+  });
+
+  it("keeps the open menu DOM across refreshes (no scroll reset)", () => {
+    const root = document.createElement("div");
+    const panel = createFormatPanel(root, host() as never, vp);
+    (root.querySelector(".rofd-fp-family") as HTMLElement).dispatchEvent(
+      new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
+    );
+    const first = root.querySelector(".rofd-fp-family-item");
+    panel.refresh();
+    expect(first).not.toBeNull();
+    expect(root.querySelector(".rofd-fp-family-item")).toBe(first);
+  });
+
+  it("hides when the box is outside the viewport", () => {
+    const root = document.createElement("div");
+    createFormatPanel(
+      root,
+      host({ annotationFormatAnchor: () => [100, 700, 200, 50] }) as never,
+      () => ({ w: 800, h: 600 }),
+    );
+    const el = root.querySelector(".rofd-format-panel") as HTMLElement;
+    expect(el.style.display).toBe("none");
+  });
+
   it("anchor flips below near the top and clamps horizontally", () => {
     expect(panelAnchor([10, 10, 200, 50], { w: 800, h: 600 })).toEqual({
       left: 10,

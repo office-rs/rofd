@@ -543,6 +543,8 @@ export class Ofd {
           offsetX: canvas.offsetLeft,
           offsetY: canvas.offsetTop,
         },
+        // Panel setters bypass the proxy surface, so schedule the frame here.
+        () => ofd.kick(),
       );
     }
 

@@ -42,13 +42,16 @@ pub fn normalize_newlines(s: &str) -> String {
 }
 
 impl Editor {
-    /// Set the primary color.
+    /// Set the primary color. Rich TextBoxes collapse their runs in the same
+    /// transaction (spec 2026-11-10 §1.6): runs draw with their own colors, so
+    /// without the collapse the picked color would be invisible.
     pub fn set_annotation_color(&mut self, id: &AnnotationId, color: Color) {
         let before = match self.document.annotations.find(id).cloned() {
             Some(a) => a,
             None => return,
         };
         let mut after = before.clone();
+        collapse_runs(&mut after.payload);
         set_color(&mut after.payload, color);
         after.modified = self.current_ts;
         self.execute_transaction(self.replace_txn(id.clone(), before, after));
@@ -717,6 +720,20 @@ mod tests {
             ),
             "undo restores the rich appearance"
         );
+    }
+
+    #[test]
+    fn set_color_collapses_runs_so_the_pick_is_visible() {
+        let (mut e, id) = rich_textbox_editor();
+        let before = textbox_payload(&e, &id).clone();
+        e.set_annotation_color(&id, Color::Rgb(0, 0, 255));
+        let AnnotationPayload::TextBox { runs, color, .. } = textbox_payload(&e, &id) else {
+            panic!("expected TextBox");
+        };
+        assert!(runs.is_empty(), "runs collapse so the flat color applies");
+        assert_eq!(*color, Color::Rgb(0, 0, 255));
+        assert!(e.undo());
+        assert_eq!(textbox_payload(&e, &id), &before, "one undo restores runs");
     }
 
     #[test]

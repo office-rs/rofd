@@ -77,6 +77,8 @@ export function createFormatPanel(
   host: FormatPanelHost,
   viewport: () => { w: number; h: number },
   placement: PanelPlacement = {},
+  /** Called after a mutation so the host can schedule a render frame. */
+  onMutate?: () => void,
 ): FormatPanel {
   // Version skew guard: an older wasm surface has no panel exports yet
   // (dist/ is built separately); degrade to a no-op panel instead of throwing
@@ -122,6 +124,12 @@ export function createFormatPanel(
   let open: Menu = null;
   let target: string | null = null;
   let style: string[] | null = null;
+  // Menu data is static for the session (font lists change only at init):
+  // cache it so a per-frame refresh does not rebuild or re-allocate the menu.
+  let familiesCache: string[][] | null = null;
+  let sizesCache: (string | number)[][] | null = null;
+  let paletteCache: string[] | null = null;
+  let menuKey = "";
 
   function button(cls: string, text: string): HTMLButtonElement {
     const b = document.createElement("button");
@@ -151,6 +159,7 @@ export function createFormatPanel(
       e.stopPropagation();
       onClick();
       open = null;
+      menuKey = "";
       rebuildMenu();
       refresh();
     });
@@ -158,28 +167,33 @@ export function createFormatPanel(
   }
 
   function rebuildMenu(): void {
+    menuKey = `${open ?? ""}|${target ?? ""}`;
     menu.replaceChildren();
     menu.style.display = open === null ? "none" : "block";
     if (open === null) {
       return;
     }
     if (open === "family") {
-      for (const [key, display] of host.fontFamilies()) {
+      familiesCache ??= host.fontFamilies();
+      for (const [key, display] of familiesCache) {
         menu.appendChild(
           item(display, "rofd-fp-family-item", () => {
             if (target !== null) {
               host.setAnnotationFontFamily(target, key);
+              onMutate?.();
             }
           }),
         );
       }
     } else if (open === "size") {
-      for (const entry of host.textSizes()) {
+      sizesCache ??= host.textSizes();
+      for (const entry of sizesCache) {
         const mm = (Number(entry[1]) * 25.4) / 72;
         menu.appendChild(
           item(sizeLabel(entry), "rofd-fp-size-item", () => {
             if (target !== null) {
               host.setAnnotationFontSize(target, mm);
+              onMutate?.();
             }
           }),
         );
@@ -187,7 +201,8 @@ export function createFormatPanel(
     } else {
       const grid = document.createElement("div");
       grid.style.cssText = "display:grid;grid-template-columns:repeat(10,18px);gap:2px;padding:4px;";
-      for (const hex of [...host.textColorPalette(), ...host.textColorStandard()]) {
+      paletteCache ??= [...host.textColorPalette(), ...host.textColorStandard()];
+      for (const hex of paletteCache) {
         grid.appendChild(swatch(hex));
       }
       menu.appendChild(grid);
@@ -202,8 +217,10 @@ export function createFormatPanel(
       e.stopPropagation();
       if (target !== null) {
         host.setTextAnnotationColor(target, hex);
+        onMutate?.();
       }
       open = null;
+      menuKey = "";
       rebuildMenu();
       refresh();
     });
@@ -214,10 +231,24 @@ export function createFormatPanel(
     const id = host.selectedTextAnnotation();
     const nextStyle = id === null ? null : host.annotationTextStyle(id);
     const anchor = id === null ? null : host.annotationFormatAnchor(id);
-    if (id === null || nextStyle === null || anchor === null || anchor.length !== 4) {
+    // Visibility is judged in kernel (device) space: the viewport callback is
+    // CSS px, so scale it back.
+    const deviceViewport = {
+      w: viewport().w / scale,
+      h: viewport().h / scale,
+    };
+    const visible =
+      anchor !== null &&
+      anchor.length === 4 &&
+      anchor[0] + anchor[2] > 0 &&
+      anchor[1] + anchor[3] > 0 &&
+      anchor[0] < deviceViewport.w &&
+      anchor[1] < deviceViewport.h;
+    if (id === null || nextStyle === null || anchor === null || anchor.length !== 4 || !visible) {
       target = null;
       style = null;
       open = null;
+      menuKey = "";
       menu.style.display = "none";
       root.style.display = "none";
       return;
@@ -225,7 +256,8 @@ export function createFormatPanel(
     target = id;
     style = nextStyle;
     familyBtn.textContent = (style[0] ?? "") !== "" ? style[0] : "字体";
-    sizeBtn.textContent = sizeDisplay(Number(style[1]), host.textSizes());
+    sizesCache ??= host.textSizes();
+    sizeBtn.textContent = sizeDisplay(Number(style[1]), sizesCache);
     colorBtn.style.borderBottom = "3px solid " + (style[2] ?? "#000000");
 
     const vp = viewport();
@@ -236,7 +268,13 @@ export function createFormatPanel(
     root.style.left = `${Math.round(left + offsetX)}px`;
     root.style.top = `${Math.round(top + offsetY)}px`;
     root.style.display = "block";
-    rebuildMenu();
+    // Rebuilding resets the menu's scroll position and re-allocates the list:
+    // only do it when what the menu shows actually changed.
+    const nextMenuKey = `${open ?? ""}|${id}`;
+    if (nextMenuKey !== menuKey) {
+      menuKey = nextMenuKey;
+      rebuildMenu();
+    }
   }
 
   refresh();

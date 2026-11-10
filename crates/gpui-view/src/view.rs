@@ -234,7 +234,13 @@ impl OfdGpuiView {
             .bg(rgb(0xFFFFFF))
             .border_1()
             .border_color(rgb(0xC9_CD_D4))
-            .rounded(px(4.));
+            .rounded(px(4.))
+            // Chrome gaps (border, swatch margins) must not reach the canvas:
+            // a press there would deselect and could mint a new annotation.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_, _: &MouseDownEvent, _w, cx| cx.stop_propagation()),
+            );
         root = root.child(
             div()
                 .flex()
@@ -301,7 +307,11 @@ impl OfdGpuiView {
             .flex_col()
             .max_h(px(260.))
             .overflow_y_scroll()
-            .bg(rgb(0xFFFFFF));
+            .bg(rgb(0xFFFFFF))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_, _: &MouseDownEvent, _w, cx| cx.stop_propagation()),
+            );
         match menu {
             PanelMenu::Family => {
                 for (i, entry) in self.panel.families.iter().enumerate() {

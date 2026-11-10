@@ -510,7 +510,6 @@ impl OfdComponent {
         // Body-text selection belongs to the old document's pages.
         self.set_text_selection(None);
         self.annot_text_selection = None;
-        self.available_font_families.clear();
         self.editor.load_document(doc);
         self.body_font_req = font_req::body_requirements(self.editor.document());
         self.font_store = Some(self.build_font_store());
@@ -540,7 +539,6 @@ impl OfdComponent {
         self.hover = None;
         self.set_text_selection(None);
         self.annot_text_selection = None;
-        self.available_font_families.clear();
         self.editor.load_document(OfdDocument::default());
         self.body_font_req = font_req::body_requirements(self.editor.document());
         self.font_store = Some(self.build_font_store());
@@ -655,6 +653,14 @@ impl OfdComponent {
             .as_ref()
             .expect("font_store initialized above")
             .family_display_name(font)
+            // SDK-listed families are stored by key (web manifest); show the
+            // host's display name instead of the normalized key.
+            .or_else(|| {
+                self.available_font_families
+                    .iter()
+                    .find(|e| e.key == font.0)
+                    .map(|e| e.display.clone())
+            })
             .unwrap_or_else(|| font.0.clone());
         Some(AnnotationTextStyle {
             family,
@@ -707,6 +713,9 @@ impl OfdComponent {
     /// Change the font size (millimetres) of a TextBox. Growth-only: the
     /// measure closure returns a height only when the box must grow.
     pub fn set_annotation_font_size(&mut self, id: &AnnotationId, size_mm: f64) {
+        if !size_mm.is_finite() || size_mm <= 0.0 {
+            return; // boundary validation: NaN/negative would poison layout
+        }
         self.ensure_font_store();
         let store = self
             .font_store
@@ -9718,8 +9727,32 @@ mod tests {
             display: "测试族".into(),
         }]);
         assert!(c.font_families().iter().any(|e| e.display == "测试族"));
+        // The host-supplied list describes the SDK's capabilities, not the
+        // document: it must survive document swaps.
         c.new_document();
-        assert!(!c.font_families().iter().any(|e| e.display == "测试族"));
+        assert!(c.font_families().iter().any(|e| e.display == "测试族"));
+    }
+
+    #[test]
+    fn annotation_text_style_maps_the_host_key_to_its_display_name() {
+        let mut c = component_with_textbox();
+        let id = textbox_id(&c);
+        c.set_available_font_families(vec![rofd_render::FamilyEntry {
+            key: "simsun".into(),
+            display: "宋体".into(),
+        }]);
+        c.set_annotation_font_family(&id, "simsun");
+        assert_eq!(c.annotation_text_style(&id).unwrap().family, "宋体");
+    }
+
+    #[test]
+    fn set_annotation_font_size_rejects_non_finite_values() {
+        let mut c = component_with_textbox();
+        let id = textbox_id(&c);
+        let before = c.annotation_text_style(&id).unwrap().size_mm;
+        c.set_annotation_font_size(&id, f64::NAN);
+        c.set_annotation_font_size(&id, -1.0);
+        assert_eq!(c.annotation_text_style(&id).unwrap().size_mm, before);
     }
 
     #[test]
