@@ -30,6 +30,18 @@ fn assert_round_trip(doc: &OfdDocument) -> OfdDocument {
         "annotations must round trip"
     );
     assert_eq!(report.document.meta, doc.meta, "meta must round trip");
+    assert_eq!(
+        report.document.raw_doc_children, doc.raw_doc_children,
+        "document-root raws must round trip"
+    );
+    assert_eq!(
+        report.document.raw_common_children, doc.raw_common_children,
+        "CommonData raws must round trip"
+    );
+    assert_eq!(
+        report.document.raw_ofd_body_children, doc.raw_ofd_body_children,
+        "OFD.xml body raws must round trip"
+    );
     assert!(
         report.document.max_unit_id >= doc.max_unit_id,
         "max_unit_id may only grow"
@@ -701,5 +713,193 @@ fn consumed_set_records_modeled_entries() {
     assert!(
         !consumed.contains("Attachments/file.dat"),
         "unconsumed entries stay out: {consumed:?}"
+    );
+}
+
+// ---- Passthrough re-emission (spec 2026-11-11 §6.2, Task 8) ----
+
+#[test]
+fn layer_raw_children_interleave_in_write() {
+    let mut doc = OfdDocument::default();
+    doc.pages.push(page_with(vec![Layer {
+        layer_type: LayerType::Body,
+        objects: vec![
+            PageObject::Path(PathObject {
+                id: ObjectId::new("p1"),
+                boundary: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 10.0,
+                    h: 1.0,
+                },
+                ctm: None,
+                fill: None,
+                stroke: None,
+                line_width: 1.0,
+                data: PathData {
+                    commands: vec![PathCommand::M(0.0, 0.0), PathCommand::L(9.0, 0.0)],
+                },
+                draw_param: None,
+                stroke_enabled: None,
+                fill_enabled: None,
+                raw_attrs: Vec::new(),
+            }),
+            PageObject::Path(PathObject {
+                id: ObjectId::new("p2"),
+                boundary: Rect {
+                    x: 0.0,
+                    y: 5.0,
+                    w: 10.0,
+                    h: 1.0,
+                },
+                ctm: None,
+                fill: None,
+                stroke: None,
+                line_width: 1.0,
+                data: PathData {
+                    commands: vec![PathCommand::M(0.0, 5.0), PathCommand::L(9.0, 5.0)],
+                },
+                draw_param: None,
+                stroke_enabled: None,
+                fill_enabled: None,
+                raw_attrs: Vec::new(),
+            }),
+        ],
+        raw_children: vec![rofd_dom::RawFragment {
+            position: 1,
+            xml: "<ext:Mark xmlns:ext=\"urn:x\" ID=\"8\"/>".into(),
+        }],
+    }]));
+    let bytes = write_ofd(&doc).expect("write_ofd");
+    let xml = content_xml(&bytes);
+    let mark_at = xml.find("<ext:Mark").expect("raw fragment emitted");
+    let p1_at = xml.find("<ofd:PathObject ID=\"p1\"").expect("p1");
+    let p2_at = xml.find("<ofd:PathObject ID=\"p2\"").expect("p2");
+    assert!(
+        p1_at < mark_at && mark_at < p2_at,
+        "interleaved order: {xml}"
+    );
+}
+
+#[test]
+fn object_raw_attrs_reemitted() {
+    let mut doc = OfdDocument::default();
+    doc.pages.push(page_with(vec![Layer {
+        layer_type: LayerType::Body,
+        objects: vec![PageObject::Text(TextObject {
+            id: ObjectId::new("t1"),
+            boundary: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 50.0,
+                h: 10.0,
+            },
+            ctm: None,
+            font: FontId::new("4"),
+            size: 10.0,
+            fill: None,
+            codes: vec![TextCode {
+                glyph_ids: vec![],
+                deltas: vec![(0.0, 0.0)],
+                text: "hi".into(),
+                x: 0.0,
+                y: 5.0,
+            }],
+            draw_param: None,
+            raw_attrs: vec![("ReadOrder".into(), "1".into())],
+        })],
+        raw_children: Vec::new(),
+    }]));
+    let bytes = write_ofd(&doc).expect("write_ofd");
+    let xml = content_xml(&bytes);
+    assert!(xml.contains("ReadOrder=\"1\""), "{xml}");
+}
+
+#[test]
+fn document_and_ofd_xml_raws_reemitted() {
+    let mut doc = OfdDocument::default();
+    doc.pages.push(page_with(vec![]));
+    doc.raw_doc_children = vec![rofd_dom::RawFragment {
+        position: 2,
+        xml: "<ofd:Bookmarks><ofd:Outline Title=\"ch1\"/></ofd:Bookmarks>".into(),
+    }];
+    doc.raw_common_children = vec![rofd_dom::RawFragment {
+        position: 2,
+        xml: "<ofd:Security/>".into(),
+    }];
+    doc.raw_ofd_body_children = vec![rofd_dom::RawFragment {
+        position: 1,
+        xml: "<ofd:Version>1.1</ofd:Version>".into(),
+    }];
+    doc.meta.raw_info_children = vec![rofd_dom::RawFragment {
+        position: 1,
+        xml: "<ofd:Subject>s</ofd:Subject>".into(),
+    }];
+    doc.meta.title = Some("T".into());
+
+    let bytes = write_ofd(&doc).expect("write_ofd");
+    let doc_xml = read_entry(&bytes, "Doc_0/Document.xml");
+    assert!(
+        doc_xml.contains("<ofd:Bookmarks><ofd:Outline Title=\"ch1\"/></ofd:Bookmarks>"),
+        "{doc_xml}"
+    );
+    assert!(
+        doc_xml.find("</ofd:Pages>").unwrap() < doc_xml.find("<ofd:Bookmarks>").unwrap(),
+        "root raws interleave after Pages: {doc_xml}"
+    );
+    assert!(
+        doc_xml.contains("<ofd:Security/></ofd:CommonData>"),
+        "{doc_xml}"
+    );
+    let ofd = read_entry(&bytes, "OFD.xml");
+    assert!(ofd.contains("<ofd:Subject>s</ofd:Subject>"), "{ofd}");
+    assert!(
+        ofd.find("</ofd:DocInfo>").unwrap() < ofd.find("<ofd:Version>1.1</ofd:Version>").unwrap(),
+        "body raws after DocInfo: {ofd}"
+    );
+    assert!(
+        ofd.find("<ofd:DocRoot>").unwrap() < ofd.find("<ofd:Version>1.1</ofd:Version>").unwrap(),
+        "body raws after DocRoot: {ofd}"
+    );
+}
+
+#[test]
+fn full_passthrough_stack_round_trips() {
+    // Unknown content at every captured level must survive write -> parse.
+    let content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:Page xmlns:ofd=\"http://www.ofdspec.org/2016\" xmlns:ext=\"urn:x\"><ofd:Area><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:Area><ofd:Content><ofd:Layer Type=\"Body\"><ofd:TextObject ID=\"t1\" Boundary=\"0 0 50 10\" Font=\"4\" Size=\"10\" ReadOrder=\"1\"><ofd:TextCode X=\"0\" Y=\"5\">hi</ofd:TextCode></ofd:TextObject><ext:Stamp ID=\"9\" ext:seal=\"1\"/></ofd:Layer></ofd:Content></ofd:Page>";
+    let doc_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:Document xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:PageArea><ofd:MaxUnitID>10</ofd:MaxUnitID><ofd:Security/></ofd:CommonData><ofd:Pages><ofd:Page ID=\"P0\" BaseLoc=\"Pages/Page_0/Content.xml\"/></ofd:Pages><ofd:Bookmarks><ofd:Outline Title=\"ch1\"/></ofd:Bookmarks></ofd:Document>";
+    let ofd_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:OFD xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:DocBody><ofd:DocInfo><ofd:DocID>D1</ofd:DocID><ofd:Subject>s</ofd:Subject></ofd:DocInfo><ofd:DocRoot>Doc_0/Document.xml</ofd:DocRoot><ofd:Version>1.1</ofd:Version></ofd:DocBody></ofd:OFD>";
+    let first = parse_ofd(&custom_package(ofd_xml, doc_xml, content, &[])).expect("parse");
+    let bytes = write_ofd(&first.document).expect("write_ofd");
+    let second = parse_ofd(&bytes).expect("re-parse");
+
+    // Model-level equality, raws included.
+    assert_eq!(
+        second.document.pages, first.document.pages,
+        "pages incl. layer raws"
+    );
+    assert_eq!(
+        second.document.raw_doc_children,
+        first.document.raw_doc_children
+    );
+    assert_eq!(
+        second.document.raw_common_children,
+        first.document.raw_common_children
+    );
+    assert_eq!(
+        second.document.raw_ofd_body_children,
+        first.document.raw_ofd_body_children
+    );
+    assert_eq!(
+        second.document.meta.raw_info_children,
+        first.document.meta.raw_info_children
+    );
+    // The object's unknown attribute survived.
+    let PageObject::Text(t) = &second.document.pages[0].layers[0].objects[0] else {
+        panic!("text object");
+    };
+    assert_eq!(
+        t.raw_attrs,
+        vec![("ReadOrder".to_string(), "1".to_string())]
     );
 }

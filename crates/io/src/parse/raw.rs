@@ -96,7 +96,9 @@ impl NsScope {
             return;
         }
         let close = raw.find('>').expect("fragment root start tag has '>'");
-        let insert_at = if raw[..close + 1].ends_with('/') {
+        // Self-closing root (`/>`): insert before the slash so the tag stays
+        // self-closing; otherwise insert before the closing '>'.
+        let insert_at = if raw[..close].ends_with('/') {
             close - 1
         } else {
             close
@@ -149,7 +151,11 @@ pub(crate) fn capture_raw_subtree(
             _ => {}
         }
     }
-    let mut raw = xml[start_pos..end_pos].to_string();
+    // Trim leading whitespace: with trim_text(true) the reader may have
+    // skipped indentation between the previous event and this subtree, and
+    // pos_before anchors before that whitespace - the element itself starts
+    // at '<'.
+    let mut raw = xml[start_pos..end_pos].trim_start().to_string();
     ns.synthesize_into(&mut raw);
     Ok(raw)
 }
@@ -162,7 +168,10 @@ pub(crate) fn capture_raw_empty(
     start_pos: usize,
     ns: &NsScope,
 ) -> String {
-    let mut raw = xml[start_pos..reader.buffer_position() as usize].to_string();
+    // Same leading-whitespace trim as `capture_raw_subtree`.
+    let mut raw = xml[start_pos..reader.buffer_position() as usize]
+        .trim_start()
+        .to_string();
     ns.synthesize_into(&mut raw);
     raw
 }

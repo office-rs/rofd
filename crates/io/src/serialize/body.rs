@@ -10,10 +10,12 @@ use rofd_dom::{
 };
 
 use super::annotation::{color_str, xml_escape, xml_escape_preserving_edges};
+use super::interleave;
 
 /// Serialize one layer (4-space indent, as nested inside `<ofd:Content>`).
-/// An object-free layer emits the self-closing form - the parser accepts
-/// both and the compact form keeps files small.
+/// Modelled objects and captured raw fragments interleave at their original
+/// positions (spec 2026-11-11 D3); a child-free layer emits the
+/// self-closing form - the parser accepts both and it keeps files small.
 pub(crate) fn layer_xml(layer: &Layer) -> String {
     let ty = match layer.layer_type {
         LayerType::Body => "Body",
@@ -21,12 +23,15 @@ pub(crate) fn layer_xml(layer: &Layer) -> String {
         LayerType::Background => "Background",
     };
     let mut children = String::new();
-    for obj in &layer.objects {
-        match obj {
-            PageObject::Text(t) => children.push_str(&text_object_xml(t)),
-            PageObject::Path(p) => children.push_str(&path_object_xml(p)),
-            PageObject::Image(i) => children.push_str(&image_object_xml(i)),
-            PageObject::Composite(c) => children.push_str(&composite_object_xml(c)),
+    for child in interleave(layer.objects.len(), &layer.raw_children) {
+        match child {
+            super::Child::Known(i) => match &layer.objects[i] {
+                PageObject::Text(t) => children.push_str(&text_object_xml(t)),
+                PageObject::Path(p) => children.push_str(&path_object_xml(p)),
+                PageObject::Image(i) => children.push_str(&image_object_xml(i)),
+                PageObject::Composite(c) => children.push_str(&composite_object_xml(c)),
+            },
+            super::Child::Raw(f) => children.push_str(&format!("    {}\n", f.xml)),
         }
     }
     if children.is_empty() {
@@ -52,6 +57,7 @@ pub(crate) fn text_object_xml(t: &TextObject) -> String {
     if let Some(dp) = &t.draw_param {
         s.push_str(&format!(" DrawParam=\"{}\"", xml_escape(&dp.0)));
     }
+    s.push_str(&raw_attrs_str(&t.raw_attrs));
     s.push_str(">\n");
     if let Some(c) = t.fill {
         s.push_str(&format!(
@@ -98,6 +104,15 @@ pub(crate) fn text_object_xml(t: &TextObject) -> String {
     s
 }
 
+/// Unmodelled attributes, re-emitted verbatim after the known set.
+fn raw_attrs_str(raws: &[(String, String)]) -> String {
+    let mut s = String::new();
+    for (k, v) in raws {
+        s.push_str(&format!(" {k}=\"{}\"", xml_escape(v)));
+    }
+    s
+}
+
 fn rect_str(r: &Rect) -> String {
     format!("{} {} {} {}", r.x, r.y, r.w, r.h)
 }
@@ -130,6 +145,7 @@ pub(crate) fn path_object_xml(p: &PathObject) -> String {
     if let Some(dp) = &p.draw_param {
         s.push_str(&format!(" DrawParam=\"{}\"", xml_escape(&dp.0)));
     }
+    s.push_str(&raw_attrs_str(&p.raw_attrs));
     s.push_str(">\n");
     if let Some(c) = p.fill {
         s.push_str(&format!(
@@ -189,10 +205,11 @@ pub(crate) fn composite_object_xml(c: &CompositeObject) -> String {
 /// One `<ofd:ImageObject>`: ResourceID references a MultiMedia resource.
 pub(crate) fn image_object_xml(i: &ImageObject) -> String {
     format!(
-        "      <ofd:ImageObject ID=\"{}\" Boundary=\"{}\"{} ResourceID=\"{}\"/>\n",
+        "      <ofd:ImageObject ID=\"{}\" Boundary=\"{}\"{} ResourceID=\"{}\"{}/>\n",
         xml_escape(&i.id.0),
         rect_str(&i.boundary),
         ctm_attr(&i.ctm),
-        xml_escape(&i.image.0)
+        xml_escape(&i.image.0),
+        raw_attrs_str(&i.raw_attrs)
     )
 }

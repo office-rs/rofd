@@ -7,38 +7,53 @@ use crate::serialize::annotation::{object_id_seed, serialize_page_annot, xml_esc
 use crate::serialize::annotation_entry::serialize_annotations_entry;
 use crate::serialize::body;
 use crate::serialize::resource;
+use crate::serialize::{interleave, Child};
 use crate::zip_util::write_zip;
+use rofd_dom::RawFragment;
 
 /// Synthesize OFD.xml: DocBody with an optional DocInfo (GB/T 33190 places
 /// CT_DocInfo on the OFD.xml DocBody face - the parse side reads it from
-/// there, `parse/ofd_xml.rs`) followed by DocRoot. DocInfo is emitted only
-/// when at least one meta field is set; field order is fixed for
-/// determinism.
-fn ofd_xml(meta: &DocMeta) -> String {
+/// there, `parse/ofd_xml.rs`) followed by DocRoot, with passthrough
+/// fragments interleaved at their captured positions (spec 2026-11-11 D3).
+/// DocInfo is emitted when a modelled field is set OR a captured DocInfo
+/// fragment exists; field order is fixed for determinism. Body raws'
+/// positions count DocRoot as the only known child (capture-side
+/// convention), so DocInfo is emitted before the merged sequence.
+fn ofd_xml(meta: &DocMeta, body_raws: &[RawFragment]) -> String {
     let mut s = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     s.push_str("<ofd:OFD xmlns:ofd=\"http://www.ofdspec.org/2016\">\n");
     s.push_str("  <ofd:DocBody>\n");
-    let any = meta.doc_id.is_some()
-        || meta.title.is_some()
-        || meta.author.is_some()
-        || meta.creation_date.is_some()
-        || meta.mod_date.is_some();
-    if any {
+    let fields: Vec<(&str, &String)> = [
+        ("DocID", &meta.doc_id),
+        ("Title", &meta.title),
+        ("Author", &meta.author),
+        ("CreationDate", &meta.creation_date),
+        ("LastModDate", &meta.mod_date),
+    ]
+    .into_iter()
+    .filter_map(|(tag, v)| v.as_ref().map(|v| (tag, v)))
+    .collect();
+    if !fields.is_empty() || !meta.raw_info_children.is_empty() {
         s.push_str("    <ofd:DocInfo>\n");
-        for (tag, value) in [
-            ("DocID", &meta.doc_id),
-            ("Title", &meta.title),
-            ("Author", &meta.author),
-            ("CreationDate", &meta.creation_date),
-            ("LastModDate", &meta.mod_date),
-        ] {
-            if let Some(v) = value {
-                s.push_str(&format!("      <ofd:{tag}>{}</ofd:{tag}>\n", xml_escape(v)));
+        for child in interleave(fields.len(), &meta.raw_info_children) {
+            match child {
+                Child::Known(i) => {
+                    let (tag, v) = fields[i];
+                    s.push_str(&format!("      <ofd:{tag}>{}</ofd:{tag}>\n", xml_escape(v)));
+                }
+                Child::Raw(f) => s.push_str(&format!("      {}\n", f.xml)),
             }
         }
         s.push_str("    </ofd:DocInfo>\n");
     }
-    s.push_str("    <ofd:DocRoot>Doc_0/Document.xml</ofd:DocRoot>\n");
+    for child in interleave(1, body_raws) {
+        match child {
+            Child::Known(_) => {
+                s.push_str("    <ofd:DocRoot>Doc_0/Document.xml</ofd:DocRoot>\n");
+            }
+            Child::Raw(f) => s.push_str(&format!("    {}\n", f.xml)),
+        }
+    }
     s.push_str("  </ofd:DocBody>\n");
     s.push_str("</ofd:OFD>");
     s
@@ -62,7 +77,10 @@ pub fn write_ofd_with_text_layout(
     text_layout: &TextLayoutHints,
 ) -> Result<Vec<u8>, OfdError> {
     let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
-    entries.push(("OFD.xml".into(), ofd_xml(&doc.meta).into_bytes()));
+    entries.push((
+        "OFD.xml".into(),
+        ofd_xml(&doc.meta, &doc.raw_ofd_body_children).into_bytes(),
+    ));
 
     // Pages with annotations (doc order): (page_id, page_index).
     let pages_with_ann: Vec<(rofd_dom::PageId, usize)> = doc
@@ -89,32 +107,54 @@ pub fn write_ofd_with_text_layout(
         }
     }
 
-    // Document.xml
+    // Document.xml. Known root children (CommonData / Pages / Annotations)
+    // interleave with captured raw fragments at their original positions
+    // (spec 2026-11-11 D3); inside CommonData, PageArea / MaxUnitID / the
+    // canonical DocumentRes loc interleave with `raw_common_children`.
     let res = resource::res_entries(doc);
-    let res_loc = if res.is_empty() {
-        ""
-    } else {
-        "<ofd:DocumentRes BaseLoc=\"Res/DocumentRes.xml\"/>"
-    };
     let mut doc_xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     doc_xml.push_str("<ofd:Document xmlns:ofd=\"http://www.ofdspec.org/2016\">\n");
     let pb = doc.pages.first().map(|p| p.physical_box);
+    let mut root_known: Vec<String> = Vec::new();
     if let Some(r) = pb {
-        doc_xml.push_str(&format!(
-            "  <ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>{} {} {} {}</ofd:PhysicalBox></ofd:PageArea><ofd:MaxUnitID>{}</ofd:MaxUnitID>{res_loc}</ofd:CommonData>\n",
-            r.x, r.y, r.w, r.h, next_id
+        let mut common_known: Vec<String> = vec![
+            format!(
+                "<ofd:PageArea><ofd:PhysicalBox>{} {} {} {}</ofd:PhysicalBox></ofd:PageArea>",
+                r.x, r.y, r.w, r.h
+            ),
+            format!("<ofd:MaxUnitID>{next_id}</ofd:MaxUnitID>"),
+        ];
+        if !res.is_empty() {
+            common_known.push("<ofd:DocumentRes BaseLoc=\"Res/DocumentRes.xml\"/>".into());
+        }
+        let mut common_inner = String::new();
+        for child in interleave(common_known.len(), &doc.raw_common_children) {
+            match child {
+                Child::Known(i) => common_inner.push_str(&common_known[i]),
+                Child::Raw(f) => common_inner.push_str(&f.xml),
+            }
+        }
+        root_known.push(format!(
+            "  <ofd:CommonData>{common_inner}</ofd:CommonData>\n"
         ));
     }
-    doc_xml.push_str("  <ofd:Pages>\n");
+    let mut pages_block = String::from("  <ofd:Pages>\n");
     for (i, page) in doc.pages.iter().enumerate() {
-        doc_xml.push_str(&format!(
+        pages_block.push_str(&format!(
             "    <ofd:Page ID=\"{}\" BaseLoc=\"Pages/Page_{i}/Content.xml\"/>\n",
             page.id.0
         ));
     }
-    doc_xml.push_str("  </ofd:Pages>\n");
+    pages_block.push_str("  </ofd:Pages>\n");
+    root_known.push(pages_block);
     if has_annots {
-        doc_xml.push_str("  <ofd:Annotations>Annots/Annotations.xml</ofd:Annotations>\n");
+        root_known.push("  <ofd:Annotations>Annots/Annotations.xml</ofd:Annotations>\n".into());
+    }
+    for child in interleave(root_known.len(), &doc.raw_doc_children) {
+        match child {
+            Child::Known(i) => doc_xml.push_str(&root_known[i]),
+            Child::Raw(f) => doc_xml.push_str(&format!("  {}\n", f.xml)),
+        }
     }
     doc_xml.push_str("</ofd:Document>");
     entries.push(("Doc_0/Document.xml".into(), doc_xml.into_bytes()));
