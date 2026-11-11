@@ -47,7 +47,7 @@ pub fn save_ofd(
 ) -> Result<(), String> {
     let bytes = match package {
         Some(pkg) => save_ofd_with_text_layout(document, pkg, text_layout),
-        None => write_ofd_with_text_layout(document, text_layout),
+        None => write_ofd_with_text_layout(document, None, text_layout),
     }
     .map_err(|e| format!("serialize {}: {e}", path.display()))?;
     write_atomic(path, &bytes)

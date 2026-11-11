@@ -903,3 +903,125 @@ fn full_passthrough_stack_round_trips() {
         vec![("ReadOrder".to_string(), "1".to_string())]
     );
 }
+
+// ---- Package-layer transport (spec 2026-11-11 D12, Task 9) ----
+
+fn entry_bytes(bytes: &[u8], name: &str) -> Vec<u8> {
+    use std::io::Read;
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("zip");
+    let mut f = zip.by_name(name).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let mut out = Vec::new();
+    f.read_to_end(&mut out).expect("read");
+    out
+}
+
+#[test]
+fn unconsumed_entries_transport_verbatim() {
+    let doc_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:Document xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:PageArea><ofd:MaxUnitID>10</ofd:MaxUnitID></ofd:CommonData><ofd:Pages><ofd:Page ID=\"P0\" BaseLoc=\"Pages/Page_0/Content.xml\"/></ofd:Pages></ofd:Document>";
+    let ofd_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:OFD xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:DocBody><ofd:DocRoot>Doc_0/Document.xml</ofd:DocRoot></ofd:DocBody></ofd:OFD>";
+    let report = parse_ofd(&custom_package(
+        ofd_xml,
+        doc_xml,
+        PLAIN_CONTENT,
+        &[
+            ("Attachments/file.dat", "blob-bytes"),
+            ("Doc_0/Signs/Sign_0/Signature.xml", "<Signature/>"),
+        ],
+    ))
+    .expect("parse");
+    let out = rofd_io::write_ofd_with_text_layout(
+        &report.document,
+        Some(&report.package),
+        &rofd_dom::TextLayoutHints::new(),
+    )
+    .expect("write");
+    assert_eq!(entry_bytes(&out, "Attachments/file.dat"), b"blob-bytes");
+    assert_eq!(
+        entry_bytes(&out, "Doc_0/Signs/Sign_0/Signature.xml"),
+        b"<Signature/>"
+    );
+}
+
+#[test]
+fn nonstandard_entry_names_canonicalized_no_duplicates() {
+    // Nonstandard Content.xml path (Pages/P0.xml) and a PublicRes.xml at the
+    // doc root: full write canonicalizes names, consumed originals are NOT
+    // transported, and the result re-parses to the same model.
+    let content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:Page xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:Area><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:Area><ofd:Content><ofd:Layer Type=\"Body\"/></ofd:Content></ofd:Page>";
+    let doc_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:Document xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:PageArea><ofd:MaxUnitID>10</ofd:MaxUnitID></ofd:CommonData><ofd:Pages><ofd:Page ID=\"P0\" BaseLoc=\"Pages/P0.xml\"/></ofd:Pages></ofd:Document>";
+    let ofd_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:OFD xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:DocBody><ofd:DocRoot>Doc_0/Document.xml</ofd:DocRoot></ofd:DocBody></ofd:OFD>";
+    let res_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:Res xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:MultiMedias><ofd:MultiMedia Type=\"Image\" Format=\"png\" ID=\"img1\"><ofd:MediaFile>img.png</ofd:MediaFile></ofd:MultiMedia></ofd:MultiMedias></ofd:Res>";
+    let png: Vec<u8> = PNG_MAGIC.to_vec();
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    use std::io::Write;
+    for (n, c) in [
+        ("OFD.xml", ofd_xml.as_bytes().to_vec()),
+        ("Doc_0/Document.xml", doc_xml.as_bytes().to_vec()),
+        ("Doc_0/Pages/P0.xml", content.as_bytes().to_vec()),
+        ("Doc_0/PublicRes.xml", res_xml.as_bytes().to_vec()),
+        ("Doc_0/img.png", png.clone()),
+    ] {
+        w.start_file::<_, ()>(n, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        w.write_all(&c).unwrap();
+    }
+    let bytes = w.finish().unwrap().into_inner();
+
+    let report = parse_ofd(&bytes).expect("parse");
+    assert!(
+        report
+            .document
+            .resources
+            .images
+            .contains_key(&ImageId::new("img1")),
+        "image loaded via nonstandard PublicRes"
+    );
+    let out = rofd_io::write_ofd_with_text_layout(
+        &report.document,
+        Some(&report.package),
+        &rofd_dom::TextLayoutHints::new(),
+    )
+    .expect("write");
+
+    let zip = zip::ZipArchive::new(std::io::Cursor::new(&out)).unwrap();
+    let names: Vec<&str> = zip.file_names().collect();
+    let mut sorted = names.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(
+        names.len(),
+        sorted.len(),
+        "no duplicate entry names: {names:?}"
+    );
+    assert!(
+        names.contains(&"Doc_0/Pages/Page_0/Content.xml"),
+        "{names:?}"
+    );
+    assert!(
+        !names.contains(&"Doc_0/Pages/P0.xml"),
+        "consumed original not transported: {names:?}"
+    );
+    assert!(
+        !names.contains(&"Doc_0/PublicRes.xml"),
+        "consumed original not transported: {names:?}"
+    );
+    assert!(
+        !names.contains(&"Doc_0/img.png"),
+        "consumed original not transported: {names:?}"
+    );
+    assert!(names.contains(&"Doc_0/Res/Img_img1.png"), "{names:?}");
+
+    let second = parse_ofd(&out).expect("re-parse");
+    assert_eq!(second.document.pages, report.document.pages);
+    assert_eq!(second.document.resources, report.document.resources);
+}
+
+#[test]
+fn generation_passes_none() {
+    let mut doc = OfdDocument::default();
+    doc.pages.push(page_with(vec![]));
+    let a = write_ofd(&doc).expect("write_ofd");
+    let b = rofd_io::write_ofd_with_text_layout(&doc, None, &rofd_dom::TextLayoutHints::new())
+        .expect("write with None");
+    assert_eq!(a, b, "None path == generation path");
+}

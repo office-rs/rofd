@@ -59,7 +59,8 @@ fn saved_text_reopens_with_logical_content_and_reflows_on_resize() {
     let (c, id) = textbox_component("abc def ghi jkl", 45.0, 14.0);
     let snap = c.save_snapshot();
     assert_eq!(snap.text_layout[&id].len(), 2, "two wrapped lines");
-    let bytes = rofd_io::write_ofd_with_text_layout(&snap.document, &snap.text_layout).unwrap();
+    let bytes =
+        rofd_io::write_ofd_with_text_layout(&snap.document, None, &snap.text_layout).unwrap();
 
     let report = rofd_io::parse_ofd(&bytes).unwrap();
     let (reloaded_id, rect_h) = {
@@ -136,7 +137,8 @@ fn span_textbox_component() -> (OfdComponent, AnnotationId) {
 fn span_colors_survive_save_and_reload_through_the_real_layout() {
     let (c, _id) = span_textbox_component();
     let snap = c.save_snapshot();
-    let bytes = rofd_io::write_ofd_with_text_layout(&snap.document, &snap.text_layout).unwrap();
+    let bytes =
+        rofd_io::write_ofd_with_text_layout(&snap.document, None, &snap.text_layout).unwrap();
     let report = rofd_io::parse_ofd(&bytes).unwrap();
     let ann = &report.document.annotations.for_page(&PageId::new("P0"))[0];
     let AnnotationPayload::TextBox { content, spans, .. } = &ann.payload else {

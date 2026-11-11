@@ -875,7 +875,7 @@ mod wasm_impl {
                 Some(pkg) => {
                     save_ofd_with_text_layout(&snapshot.document, pkg, &snapshot.text_layout)
                 }
-                None => write_ofd_with_text_layout(&snapshot.document, &snapshot.text_layout),
+                None => write_ofd_with_text_layout(&snapshot.document, None, &snapshot.text_layout),
             }
             .map_err(|e| JsValue::from_str(&format!("save failed: {e}")))
         }

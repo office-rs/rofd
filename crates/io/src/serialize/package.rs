@@ -59,12 +59,21 @@ fn ofd_xml(meta: &DocMeta, body_raws: &[RawFragment]) -> String {
     s
 }
 
-/// Full write: construct a fresh .ofd package from the model (generation / conversion).
+/// Full write: construct a fresh .ofd package from the model (generation /
+/// conversion / save). Emits GB/T 33190 standard structure under canonical
+/// entry names, then transports the original package's UNCONSUMED entries
+/// verbatim (passthrough, spec 2026-11-11 D12): `pkg.consumed` records what
+/// parse read into the model, so anything outside it - attachments,
+/// signatures, unknown files - copies through byte-identical under its
+/// original name. An unconsumed entry whose name collides with an emitted
+/// canonical name is dropped (emitted wins; malformed-input boundary - the
+/// write path has no warning channel).
 ///
-/// Emits GB/T 33190 standard structure:
-/// - `OFD.xml` -> `Doc_0/Document.xml`
-/// - `Doc_0/Document.xml` with `<CommonData>` (PhysicalBox + MaxUnitID), `<Pages>`,
-///   and `<Annotations>` loc (only if any page has annotations)
+/// Emits:
+/// - `OFD.xml` (DocInfo + DocRoot + passthrough) -> `Doc_0/Document.xml`
+/// - `Doc_0/Document.xml` with `<CommonData>` (PageArea + MaxUnitID +
+///   DocumentRes loc + passthrough), `<Pages>`, `<Annotations>` loc
+/// - `Doc_0/Res/DocumentRes.xml` + font/image byte files (when resources exist)
 /// - `Doc_0/Pages/Page_N/Content.xml` per page
 /// - `Doc_0/Annots/Annotations.xml` entry file (only if any page has annotations)
 /// - `Doc_0/Annots/Page_N/Annotation.xml` per annotated page
@@ -74,6 +83,7 @@ fn ofd_xml(meta: &DocMeta, body_raws: &[RawFragment]) -> String {
 /// map for the legacy content-`\n` split.
 pub fn write_ofd_with_text_layout(
     doc: &OfdDocument,
+    pkg: Option<&crate::package::PackageHandle>,
     text_layout: &TextLayoutHints,
 ) -> Result<Vec<u8>, OfdError> {
     let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
@@ -198,11 +208,25 @@ pub fn write_ofd_with_text_layout(
         }
     }
 
+    // Package-layer passthrough (spec D12): unconsumed entries of the
+    // original package copy through verbatim under their original names;
+    // entries whose names collide with emitted canonical names lose.
+    if let Some(pkg) = pkg {
+        let emitted: std::collections::BTreeSet<String> =
+            entries.iter().map(|(n, _)| n.clone()).collect();
+        for e in &pkg.entries {
+            if !pkg.consumed.contains(e.name.as_str()) && !emitted.contains(&e.name) {
+                entries.push((e.name.clone(), e.bytes.as_ref().clone()));
+            }
+        }
+    }
+
     write_zip(&entries)
 }
 
-/// Full write without wrapped-text line hints (legacy entry point): the
-/// appearance splits content on explicit `\n` only.
+/// Full write without a source package (pure generation) and without
+/// wrapped-text line hints (legacy entry point): the appearance splits
+/// content on explicit `\n` only.
 pub fn write_ofd(doc: &OfdDocument) -> Result<Vec<u8>, OfdError> {
-    write_ofd_with_text_layout(doc, &TextLayoutHints::new())
+    write_ofd_with_text_layout(doc, None, &TextLayoutHints::new())
 }
