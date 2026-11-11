@@ -36,7 +36,7 @@ describe("format panel", () => {
     createFormatPanel(root, host() as never, vp);
     const el = root.querySelector(".rofd-format-panel") as HTMLElement;
     expect(el.style.display).not.toBe("none");
-    expect(el.style.top).toBe("64px"); // 100 - 28 - 8
+    expect(el.style.top).toBe("56px"); // 100 - 36 - 8
     expect(el.style.left).toBe("100px");
     expect(el.textContent).toContain("宋体");
     expect(el.textContent).toContain("12");
@@ -170,7 +170,26 @@ describe("format panel", () => {
       left: 10,
       top: 68,
     });
-    expect(panelAnchor([700, 300, 60, 20], { w: 800, h: 600 }).left).toBe(552);
+    expect(panelAnchor([700, 300, 60, 20], { w: 800, h: 600 }).left).toBe(538);
+  });
+
+  it("renders the WPS-style color menu sections and applies swatches", () => {
+    const root = document.createElement("div");
+    const h = host();
+    createFormatPanel(root, h as never, vp);
+    (root.querySelector(".rofd-fp-color") as HTMLElement).dispatchEvent(
+      new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
+    );
+    const menu = root.querySelector(".rofd-fp-menu") as HTMLElement;
+    expect(menu.textContent).toContain("自动");
+    expect(menu.textContent).toContain("主题颜色");
+    expect(menu.textContent).toContain("标准色");
+    expect(menu.textContent).toContain("其他颜色(M)...");
+    expect(root.querySelectorAll(".rofd-fp-color-item").length).toBe(4);
+    (root.querySelector(".rofd-fp-color-item") as HTMLElement).dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    );
+    expect(h.calls).toContain("color:7:#FFFFFF");
   });
 
   it("shows the style at the start of the text selection", () => {
@@ -179,14 +198,14 @@ describe("format panel", () => {
     const h = host({ annotationTextStyle: () => styled });
     const panel = createFormatPanel(root, h as never, vp);
     expect(
-      (root.querySelector(".rofd-fp-color") as HTMLElement).style.borderBottom,
+      (root.querySelector(".rofd-fp-bar") as HTMLElement).style.background,
     ).toContain("rgb(0, 0, 0)");
     styled = ["黑体", "7.06", "#FF0000", "1"]; // selection moved inside the box
     panel.refresh();
     const el = root.querySelector(".rofd-format-panel") as HTMLElement;
     expect(el.textContent).toContain("黑体");
     expect(
-      (root.querySelector(".rofd-fp-color") as HTMLElement).style.borderBottom,
+      (root.querySelector(".rofd-fp-bar") as HTMLElement).style.background,
     ).toContain("rgb(255, 0, 0)");
   });
 
