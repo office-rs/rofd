@@ -455,7 +455,7 @@ export function createFormatPanel(
     }
   }
 
-  colorInput.addEventListener("input", () => {
+  colorInput.addEventListener("change", () => {
     applyColor(colorInput.value);
   });
 
