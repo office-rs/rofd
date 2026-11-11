@@ -669,7 +669,7 @@ impl OfdComponent {
             .or_else(|| {
                 self.available_font_families
                     .iter()
-                    .find(|e| e.key == style_font.0)
+                    .find(|e| e.key == style_font.0 || e.display == style_font.0)
                     .map(|e| e.display.clone())
             })
             .unwrap_or_else(|| style_font.0.clone());
@@ -707,22 +707,45 @@ impl OfdComponent {
         out
     }
 
-    /// Change the font family of a TextBox. The family name becomes the
-    /// payload's `FontId` (session-only in v1; no Font resource is written).
-    /// With an active text selection inside the box, only the selected chars
-    /// change; otherwise the whole box does.
+    /// Change the font family of a TextBox. The picked entry's **display name**
+    /// is stored as `FontId` (the panel sends normalized keys; a key alone can
+    /// be an alias the font backend does not know, e.g. `times`). With an
+    /// active text selection inside the box, only the selected chars change;
+    /// otherwise the whole box does.
     pub fn set_annotation_font_family(&mut self, id: &AnnotationId, family: &str) {
         self.ensure_font_store();
+        let family = self.family_storage_name(family);
         let store = self
             .font_store
             .clone()
             .expect("font_store initialized above");
         let range = self.annot_selection_range(id);
         self.editor
-            .set_annotation_font_family_measured(id, range, family, |p| {
+            .set_annotation_font_family_measured(id, range, &family, |p| {
                 measure_textbox_growth(&store, p)
             });
         self.after_annotation_change();
+    }
+
+    /// The family name to store in the payload: the display name of the entry
+    /// the host picked. Host-declared entries win over system ones (the host
+    /// owns what its picker showed); matching is by display first, then key.
+    fn family_storage_name(&mut self, family: &str) -> String {
+        if let Some(entry) = self
+            .available_font_families
+            .iter()
+            .find(|e| e.display == family || e.key == family)
+        {
+            return entry.display.clone();
+        }
+        let entries = self.font_families();
+        if let Some(entry) = entries
+            .iter()
+            .find(|e| e.display == family || e.key == family)
+        {
+            return entry.display.clone();
+        }
+        family.to_string()
     }
 
     /// Change the font size (millimetres) of a TextBox. Growth-only: the
@@ -9925,6 +9948,31 @@ mod tests {
         }]);
         c.set_annotation_font_family(&id, "simsun");
         assert_eq!(c.annotation_text_style(&id).unwrap().family, "宋体");
+    }
+
+    #[test]
+    fn family_selection_stores_the_display_name_not_the_key() {
+        // The panel sends normalized keys; storing the key alone is an alias
+        // the font backend may not know (`times` vs `Times New Roman`).
+        let mut c = component_with_textbox();
+        let id = textbox_id(&c);
+        c.set_available_font_families(vec![rofd_render::FamilyEntry {
+            key: "rofd-test-family".into(),
+            display: "测试族".into(),
+        }]);
+        c.set_annotation_font_family(&id, "rofd-test-family");
+        match &textbox_payload(&c, &id) {
+            AnnotationPayload::TextBox { font, .. } => {
+                assert_eq!(font.0, "测试族", "display name is stored");
+            }
+            other => panic!("expected TextBox, got {other:?}"),
+        }
+        // Selecting by display name is a no-op mapping.
+        c.set_annotation_font_family(&id, "测试族");
+        match &textbox_payload(&c, &id) {
+            AnnotationPayload::TextBox { font, .. } => assert_eq!(font.0, "测试族"),
+            other => panic!("expected TextBox, got {other:?}"),
+        }
     }
 
     #[test]

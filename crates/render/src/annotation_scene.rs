@@ -2188,10 +2188,9 @@ mod tests {
     }
 
     #[test]
-    fn preedit_rich_textbox_keeps_legacy_first_line_position() {
-        // Rich boxes keep the legacy single-line caret path (spec §1.2.2), so
-        // the composition must stay on the first line even when the flat
-        // content would wrap.
+    fn preedit_span_textbox_anchors_at_the_caret() {
+        // Span boxes keep the detached composition, but it must sit at the
+        // caret's line (not the first line / flat prefix width).
         let rect = Rect {
             x: 0.0,
             y: 0.0,
@@ -2243,6 +2242,10 @@ mod tests {
             page_gap: 20.0,
         };
         let fonts = test_font_store();
+        let offset = 8; // second visual line
+        let caret =
+            crate::caret_rect_on_line(&doc, &vp, &fonts, &AnnotationId::from_int(1), offset, None)
+                .expect("caret rect");
         let mut scene = Scene::new();
         crate::preedit_overlay::paint_preedit_overlay(
             &mut scene,
@@ -2251,21 +2254,25 @@ mod tests {
             &fonts,
             "XY",
             &AnnotationId::from_int(1),
-            8,
+            offset,
         );
-        let mut tys = Vec::new();
+        let mut transforms = Vec::new();
         for cmd in scene.commands() {
             if let imaging::record::Command::Draw(id) = cmd {
                 if let imaging::record::Draw::GlyphRun(gr) = scene.draw_op(*id) {
-                    tys.push(gr.transform.as_coeffs()[5]);
+                    transforms.push(gr.transform.as_coeffs());
                 }
             }
         }
-        assert!(!tys.is_empty(), "composition was drawn");
-        for ty in &tys {
+        assert!(!transforms.is_empty(), "composition was drawn");
+        for t in &transforms {
             assert!(
-                (ty - (vp.page_gap + rect.y)).abs() < 1e-3,
-                "rich preedit stays on the first line (got {ty})"
+                (t[4] - caret.x).abs() < 1e-3 && (t[5] - caret.y).abs() < 1e-3,
+                "composition anchors at the caret: got ({}, {}), caret ({}, {})",
+                t[4],
+                t[5],
+                caret.x,
+                caret.y
             );
         }
     }

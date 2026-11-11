@@ -176,6 +176,30 @@ impl FontStore {
         }
     }
 
+    /// Resolve a normalized family key to a family name fontique actually
+    /// registered (skipping internal slice names). Keys from the alias table can
+    /// differ from every real name (`times` -> `Times New Roman`,
+    /// `simsun` -> `SimSun`/`NSimSun`); without this fallback a font id stored
+    /// as the normalized key would silently shape with the default font.
+    fn registered_name_for_key(&self, key: &str) -> Option<String> {
+        let names: Vec<String> = self
+            .font_cx
+            .borrow_mut()
+            .collection
+            .family_names()
+            .map(|n| n.to_owned())
+            .collect();
+        for name in names {
+            if name.starts_with("__rofs_") {
+                continue;
+            }
+            if super::family::normalize_family_key(&name) == key {
+                return Some(name);
+            }
+        }
+        None
+    }
+
     /// Resolve a document font by id. `None` if the id has no font bytes.
     pub fn resolve(&self, id: &FontId) -> Option<&FontData> {
         self.fonts.get(id)
@@ -552,12 +576,17 @@ impl FontStore {
             }
         }
         if names.is_empty() && !font_id.0.trim().is_empty() {
-            // Unknown font id: the id itself is the family name we wrote when
-            // the user picked a family in the format panel (spec §4.2).
+            // Unknown font id: either the id itself is a real family name we
+            // wrote when the user picked a family in the format panel, or a
+            // normalized key (the panel sends keys). Resolve the key back to
+            // the name fontique registered, then fall back to the raw id.
             let key = super::family::normalize_family_key(&font_id.0);
             names.extend(chain_names(&self.slice_chains, &key));
             if names.is_empty() {
-                names.push(FontFamilyName::Named(Cow::Owned(font_id.0.clone())));
+                match self.registered_name_for_key(&key) {
+                    Some(name) => names.push(FontFamilyName::Named(Cow::Owned(name))),
+                    None => names.push(FontFamilyName::Named(Cow::Owned(font_id.0.clone()))),
+                }
             }
         }
         if names.is_empty() {
@@ -1181,6 +1210,39 @@ mod tests {
         assert!(
             store.family_display_name(&FontId::new("nope")).is_none(),
             "unknown ids have no display name"
+        );
+    }
+
+    #[test]
+    fn registered_name_for_key_finds_the_fixture_family() {
+        let mut store = FontStore::from_resources(&Resources::default(), Arc::new(Vec::new()));
+        let ttc = include_bytes!("../../tests/fixtures/fonts/TwoFamily.ttc") as &[u8];
+        assert!(store.register_font(Arc::new(ttc.to_vec())));
+        // The key is the normalized name; the resolved value is the name
+        // fontique registered (original casing/spacing).
+        assert_eq!(
+            store.registered_name_for_key("dejavu sans").as_deref(),
+            Some("DejaVu Sans")
+        );
+    }
+
+    #[test]
+    fn unknown_family_key_shapes_like_its_real_name() {
+        // Alias-table keys can differ from every registered name (`times` ->
+        // `Times New Roman`). Resolving the key back to the real family must
+        // shape identically; skip when this machine has no Times New Roman.
+        let store = FontStore::from_resources(&Resources::default(), Arc::new(Vec::new()));
+        let entries = store.family_entries();
+        let Some(times) = entries.iter().find(|e| e.key == "times") else {
+            return;
+        };
+        let key_w = store.line_width(&FontId::new(&times.key), "Hello", 12.0);
+        let display_w = store.line_width(&FontId::new(&times.display), "Hello", 12.0);
+        assert!(
+            (key_w - display_w).abs() < 1e-6,
+            "key {} must shape like {}: {key_w} vs {display_w}",
+            times.key,
+            times.display
         );
     }
 

@@ -23,7 +23,7 @@
 - 不做段落级属性（对齐、行距、缩进）。
 - 不做 body（正文）格式化——§4.2 不变。
 - xilem-view 面板仍按旧 spec §5.3 挂账。
-- 富文本框的 IME 组合串仍是 detached overlay 单行预览（沿用 2026-11-09 行为），不内联进流式行。
+- 富文本框的 IME 组合串仍是 detached overlay（不内联进流式行）：锚点为 caret rect（caret 所在视觉行顶），字体/字号/颜色取插入点继承的 span 样式。
 
 ---
 
@@ -177,7 +177,7 @@ set_annotation_color(id, range: Option<(usize, usize)>, color)
 - `range == Some((s, e))` 非空 → clamp 到内容长度后交给 `spans_apply`（§4.1 规则 2/3）。覆盖全内容时**仍走规则 3 的无损合并**，而不是绕过检查直接抹平。
 - `measure` 闭包契约不变（返回需要增高的新高度；只增不减），只是它的排版输入现在是 span-aware。
 
-字体族仍是 v1 规则：`span.font = FontId(族名)`，不建 Font 资源、不落盘字体字节。
+字体族仍是 v1 规则：`span.font = FontId(显示族名)`（面板给归一化键，组件映射到该项 display），不建 Font 资源、不落盘字体字节。渲染对未知 FontId 依次尝试：归一化键 → 切片链 → 已注册族名（fontique 实际名，避开 `times` 这类别名键）→ 原 id。
 
 ---
 
