@@ -3,6 +3,24 @@
 //! `tools/slice.py --key` 决定）。需求收集（component）与片注册（FontStore）
 //! 共用本函数，保证两侧键一致。
 
+/// Localized family aliases offered beside a deliverable canonical family in
+/// the font picker (same idea as rword's `SLICE_FAMILY_ALIASES`):
+/// `(alias, canonical normalized key)`. The picker lists an alias only when
+/// its canonical family is deliverable; picking it stores the localized name
+/// and resolves through the canonical family's chain via
+/// [`normalize_family_key`].
+pub const PICKER_ALIASES: &[(&str, &str)] = &[
+    ("宋体", "simsun"),
+    ("新宋体", "simsun"),
+    ("黑体", "simhei"),
+    ("仿宋", "fangsong"),
+    ("仿宋_GB2312", "fangsong"),
+    ("楷体", "kaiti"),
+    ("楷体_GB2312", "kaiti"),
+    ("微软雅黑", "msyh"),
+    ("雅黑", "msyh"),
+];
+
 /// 归一到规范键：trim + 小写后查别名表；未知名字原样小写返回（空串进空串出）。
 pub fn normalize_family_key(name: &str) -> String {
     let lower = name.trim().to_lowercase();
@@ -27,6 +45,17 @@ pub fn normalize_family_key(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::normalize_family_key;
+
+    #[test]
+    fn picker_aliases_normalize_to_their_canonical_key() {
+        for (alias, canonical) in super::PICKER_ALIASES {
+            assert_eq!(
+                normalize_family_key(alias),
+                *canonical,
+                "alias {alias} must resolve to {canonical}"
+            );
+        }
+    }
 
     #[test]
     fn chinese_aliases_map_to_canonical_keys() {

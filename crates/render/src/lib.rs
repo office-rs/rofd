@@ -55,7 +55,7 @@ pub use scrollbar::{
     TRACK_PAGE_RATIO,
 };
 pub use text::layout_runs;
-pub use text::normalize_family_key;
+pub use text::{normalize_family_key, PICKER_ALIASES};
 pub use text::{
     shape_text, FamilyEntry, FontStore, LayoutRun, ShapedGlyph, WrappedLine, WrappedText,
 };

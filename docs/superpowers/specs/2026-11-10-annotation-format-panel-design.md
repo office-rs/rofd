@@ -146,12 +146,11 @@ xilem-view        gpui-view          web-view SDK
      `__rofs_*`。首次调用会触发系统字体扫描，结果缓存在组件里。
    - wasm：fontique 的系统后端为空，改由 SDK 把 manifest 的**可加载族**
      （规范键 + `displayName`）经 `set_available_font_families()` 推给组件，
-     再并上文档声明族与已注册族（过滤 `__rofs_*`）。**2026-11-11 补充**：SDK 另推
-     `fontCatalog.ts` 的通用族名目录（仅名字，不含字体字节；浏览器取不到的族选中
-     后回退默认字体，桌面经系统字体懒加载真正生效），使下拉与桌面 office 观感一致。
-     **2026-11-11 补充**：Chromium 的 `queryLocalFonts()` 在首次用户手势后授权，
-     授权的本机字体并入系统字体流（清单进下拉、需求命中时读字节注册）；不支持该
-     API 的浏览器仅保留名字目录。
+     再并上文档声明族与已注册族（过滤 `__rofs_*`）。**2026-11-11 补充**：与 rword
+     同机制，SDK 另按 `fontFamilyAliases()`（内核 `PICKER_ALIASES`）追加本地化别名
+     （宋体/黑体/楷体…），仅当其 canonical 族已在可交付清单中——绝不列通道交付不了
+     的族；选中别名按规范键命中切片链。浏览器里的商用族来自本机 gitignored
+     `public/fonts-sliced/` 切片清单（不入库、不分发），桌面走系统字体通道。
    - 去重按规范键，声明族 / SDK 提供项优先保留 display。
 3. `FontStore::family_display_name(&FontId) -> Option<String>`：注册族名 → 声明族名 →
    `None`。

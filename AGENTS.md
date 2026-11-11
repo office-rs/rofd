@@ -68,7 +68,7 @@ npm run smoke:nogpu       # 无 GPU 冒烟（headless Chrome --disable-gpu 必�
 ```
 
 `build:sdk` 等价于 `cd ../web-view && wasm-pack build --target web --out-dir sdk/dist`。
-字体通道：Noto 两族经 `@office-rs/font-runtime/vite` 从 npm 切片按需加载，商用六族走本机切片 `public/fonts-sliced/`（gitignored，裸 `Ofd.init` 不再默认拉 CDN 字体）——详见 `crates/web-app/README.md`。批注格式面板的字体下拉 = 通道可交付族（manifest + 桌面系统清单）∪ `fontCatalog.ts` 的**通用族名目录**（仅名字，不含/不拉字体字节；浏览器取不到的族选中后回退默认字体，桌面走系统字体懒加载）。`file:` 过渡依赖需要 sibling 检出 `D:/code/fonts`（spec 2026-10-17 §7：npm 包上线后切 `^1.0.0`，届时移除本注记）。
+字体通道：Noto 两族经 `@office-rs/font-runtime/vite` 从 npm 切片按需加载，商用六族走本机切片 `public/fonts-sliced/`（gitignored，裸 `Ofd.init` 不再默认拉 CDN 字体；本机可用 `D:/code/fonts/tools/slice.py` 从 `C:/Windows/Fonts` 生成，含 kaiti）——详见 `crates/web-app/README.md`。批注格式面板的字体下拉与 rword 同机制：通道可交付族（manifest + 桌面系统清单）+ 内核 `PICKER_ALIASES` 的本地化别名（仅当 canonical 族可交付时列出，选中后按规范键命中切片链）。`file:` 过渡依赖需要 sibling 检出 `D:/code/fonts`（spec 2026-10-17 §7：npm 包上线后切 `^1.0.0`，届时移除本注记）。
 
 ### 构建 / 运行 tauri 桌面宿主
 
@@ -248,7 +248,6 @@ converter hosts（CLI/未来绑定）只碰 rofd-convert，与"编辑器宿主�
 - `WasmOfd`（wasm-bindgen）+ `WebGpuRenderTarget` + JS 事件桥。工厂 `create_wasm_ofd`。wasm-pack --target web。
 - CPU 回退（spec 2026-10-18）：WebGPU 不可用时 SDK 落 `create_wasm_ofd_cpu`（vello_cpu + 页位图缓存）于**同一 canvas**——前提是 `create_wasm_ofd` **先探 adapter（`compatible_surface: None`）后 `create_surface`**（canvas 一旦绑了 webgpu context 就永远拿不到 2d context，回退必挂）；该链路由 `npm run smoke:nogpu` 冒烟守护，勿倒回"先绑 surface 再探 adapter"。
 - SDK 在 `crates/web-view/sdk/`，入口 `Ofd.init(container, config?)`，发布为 npm 包 `@office-rs/rofd`。
-- 浏览器本机字体通道（2026-11-11）：Chromium 的 `queryLocalFonts()` 在**首次用户手势**后请求授权，清单并入系统字体流（族名进下拉、需求命中时读字节注册）；Firefox/Safari 无此 API 时只保留 `fontCatalog.ts` 的名字目录（选中回退默认字体）。字体字节只在本机读取，不分发。
 - IME 桥（2026-11-07）：canvas 不可编辑，OS IME 不会对它起组合——SDK 用 1px 透明 `<input data-rofd-ime>` 承载键盘焦点与组合（`compositionupdate`→`handleImePreedit`、`compositionend`→`handleImeCommit` + 清 preedit + 清 value；组合期间 keydown（`isComposing`/`keyCode 229`）一律丢弃防双插）；input 经 `caretRect()` 锚定到光标处（候选窗跟光标）；焦点模型整体从 canvas 迁到该 input。
 - 渲染调度（spec 2026-10-13 web-render-on-demand）：内核 `needs_frame() -> FrameNeed` 是唯一真值；wasm 融合导出 `renderFrame()` 返回 `0` / `>0`ms / `-1`。SDK 自挂起调度器（`scheduler.ts` `RenderScheduler` + `with-kick.ts` Proxy kick + watchdog）：`0`→rAF 立即重渲、`>0`→唯一 `setTimeout` 唤醒（blink deadline，web 的 WaitUntil）、`-1`→完全挂起；任何 wasm 方法调用经 Proxy kick 恰预约一个 rAF（`renderFrame` 豁免）；`visibilitychange` 隐藏完全静默；`pauseRendering`/`resumeRendering` 为宿主政策层手柄。
 

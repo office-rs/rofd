@@ -433,98 +433,40 @@ export function mergeFontFamilyLists(
   return [...listed, ...extra];
 }
 
-// ─── 浏览器本机字体通道（Local Font Access API）─────────────────────────────
-//
-// Chromium 的 `queryLocalFonts()` 让网页在**用户手势 + 授权**后读取本机已安装
-// 字体（不经文件分发，不打包商业字体）。浏览器没有桌面桥，我们把它的清单接进
-// 同一套系统字体流：族名进 picker，需求命中时读字节注册。
-
-/** One installed face returned by `window.queryLocalFonts()`. */
-export interface LocalFontFace {
-  family: string;
-  style?: string;
-  postscriptName: string;
-  blob(): Promise<Blob>;
-}
-
-export type QueryLocalFontsFn = () => Promise<LocalFontFace[]>;
-
-/** Browser channel: `list()` stays empty until {@link BrowserLocalFontProvider.activate}
- * (the API needs a user gesture); `read()` serves the activated faces. */
-export interface BrowserLocalFontProvider extends SystemFontProvider {
-  activate(): Promise<SystemFontEntry[]>;
-}
-
-/** Whether this browser exposes the Local Font Access API. */
-export function browserLocalFontsAvailable(
-  scope: unknown = globalThis,
-): boolean {
-  return (
-    typeof (scope as { queryLocalFonts?: unknown } | null)?.queryLocalFonts ===
-    "function"
-  );
-}
-
-/** Build the browser local-font provider. `query` is injectable for tests. */
-export function createBrowserLocalFontProvider(
-  query?: QueryLocalFontsFn,
-): BrowserLocalFontProvider {
-  const faces = new Map<string, LocalFontFace>();
-  const run =
-    query ??
-    (() =>
-      (
-        globalThis as unknown as { queryLocalFonts: QueryLocalFontsFn }
-      ).queryLocalFonts());
-
-  return {
-    list: async () => [], // populated by activate(): needs a user gesture
-    read: async (entry) => {
-      const face = faces.get(entry.fileName);
-      if (!face) {
-        return null;
-      }
-      const blob = await face.blob();
-      return new Uint8Array(await blob.arrayBuffer());
-    },
-    activate: async () => {
-      const listed = await run();
-      // Regular faces first: a family's bytes then register the normal weight.
-      listed.sort(
-        (a, b) =>
-          Number((b.style ?? "").toLowerCase() === "regular") -
-          Number((a.style ?? "").toLowerCase() === "regular"),
-      );
-      const out: SystemFontEntry[] = [];
-      for (const face of listed) {
-        if (!face.family || !face.postscriptName) {
-          continue;
-        }
-        faces.set(face.postscriptName, face);
-        out.push({ family: face.family, fileName: face.postscriptName });
-      }
-      return out;
-    },
-  };
-}
-
-/** Add late-arriving entries (browser activation) to an existing system flow:
- * names feed the picker, normalized keys feed the load pass. Families the flow
- * gave up on before the channel was ready are retried once. */
-export function addSystemEntries(
-  flow: SystemFontFlow,
-  entries: readonly SystemFontEntry[],
+/** rword-style picker aliases: a localized alias (`宋体`, `楷体`, …) is listed
+ * only when its canonical family is already deliverable (manifest/system
+ * list), so the picker never offers a family the channel cannot deliver. Flat
+ * input pairs are `[alias, canonicalKey, …]`. */
+export function withFontFamilyAliases(
+  pairs: readonly string[][],
+  aliases: readonly string[],
   normalize: (name: string) => string,
-): void {
-  for (const entry of entries) {
-    if (!flow.familiesRaw.includes(entry.family)) {
-      flow.familiesRaw.push(entry.family);
-    }
-    const key = normalize(entry.family);
-    if (!flow.fileByFamily.has(key)) {
-      flow.fileByFamily.set(key, entry.fileName);
-    }
+): string[][] {
+  const deliverable = new Set<string>();
+  for (const [key, display] of pairs) {
+    deliverable.add(normalize(key ?? ""));
+    deliverable.add(normalize(display ?? ""));
   }
-  flow.familiesRaw.sort((a, b) => a.localeCompare(b));
-  flow.settled.clear();
+  const seen = new Set(
+    pairs.map(([, display]) =>
+      String(display ?? "")
+        .trim()
+        .toLowerCase(),
+    ),
+  );
+  const out = pairs.map((pair) => [...pair]);
+  for (let i = 0; i + 1 < aliases.length; i += 2) {
+    const alias = aliases[i];
+    const canonical = normalize(aliases[i + 1] ?? "");
+    if (!alias || !deliverable.has(canonical)) {
+      continue;
+    }
+    const display = alias.trim().toLowerCase();
+    if (display === "" || seen.has(display)) {
+      continue;
+    }
+    seen.add(display);
+    out.push([alias, alias]);
+  }
+  return out;
 }

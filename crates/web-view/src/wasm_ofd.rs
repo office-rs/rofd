@@ -594,6 +594,17 @@ mod wasm_impl {
             self.component.set_available_font_families(families);
         }
 
+        /// Localized family aliases as flat `[alias, canonicalKey, ...]`
+        /// pairs (rword-style picker: list an alias only when its canonical
+        /// family is deliverable).
+        #[wasm_bindgen(js_name = fontFamilyAliases)]
+        pub fn font_family_aliases(&self) -> Vec<String> {
+            rofd_render::PICKER_ALIASES
+                .iter()
+                .flat_map(|(alias, canonical)| [alias.to_string(), canonical.to_string()])
+                .collect()
+        }
+
         /// Font size dropdown entries as `[[label, pt], ...]` (label may be
         /// empty for numeric sizes).
         #[wasm_bindgen(js_name = textSizes)]
