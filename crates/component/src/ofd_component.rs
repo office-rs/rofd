@@ -7945,6 +7945,7 @@ mod tests {
                 h: 200.0,
             },
             layers: vec![Layer {
+                raw_attrs: Vec::new(),
                 raw_children: Vec::new(),
                 layer_type: LayerType::Body,
                 objects: vec![PageObject::Text(TextObject {
@@ -9482,6 +9483,7 @@ mod tests {
             id: PageId::new("P0"),
             physical_box: Rect::default(),
             layers: vec![Layer {
+                raw_attrs: Vec::new(),
                 raw_children: Vec::new(),
                 layer_type: LayerType::Body,
                 objects: vec![

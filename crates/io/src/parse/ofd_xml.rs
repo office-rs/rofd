@@ -4,7 +4,7 @@ use quick_xml::Reader;
 use rofd_dom::{DocMeta, RawFragment};
 
 use crate::error::OfdError;
-use crate::parse::raw::{capture_raw_subtree, NsScope};
+use crate::parse::raw::{capture_raw_empty, capture_raw_subtree, NsScope};
 
 /// Extract DocRoot path (e.g. "Doc_0/Document.xml") from OFD.xml.
 pub fn parse_doc_root(ofd_xml: &str) -> Result<String, OfdError> {
@@ -150,9 +150,14 @@ pub fn parse_ofd_xml_raws(ofd_xml: &str) -> (Vec<RawFragment>, Vec<RawFragment>)
                         b"DocID" | b"Title" | b"Author" | b"CreationDate" | b"LastModDate"
                     ) {
                         info_seen += 1;
-                    } else if let Ok(frag) =
-                        capture_raw_subtree(&mut reader, &mut buf, ofd_xml, pos_before, &ns)
-                    {
+                    } else if let Ok(frag) = capture_raw_subtree(
+                        &mut reader,
+                        &mut buf,
+                        ofd_xml,
+                        pos_before,
+                        &ns,
+                        "OFD.xml",
+                    ) {
                         // The capture consumed the subtree root's End event;
                         // undo this loop's depth increment for it.
                         depth = depth.saturating_sub(1);
@@ -167,9 +172,14 @@ pub fn parse_ofd_xml_raws(ofd_xml: &str) -> (Vec<RawFragment>, Vec<RawFragment>)
                         ns.end();
                     }
                 } else if in_doc_body && depth == 3 {
-                    if let Ok(frag) =
-                        capture_raw_subtree(&mut reader, &mut buf, ofd_xml, pos_before, &ns)
-                    {
+                    if let Ok(frag) = capture_raw_subtree(
+                        &mut reader,
+                        &mut buf,
+                        ofd_xml,
+                        pos_before,
+                        &ns,
+                        "OFD.xml",
+                    ) {
                         depth = depth.saturating_sub(1);
                         ns.end();
                         let position = body_seen + body.len();
@@ -190,6 +200,27 @@ pub fn parse_ofd_xml_raws(ofd_xml: &str) -> (Vec<RawFragment>, Vec<RawFragment>)
                     b"DocBody" => in_doc_body = false,
                     b"DocInfo" => in_doc_info = false,
                     _ => {}
+                }
+            }
+            Ok(Event::Empty(e)) => {
+                let name = e.name().local_name();
+                let name = name.as_ref();
+                if matches!(name, b"DocBody" | b"DocInfo" | b"DocRoot" | b"OFD") {
+                    // Known structural elements: nothing to capture.
+                } else if in_doc_info && depth == 3 {
+                    let frag = capture_raw_empty(&reader, ofd_xml, pos_before, &ns);
+                    let position = info_seen + info.len();
+                    info.push(RawFragment {
+                        position,
+                        xml: frag,
+                    });
+                } else if in_doc_body && depth == 2 {
+                    let frag = capture_raw_empty(&reader, ofd_xml, pos_before, &ns);
+                    let position = body_seen + body.len();
+                    body.push(RawFragment {
+                        position,
+                        xml: frag,
+                    });
                 }
             }
             Ok(Event::Eof) => break,

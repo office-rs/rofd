@@ -6,7 +6,7 @@ use rofd_dom::{DocMeta, PageId, RawFragment, Rect};
 use crate::error::OfdError;
 use crate::parse::attr;
 use crate::parse::parse_rect_ws;
-use crate::parse::raw::{capture_raw_subtree, NsScope};
+use crate::parse::raw::{capture_raw_empty, capture_raw_subtree, NsScope};
 
 pub struct PageRef {
     pub id: PageId,
@@ -89,8 +89,14 @@ pub fn parse_document(doc_xml: &str) -> Result<DocHeader, OfdError> {
                     // must NOT pass through (duplicate locs would dangle).
                     common_seen += 1;
                 } else if depth == 2 {
-                    let frag =
-                        capture_raw_subtree(&mut reader, &mut buf, doc_xml, pos_before, &ns)?;
+                    let frag = capture_raw_subtree(
+                        &mut reader,
+                        &mut buf,
+                        doc_xml,
+                        pos_before,
+                        &ns,
+                        "Document.xml",
+                    )?;
                     // The capture consumed the subtree root's End event; undo
                     // this loop's depth increment for it.
                     depth = depth.saturating_sub(1);
@@ -101,8 +107,14 @@ pub fn parse_document(doc_xml: &str) -> Result<DocHeader, OfdError> {
                         xml: frag,
                     });
                 } else if in_common_data && depth == 3 {
-                    let frag =
-                        capture_raw_subtree(&mut reader, &mut buf, doc_xml, pos_before, &ns)?;
+                    let frag = capture_raw_subtree(
+                        &mut reader,
+                        &mut buf,
+                        doc_xml,
+                        pos_before,
+                        &ns,
+                        "Document.xml",
+                    )?;
                     depth = depth.saturating_sub(1);
                     ns.end();
                     let position = common_seen + header.raw_common_children.len();
@@ -114,12 +126,39 @@ pub fn parse_document(doc_xml: &str) -> Result<DocHeader, OfdError> {
             }
             Ok(Event::Empty(e)) => {
                 let local = e.name().local_name();
-                if e.name().local_name().as_ref() == b"Page" {
+                let name = local.as_ref();
+                if name == b"Page" {
                     handle_page(&e, &mut header);
-                } else if local.as_ref() == b"Annotations" {
-                    // Empty annotations element carries no text; nothing to do.
+                } else if matches!(
+                    name,
+                    b"Annotations"
+                        | b"Pages"
+                        | b"CommonData"
+                        | b"PageArea"
+                        | b"MaxUnitID"
+                        | b"PhysicalBox"
+                        | b"PublicRes"
+                        | b"DocumentRes"
+                        | b"Document"
+                ) {
+                    // Known-but-empty structural elements: nothing to capture.
+                } else if depth == 1 {
+                    // Unknown self-closing root child (typical form for
+                    // attachment/outline references) - capture verbatim.
+                    let frag = capture_raw_empty(&reader, doc_xml, pos_before, &ns);
+                    let position = root_seen + header.raw_children.len();
+                    header.raw_children.push(RawFragment {
+                        position,
+                        xml: frag,
+                    });
+                } else if in_common_data && depth == 2 {
+                    let frag = capture_raw_empty(&reader, doc_xml, pos_before, &ns);
+                    let position = common_seen + header.raw_common_children.len();
+                    header.raw_common_children.push(RawFragment {
+                        position,
+                        xml: frag,
+                    });
                 }
-                // Other empty elements carry no modeled content.
             }
             Ok(Event::Text(t)) => {
                 let s = t.unescape().map(|c| c.into_owned()).unwrap_or_default();

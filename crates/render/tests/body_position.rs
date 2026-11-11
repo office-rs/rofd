@@ -97,6 +97,7 @@ fn text_glyph_ids_used_when_present() {
             h: 297.0,
         },
         layers: vec![Layer {
+            raw_attrs: Vec::new(),
             raw_children: Vec::new(),
             layer_type: LayerType::Body,
             objects: vec![PageObject::Text(text)],
@@ -168,6 +169,7 @@ fn text_glyph_transform_includes_boundary_origin() {
             h: 297.0,
         },
         layers: vec![Layer {
+            raw_attrs: Vec::new(),
             raw_children: Vec::new(),
             layer_type: LayerType::Body,
             objects: vec![PageObject::Text(text)],

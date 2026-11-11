@@ -79,7 +79,7 @@ fn ofd_xml(meta: &DocMeta, body_raws: &[RawFragment]) -> String {
 /// - `Doc_0/Annots/Page_N/Annotation.xml` per annotated page
 ///
 /// `text_layout` carries the wrapped annotation-text line geometry computed
-/// by the component (see [`crate::save_ofd_with_text_layout`]); pass an empty
+/// by the component (see the editor's save_snapshot); pass an empty
 /// map for the legacy content-`\n` split.
 pub fn write_ofd_with_text_layout(
     doc: &OfdDocument,
@@ -152,7 +152,7 @@ pub fn write_ofd_with_text_layout(
     for (i, page) in doc.pages.iter().enumerate() {
         pages_block.push_str(&format!(
             "    <ofd:Page ID=\"{}\" BaseLoc=\"Pages/Page_{i}/Content.xml\"/>\n",
-            page.id.0
+            xml_escape(&page.id.0)
         ));
     }
     pages_block.push_str("  </ofd:Pages>\n");
@@ -178,7 +178,9 @@ pub fn write_ofd_with_text_layout(
         entries.push(("Doc_0/Annots/Annotations.xml".into(), xml.into_bytes()));
     }
 
-    // Per-page Content.xml + Annotation.xml (§15.2).
+    // Per-page Content.xml + Annotation.xml (§15.2). GB/T CT_Page orders
+    // Template before Content; page-root raw fragments follow in capture
+    // order (position approximation, content preserved).
     for (i, page) in doc.pages.iter().enumerate() {
         let mut page_xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
         page_xml.push_str("<ofd:Page xmlns:ofd=\"http://www.ofdspec.org/2016\">\n");
@@ -186,13 +188,19 @@ pub fn write_ofd_with_text_layout(
             "  <ofd:Area><ofd:PhysicalBox>{} {} {} {}</ofd:PhysicalBox></ofd:Area>\n",
             page.physical_box.x, page.physical_box.y, page.physical_box.w, page.physical_box.h
         ));
+        if let Some(loc) = &page.template {
+            page_xml.push_str(&format!(
+                "  <ofd:Template TemplateLoc=\"{}\"/>\n",
+                xml_escape(loc)
+            ));
+        }
         page_xml.push_str("  <ofd:Content>\n");
         for layer in &page.layers {
             page_xml.push_str(&body::layer_xml(layer));
         }
         page_xml.push_str("  </ofd:Content>\n");
-        if let Some(loc) = &page.template {
-            page_xml.push_str(&format!("  <ofd:Template TemplateLoc=\"{loc}\"/>\n"));
+        for frag in &page.raw_children {
+            page_xml.push_str(&format!("  {}\n", frag.xml));
         }
         page_xml.push_str("</ofd:Page>");
         entries.push((

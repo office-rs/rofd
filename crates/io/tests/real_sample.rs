@@ -55,6 +55,19 @@ fn real_sample_parses_and_surgically_saves() {
         report.document.max_unit_id
     );
 
+    // C1 regression pin: modeled body objects must parse (the reference
+    // sample wraps objects in <PageBlock> - a transparent container).
+    let modeled: usize = report
+        .document
+        .pages
+        .iter()
+        .map(|p| p.layers.iter().map(|l| l.objects.len()).sum::<usize>())
+        .sum();
+    assert!(
+        modeled > 0,
+        "real sample parses modeled objects, got {modeled}"
+    );
+
     // Full write with passthrough (spec 2026-11-11 D12): the saved package
     // re-parses to the same model, and entries parse never consumed
     // (signatures/attachments/unknown files) stay byte-identical.

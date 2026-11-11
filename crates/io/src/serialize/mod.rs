@@ -34,5 +34,11 @@ pub(crate) fn interleave<'a>(known_count: usize, raws: &'a [RawFragment]) -> Vec
             k += 1;
         }
     }
+    // Never drop: parse-side positions count elements the writer may not
+    // emit (e.g. an emptied <Annotations>), so trailing raws that missed
+    // their slot append at the end (final review I2).
+    for leftover in &sorted[ri..] {
+        out.push(Child::Raw(leftover));
+    }
     out
 }

@@ -98,6 +98,9 @@ pub struct CompositeObject {
     pub ctm: Option<Ctm>,
     /// Reference to a reusable composite unit (v1: unresolved, stored as-is).
     pub unit: String,
+    /// Unmodelled attributes on the element, verbatim (passthrough).
+    #[serde(default)]
+    pub raw_attrs: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

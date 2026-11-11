@@ -97,6 +97,7 @@ fn page_with(layers: Vec<Layer>) -> Page {
 fn text_object_round_trips() {
     let mut doc = OfdDocument::default();
     doc.pages.push(page_with(vec![Layer {
+        raw_attrs: Vec::new(),
         raw_children: Vec::new(),
         layer_type: LayerType::Body,
         objects: vec![PageObject::Text(TextObject {
@@ -144,6 +145,7 @@ fn text_object_round_trips() {
 fn layer_without_objects_emits_self_closing() {
     let mut doc = OfdDocument::default();
     doc.pages.push(page_with(vec![Layer {
+        raw_attrs: Vec::new(),
         raw_children: Vec::new(),
         layer_type: LayerType::Body,
         objects: vec![],
@@ -159,6 +161,7 @@ fn layer_without_objects_emits_self_closing() {
 fn path_object_round_trips() {
     let mut doc = OfdDocument::default();
     doc.pages.push(page_with(vec![Layer {
+        raw_attrs: Vec::new(),
         raw_children: Vec::new(),
         layer_type: LayerType::Body,
         objects: vec![
@@ -230,6 +233,7 @@ fn path_object_round_trips() {
 fn path_z_round_trips_as_z() {
     let mut doc = OfdDocument::default();
     doc.pages.push(page_with(vec![Layer {
+        raw_attrs: Vec::new(),
         raw_children: Vec::new(),
         layer_type: LayerType::Body,
         objects: vec![PageObject::Path(PathObject {
@@ -270,9 +274,11 @@ fn path_z_round_trips_as_z() {
 fn composite_round_trips() {
     let mut doc = OfdDocument::default();
     doc.pages.push(page_with(vec![Layer {
+        raw_attrs: Vec::new(),
         raw_children: Vec::new(),
         layer_type: LayerType::Body,
         objects: vec![PageObject::Composite(CompositeObject {
+            raw_attrs: Vec::new(),
             id: ObjectId::new("c1"),
             boundary: Rect {
                 x: 0.0,
@@ -331,7 +337,7 @@ fn resources_round_trip() {
 
     let bytes = write_ofd(&doc).expect("write_ofd");
     let res_xml = read_entry(&bytes, "Doc_0/Res/DocumentRes.xml");
-    assert!(res_xml.contains("Format=\"png\""), "{res_xml}");
+    assert!(res_xml.contains("Format=\"PNG\""), "{res_xml}");
     assert!(
         res_xml.contains("<ofd:MediaFile>Img_img1.png</ofd:MediaFile>"),
         "{res_xml}"
@@ -377,7 +383,7 @@ fn jpeg_sniffed_as_jpg() {
         .insert(ImageId::new("img9"), Arc::new(JPG_MAGIC.to_vec()));
     let bytes = write_ofd(&doc).expect("write_ofd");
     let res_xml = read_entry(&bytes, "Doc_0/Res/DocumentRes.xml");
-    assert!(res_xml.contains("Format=\"jpg\""), "{res_xml}");
+    assert!(res_xml.contains("Format=\"JPG\""), "{res_xml}");
     assert!(res_xml.contains("Img_img9.jpg"), "{res_xml}");
     assert_round_trip(&doc);
 }
@@ -398,6 +404,7 @@ fn empty_resources_emit_nothing() {
 fn image_object_round_trips() {
     let mut doc = OfdDocument::default();
     doc.pages.push(page_with(vec![Layer {
+        raw_attrs: Vec::new(),
         raw_children: Vec::new(),
         layer_type: LayerType::Body,
         objects: vec![PageObject::Image(ImageObject {
@@ -606,6 +613,7 @@ fn object_id_seed_scans_raw_fragment_ids() {
     let doc = OfdDocument {
         max_unit_id: 5,
         pages: vec![page_with(vec![Layer {
+            raw_attrs: Vec::new(),
             layer_type: LayerType::Body,
             objects: vec![],
             raw_children: vec![rofd_dom::RawFragment {
@@ -722,6 +730,7 @@ fn consumed_set_records_modeled_entries() {
 fn layer_raw_children_interleave_in_write() {
     let mut doc = OfdDocument::default();
     doc.pages.push(page_with(vec![Layer {
+        raw_attrs: Vec::new(),
         layer_type: LayerType::Body,
         objects: vec![
             PageObject::Path(PathObject {
@@ -785,6 +794,7 @@ fn layer_raw_children_interleave_in_write() {
 fn object_raw_attrs_reemitted() {
     let mut doc = OfdDocument::default();
     doc.pages.push(page_with(vec![Layer {
+        raw_attrs: Vec::new(),
         layer_type: LayerType::Body,
         objects: vec![PageObject::Text(TextObject {
             id: ObjectId::new("t1"),
@@ -1024,4 +1034,140 @@ fn generation_passes_none() {
     let b = rofd_io::write_ofd_with_text_layout(&doc, None, &rofd_dom::TextLayoutHints::new())
         .expect("write with None");
     assert_eq!(a, b, "None path == generation path");
+}
+
+// ---- Final-review fix pass ----
+
+#[test]
+fn page_block_is_transparent_and_objects_parse() {
+    // C1: PageBlock is a standard GB/T grouping element; its modeled
+    // children must parse into the layer (the old name-based parser did).
+    let content = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:Page xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:Content><ofd:Layer Type=\"Body\"><ofd:PageBlock>{PATH_XML}<ofd:PageBlock>{PATH_XML}</ofd:PageBlock></ofd:PageBlock></ofd:Layer></ofd:Content></ofd:Page>"
+    );
+    let report = parse_ofd(&page_package(&content, 10)).expect("parse");
+    let layer = &report.document.pages[0].layers[0];
+    assert_eq!(layer.objects.len(), 2, "PageBlock children parsed");
+    assert!(
+        layer.raw_children.is_empty(),
+        "wrapper not captured as fragment"
+    );
+}
+
+#[test]
+fn page_root_raws_reemitted() {
+    // I1: page-root unknown children must be written back.
+    let mut doc = OfdDocument::default();
+    let mut page = page_with(vec![]);
+    page.raw_children = vec![rofd_dom::RawFragment {
+        position: 0,
+        xml: "<ofd:ExtraPageThing ID=\"77\"/>".into(),
+    }];
+    doc.pages.push(page);
+    let bytes = write_ofd(&doc).expect("write_ofd");
+    let xml = content_xml(&bytes);
+    assert!(xml.contains("<ofd:ExtraPageThing ID=\"77\"/>"), "{xml}");
+}
+
+#[test]
+fn interleave_never_drops_out_of_range_raws() {
+    // I2: a raw whose position exceeds the writer's known slots (e.g.
+    // captured after an <Annotations> the writer no longer emits) must
+    // still be written, not silently dropped.
+    let mut doc = OfdDocument::default();
+    doc.pages.push(page_with(vec![]));
+    doc.raw_doc_children = vec![rofd_dom::RawFragment {
+        position: 3,
+        xml: "<ofd:Attachments FileLoc=\"a.dat\"/>".into(),
+    }];
+    let bytes = write_ofd(&doc).expect("write_ofd");
+    let doc_xml = read_entry(&bytes, "Doc_0/Document.xml");
+    assert!(
+        doc_xml.contains("<ofd:Attachments FileLoc=\"a.dat\"/>"),
+        "{doc_xml}"
+    );
+}
+
+#[test]
+fn empty_form_unknowns_captured_at_document_and_ofd_level() {
+    // I3: self-closing unknown elements must be captured too (the typical
+    // form for attachment/outline/Version references).
+    let doc_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:Document xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:PageArea><ofd:MaxUnitID>10</ofd:MaxUnitID></ofd:CommonData><ofd:Pages><ofd:Page ID=\"P0\" BaseLoc=\"Pages/Page_0/Content.xml\"/></ofd:Pages><ofd:Attachments FileLoc=\"a.dat\"/></ofd:Document>";
+    let ofd_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:OFD xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:DocBody><ofd:DocRoot>Doc_0/Document.xml</ofd:DocRoot><ofd:Version/></ofd:DocBody></ofd:OFD>";
+    let report = parse_ofd(&custom_package(ofd_xml, doc_xml, PLAIN_CONTENT, &[])).expect("parse");
+    assert_eq!(
+        report.document.raw_doc_children.len(),
+        1,
+        "empty Attachments captured"
+    );
+    assert!(report.document.raw_doc_children[0]
+        .xml
+        .contains("FileLoc=\"a.dat\""));
+    assert_eq!(
+        report.document.raw_ofd_body_children.len(),
+        1,
+        "empty Version captured"
+    );
+}
+
+#[test]
+fn prefixed_raw_attrs_carry_namespace_binding() {
+    // I4: a prefixed unknown attribute must not dangle - the binding is
+    // synthesized onto the object and survives re-parse.
+    let content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:Page xmlns:ofd=\"http://www.ofdspec.org/2016\" xmlns:ext=\"urn:x\"><ofd:Content><ofd:Layer Type=\"Body\"><ofd:TextObject ID=\"t1\" Boundary=\"0 0 50 10\" Font=\"4\" Size=\"10\" ext:seal=\"1\"><ofd:TextCode X=\"0\" Y=\"5\">hi</ofd:TextCode></ofd:TextObject></ofd:Layer></ofd:Content></ofd:Page>";
+    let doc_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:Document xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:PageArea><ofd:MaxUnitID>10</ofd:MaxUnitID></ofd:CommonData><ofd:Pages><ofd:Page ID=\"P0\" BaseLoc=\"Pages/Page_0/Content.xml\"/></ofd:Pages></ofd:Document>";
+    let ofd_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:OFD xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:DocBody><ofd:DocRoot>Doc_0/Document.xml</ofd:DocRoot></ofd:DocBody></ofd:OFD>";
+    let report = parse_ofd(&custom_package(ofd_xml, doc_xml, content, &[])).expect("parse");
+    let bytes = write_ofd(&report.document).expect("write");
+    let xml = content_xml(&bytes);
+    assert!(xml.contains("ext:seal=\"1\""), "{xml}");
+    assert!(
+        xml.contains("xmlns:ext=\"urn:x\""),
+        "binding present: {xml}"
+    );
+    // And the second round trip keeps the attribute (the xmlns pseudo-attr
+    // re-synthesizes from the written declaration - a stable state).
+    let second = parse_ofd(&bytes).expect("re-parse");
+    let PageObject::Text(t) = &second.document.pages[0].layers[0].objects[0] else {
+        panic!("text");
+    };
+    assert_eq!(
+        t.raw_attrs,
+        vec![
+            ("ext:seal".to_string(), "1".to_string()),
+            ("xmlns:ext".to_string(), "urn:x".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn layer_and_composite_raw_attrs_round_trip() {
+    // I5: Layer ID and CompositeObject unknown attrs survive save.
+    let content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:Page xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:Content><ofd:Layer Type=\"Body\" ID=\"2\"><ofd:CompositeObject ID=\"c1\" Boundary=\"0 0 50 20\" ResourceID=\"Page_2/Content.xml\" Alpha=\"0.5\"/></ofd:Layer></ofd:Content></ofd:Page>";
+    let doc_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:Document xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:PageArea><ofd:MaxUnitID>10</ofd:MaxUnitID></ofd:CommonData><ofd:Pages><ofd:Page ID=\"P0\" BaseLoc=\"Pages/Page_0/Content.xml\"/></ofd:Pages></ofd:Document>";
+    let ofd_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:OFD xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:DocBody><ofd:DocRoot>Doc_0/Document.xml</ofd:DocRoot></ofd:DocBody></ofd:OFD>";
+    let report = parse_ofd(&custom_package(ofd_xml, doc_xml, content, &[])).expect("parse");
+    assert_eq!(
+        report.document.pages[0].layers[0].raw_attrs,
+        vec![("ID".to_string(), "2".to_string())],
+        "Layer ID captured"
+    );
+    let bytes = write_ofd(&report.document).expect("write");
+    let xml = content_xml(&bytes);
+    assert!(xml.contains("<ofd:Layer Type=\"Body\" ID=\"2\">"), "{xml}");
+    assert!(xml.contains("Alpha=\"0.5\""), "{xml}");
+}
+
+#[test]
+fn template_precedes_content() {
+    // I6: GB/T CT_Page orders Template before Content.
+    let mut doc = OfdDocument::default();
+    let mut page = page_with(vec![]);
+    page.template = Some("Pages/Tpl.xml".into());
+    doc.pages.push(page);
+    let bytes = write_ofd(&doc).expect("write_ofd");
+    let xml = content_xml(&bytes);
+    let tpl = xml.find("<ofd:Template").expect("template");
+    let content_at = xml.find("<ofd:Content>").expect("content");
+    assert!(tpl < content_at, "Template before Content: {xml}");
 }

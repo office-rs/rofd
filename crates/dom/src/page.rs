@@ -21,6 +21,9 @@ pub struct Layer {
     /// (passthrough, spec 2026-11-11 D3).
     #[serde(default)]
     pub raw_children: Vec<RawFragment>,
+    /// Unmodelled attributes on the Layer element, verbatim (e.g. ID).
+    #[serde(default)]
+    pub raw_attrs: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

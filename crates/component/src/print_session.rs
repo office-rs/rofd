@@ -390,6 +390,7 @@ mod tests {
         let mut page = a4_page("P0");
         if body_text {
             page.layers[0] = Layer {
+                raw_attrs: Vec::new(),
                 raw_children: Vec::new(),
                 layer_type: LayerType::Body,
                 objects: vec![PageObject::Text(TextObject {

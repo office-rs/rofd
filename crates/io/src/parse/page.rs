@@ -89,14 +89,21 @@ pub fn parse_page(
                         &mut text_origin,
                         &mut in_glyphs,
                         &mut pending_glyph_ids,
+                        &ns,
                     );
                 } else {
                     // Unknown element -> capture the subtree verbatim (spec
                     // 2026-11-11 D3). All uses of `e` must happen before
                     // the capture call re-borrows the event buffer.
                     let element = String::from_utf8_lossy(e.name().as_ref()).into_owned();
-                    let frag_xml =
-                        capture_raw_subtree(&mut reader, &mut buf, page_xml, pos_before, &ns)?;
+                    let frag_xml = capture_raw_subtree(
+                        &mut reader,
+                        &mut buf,
+                        page_xml,
+                        pos_before,
+                        &ns,
+                        "Page.xml",
+                    )?;
                     ns.end(); // the subtree root's own declarations end with it
                     push_raw_fragment(&mut page, &mut current_layer, frag_xml);
                     warnings.push(OfdWarning::PreservedRaw {
@@ -116,6 +123,7 @@ pub fn parse_page(
                         _ => LayerType::Body,
                     };
                     page.layers.push(Layer {
+                        raw_attrs: Vec::new(),
                         raw_children: Vec::new(),
                         layer_type: lt,
                         objects: vec![],
@@ -133,6 +141,7 @@ pub fn parse_page(
                         &mut text_origin,
                         &mut in_glyphs,
                         &mut pending_glyph_ids,
+                        &ns,
                     );
                 } else {
                     let element = String::from_utf8_lossy(e.name().as_ref()).into_owned();
@@ -251,6 +260,7 @@ fn handle_element_start(
     text_origin: &mut (f64, f64),
     in_glyphs: &mut bool,
     pending_glyph_ids: &mut Option<Vec<u32>>,
+    ns: &NsScope,
 ) {
     match e.name().local_name().as_ref() {
         b"Layer" => {
@@ -260,6 +270,7 @@ fn handle_element_start(
                 _ => LayerType::Body,
             };
             *current_layer = Some(Layer {
+                raw_attrs: raw_attrs_of(e, &[b"Type"], ns),
                 raw_children: Vec::new(),
                 layer_type: lt,
                 objects: vec![],
@@ -270,6 +281,7 @@ fn handle_element_start(
                 raw_attrs: raw_attrs_of(
                     e,
                     &[b"ID", b"Boundary", b"CTM", b"Font", b"Size", b"DrawParam"],
+                    ns,
                 ),
                 id: ObjectId::new(attr(e, "ID").unwrap_or_default()),
                 boundary: parse_rect_attr(e, "Boundary"),
@@ -315,7 +327,7 @@ fn handle_element_start(
         b"ImageObject" => {
             if let Some(l) = current_layer.as_mut() {
                 l.objects.push(PageObject::Image(ImageObject {
-                    raw_attrs: raw_attrs_of(e, &[b"ID", b"Boundary", b"CTM", b"ResourceID"]),
+                    raw_attrs: raw_attrs_of(e, &[b"ID", b"Boundary", b"CTM", b"ResourceID"], ns),
                     id: ObjectId::new(attr(e, "ID").unwrap_or_default()),
                     boundary: parse_rect_attr(e, "Boundary"),
                     ctm: attr(e, "CTM").and_then(parse_ctm),
@@ -337,6 +349,7 @@ fn handle_element_start(
                             b"Stroke",
                             b"Fill",
                         ],
+                        ns,
                     ),
                     id: ObjectId::new(attr(e, "ID").unwrap_or_default()),
                     boundary: parse_rect_attr(e, "Boundary"),
@@ -360,6 +373,7 @@ fn handle_element_start(
             // model round-trips them: ResourceID is the raw unit reference.
             if let Some(l) = current_layer.as_mut() {
                 l.objects.push(PageObject::Composite(CompositeObject {
+                    raw_attrs: raw_attrs_of(e, &[b"ID", b"Boundary", b"CTM", b"ResourceID"], ns),
                     id: ObjectId::new(attr(e, "ID").unwrap_or_default()),
                     boundary: parse_rect_attr(e, "Boundary"),
                     ctm: attr(e, "CTM").and_then(parse_ctm),
@@ -412,6 +426,10 @@ fn is_known_content_element(local: &[u8]) -> bool {
             | b"Area"
             | b"Content"
             | b"Page"
+            // Standard GB/T grouping element (final review C1): modeled
+            // children nest inside it, so it is a transparent container -
+            // the loop keeps parsing its children into the layer.
+            | b"PageBlock"
     )
 }
 
@@ -667,5 +685,34 @@ mod tests {
             "CGTransform/Glyphs should not warn, got: {:?}",
             warnings
         );
+    }
+}
+
+#[cfg(test)]
+mod probe {
+    use super::*;
+
+    #[test]
+    fn page_block_children_parse() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016" ID="P0">
+  <ofd:Content><ofd:Layer Type="Body">
+    <ofd:PageBlock><ofd:PathObject ID="p1" LineWidth="1"><ofd:AbbreviatedData>M 0 0 L 1 1</ofd:AbbreviatedData></ofd:PathObject></ofd:PageBlock>
+  </ofd:Layer></ofd:Content>
+</ofd:Page>"#;
+        let page = parse_page(
+            PageId::new("P0"),
+            xml,
+            &DocHeader::default(),
+            &mut Vec::new(),
+        )
+        .expect("page parses");
+        let layer = &page.layers[0];
+        eprintln!(
+            "objects={} raws={}",
+            layer.objects.len(),
+            layer.raw_children.len()
+        );
+        assert_eq!(layer.objects.len(), 1, "PageBlock transparent");
     }
 }

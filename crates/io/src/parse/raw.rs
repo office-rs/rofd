@@ -89,6 +89,11 @@ impl NsScope {
         needed
     }
 
+    /// Binding for a prefix currently in scope, if any.
+    fn binding_of(&self, prefix: &str) -> Option<&(String, String)> {
+        self.stack.iter().rev().find(|(p, _)| p == prefix)
+    }
+
     /// Inject the needed declarations into the fragment's root start tag.
     fn synthesize_into(&self, raw: &mut String) {
         let needed = self.needed_by(raw);
@@ -122,6 +127,7 @@ pub(crate) fn capture_raw_subtree(
     xml: &str,
     start_pos: usize,
     ns: &NsScope,
+    entry: &str,
 ) -> Result<String, OfdError> {
     let mut depth = 1usize;
     let end_pos;
@@ -137,13 +143,13 @@ pub(crate) fn capture_raw_subtree(
             }
             Ok(Event::Eof) => {
                 return Err(OfdError::Schema {
-                    entry: "Page.xml".into(),
+                    entry: entry.into(),
                     reason: "unterminated unknown element".into(),
                 });
             }
             Err(e) => {
                 return Err(OfdError::Xml {
-                    entry: "Page.xml".into(),
+                    entry: entry.into(),
                     loc: String::new(),
                     source: e,
                 });
@@ -179,7 +185,7 @@ pub(crate) fn capture_raw_empty(
 /// Collect attributes outside the known set for a recognized element
 /// (passthrough, spec D3 attribute layer). `xmlns` declarations are scope,
 /// not attributes, and never land here.
-pub(crate) fn raw_attrs_of(e: &BytesStart, known: &[&[u8]]) -> Vec<(String, String)> {
+pub(crate) fn raw_attrs_of(e: &BytesStart, known: &[&[u8]], ns: &NsScope) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for a in e.attributes().flatten() {
         let key = a.key.as_ref();
@@ -191,5 +197,21 @@ pub(crate) fn raw_attrs_of(e: &BytesStart, known: &[&[u8]]) -> Vec<(String, Stri
             String::from_utf8_lossy(&a.value).into_owned(),
         ));
     }
+    // A prefixed attribute would dangle after re-emission (the declaration
+    // lives on an ancestor). Synthesize the needed bindings as xmlns pseudo
+    // attributes at the end of the list - written on the object, they keep
+    // the output well-formed and re-establish scope on re-parse.
+    let mut bindings: Vec<(String, String)> = Vec::new();
+    for (k, _) in &out {
+        if let Some((prefix, _)) = k.split_once(':') {
+            if let Some((_, uri)) = ns.binding_of(prefix) {
+                let decl = (format!("xmlns:{prefix}"), uri.clone());
+                if !bindings.contains(&decl) && !out.contains(&decl) {
+                    bindings.push(decl);
+                }
+            }
+        }
+    }
+    out.extend(bindings);
     out
 }

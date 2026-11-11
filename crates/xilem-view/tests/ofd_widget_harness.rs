@@ -67,6 +67,7 @@ fn setup_command() -> OfdCommand {
                 h: 200.0,
             },
             layers: vec![Layer {
+                raw_attrs: Vec::new(),
                 raw_children: Vec::new(),
                 layer_type: LayerType::Body,
                 objects: vec![PageObject::Text(TextObject {

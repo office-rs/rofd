@@ -279,6 +279,7 @@ mod tests {
             id: rofd_dom::PageId::new("P0"),
             physical_box: Rect::default(),
             layers: vec![rofd_dom::Layer {
+                raw_attrs: Vec::new(),
                 raw_children: Vec::new(),
                 layer_type: rofd_dom::LayerType::Body,
                 objects: vec![PageObject::Image(ImageObject {
@@ -300,6 +301,7 @@ mod tests {
             id: rofd_dom::PageId::new("P0"),
             physical_box: Rect::default(),
             layers: vec![rofd_dom::Layer {
+                raw_attrs: Vec::new(),
                 raw_children: Vec::new(),
                 layer_type: rofd_dom::LayerType::Body,
                 objects: vec![PageObject::Path(path)],
@@ -511,6 +513,7 @@ mod tests {
             id: rofd_dom::PageId::new("P0"),
             physical_box: Rect::default(),
             layers: vec![rofd_dom::Layer {
+                raw_attrs: Vec::new(),
                 raw_children: Vec::new(),
                 layer_type: rofd_dom::LayerType::Body,
                 objects: vec![PageObject::Path(path)],
@@ -551,6 +554,7 @@ mod tests {
             id: rofd_dom::PageId::new("P0"),
             physical_box: Rect::default(),
             layers: vec![rofd_dom::Layer {
+                raw_attrs: Vec::new(),
                 raw_children: Vec::new(),
                 layer_type: rofd_dom::LayerType::Body,
                 objects: vec![PageObject::Text(text)],
@@ -565,6 +569,7 @@ mod tests {
     #[test]
     fn composite_object_is_skipped_without_panic() {
         let composite = rofd_dom::CompositeObject {
+            raw_attrs: Vec::new(),
             id: ObjectId::new("c1"),
             boundary: Rect::default(),
             ctm: None,
@@ -575,6 +580,7 @@ mod tests {
             id: rofd_dom::PageId::new("P0"),
             physical_box: Rect::default(),
             layers: vec![rofd_dom::Layer {
+                raw_attrs: Vec::new(),
                 raw_children: Vec::new(),
                 layer_type: rofd_dom::LayerType::Body,
                 objects: vec![PageObject::Composite(composite)],
@@ -605,6 +611,7 @@ mod tests {
             id: rofd_dom::PageId::new("P0"),
             physical_box: Rect::default(),
             layers: vec![rofd_dom::Layer {
+                raw_attrs: Vec::new(),
                 raw_children: Vec::new(),
                 layer_type: rofd_dom::LayerType::Body,
                 objects: vec![PageObject::Image(img_obj)],
@@ -647,6 +654,7 @@ mod tests {
             id: rofd_dom::PageId::new("P0"),
             physical_box: Rect::default(),
             layers: vec![rofd_dom::Layer {
+                raw_attrs: Vec::new(),
                 raw_children: Vec::new(),
                 layer_type: rofd_dom::LayerType::Body,
                 objects: vec![PageObject::Path(path)],
@@ -686,6 +694,7 @@ mod tests {
             id: rofd_dom::PageId::new("P0"),
             physical_box: Rect::default(),
             layers: vec![rofd_dom::Layer {
+                raw_attrs: Vec::new(),
                 raw_children: Vec::new(),
                 layer_type: rofd_dom::LayerType::Body,
                 objects: vec![PageObject::Image(img_obj)],
@@ -731,6 +740,7 @@ mod tests {
             id: rofd_dom::PageId::new("P0"),
             physical_box: Rect::default(),
             layers: vec![rofd_dom::Layer {
+                raw_attrs: Vec::new(),
                 raw_children: Vec::new(),
                 layer_type: rofd_dom::LayerType::Body,
                 objects: vec![PageObject::Image(img_obj)],
@@ -773,6 +783,7 @@ mod tests {
             id: rofd_dom::PageId::new("P0"),
             physical_box: Rect::default(),
             layers: vec![rofd_dom::Layer {
+                raw_attrs: Vec::new(),
                 raw_children: Vec::new(),
                 layer_type: rofd_dom::LayerType::Body,
                 objects: vec![PageObject::Path(path)],

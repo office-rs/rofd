@@ -72,6 +72,7 @@ fn page_doc() -> OfdDocument {
 fn body_text_doc() -> OfdDocument {
     let mut doc = page_doc();
     doc.pages[0].layers = vec![Layer {
+        raw_attrs: Vec::new(),
         raw_children: Vec::new(),
         layer_type: LayerType::Body,
         objects: vec![PageObject::Text(TextObject {

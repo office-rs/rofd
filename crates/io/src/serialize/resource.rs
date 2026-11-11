@@ -18,11 +18,19 @@ use super::annotation::{color_str, xml_escape};
 /// is reader-facing metadata only.
 pub(crate) fn sniff_image_format(bytes: &[u8]) -> &'static str {
     if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
-        "png"
+        "PNG"
     } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        "jpg"
+        "JPG"
     } else {
-        "png"
+        "PNG"
+    }
+}
+
+/// Lowercase file extension for a sniffed format.
+fn ext_of(fmt: &str) -> &'static str {
+    match fmt {
+        "JPG" => "jpg",
+        _ => "png",
     }
 }
 
@@ -93,8 +101,9 @@ pub(crate) fn res_entries(doc: &OfdDocument) -> Vec<(String, Vec<u8>)> {
         xml.push_str("  <ofd:MultiMedias>\n");
         for (id, bytes) in &images {
             let fmt = sniff_image_format(bytes);
+            let ext = ext_of(fmt);
             xml.push_str(&format!(
-                "    <ofd:MultiMedia Type=\"Image\" Format=\"{fmt}\" ID=\"{}\"><ofd:MediaFile>Img_{}.{fmt}</ofd:MediaFile></ofd:MultiMedia>\n",
+                "    <ofd:MultiMedia Type=\"Image\" Format=\"{fmt}\" ID=\"{}\"><ofd:MediaFile>Img_{}.{ext}</ofd:MediaFile></ofd:MultiMedia>\n",
                 xml_escape(&id.0),
                 xml_escape(&id.0)
             ));
@@ -137,9 +146,9 @@ pub(crate) fn res_entries(doc: &OfdDocument) -> Vec<(String, Vec<u8>)> {
     for (id, bytes) in &images {
         entries.push((
             format!(
-                "Doc_0/Res/Img_{}.{fmt}",
+                "Doc_0/Res/Img_{}.{ext}",
                 id.0,
-                fmt = sniff_image_format(bytes)
+                ext = ext_of(sniff_image_format(bytes))
             ),
             bytes.as_ref().clone(),
         ));

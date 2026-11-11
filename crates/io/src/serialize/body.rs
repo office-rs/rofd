@@ -34,10 +34,14 @@ pub(crate) fn layer_xml(layer: &Layer) -> String {
             super::Child::Raw(f) => children.push_str(&format!("    {}\n", f.xml)),
         }
     }
+    let mut attrs = String::new();
+    for (k, v) in &layer.raw_attrs {
+        attrs.push_str(&format!(" {k}=\"{}\"", xml_escape(v)));
+    }
     if children.is_empty() {
-        format!("    <ofd:Layer Type=\"{ty}\"/>\n")
+        format!("    <ofd:Layer Type=\"{ty}\"{attrs}/>\n")
     } else {
-        format!("    <ofd:Layer Type=\"{ty}\">\n{children}    </ofd:Layer>\n")
+        format!("    <ofd:Layer Type=\"{ty}\"{attrs}>\n{children}    </ofd:Layer>\n")
     }
 }
 
@@ -194,11 +198,12 @@ pub(crate) fn abbrev_fidelity(p: &PathData) -> String {
 /// model and round-trips via ResourceID (mirroring the parser arm).
 pub(crate) fn composite_object_xml(c: &CompositeObject) -> String {
     format!(
-        "      <ofd:CompositeObject ID=\"{}\" Boundary=\"{}\"{} ResourceID=\"{}\"/>\n",
+        "      <ofd:CompositeObject ID=\"{}\" Boundary=\"{}\"{} ResourceID=\"{}\"{}/>\n",
         xml_escape(&c.id.0),
         rect_str(&c.boundary),
         ctm_attr(&c.ctm),
-        xml_escape(&c.unit)
+        xml_escape(&c.unit),
+        raw_attrs_str(&c.raw_attrs)
     )
 }
 
