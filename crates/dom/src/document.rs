@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::annotation::AnnotationModel;
 use crate::page::{DocMeta, Page};
+use crate::raw::RawFragment;
 use crate::resource::Resources;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -17,6 +18,18 @@ pub struct OfdDocument {
     /// 页级 Scene/位图缓存按此自动失效（spec 2026-10-15 §7.3）。
     #[serde(default)]
     pub body_revision: u64,
+    /// Unknown children of the Document.xml root (Outlines/Attachments/
+    /// Actions/CustomDatas/...), position-preserved (passthrough, spec
+    /// 2026-11-11 §6.2).
+    #[serde(default)]
+    pub raw_doc_children: Vec<RawFragment>,
+    /// Unknown children of Document.xml `<CommonData>`, position-preserved.
+    #[serde(default)]
+    pub raw_common_children: Vec<RawFragment>,
+    /// Unknown children of OFD.xml `<DocBody>` (e.g. Version), position-
+    /// preserved.
+    #[serde(default)]
+    pub raw_ofd_body_children: Vec<RawFragment>,
 }
 
 #[cfg(test)]

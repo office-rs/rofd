@@ -19,6 +19,7 @@ use rofd_gpui_view::{GpuiOfdHandle, OfdGpuiView};
 fn page_doc() -> OfdDocument {
     let mut doc = OfdDocument::default();
     doc.pages.push(Page {
+        raw_children: Vec::new(),
         id: PageId::new("P0"),
         physical_box: Rect {
             x: 0.0,
@@ -134,6 +135,7 @@ fn load_and_new_document_swap_state(cx: &mut TestAppContext) {
 
     let mut two = page_doc();
     two.pages.push(Page {
+        raw_children: Vec::new(),
         id: PageId::new("P1"),
         physical_box: Rect {
             x: 0.0,

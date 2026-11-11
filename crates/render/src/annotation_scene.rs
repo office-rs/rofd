@@ -1930,7 +1930,11 @@ mod tests {
             .by_page
             .insert(rofd_dom::PageId::new("P0"), vec![a]);
         rofd_dom::OfdDocument {
+            raw_doc_children: Vec::new(),
+            raw_common_children: Vec::new(),
+            raw_ofd_body_children: Vec::new(),
             pages: vec![rofd_dom::Page {
+                raw_children: Vec::new(),
                 id: rofd_dom::PageId::new("P0"),
                 physical_box: Rect {
                     x: 0.0,

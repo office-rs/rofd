@@ -6,6 +6,7 @@ fn write_ofd_emits_standard_annotation_entry_and_document() {
     use rofd_dom::*;
     let mut doc = OfdDocument::default();
     doc.pages.push(Page {
+        raw_children: Vec::new(),
         id: PageId::new("1"),
         physical_box: Rect {
             x: 0.0,

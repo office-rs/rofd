@@ -59,6 +59,7 @@ fn text_glyph_ids_used_when_present() {
     assert_eq!(valid_ids.len(), 4, "TestFont shapes 'test' to 4 glyphs");
 
     let text = TextObject {
+        raw_attrs: Vec::new(),
         id: ObjectId::new("t1"),
         boundary: Rect {
             x: 31.75,
@@ -87,6 +88,7 @@ fn text_glyph_ids_used_when_present() {
         draw_param: None,
     };
     let page = Page {
+        raw_children: Vec::new(),
         id: PageId::new("P0"),
         physical_box: Rect {
             x: 0.0,
@@ -95,6 +97,7 @@ fn text_glyph_ids_used_when_present() {
             h: 297.0,
         },
         layers: vec![Layer {
+            raw_children: Vec::new(),
             layer_type: LayerType::Body,
             objects: vec![PageObject::Text(text)],
         }],
@@ -127,6 +130,7 @@ fn text_glyph_transform_includes_boundary_origin() {
     //                             = (31.75, 29.4745).
     // Old bug (no Boundary): (0, 3.16) -> piles at top-left.
     let text = TextObject {
+        raw_attrs: Vec::new(),
         id: ObjectId::new("t1"),
         boundary: Rect {
             x: 31.75,
@@ -155,6 +159,7 @@ fn text_glyph_transform_includes_boundary_origin() {
         draw_param: None,
     };
     let page = Page {
+        raw_children: Vec::new(),
         id: PageId::new("P0"),
         physical_box: Rect {
             x: 0.0,
@@ -163,6 +168,7 @@ fn text_glyph_transform_includes_boundary_origin() {
             h: 297.0,
         },
         layers: vec![Layer {
+            raw_children: Vec::new(),
             layer_type: LayerType::Body,
             objects: vec![PageObject::Text(text)],
         }],

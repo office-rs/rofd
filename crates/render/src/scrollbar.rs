@@ -537,6 +537,7 @@ mod tests {
         let mut doc = OfdDocument::default();
         for (i, &(w, h)) in pages.iter().enumerate() {
             doc.pages.push(Page {
+                raw_children: Vec::new(),
                 id: PageId::new(format!("P{i}")),
                 physical_box: RofdRect {
                     x: 0.0,
@@ -712,6 +713,7 @@ mod hit_tests {
         let mut doc = OfdDocument::default();
         for (i, &(w, h)) in pages.iter().enumerate() {
             doc.pages.push(Page {
+                raw_children: Vec::new(),
                 id: PageId::new(format!("P{i}")),
                 physical_box: RofdRect {
                     x: 0.0,
@@ -859,6 +861,7 @@ mod paint_tests {
         let mut doc = OfdDocument::default();
         for (i, &(w, h)) in pages.iter().enumerate() {
             doc.pages.push(Page {
+                raw_children: Vec::new(),
                 id: PageId::new(format!("P{i}")),
                 physical_box: RofdRect {
                     x: 0.0,

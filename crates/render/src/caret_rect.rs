@@ -458,6 +458,7 @@ mod tests {
         let font_bytes = include_bytes!("../tests/fixtures/fonts/TestFont.ttf") as &[u8];
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
+            raw_children: Vec::new(),
             id: PageId::new("P0"),
             physical_box: Rect {
                 x: 0.0,

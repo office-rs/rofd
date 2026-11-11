@@ -52,6 +52,7 @@ fn test_config() -> OfdConfig {
 fn page_doc() -> OfdDocument {
     let mut doc = OfdDocument::default();
     doc.pages.push(Page {
+        raw_children: Vec::new(),
         id: PageId::new("P0"),
         physical_box: Rect {
             x: 0.0,
@@ -71,8 +72,10 @@ fn page_doc() -> OfdDocument {
 fn body_text_doc() -> OfdDocument {
     let mut doc = page_doc();
     doc.pages[0].layers = vec![Layer {
+        raw_children: Vec::new(),
         layer_type: LayerType::Body,
         objects: vec![PageObject::Text(TextObject {
+            raw_attrs: Vec::new(),
             id: ObjectId::new("t1"),
             boundary: Rect {
                 x: 10.0,

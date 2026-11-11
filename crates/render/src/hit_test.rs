@@ -429,6 +429,7 @@ mod tests {
             },
         };
         let page = Page {
+            raw_children: Vec::new(),
             id: page_id.clone(),
             physical_box: Rect {
                 x: 0.0,
@@ -442,6 +443,9 @@ mod tests {
         let mut model = AnnotationModel::default();
         model.insert(annotation.clone());
         let doc = OfdDocument {
+            raw_doc_children: Vec::new(),
+            raw_common_children: Vec::new(),
+            raw_ofd_body_children: Vec::new(),
             meta: Default::default(),
             pages: vec![page],
             resources: Default::default(),
@@ -504,6 +508,7 @@ mod tests {
             },
         };
         let page = Page {
+            raw_children: Vec::new(),
             id: page_id.clone(),
             physical_box: Rect {
                 x: 0.0,
@@ -517,6 +522,9 @@ mod tests {
         let mut model = AnnotationModel::default();
         model.insert(annotation);
         let doc = OfdDocument {
+            raw_doc_children: Vec::new(),
+            raw_common_children: Vec::new(),
+            raw_ofd_body_children: Vec::new(),
             meta: Default::default(),
             pages: vec![page],
             resources: Default::default(),
@@ -582,6 +590,7 @@ mod tests {
             },
         };
         let mk_page = |id: PageId| Page {
+            raw_children: Vec::new(),
             id,
             physical_box: Rect {
                 x: 0.0,
@@ -595,6 +604,9 @@ mod tests {
         let mut model = AnnotationModel::default();
         model.insert(annotation.clone());
         let doc = OfdDocument {
+            raw_doc_children: Vec::new(),
+            raw_common_children: Vec::new(),
+            raw_ofd_body_children: Vec::new(),
             meta: Default::default(),
             pages: vec![mk_page(page0_id), mk_page(page1_id)],
             resources: Default::default(),
@@ -694,8 +706,12 @@ mod tests {
         let mut model = rofd_dom::AnnotationModel::default();
         model.insert(annotation);
         let doc = OfdDocument {
+            raw_doc_children: Vec::new(),
+            raw_common_children: Vec::new(),
+            raw_ofd_body_children: Vec::new(),
             meta: Default::default(),
             pages: vec![rofd_dom::Page {
+                raw_children: Vec::new(),
                 id: PageId::new("P0"),
                 physical_box: Rect {
                     x: 0.0,

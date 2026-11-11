@@ -86,6 +86,9 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
     let doc_xml = entry_str(&entries, &doc_root)?;
     let header = document::parse_document(&doc_xml)?;
     let mut doc = OfdDocument {
+        raw_doc_children: Vec::new(),
+        raw_common_children: Vec::new(),
+        raw_ofd_body_children: Vec::new(),
         meta,
         ..OfdDocument::default()
     };

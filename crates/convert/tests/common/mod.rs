@@ -58,6 +58,7 @@ pub const TEST_FONT: &[u8] = include_bytes!("../../../render/tests/fixtures/font
 /// construction).
 pub fn page(id: &str) -> Page {
     Page {
+        raw_children: Vec::new(),
         id: PageId::new(id),
         physical_box: Rect {
             x: 0.0,

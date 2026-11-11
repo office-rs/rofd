@@ -20,6 +20,7 @@ mod fixtures;
 /// annotations on that page.
 fn doc_with_page_and_anns(phys: Rect, anns: Vec<Annotation>) -> OfdDocument {
     let page = Page {
+        raw_children: Vec::new(),
         id: PageId::new("P0"),
         physical_box: phys,
         layers: vec![],
@@ -28,6 +29,9 @@ fn doc_with_page_and_anns(phys: Rect, anns: Vec<Annotation>) -> OfdDocument {
     let mut model = AnnotationModel::default();
     model.by_page.insert(page.id.clone(), anns);
     OfdDocument {
+        raw_doc_children: Vec::new(),
+        raw_common_children: Vec::new(),
+        raw_ofd_body_children: Vec::new(),
         meta: Default::default(),
         pages: vec![page],
         resources: Default::default(),
@@ -266,6 +270,7 @@ fn hit_test_second_page_stacked_vertically() {
         vec![],
     );
     doc.pages.push(Page {
+        raw_children: Vec::new(),
         id: PageId::new("P1"),
         physical_box: Rect {
             x: 0.0,

@@ -724,6 +724,7 @@ mod tests {
     fn image_doc() -> OfdDocument {
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
+            raw_children: Vec::new(),
             id: PageId::new("P0"),
             physical_box: rofd_dom::Rect {
                 x: 0.0,
@@ -732,8 +733,10 @@ mod tests {
                 h: 200.0,
             },
             layers: vec![Layer {
+                raw_children: Vec::new(),
                 layer_type: LayerType::Body,
                 objects: vec![PageObject::Image(rofd_dom::ImageObject {
+                    raw_attrs: Vec::new(),
                     id: ObjectId::new("i1"),
                     boundary: rofd_dom::Rect {
                         x: 10.0,

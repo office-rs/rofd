@@ -58,6 +58,7 @@ fn setup_command() -> OfdCommand {
         c.set_clock("t".into(), 1);
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
+            raw_children: Vec::new(),
             id: PageId::new("P0"),
             physical_box: Rect {
                 x: 0.0,
@@ -66,8 +67,10 @@ fn setup_command() -> OfdCommand {
                 h: 200.0,
             },
             layers: vec![Layer {
+                raw_children: Vec::new(),
                 layer_type: LayerType::Body,
                 objects: vec![PageObject::Text(TextObject {
+                    raw_attrs: Vec::new(),
                     id: ObjectId::new("t1"),
                     boundary: Rect {
                         x: 10.0,

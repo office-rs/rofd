@@ -95,6 +95,7 @@ mod tests {
         let mut doc = OfdDocument::default();
         for (i, &(w, h)) in pages.iter().enumerate() {
             doc.pages.push(rofd_dom::Page {
+                raw_children: Vec::new(),
                 id: rofd_dom::PageId::new(format!("P{i}")),
                 physical_box: Rect {
                     x: 0.0,

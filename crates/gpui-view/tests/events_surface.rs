@@ -24,6 +24,7 @@ fn doc_with_page(w: f64, h: f64) -> OfdDocument {
     // empty layer list is enough for hit-test/fit math).
     let mut doc = OfdDocument::default();
     doc.pages.push(Page {
+        raw_children: Vec::new(),
         id: PageId::new("P0"),
         physical_box: Rect {
             x: 0.0,

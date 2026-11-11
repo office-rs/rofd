@@ -539,6 +539,7 @@ mod tests {
             },
         };
         let page = Page {
+            raw_children: Vec::new(),
             id: page_id,
             physical_box: Rect {
                 x: 0.0,
@@ -552,6 +553,9 @@ mod tests {
         let mut model = AnnotationModel::default();
         model.insert(annotation);
         let doc = OfdDocument {
+            raw_doc_children: Vec::new(),
+            raw_common_children: Vec::new(),
+            raw_ofd_body_children: Vec::new(),
             meta: Default::default(),
             pages: vec![page],
             resources: Default::default(),
@@ -774,6 +778,7 @@ mod tests {
         let mut doc = OfdDocument::default();
         for i in 0..n {
             doc.pages.push(Page {
+                raw_children: Vec::new(),
                 id: PageId::new(format!("P{i}")),
                 physical_box: Rect {
                     x: 0.0,

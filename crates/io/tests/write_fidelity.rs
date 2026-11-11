@@ -68,6 +68,7 @@ const TTF_MAGIC: &[u8] = &[0x00, 0x01, 0x00, 0x00, 9, 9];
 
 fn page_with(layers: Vec<Layer>) -> Page {
     Page {
+        raw_children: Vec::new(),
         id: PageId::new("P0"),
         physical_box: Rect {
             x: 0.0,
@@ -84,8 +85,10 @@ fn page_with(layers: Vec<Layer>) -> Page {
 fn text_object_round_trips() {
     let mut doc = OfdDocument::default();
     doc.pages.push(page_with(vec![Layer {
+        raw_children: Vec::new(),
         layer_type: LayerType::Body,
         objects: vec![PageObject::Text(TextObject {
+            raw_attrs: Vec::new(),
             id: ObjectId::new("t1"),
             boundary: Rect {
                 x: 31.75,
@@ -129,6 +132,7 @@ fn text_object_round_trips() {
 fn layer_without_objects_emits_self_closing() {
     let mut doc = OfdDocument::default();
     doc.pages.push(page_with(vec![Layer {
+        raw_children: Vec::new(),
         layer_type: LayerType::Body,
         objects: vec![],
     }]));
@@ -143,9 +147,11 @@ fn layer_without_objects_emits_self_closing() {
 fn path_object_round_trips() {
     let mut doc = OfdDocument::default();
     doc.pages.push(page_with(vec![Layer {
+        raw_children: Vec::new(),
         layer_type: LayerType::Body,
         objects: vec![
             PageObject::Path(PathObject {
+                raw_attrs: Vec::new(),
                 id: ObjectId::new("p1"),
                 boundary: Rect {
                     x: 0.0,
@@ -169,6 +175,7 @@ fn path_object_round_trips() {
                 fill_enabled: Some(true),
             }),
             PageObject::Path(PathObject {
+                raw_attrs: Vec::new(),
                 id: ObjectId::new("p2"),
                 boundary: Rect {
                     x: 0.0,
@@ -211,8 +218,10 @@ fn path_object_round_trips() {
 fn path_z_round_trips_as_z() {
     let mut doc = OfdDocument::default();
     doc.pages.push(page_with(vec![Layer {
+        raw_children: Vec::new(),
         layer_type: LayerType::Body,
         objects: vec![PageObject::Path(PathObject {
+            raw_attrs: Vec::new(),
             id: ObjectId::new("p1"),
             boundary: Rect {
                 x: 0.0,
@@ -249,6 +258,7 @@ fn path_z_round_trips_as_z() {
 fn composite_round_trips() {
     let mut doc = OfdDocument::default();
     doc.pages.push(page_with(vec![Layer {
+        raw_children: Vec::new(),
         layer_type: LayerType::Body,
         objects: vec![PageObject::Composite(CompositeObject {
             id: ObjectId::new("c1"),
@@ -376,8 +386,10 @@ fn empty_resources_emit_nothing() {
 fn image_object_round_trips() {
     let mut doc = OfdDocument::default();
     doc.pages.push(page_with(vec![Layer {
+        raw_children: Vec::new(),
         layer_type: LayerType::Body,
         objects: vec![PageObject::Image(ImageObject {
+            raw_attrs: Vec::new(),
             id: ObjectId::new("i1"),
             boundary: Rect {
                 x: 10.0,
@@ -407,6 +419,7 @@ fn doc_meta_round_trips_via_ofd_xml() {
     let mut doc = OfdDocument::default();
     doc.pages.push(page_with(vec![]));
     doc.meta = DocMeta {
+        raw_info_children: Vec::new(),
         doc_id: Some("DOC-1".into()),
         title: Some("验收报告".into()),
         author: Some("张三".into()),

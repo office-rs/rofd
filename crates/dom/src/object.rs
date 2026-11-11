@@ -51,6 +51,10 @@ pub struct TextObject {
     /// `DrawParam` attribute (GB/T 33190): id of a `DrawParam` in `Resources`
     /// supplying fallback fill/stroke/line_width when inline colors are absent.
     pub draw_param: Option<DrawParamId>,
+    /// Unmodelled attributes on the element, verbatim (passthrough,
+    /// spec 2026-11-11 D3).
+    #[serde(default)]
+    pub raw_attrs: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -59,6 +63,9 @@ pub struct ImageObject {
     pub boundary: Rect,
     pub ctm: Option<Ctm>,
     pub image: ImageId,
+    /// Unmodelled attributes on the element, verbatim (passthrough).
+    #[serde(default)]
+    pub raw_attrs: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -79,6 +86,9 @@ pub struct PathObject {
     /// `Fill` attribute (GB/T 33190 表35): whether the path is filled.
     /// `None` = attribute absent - the spec default is `false`.
     pub fill_enabled: Option<bool>,
+    /// Unmodelled attributes on the element, verbatim (passthrough).
+    #[serde(default)]
+    pub raw_attrs: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -113,6 +123,7 @@ mod tests {
             fill: None,
             codes: vec![],
             draw_param: None,
+            raw_attrs: Vec::new(),
         };
         let _clone = t.clone();
         assert_eq!(t.size, 12.0);
@@ -131,6 +142,7 @@ mod tests {
             draw_param: None,
             stroke_enabled: None,
             fill_enabled: None,
+            raw_attrs: Vec::new(),
         });
         assert!(matches!(p, PageObject::Path(_)));
     }

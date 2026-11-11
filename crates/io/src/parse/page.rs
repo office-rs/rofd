@@ -22,6 +22,7 @@ pub fn parse_page(
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut page = Page {
+        raw_children: Vec::new(),
         id: page_id.clone(),
         physical_box: header.page_area.unwrap_or_default(),
         layers: vec![],
@@ -95,6 +96,7 @@ pub fn parse_page(
                         _ => LayerType::Body,
                     };
                     page.layers.push(Layer {
+                        raw_children: Vec::new(),
                         layer_type: lt,
                         objects: vec![],
                     });
@@ -231,12 +233,14 @@ fn handle_element_start(
                 _ => LayerType::Body,
             };
             *current_layer = Some(Layer {
+                raw_children: Vec::new(),
                 layer_type: lt,
                 objects: vec![],
             });
         }
         b"TextObject" => {
             *current_text = Some(TextObject {
+                raw_attrs: Vec::new(),
                 id: ObjectId::new(attr(e, "ID").unwrap_or_default()),
                 boundary: parse_rect_attr(e, "Boundary"),
                 ctm: attr(e, "CTM").and_then(parse_ctm),
@@ -281,6 +285,7 @@ fn handle_element_start(
         b"ImageObject" => {
             if let Some(l) = current_layer.as_mut() {
                 l.objects.push(PageObject::Image(ImageObject {
+                    raw_attrs: Vec::new(),
                     id: ObjectId::new(attr(e, "ID").unwrap_or_default()),
                     boundary: parse_rect_attr(e, "Boundary"),
                     ctm: attr(e, "CTM").and_then(parse_ctm),
@@ -291,6 +296,7 @@ fn handle_element_start(
         b"PathObject" => {
             if let Some(l) = current_layer.as_mut() {
                 l.objects.push(PageObject::Path(PathObject {
+                    raw_attrs: Vec::new(),
                     id: ObjectId::new(attr(e, "ID").unwrap_or_default()),
                     boundary: parse_rect_attr(e, "Boundary"),
                     ctm: attr(e, "CTM").and_then(parse_ctm),

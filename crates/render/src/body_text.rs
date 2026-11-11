@@ -423,6 +423,7 @@ mod tests {
 
     fn text_obj(codes: Vec<TextCode>) -> TextObject {
         TextObject {
+            raw_attrs: Vec::new(),
             id: ObjectId::new("t1"),
             boundary: Rect {
                 x: 10.0,
@@ -453,6 +454,7 @@ mod tests {
     fn doc_with(obj: TextObject) -> (OfdDocument, Viewport) {
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
+            raw_children: Vec::new(),
             id: PageId::new("P0"),
             physical_box: Rect {
                 x: 0.0,
@@ -461,6 +463,7 @@ mod tests {
                 h: 200.0,
             },
             layers: vec![Layer {
+                raw_children: Vec::new(),
                 layer_type: LayerType::Body,
                 objects: vec![PageObject::Text(obj)],
             }],

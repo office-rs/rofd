@@ -27,6 +27,7 @@ const ITERATIONS: usize = 20;
 /// copied because examples cannot import the tests directory).
 fn page(id: &str) -> Page {
     Page {
+        raw_children: Vec::new(),
         id: PageId::new(id),
         physical_box: Rect {
             x: 0.0,

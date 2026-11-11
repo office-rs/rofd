@@ -275,11 +275,14 @@ mod tests {
     /// Page carrying a single body ImageObject.
     fn image_page(boundary: Rect, ctm: Option<Ctm>) -> Page {
         Page {
+            raw_children: Vec::new(),
             id: rofd_dom::PageId::new("P0"),
             physical_box: Rect::default(),
             layers: vec![rofd_dom::Layer {
+                raw_children: Vec::new(),
                 layer_type: rofd_dom::LayerType::Body,
                 objects: vec![PageObject::Image(ImageObject {
+                    raw_attrs: Vec::new(),
                     id: ObjectId::new("i1"),
                     boundary,
                     ctm,
@@ -293,9 +296,11 @@ mod tests {
     /// Page carrying a single body PathObject.
     fn path_page(path: PathObject) -> Page {
         Page {
+            raw_children: Vec::new(),
             id: rofd_dom::PageId::new("P0"),
             physical_box: Rect::default(),
             layers: vec![rofd_dom::Layer {
+                raw_children: Vec::new(),
                 layer_type: rofd_dom::LayerType::Body,
                 objects: vec![PageObject::Path(path)],
             }],
@@ -477,6 +482,7 @@ mod tests {
     #[test]
     fn path_object_strokes_into_scene() {
         let path = PathObject {
+            raw_attrs: Vec::new(),
             id: ObjectId::new("p1"),
             boundary: Rect {
                 x: 0.0,
@@ -501,9 +507,11 @@ mod tests {
             fill_enabled: None,
         };
         let page = Page {
+            raw_children: Vec::new(),
             id: rofd_dom::PageId::new("P0"),
             physical_box: Rect::default(),
             layers: vec![rofd_dom::Layer {
+                raw_children: Vec::new(),
                 layer_type: rofd_dom::LayerType::Body,
                 objects: vec![PageObject::Path(path)],
             }],
@@ -517,6 +525,7 @@ mod tests {
     #[test]
     fn text_object_shapes_and_draws_into_scene() {
         let text = TextObject {
+            raw_attrs: Vec::new(),
             id: ObjectId::new("t1"),
             boundary: Rect {
                 x: 10.0,
@@ -538,9 +547,11 @@ mod tests {
             draw_param: None,
         };
         let page = Page {
+            raw_children: Vec::new(),
             id: rofd_dom::PageId::new("P0"),
             physical_box: Rect::default(),
             layers: vec![rofd_dom::Layer {
+                raw_children: Vec::new(),
                 layer_type: rofd_dom::LayerType::Body,
                 objects: vec![PageObject::Text(text)],
             }],
@@ -560,9 +571,11 @@ mod tests {
             unit: "U1".into(),
         };
         let page = Page {
+            raw_children: Vec::new(),
             id: rofd_dom::PageId::new("P0"),
             physical_box: Rect::default(),
             layers: vec![rofd_dom::Layer {
+                raw_children: Vec::new(),
                 layer_type: rofd_dom::LayerType::Body,
                 objects: vec![PageObject::Composite(composite)],
             }],
@@ -576,6 +589,7 @@ mod tests {
     #[test]
     fn missing_image_id_skips_silently() {
         let img_obj = rofd_dom::ImageObject {
+            raw_attrs: Vec::new(),
             id: ObjectId::new("i1"),
             boundary: Rect {
                 x: 0.0,
@@ -587,9 +601,11 @@ mod tests {
             image: ImageId::new("missing"),
         };
         let page = Page {
+            raw_children: Vec::new(),
             id: rofd_dom::PageId::new("P0"),
             physical_box: Rect::default(),
             layers: vec![rofd_dom::Layer {
+                raw_children: Vec::new(),
                 layer_type: rofd_dom::LayerType::Body,
                 objects: vec![PageObject::Image(img_obj)],
             }],
@@ -603,6 +619,7 @@ mod tests {
     #[test]
     fn ctm_applied_per_object() {
         let path = PathObject {
+            raw_attrs: Vec::new(),
             id: ObjectId::new("p1"),
             boundary: Rect::default(),
             ctm: Some(Ctm {
@@ -626,9 +643,11 @@ mod tests {
             fill_enabled: Some(true),
         };
         let page = Page {
+            raw_children: Vec::new(),
             id: rofd_dom::PageId::new("P0"),
             physical_box: Rect::default(),
             layers: vec![rofd_dom::Layer {
+                raw_children: Vec::new(),
                 layer_type: rofd_dom::LayerType::Body,
                 objects: vec![PageObject::Path(path)],
             }],
@@ -651,6 +670,7 @@ mod tests {
         let png_bytes = Arc::new(buf.into_inner());
 
         let img_obj = rofd_dom::ImageObject {
+            raw_attrs: Vec::new(),
             id: ObjectId::new("i1"),
             boundary: Rect {
                 x: 10.0,
@@ -662,9 +682,11 @@ mod tests {
             image: ImageId::new("I1"),
         };
         let page = Page {
+            raw_children: Vec::new(),
             id: rofd_dom::PageId::new("P0"),
             physical_box: Rect::default(),
             layers: vec![rofd_dom::Layer {
+                raw_children: Vec::new(),
                 layer_type: rofd_dom::LayerType::Body,
                 objects: vec![PageObject::Image(img_obj)],
             }],
@@ -686,6 +708,7 @@ mod tests {
         let png_bytes = Arc::new(buf.into_inner());
 
         let img_obj = rofd_dom::ImageObject {
+            raw_attrs: Vec::new(),
             id: ObjectId::new("i1"),
             boundary: Rect {
                 x: 5.0,
@@ -704,9 +727,11 @@ mod tests {
             image: ImageId::new("I1"),
         };
         let page = Page {
+            raw_children: Vec::new(),
             id: rofd_dom::PageId::new("P0"),
             physical_box: Rect::default(),
             layers: vec![rofd_dom::Layer {
+                raw_children: Vec::new(),
                 layer_type: rofd_dom::LayerType::Body,
                 objects: vec![PageObject::Image(img_obj)],
             }],
@@ -724,6 +749,7 @@ mod tests {
         // res) supplies the stroke color + line_width, so the path strokes into
         // the scene instead of being skipped.
         let path = PathObject {
+            raw_attrs: Vec::new(),
             id: ObjectId::new("p1"),
             boundary: Rect {
                 x: 0.0,
@@ -743,9 +769,11 @@ mod tests {
             fill_enabled: None,
         };
         let page = Page {
+            raw_children: Vec::new(),
             id: rofd_dom::PageId::new("P0"),
             physical_box: Rect::default(),
             layers: vec![rofd_dom::Layer {
+                raw_children: Vec::new(),
                 layer_type: rofd_dom::LayerType::Body,
                 objects: vec![PageObject::Path(path)],
             }],
@@ -775,6 +803,7 @@ mod tests {
         // being skipped (the old `no stroke color => draw nothing` dropped all
         // table lines, whose producers rely on the spec defaults).
         let path = PathObject {
+            raw_attrs: Vec::new(),
             id: ObjectId::new("51"),
             boundary: Rect {
                 x: 29.6775,
@@ -837,6 +866,7 @@ mod tests {
         // Stroke="false" must win even though 表35 would otherwise default the
         // stroke on.
         let path = PathObject {
+            raw_attrs: Vec::new(),
             id: ObjectId::new("79"),
             boundary: Rect {
                 x: 31.9928,
@@ -893,6 +923,7 @@ mod tests {
         // 表35: Fill 缺省 false。FillColor 子元素存在但 Fill 属性缺失 ->
         // 不填充(与 ofdrw getFill() 缺省 false 一致)。
         let path = PathObject {
+            raw_attrs: Vec::new(),
             id: ObjectId::new("p1"),
             boundary: Rect {
                 x: 10.0,

@@ -4215,6 +4215,7 @@ mod tests {
         // 滚动余量，滚动才真正改变 origin（否则测不到"换 origin 不重建"）。
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
+            raw_children: Vec::new(),
             id: PageId::new("P0"),
             physical_box: Rect {
                 x: 0.0,
@@ -4299,6 +4300,7 @@ mod tests {
         // is (0,0) so page-local coords == viewport coords (simplifies test points).
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
+            raw_children: Vec::new(),
             id: PageId::new("P0"),
             physical_box: Rect {
                 x: 0.0,
@@ -4347,6 +4349,7 @@ mod tests {
         c.set_clock("t".into(), 1);
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
+            raw_children: Vec::new(),
             id: PageId::new("P0"),
             physical_box: Rect {
                 x: 0.0,
@@ -4476,6 +4479,7 @@ mod tests {
         c.set_clock("t".into(), 1);
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
+            raw_children: Vec::new(),
             id: PageId::new("P0"),
             physical_box: Rect {
                 x: 0.0,
@@ -4508,6 +4512,7 @@ mod tests {
         c.set_clock("t".into(), 1);
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
+            raw_children: Vec::new(),
             id: PageId::new("P0"),
             physical_box: Rect {
                 x: 0.0,
@@ -4754,6 +4759,7 @@ mod tests {
         assert_eq!(c.viewport.scroll.1, 150.0);
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
+            raw_children: Vec::new(),
             id: PageId::new("Q0"),
             physical_box: Rect {
                 x: 0.0,
@@ -4862,6 +4868,7 @@ mod tests {
         let mut doc = OfdDocument::default();
         for (i, &(w, h)) in pages.iter().enumerate() {
             doc.pages.push(Page {
+                raw_children: Vec::new(),
                 id: PageId::new(format!("P{i}")),
                 physical_box: Rect {
                     x: 0.0,
@@ -5304,6 +5311,7 @@ mod tests {
         c.set_clock("t".into(), 1);
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
+            raw_children: Vec::new(),
             id: PageId::new("P0"),
             physical_box: Rect {
                 x: 0.0,
@@ -5939,6 +5947,7 @@ mod tests {
         c.set_clock("t".into(), 1);
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
+            raw_children: Vec::new(),
             id: PageId::new("P0"),
             physical_box: Rect {
                 x: 0.0,
@@ -6266,6 +6275,7 @@ mod tests {
         c.set_clock("t".into(), 1);
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
+            raw_children: Vec::new(),
             id: PageId::new("P0"),
             physical_box: Rect {
                 x: 0.0,
@@ -6359,6 +6369,7 @@ mod tests {
         c.set_clock("t".into(), 1);
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
+            raw_children: Vec::new(),
             id: PageId::new("P0"),
             physical_box: Rect {
                 x: 0.0,
@@ -6587,6 +6598,7 @@ mod tests {
         let mut doc = OfdDocument::default();
         for id in ["P0", "P1"] {
             doc.pages.push(Page {
+                raw_children: Vec::new(),
                 id: PageId::new(id),
                 physical_box: Rect {
                     x: 0.0,
@@ -6669,6 +6681,7 @@ mod tests {
         // Load a fresh single-page document.
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
+            raw_children: Vec::new(),
             id: PageId::new("P0"),
             physical_box: Rect {
                 x: 0.0,
@@ -6887,6 +6900,7 @@ mod tests {
         c.set_clock("tester".into(), 1_700_000_000_000);
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
+            raw_children: Vec::new(),
             id: PageId::new("P0"),
             physical_box: Rect {
                 x: 0.0,
@@ -7141,6 +7155,7 @@ mod tests {
         let mut doc = OfdDocument::default();
         for i in 0..2 {
             doc.pages.push(Page {
+                raw_children: Vec::new(),
                 id: PageId::new(format!("P{i}")),
                 physical_box: Rect {
                     x: 0.0,
@@ -7642,6 +7657,7 @@ mod tests {
         let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
+            raw_children: Vec::new(),
             id: PageId::new("P0"),
             physical_box: Rect {
                 x: 0.0,
@@ -7920,6 +7936,7 @@ mod tests {
         let mut c = OfdComponent::new(OfdConfig::new(Arc::new(vec![])));
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
+            raw_children: Vec::new(),
             id: PageId::new("P0"),
             physical_box: Rect {
                 x: 0.0,
@@ -7928,8 +7945,10 @@ mod tests {
                 h: 200.0,
             },
             layers: vec![Layer {
+                raw_children: Vec::new(),
                 layer_type: LayerType::Body,
                 objects: vec![PageObject::Text(TextObject {
+                    raw_attrs: Vec::new(),
                     id: ObjectId::new("t1"),
                     boundary: Rect {
                         x: 10.0,
@@ -9459,12 +9478,15 @@ mod tests {
             },
         );
         doc.pages.push(Page {
+            raw_children: Vec::new(),
             id: PageId::new("P0"),
             physical_box: Rect::default(),
             layers: vec![Layer {
+                raw_children: Vec::new(),
                 layer_type: LayerType::Body,
                 objects: vec![
                     PageObject::Text(TextObject {
+                        raw_attrs: Vec::new(),
                         id: ObjectId::new("t1"),
                         font: FontId::new("F1"),
                         size: 12.0,
@@ -9475,6 +9497,7 @@ mod tests {
                         ..Default::default()
                     }),
                     PageObject::Text(TextObject {
+                        raw_attrs: Vec::new(),
                         id: ObjectId::new("t2"),
                         font: FontId::new("F2"),
                         size: 12.0,
@@ -9485,6 +9508,7 @@ mod tests {
                         ..Default::default()
                     }),
                     PageObject::Text(TextObject {
+                        raw_attrs: Vec::new(),
                         id: ObjectId::new("t3"),
                         font: FontId::new("F3"),
                         size: 12.0,
@@ -9634,6 +9658,7 @@ mod tests {
         c.set_clock("t".into(), 1);
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
+            raw_children: Vec::new(),
             id: PageId::new("P0"),
             physical_box: Rect {
                 x: 0.0,
@@ -9795,6 +9820,7 @@ mod tests {
         c.set_clock("t".into(), 1);
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
+            raw_children: Vec::new(),
             id: PageId::new("P0"),
             physical_box: Rect {
                 x: 0.0,

@@ -96,6 +96,7 @@ mod tests {
         c.set_clock("t".into(), 1);
         let mut doc = OfdDocument::default();
         doc.pages.push(Page {
+            raw_children: Vec::new(),
             id: PageId::new("P0"),
             physical_box: Rect {
                 x: 0.0,

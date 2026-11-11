@@ -20,6 +20,7 @@ use xilem_app::host::export_pdf::export_pdf;
 /// crate's own print-session fixture shape.
 fn a4_page(id: &str) -> Page {
     Page {
+        raw_children: Vec::new(),
         id: PageId::new(id),
         physical_box: Rect {
             x: 0.0,

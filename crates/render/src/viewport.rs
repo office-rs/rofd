@@ -91,6 +91,7 @@ mod clamp_tests {
         let mut doc = OfdDocument::default();
         for (i, &(w, h)) in pages.iter().enumerate() {
             doc.pages.push(Page {
+                raw_children: Vec::new(),
                 id: PageId::new(format!("P{i}")),
                 physical_box: Rect {
                     x: 0.0,

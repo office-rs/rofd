@@ -944,6 +944,7 @@ mod tests {
     /// One A4-portrait page (210x297mm) with an empty body layer.
     fn a4_page(id: &str) -> rofd_dom::Page {
         rofd_dom::Page {
+            raw_children: Vec::new(),
             id: rofd_dom::PageId::new(id),
             physical_box: rofd_dom::Rect {
                 x: 0.0,
@@ -1113,6 +1114,7 @@ mod tests {
         let mut doc = rofd_dom::OfdDocument::default();
         for i in 0..n {
             doc.pages.push(rofd_dom::Page {
+                raw_children: Vec::new(),
                 id: rofd_dom::PageId::new(format!("L{i}")),
                 physical_box: rofd_dom::Rect {
                     x: 0.0,

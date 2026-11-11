@@ -16,6 +16,7 @@ const FONT: &[u8] = include_bytes!("../../render/tests/fixtures/fonts/TestFont.t
 fn page_doc() -> OfdDocument {
     let mut doc = OfdDocument::default();
     doc.pages.push(Page {
+        raw_children: Vec::new(),
         id: PageId::new("P0"),
         physical_box: Rect {
             x: 0.0,

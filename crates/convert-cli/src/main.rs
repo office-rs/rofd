@@ -198,6 +198,7 @@ mod tests {
     fn page(id: &str) -> rofd_dom::Page {
         use rofd_dom::{Layer, Rect};
         rofd_dom::Page {
+            raw_children: Vec::new(),
             id: rofd_dom::PageId::new(id),
             physical_box: Rect {
                 x: 0.0,

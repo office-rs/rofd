@@ -305,6 +305,7 @@ mod tests {
     /// One A4-portrait page (210x297mm), empty body layer.
     fn a4_page(id: &str) -> Page {
         Page {
+            raw_children: Vec::new(),
             id: PageId::new(id),
             physical_box: Rect {
                 x: 0.0,
@@ -389,8 +390,10 @@ mod tests {
         let mut page = a4_page("P0");
         if body_text {
             page.layers[0] = Layer {
+                raw_children: Vec::new(),
                 layer_type: LayerType::Body,
                 objects: vec![PageObject::Text(TextObject {
+                    raw_attrs: Vec::new(),
                     id: ObjectId::new("t1"),
                     font: FontId::new("F-body"),
                     size: 12.0,
