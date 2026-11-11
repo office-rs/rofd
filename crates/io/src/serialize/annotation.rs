@@ -1010,13 +1010,13 @@ fn path_to_abbrev(p: &PathData) -> String {
     s
 }
 
-fn color_str(c: Color) -> String {
+pub(crate) fn color_str(c: Color) -> String {
     match c {
         Color::Rgb(r, g, b) => format!("{} {} {}", r, g, b),
     }
 }
 
-fn xml_escape(s: &str) -> String {
+pub(crate) fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -1028,7 +1028,7 @@ fn xml_escape(s: &str) -> String {
 /// trailing spaces and hard newlines in annotation content (spec 2026-11-09
 /// §1.5). Numeric refs are opaque to that trim pass and unescape back to the
 /// original characters.
-fn xml_escape_preserving_edges(s: &str) -> String {
+pub(crate) fn xml_escape_preserving_edges(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let Some(first) = chars.iter().position(|c| !c.is_whitespace()) else {
         return chars

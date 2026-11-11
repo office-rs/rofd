@@ -5,6 +5,7 @@ use rofd_dom::{OfdDocument, TextLayoutHints};
 use crate::error::OfdError;
 use crate::serialize::annotation::{object_id_seed, serialize_page_annot};
 use crate::serialize::annotation_entry::serialize_annotations_entry;
+use crate::serialize::body;
 use crate::zip_util::write_zip;
 
 /// Full write: construct a fresh .ofd package from the model (generation / conversion).
@@ -96,15 +97,7 @@ pub fn write_ofd_with_text_layout(
         ));
         page_xml.push_str("  <ofd:Content>\n");
         for layer in &page.layers {
-            let ty = match layer.layer_type {
-                rofd_dom::LayerType::Body => "Body",
-                rofd_dom::LayerType::Foreground => "Foreground",
-                rofd_dom::LayerType::Background => "Background",
-            };
-            page_xml.push_str(&format!("    <ofd:Layer Type=\"{ty}\"/>\n"));
-            // v1 full-write emits object skeleton only; full object serialization
-            // is added as the render phase needs it. Body byte-fidelity is not
-            // required for write_ofd (generation path).
+            page_xml.push_str(&body::layer_xml(layer));
         }
         page_xml.push_str("  </ofd:Content>\n</ofd:Page>");
         entries.push((
