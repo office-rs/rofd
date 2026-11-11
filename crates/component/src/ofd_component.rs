@@ -1519,18 +1519,8 @@ impl OfdComponent {
                 }
             }
         }
-        // Preedit overlay: composition text not yet in the dom.
-        if let Some(state) = self.preedit.as_ref() {
-            rofd_render::paint_preedit_overlay(
-                &mut overlay,
-                doc,
-                &vp,
-                &fonts,
-                &state.text,
-                &state.annotation,
-                state.offset,
-            );
-        }
+        // Preedit preview is inline in the page scene (draw_annotations): it
+        // shapes the composition into the text flow, so nothing is painted here.
         // Hover tooltip paints last - above pages, handles and scrollbars
         // (spec 2026-09-18 §3.3). Skips itself when suppressed/no font.
         if let Some(lines) = self.tooltip_lines() {

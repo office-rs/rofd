@@ -23,7 +23,7 @@
 - 不做段落级属性（对齐、行距、缩进）。
 - 不做 body（正文）格式化——§4.2 不变。
 - xilem-view 面板仍按旧 spec §5.3 挂账。
-- 富文本框的 IME 组合串仍是 detached overlay（不内联进流式行）：锚点为 caret rect（caret 所在视觉行顶），字体/字号/颜色取插入点继承的 span 样式。
+- 富文本框的 IME 组合串**内联**进流式行（2026-11-11 修订，取代早先的 detached overlay）：组合串作为插入点样式的一段参与折行，组合点之后的文字随之后移，不再与既有文字重叠。
 
 ---
 
@@ -223,7 +223,7 @@ set_annotation_color(id, range: Option<(usize, usize)>, color)
 | `ofd_component.rs` `click_caret_offset`（:2931） | 富框走 `caret_offset_at_x` 单行近似 | 统一 `caret_offset_at_point` |
 | `render/caret_rect.rs` `annotation_text_selection_rects`（:272） | 富框返回空（无高亮） | 统一 span-aware 行矩形 |
 
-同类的 `save_snapshot`（:608）与 `measure_textbox_growth`（:3956）已由 §5.3/§5.4 覆盖。IME 组合串对 span 框仍走 detached overlay（§1 非目标），但 overlay 的锚点用 caret rect（不再用 `TextRun.x/baseline`）。
+同类的 `save_snapshot`（:608）与 `measure_textbox_growth`（:3956）已由 §5.3/§5.4 覆盖。IME 组合串对 span 框也已内联（与平坦框同一条 `layout_runs_with_preedit` 路径），不再使用 detached overlay。
 
 ---
 
@@ -324,7 +324,7 @@ TextBox 分支：
 | 混合样式选区显示 | 显示首字符样式（不做"多值"指示） |
 | 空行在逐段序列化中丢失 | 每行至少一个 TextObject；回环测试钉死 |
 | 缓存键膨胀 | span 签名只含区间/字体/字号/权重/斜体，短串；字体集变化清空（现状） |
-| 富框 IME 预览 | 保持 detached overlay（非目标） |
+| 富框 IME 预览 | 2026-11-11 起与平坦框同路：内联进流式行（组合串继承插入点 span 样式） |
 | 性能 | 每次样式变更重排一次（与现在的字号变更同量级）；选区编辑只重排受影响框 |
 
 ---

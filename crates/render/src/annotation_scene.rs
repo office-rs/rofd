@@ -157,21 +157,20 @@ pub fn draw_annotations(
                         .draw();
                 }
                 let runs = crate::text::layout_runs(content, spans, font, *size, *color);
-                if spans.is_empty() {
-                    // Inline composition preview: shape the text WITH the
-                    // composition inserted, so the following text wraps/shifts
-                    // instead of being overpainted by a detached overlay.
-                    let composed = preedit
-                        .filter(|p| p.annotation == &ann.id)
-                        .map(|p| compose_preedit_text(content, p.offset, p.text));
-                    let layout = match composed.as_deref() {
-                        Some(text) => crate::text::layout_runs(text, &[], font, *size, *color),
-                        None => runs,
-                    };
-                    let text = composed.as_deref().unwrap_or(content);
-                    draw_text_in_rect(painter, rect, text, &layout, *color, fonts, base);
-                } else {
-                    draw_text_in_rect(painter, rect, content, &runs, *color, fonts, base);
+                // Inline composition preview for every box: shape the text WITH
+                // the composition inserted so the following text shifts past
+                // it instead of being overpainted by a detached overlay.
+                match preedit.filter(|p| p.annotation == &ann.id) {
+                    Some(preview) => {
+                        let (text, layout) = crate::text::layout_runs_with_preedit(
+                            content,
+                            &runs,
+                            preview.offset,
+                            preview.text,
+                        );
+                        draw_text_in_rect(painter, rect, &text, &layout, *color, fonts, base);
+                    }
+                    None => draw_text_in_rect(painter, rect, content, &runs, *color, fonts, base),
                 }
             }
             AnnotationPayload::Stamp { rect, image } => {
@@ -634,23 +633,6 @@ fn draw_watermark_text(
     let center = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
     let affine = base * Affine::translate(center) * Affine::rotate(angle);
     draw_glyph_run(painter, &font, &glyphs, affine, translucent, text.size);
-}
-
-/// Insert `preedit` into `content` at char offset `offset` for the inline
-/// composition preview. An out-of-range offset clamps to the content end.
-/// Returns a fresh string (the preview is never written back to the dom).
-fn compose_preedit_text(content: &str, offset: usize, preedit: &str) -> String {
-    let byte = content
-        .char_indices()
-        .nth(offset)
-        .map(|(i, _)| i)
-        .unwrap_or(content.len());
-    let (head, tail) = content.split_at(byte);
-    let mut out = String::with_capacity(content.len() + preedit.len());
-    out.push_str(head);
-    out.push_str(preedit);
-    out.push_str(tail);
-    out
 }
 
 /// Shape `content` and return the glyphs with the shaper's natural positions.
@@ -2054,6 +2036,74 @@ mod tests {
     }
 
     #[test]
+    fn preedit_flows_inline_in_a_span_textbox() {
+        // Span boxes must preview the composition inline too: a detached
+        // overlay sits on top of the following characters (the reported
+        // overlap). The composition inherits the preceding span's style.
+        let spans = vec![
+            rofd_dom::TextSpan {
+                text: "hel".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Some(Color::Rgb(255, 0, 0)),
+                bold: false,
+                italic: false,
+            },
+            rofd_dom::TextSpan {
+                text: "lo".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Some(Color::Rgb(0, 0, 255)),
+                bold: false,
+                italic: false,
+            },
+        ];
+        let doc = textbox_doc(
+            Rect {
+                x: 30.0,
+                y: 40.0,
+                w: 100.0,
+                h: 60.0,
+            },
+            "hello",
+            spans,
+        );
+        let fonts = test_font_store();
+        let id = AnnotationId::from_int(1);
+        let preview = PreeditPreview {
+            annotation: &id,
+            offset: 3,
+            text: "XY",
+        };
+        let scene = annotation_scene_with(&doc, Some(&preview));
+        let runs = glyph_runs(&scene);
+        let glyphs: Vec<_> = runs.iter().flat_map(|(_, gs)| gs.iter()).collect();
+        assert_eq!(
+            glyphs.len(),
+            7,
+            "'helXYlo' -> 7 glyphs, no detached overlay"
+        );
+        for w in glyphs.windows(2) {
+            assert!(
+                w[1].x > w[0].x,
+                "glyph x must advance (overlap would repeat x): {glyphs:?}"
+            );
+        }
+        let prefix = fonts.line_width(&FontId::new("F1"), "hel", 12.0);
+        assert!(
+            (glyphs[3].x as f64 - prefix).abs() < 1e-3,
+            "composition starts at the offset: {} vs {prefix}",
+            glyphs[3].x
+        );
+        let after = fonts.line_width(&FontId::new("F1"), "helXY", 12.0);
+        assert!(
+            (glyphs[5].x as f64 - after).abs() < 1e-3,
+            "following text shifts past the composition: {} vs {after}",
+            glyphs[5].x
+        );
+    }
+
+    #[test]
     fn preedit_preview_wraps_with_the_text_flow() {
         // Composition at a soft-wrap boundary joins the second line and
         // pushes the rest - it must sit on that line (same y as the text
@@ -2148,132 +2198,5 @@ mod tests {
             5,
             "a preview for another annotation leaves the text untouched"
         );
-    }
-
-    #[test]
-    fn preedit_overlay_is_skipped_for_flat_textboxes() {
-        // Flat boxes preview inline; the detached overlay must draw nothing
-        // (painting both would double-draw the composition).
-        let doc = textbox_doc(
-            Rect {
-                x: 0.0,
-                y: 0.0,
-                w: 100.0,
-                h: 40.0,
-            },
-            "hello",
-            Vec::new(),
-        );
-        let vp = crate::Viewport {
-            scroll: (0.0, 0.0),
-            zoom: 1.0,
-            size: (200.0, 200.0),
-            page_gap: 20.0,
-        };
-        let fonts = test_font_store();
-        let mut scene = Scene::new();
-        crate::preedit_overlay::paint_preedit_overlay(
-            &mut scene,
-            &doc,
-            &vp,
-            &fonts,
-            "XY",
-            &AnnotationId::from_int(1),
-            3,
-        );
-        assert!(
-            glyph_runs(&scene).is_empty(),
-            "no detached composition for flat boxes"
-        );
-    }
-
-    #[test]
-    fn preedit_span_textbox_anchors_at_the_caret() {
-        // Span boxes keep the detached composition, but it must sit at the
-        // caret's line (not the first line / flat prefix width).
-        let rect = Rect {
-            x: 0.0,
-            y: 0.0,
-            w: 45.0,
-            h: 40.0,
-        };
-        let a = ann(
-            AnnotationPayload::TextBox {
-                rect,
-                content: "abc def ghi jkl".into(),
-                font: FontId::new("F1"),
-                size: 12.0,
-                color: Color::Rgb(0, 0, 0),
-                border: None,
-                spans: vec![rofd_dom::TextSpan {
-                    text: "abc def ghi jkl".into(),
-                    font: FontId::new("F1"),
-                    size: 12.0,
-                    color: None,
-                    bold: false,
-                    italic: false,
-                }],
-            },
-            AnnotationKind::TextBox,
-        );
-        let mut annotations = rofd_dom::AnnotationModel::default();
-        annotations
-            .by_page
-            .insert(rofd_dom::PageId::new("P0"), vec![a]);
-        let doc = rofd_dom::OfdDocument {
-            pages: vec![rofd_dom::Page {
-                id: rofd_dom::PageId::new("P0"),
-                physical_box: Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    w: 200.0,
-                    h: 200.0,
-                },
-                layers: vec![],
-                template: None,
-            }],
-            annotations,
-            ..Default::default()
-        };
-        let vp = crate::Viewport {
-            scroll: (0.0, 0.0),
-            zoom: 1.0,
-            size: (200.0, 200.0),
-            page_gap: 20.0,
-        };
-        let fonts = test_font_store();
-        let offset = 8; // second visual line
-        let caret =
-            crate::caret_rect_on_line(&doc, &vp, &fonts, &AnnotationId::from_int(1), offset, None)
-                .expect("caret rect");
-        let mut scene = Scene::new();
-        crate::preedit_overlay::paint_preedit_overlay(
-            &mut scene,
-            &doc,
-            &vp,
-            &fonts,
-            "XY",
-            &AnnotationId::from_int(1),
-            offset,
-        );
-        let mut transforms = Vec::new();
-        for cmd in scene.commands() {
-            if let imaging::record::Command::Draw(id) = cmd {
-                if let imaging::record::Draw::GlyphRun(gr) = scene.draw_op(*id) {
-                    transforms.push(gr.transform.as_coeffs());
-                }
-            }
-        }
-        assert!(!transforms.is_empty(), "composition was drawn");
-        for t in &transforms {
-            assert!(
-                (t[4] - caret.x).abs() < 1e-3 && (t[5] - caret.y).abs() < 1e-3,
-                "composition anchors at the caret: got ({}, {}), caret ({}, {})",
-                t[4],
-                t[5],
-                caret.x,
-                caret.y
-            );
-        }
     }
 }

@@ -20,7 +20,6 @@ pub mod image;
 pub mod layers;
 pub mod page_raster_cache;
 pub mod path;
-pub mod preedit_overlay;
 pub mod scrollbar;
 pub mod text;
 pub mod tooltip;
@@ -49,7 +48,6 @@ pub use image::decode_image;
 pub use layers::{overlay_scene, page_body_scene, OverlayInput, DESK_BG};
 pub use page_raster_cache::{PageCacheKey, PageRasterCache};
 pub use path::path_to_bezpath;
-pub use preedit_overlay::paint_preedit_overlay;
 pub use scrollbar::{
     content_metrics, hit_scrollbar, paint_scrollbars, scroll_x_margin, scroll_y_max,
     scrollbar_layout, Axis, BarGeom, ScrollbarHit, ScrollbarHover, ScrollbarLayout,

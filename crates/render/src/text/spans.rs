@@ -110,6 +110,97 @@ pub fn layout_runs(
     out
 }
 
+/// Byte index of the `n`-th char (content length when past the end).
+fn char_byte(s: &str, n: usize) -> usize {
+    s.char_indices().nth(n).map(|(i, _)| i).unwrap_or(s.len())
+}
+
+/// Insert `preedit` into the flow at char `offset`: returns the composed text
+/// and the layout runs over it. The composition run inherits the style of the
+/// char before `offset` (the char the insertion would take its style from).
+pub fn layout_runs_with_preedit(
+    content: &str,
+    runs: &[LayoutRun],
+    offset: usize,
+    preedit: &str,
+) -> (String, Vec<LayoutRun>) {
+    if preedit.is_empty() {
+        return (content.to_string(), runs.to_vec());
+    }
+    let off = offset.min(content.chars().count());
+    let byte = char_byte(content, off);
+    let probe = char_byte(content, off.saturating_sub(1));
+    let Some(style) = runs
+        .iter()
+        .find(|r| r.byte_range.start <= probe && probe < r.byte_range.end)
+        .or_else(|| runs.first())
+    else {
+        return (content.to_string(), runs.to_vec());
+    };
+    let make = |range: std::ops::Range<usize>, from: &LayoutRun| LayoutRun {
+        byte_range: range,
+        font: from.font.clone(),
+        size: from.size,
+        color: from.color,
+        bold: from.bold,
+        italic: from.italic,
+    };
+    let delta = preedit.len();
+    let preedit_run = make(byte..byte + delta, style);
+    let mut out: Vec<LayoutRun> = Vec::with_capacity(runs.len() + 1);
+    let mut inserted = false;
+    for run in runs {
+        let r = run.byte_range.clone();
+        if r.end <= byte {
+            out.push(run.clone());
+        } else if r.start >= byte {
+            if !inserted {
+                out.push(preedit_run.clone());
+                inserted = true;
+            }
+            out.push(make(r.start + delta..r.end + delta, run));
+        } else {
+            if r.start < byte {
+                out.push(make(r.start..byte, run));
+            }
+            if !inserted {
+                out.push(preedit_run.clone());
+                inserted = true;
+            }
+            if byte < r.end {
+                out.push(make(byte + delta..r.end + delta, run));
+            }
+        }
+    }
+    if !inserted {
+        out.push(preedit_run);
+    }
+
+    // The composition inherits the preceding style, so adjacent runs can end up
+    // identical (the flat box becomes one run again). Merging keeps the glyph
+    // groups identical to the committed text.
+    let same = |a: &LayoutRun, b: &LayoutRun| {
+        a.font == b.font
+            && (a.size - b.size).abs() < 1e-9
+            && a.color == b.color
+            && a.bold == b.bold
+            && a.italic == b.italic
+    };
+    let mut merged: Vec<LayoutRun> = Vec::with_capacity(out.len());
+    for run in out {
+        match merged.last_mut() {
+            Some(prev) if same(prev, &run) => prev.byte_range.end = run.byte_range.end,
+            _ => merged.push(run),
+        }
+    }
+
+    let mut text = String::with_capacity(content.len() + preedit.len());
+    text.push_str(&content[..byte]);
+    text.push_str(preedit);
+    text.push_str(&content[byte..]);
+    (text, merged)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,6 +214,50 @@ mod tests {
             bold: false,
             italic: false,
         }
+    }
+
+    #[test]
+    fn preedit_inherits_the_preceding_span_and_merges() {
+        let spans = [
+            TextSpan {
+                text: "ab".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Some(Color::Rgb(255, 0, 0)),
+                bold: false,
+                italic: false,
+            },
+            TextSpan {
+                text: "cd".into(),
+                font: FontId::new("F1"),
+                size: 12.0,
+                color: Some(Color::Rgb(0, 0, 255)),
+                bold: false,
+                italic: false,
+            },
+        ];
+        let runs = layout_runs(
+            "abcd",
+            &spans,
+            &FontId::new("F1"),
+            12.0,
+            Color::Rgb(0, 0, 0),
+        );
+        let (text, composed) = layout_runs_with_preedit("abcd", &runs, 3, "X");
+        assert_eq!(text, "abcXd");
+        assert_eq!(composed.len(), 2, "preedit merges into the preceding span");
+        assert_eq!(composed[0].byte_range, 0..2);
+        assert_eq!(composed[1].byte_range, 2..5);
+        assert_eq!(composed[1].color, Some(Color::Rgb(0, 0, 255)));
+    }
+
+    #[test]
+    fn preedit_in_a_flat_box_stays_one_run() {
+        let runs = layout_runs("abcd", &[], &FontId::new("F1"), 12.0, Color::Rgb(0, 0, 0));
+        let (text, composed) = layout_runs_with_preedit("abcd", &runs, 1, "XY");
+        assert_eq!(text, "aXYbcd");
+        assert_eq!(composed.len(), 1);
+        assert_eq!(composed[0].byte_range, 0..6);
     }
 
     #[test]

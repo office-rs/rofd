@@ -114,7 +114,7 @@ preedit：
 
 - 平铺 TextBox（`runs` 空）把组合串**内联**插进内容流：按 `content[..offset] + 组合串 + content[offset..]` 走同一份折行排版，组合点之后的文字随之下移/换行。组合串因此出现在它将要提交的位置，且不会叠在既有文字上（2026-11-10 修订：此前的 detached overlay 画在组合点，会与之后的文字重叠）。
 - 组合串只用于屏幕预览：不写 dom、不进保存快照、不参与打印/PDF 导出（那些路径 `draw_annotations(..., preedit: None)`）。
-- `runs` 非空的富 TextBox 保持现有单行 detached overlay 定位（§1.2.2）。
+- `runs` 非空的富 TextBox 当时保持单行 detached overlay（§1.2.2）。**2026-11-11 修订**：rich-text 改名后（`spans`）所有 TextBox 统一内联预览，overlay 已移除。
 
 ### 1.4 改宽
 
@@ -425,7 +425,7 @@ for i, line in hints[ann_id].iter().enumerate():
 - `caret_offset_vertical`：软折行上/下移；显式 `\n` 上/下移；连续下移保留 preferred_x（长行→短行→长行）；短行夹到行尾；首行 Up → 0、末行 Down → 文末。
 - `caret_rect` 高度 = 行框高（`line.height`），光学重心随之下移；legacy 路径仍 `size`。
 - `annotation_text_selection_rects`：单行部分区间（x/宽取字形 pen 与行尾）、跨行两矩形（第二矩形 y = 第二行 top）、空区间/反向区间/未知批注/富 TextBox。
-- `preedit` 内联预览：组合点在文本中间时组合串之后的字符 x 后移（不与组合串重叠）；折行边界处组合串落到下一行；目标以外批注不受影响；平铺 TextBox 的 detached overlay 不再绘制；富 TextBox 仍走 overlay。
+- `preedit` 内联预览：组合点在文本中间时组合串之后的字符 x 后移（不与组合串重叠）；折行边界处组合串落到下一行、目标以外批注不受影响；所有 TextBox（含 spans 框）都内联，detached overlay 已移除（2026-11-11 修订）。
 - 绘制：折行后各行 baseline 落在 rect 内；`to_layout_hints` 的 top/baseline/width/advances 与 glyph 位置一致。
 - 富 TextBox（`runs` 非空）：绘制仍走 `draw_text_runs`；`caret_rect` / preedit 保持旧单行定位。
 
