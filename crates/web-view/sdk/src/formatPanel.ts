@@ -224,7 +224,6 @@ export function createFormatPanel(
   let style: string[] | null = null;
   // Menu data is static for the session (font lists change only at init):
   // cache it so a per-frame refresh does not rebuild or re-allocate the menu.
-  let familiesCache: string[][] | null = null;
   let sizesCache: (string | number)[][] | null = null;
   let paletteCache: string[] | null = null;
   let standardCache: string[] | null = null;
@@ -424,10 +423,9 @@ export function createFormatPanel(
       return;
     }
     if (open === "family") {
-      familiesCache ??= host.fontFamilies();
       itemsMenu(
         160,
-        familiesCache.map(([key, display]) => ({
+        host.fontFamilies().map(([key, display]) => ({
           label: display,
           active: (style?.[0] ?? "") === display,
           pick: () => {

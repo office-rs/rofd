@@ -1,21 +1,29 @@
 // 切片字体流（spec 2026-10-17 §3.2）：初始加载、default 族前置、批注轻量
 // watcher（delta 由两次 collect 结果做差，无内核 takeFontDelta）。纯编排，
 // 两个注入缝（wasm 字体面 + FontRuntime）——无 DOM。
-import { FontRuntime, FontLoadError } from '@office-rs/font-runtime';
-import type { FontSlicePlan } from '@office-rs/font-runtime';
+import { FontRuntime, FontLoadError } from "@office-rs/font-runtime";
+import type { FontSlicePlan } from "@office-rs/font-runtime";
 
 export const WATCH_DEBOUNCE_MS = 300;
 
 export interface WasmFontSurface {
   collectFontRequirements(): { families: string[]; codepoints: number[] };
-  registerFontSlice(bytes: Uint8Array, family: string, sliceId: string): boolean;
+  registerFontSlice(
+    bytes: Uint8Array,
+    family: string,
+    sliceId: string,
+  ): boolean;
   /** 系统字体流用（draft 2026-10-18）：整字体注册（legacy 面）与内核族名
    * 归一（键宇宙单一事实源在内核）。缺省时系统流不可用/退化。 */
   registerFont?(bytes: Uint8Array): boolean;
   normalizeFontName?(name: string): string;
 }
 
-export interface FontFlowError { family: string; sliceId?: string; message: string; }
+export interface FontFlowError {
+  family: string;
+  sliceId?: string;
+  message: string;
+}
 export interface FontSlicesConfig {
   manifests: string[];
   defaultFamily?: string;
@@ -23,15 +31,18 @@ export interface FontSlicesConfig {
 }
 
 export function toFontFlowError(e: unknown): FontFlowError {
-  if (e instanceof FontLoadError || (e != null && typeof e === 'object' && 'family' in e && 'message' in e)) {
+  if (
+    e instanceof FontLoadError ||
+    (e != null && typeof e === "object" && "family" in e && "message" in e)
+  ) {
     const fe = e as { family: unknown; sliceId?: unknown; message: unknown };
     return {
-      family: typeof fe.family === 'string' ? fe.family : '',
-      sliceId: typeof fe.sliceId === 'string' ? fe.sliceId : undefined,
-      message: typeof fe.message === 'string' ? fe.message : String(e),
+      family: typeof fe.family === "string" ? fe.family : "",
+      sliceId: typeof fe.sliceId === "string" ? fe.sliceId : undefined,
+      message: typeof fe.message === "string" ? fe.message : String(e),
     };
   }
-  return { family: '', message: e instanceof Error ? e.message : String(e) };
+  return { family: "", message: e instanceof Error ? e.message : String(e) };
 }
 
 /** Pre-check manifest URLs (spec §5): silently drop entries that 404, fail to
@@ -48,19 +59,32 @@ export async function filterLiveManifests(urls: string[]): Promise<string[]> {
   for (const url of urls) {
     try {
       const res = await fetch(url);
-      const type = res.headers.get('content-type') ?? '';
-      if (res.ok && type.includes('json')) { live.push(url); } else { console.debug(`[rofd] font manifest unavailable (degraded): ${url}`); }
-    } catch { console.debug(`[rofd] font manifest unreachable (degraded): ${url}`); }
+      const type = res.headers.get("content-type") ?? "";
+      if (res.ok && type.includes("json")) {
+        live.push(url);
+      } else {
+        console.debug(`[rofd] font manifest unavailable (degraded): ${url}`);
+      }
+    } catch {
+      console.debug(`[rofd] font manifest unreachable (degraded): ${url}`);
+    }
   }
   return live;
 }
 
 function registerSlice(
-  wasm: WasmFontSurface, slice: { family: string; id: string; bytes: Uint8Array },
+  wasm: WasmFontSurface,
+  slice: { family: string; id: string; bytes: Uint8Array },
   onError?: (err: FontFlowError) => void,
 ): void {
   const ok = wasm.registerFontSlice(slice.bytes, slice.family, slice.id);
-  if (!ok) { onError?.({ family: slice.family, sliceId: slice.id, message: 'slice bytes failed to register' }); }
+  if (!ok) {
+    onError?.({
+      family: slice.family,
+      sliceId: slice.id,
+      message: "slice bytes failed to register",
+    });
+  }
 }
 
 /** 初始加载（spec §3.2）：ready → 键→displayName 翻译 → selectInitial →
@@ -79,15 +103,22 @@ export async function ensureFonts(
   try {
     const manifest = await runtime.ready();
     const displayByKey = new Map<string, string>(
-      Object.entries(manifest.families).map(([key, fam]) => [key, (fam as { displayName: string }).displayName]),
+      Object.entries(manifest.families).map(([key, fam]) => [
+        key,
+        (fam as { displayName: string }).displayName,
+      ]),
     );
     const req = wasm.collectFontRequirements();
     const names = req.families
       .map((key) => displayByKey.get(key))
       .filter((n): n is string => n !== undefined);
     let plan = runtime.selectInitial(req.codepoints, names);
-    if (opts.defaultFamily) { plan = defaultFirst(plan, opts.defaultFamily); }
-    for await (const slice of runtime.ensure(plan)) { registerSlice(wasm, slice, opts.onError); }
+    if (opts.defaultFamily) {
+      plan = defaultFirst(plan, opts.defaultFamily);
+    }
+    for await (const slice of runtime.ensure(plan)) {
+      registerSlice(wasm, slice, opts.onError);
+    }
     if (opts.system) {
       await satisfySystemFamilies(
         wasm,
@@ -104,7 +135,10 @@ export async function ensureFonts(
   }
 }
 
-function defaultFirst(plan: FontSlicePlan, defaultFamily: string): FontSlicePlan {
+function defaultFirst(
+  plan: FontSlicePlan,
+  defaultFamily: string,
+): FontSlicePlan {
   const rest = plan.families.filter((f) => f.family !== defaultFamily);
   const head = plan.families.filter((f) => f.family === defaultFamily);
   return { families: [...head, ...rest] };
@@ -133,7 +167,7 @@ export function scheduleFontWatch(
 ): FontWatch {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let cancelled = false;
-  let lastKey = '';
+  let lastKey = "";
   let lastSet = new Set<number>();
   // In-flight round bookkeeping for pending(): a round is armed by kick()
   // and stays armed while a debounce timer or tick chain is outstanding
@@ -158,25 +192,36 @@ export function scheduleFontWatch(
     resolve?.();
   };
   const tick = async (): Promise<void> => {
-    if (cancelled) { return; }
+    if (cancelled) {
+      return;
+    }
     try {
       const req = wasm.collectFontRequirements();
-      const key = `${req.families.join('\u{1}')}\u{2}${req.codepoints.join(',')}`;
-      if (key === lastKey) { return; }
+      const key = `${req.families.join("\u{1}")}\u{2}${req.codepoints.join(",")}`;
+      if (key === lastKey) {
+        return;
+      }
       const delta = req.codepoints.filter((cp) => !lastSet.has(cp));
       lastKey = key;
       lastSet = new Set(req.codepoints);
       const manifest = await runtime.ready();
       const displayByKey = new Map<string, string>(
-        Object.entries(manifest.families).map(([k, f]) => [k, (f as { displayName: string }).displayName]),
+        Object.entries(manifest.families).map(([k, f]) => [
+          k,
+          (f as { displayName: string }).displayName,
+        ]),
       );
       const names = req.families
         .map((k) => displayByKey.get(k))
         .filter((n): n is string => n !== undefined);
       let plan = runtime.selectInitial(req.codepoints, names);
-      if (delta.length > 0) { plan = mergePlans(plan, runtime.watchText(delta)); }
+      if (delta.length > 0) {
+        plan = mergePlans(plan, runtime.watchText(delta));
+      }
       for await (const slice of runtime.ensure(plan)) {
-        if (cancelled) { return; }
+        if (cancelled) {
+          return;
+        }
         registerSlice(wasm, slice, opts.onError);
       }
       if (opts.system && !cancelled) {
@@ -194,9 +239,13 @@ export function scheduleFontWatch(
   };
   return {
     kick() {
-      if (cancelled) { return; }
+      if (cancelled) {
+        return;
+      }
       armRound();
-      if (timer !== undefined) { clearTimeout(timer); }
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
       timer = setTimeout(() => {
         timer = undefined;
         armRound();
@@ -205,7 +254,10 @@ export function scheduleFontWatch(
     },
     cancel() {
       cancelled = true;
-      if (timer !== undefined) { clearTimeout(timer); timer = undefined; }
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
       settleRound();
     },
     pending(): Promise<void> {
@@ -215,9 +267,17 @@ export function scheduleFontWatch(
 }
 
 /** 两计划取并：primary 的族条目胜（full 短路不可降级），extra 独有族追加。 */
-export function mergePlans(primary: FontSlicePlan, extra: FontSlicePlan): FontSlicePlan {
+export function mergePlans(
+  primary: FontSlicePlan,
+  extra: FontSlicePlan,
+): FontSlicePlan {
   const keys = new Set(primary.families.map((f) => f.family));
-  return { families: [...primary.families, ...extra.families.filter((f) => !keys.has(f.family))] };
+  return {
+    families: [
+      ...primary.families,
+      ...extra.families.filter((f) => !keys.has(f.family)),
+    ],
+  };
 }
 
 // ─── 系统字体流（draft 2026-10-18 §4：桌面第四通道）───────────────────────
@@ -253,16 +313,12 @@ export interface SystemFontFlow {
   defaultFamilyKey?: string;
 }
 
-function normalizeWith(
-  wasm: WasmFontSurface,
-  name: string,
-): string {
+function normalizeWith(wasm: WasmFontSurface, name: string): string {
   return wasm.normalizeFontName ? wasm.normalizeFontName(name) : name;
 }
 
 /** 建系统遍：list() → 逐条归一建 fileByFamily（同键首见胜出——排序输入下
-  * 即字母序首个）。list 失败 → 空流（桌面纯降级，等价无本机字体）。 */
-export async function createSystemFlow(
+ * 即字母序首个）。list 失败 → 空流（桌面纯降级，等价无本机字体）。 */ export async function createSystemFlow(
   wasm: WasmFontSurface,
   provider: SystemFontProvider,
   defaultFamily?: string,
@@ -272,7 +328,9 @@ export async function createSystemFlow(
     fileByFamily: new Map(),
     familiesRaw: [],
     settled: new Set(),
-    defaultFamilyKey: defaultFamily ? normalizeWith(wasm, defaultFamily) : undefined,
+    defaultFamilyKey: defaultFamily
+      ? normalizeWith(wasm, defaultFamily)
+      : undefined,
   };
   try {
     for (const entry of await provider.list()) {
@@ -288,7 +346,9 @@ export async function createSystemFlow(
   if (!wasm.normalizeFontName) {
     // 混合 wasm/SDK 版本防御：无归一面则 map 以原始名建键，与归一后的需求
     // 永不匹配——通道"安静地死"。显式警告使其可诊断。
-    console.warn('[rofd] systemFonts requires wasm.normalizeFontName (rebuild sdk wasm)');
+    console.warn(
+      "[rofd] systemFonts requires wasm.normalizeFontName (rebuild sdk wasm)",
+    );
   }
   return flow;
 }
@@ -309,7 +369,9 @@ export async function satisfySystemFamilies(
   }
   // 迭代序即注册序：defaultFamily 恒排首位（D5——内核 default 锚定在首个
   // 整字体注册，声明族是排序键，字母序靠前者会抢走宋体的锚）。
-  const wanted = new Set<string>(flow.defaultFamilyKey ? [flow.defaultFamilyKey] : []);
+  const wanted = new Set<string>(
+    flow.defaultFamilyKey ? [flow.defaultFamilyKey] : [],
+  );
   for (const f of families) {
     wanted.add(f);
   }
@@ -327,11 +389,17 @@ export async function satisfySystemFamilies(
       if (bytes && bytes.length > 0) {
         const ok = wasm.registerFont(bytes);
         if (!ok) {
-          onError?.({ family: key, message: 'system font bytes failed to register' });
+          onError?.({
+            family: key,
+            message: "system font bytes failed to register",
+          });
         }
       }
     } catch (e) {
-      onError?.({ family: key, message: e instanceof Error ? e.message : String(e) });
+      onError?.({
+        family: key,
+        message: e instanceof Error ? e.message : String(e),
+      });
     }
     // 无论成败 settled（draft §6.4：缺族不 settle 会对 provider 反复查询）。
     flow.settled.add(key);
@@ -354,8 +422,109 @@ export function manifestFamilyKeys(
 
 /** picker 合并（draft §4.3）：精确字符串去重，已列族保持原序，系统族
  * localeCompare 排序追加。同族多名（宋体/SimSun）各自成条。 */
-export function mergeFontFamilyLists(listed: string[], system: string[]): string[] {
+export function mergeFontFamilyLists(
+  listed: string[],
+  system: string[],
+): string[] {
   const seen = new Set(listed);
-  const extra = system.filter((f) => !seen.has(f)).sort((a, b) => a.localeCompare(b));
+  const extra = system
+    .filter((f) => !seen.has(f))
+    .sort((a, b) => a.localeCompare(b));
   return [...listed, ...extra];
+}
+
+// ─── 浏览器本机字体通道（Local Font Access API）─────────────────────────────
+//
+// Chromium 的 `queryLocalFonts()` 让网页在**用户手势 + 授权**后读取本机已安装
+// 字体（不经文件分发，不打包商业字体）。浏览器没有桌面桥，我们把它的清单接进
+// 同一套系统字体流：族名进 picker，需求命中时读字节注册。
+
+/** One installed face returned by `window.queryLocalFonts()`. */
+export interface LocalFontFace {
+  family: string;
+  style?: string;
+  postscriptName: string;
+  blob(): Promise<Blob>;
+}
+
+export type QueryLocalFontsFn = () => Promise<LocalFontFace[]>;
+
+/** Browser channel: `list()` stays empty until {@link BrowserLocalFontProvider.activate}
+ * (the API needs a user gesture); `read()` serves the activated faces. */
+export interface BrowserLocalFontProvider extends SystemFontProvider {
+  activate(): Promise<SystemFontEntry[]>;
+}
+
+/** Whether this browser exposes the Local Font Access API. */
+export function browserLocalFontsAvailable(
+  scope: unknown = globalThis,
+): boolean {
+  return (
+    typeof (scope as { queryLocalFonts?: unknown } | null)?.queryLocalFonts ===
+    "function"
+  );
+}
+
+/** Build the browser local-font provider. `query` is injectable for tests. */
+export function createBrowserLocalFontProvider(
+  query?: QueryLocalFontsFn,
+): BrowserLocalFontProvider {
+  const faces = new Map<string, LocalFontFace>();
+  const run =
+    query ??
+    (() =>
+      (
+        globalThis as unknown as { queryLocalFonts: QueryLocalFontsFn }
+      ).queryLocalFonts());
+
+  return {
+    list: async () => [], // populated by activate(): needs a user gesture
+    read: async (entry) => {
+      const face = faces.get(entry.fileName);
+      if (!face) {
+        return null;
+      }
+      const blob = await face.blob();
+      return new Uint8Array(await blob.arrayBuffer());
+    },
+    activate: async () => {
+      const listed = await run();
+      // Regular faces first: a family's bytes then register the normal weight.
+      listed.sort(
+        (a, b) =>
+          Number((b.style ?? "").toLowerCase() === "regular") -
+          Number((a.style ?? "").toLowerCase() === "regular"),
+      );
+      const out: SystemFontEntry[] = [];
+      for (const face of listed) {
+        if (!face.family || !face.postscriptName) {
+          continue;
+        }
+        faces.set(face.postscriptName, face);
+        out.push({ family: face.family, fileName: face.postscriptName });
+      }
+      return out;
+    },
+  };
+}
+
+/** Add late-arriving entries (browser activation) to an existing system flow:
+ * names feed the picker, normalized keys feed the load pass. Families the flow
+ * gave up on before the channel was ready are retried once. */
+export function addSystemEntries(
+  flow: SystemFontFlow,
+  entries: readonly SystemFontEntry[],
+  normalize: (name: string) => string,
+): void {
+  for (const entry of entries) {
+    if (!flow.familiesRaw.includes(entry.family)) {
+      flow.familiesRaw.push(entry.family);
+    }
+    const key = normalize(entry.family);
+    if (!flow.fileByFamily.has(key)) {
+      flow.fileByFamily.set(key, entry.fileName);
+    }
+  }
+  flow.familiesRaw.sort((a, b) => a.localeCompare(b));
+  flow.settled.clear();
 }

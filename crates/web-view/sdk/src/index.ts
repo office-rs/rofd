@@ -336,6 +336,11 @@ export class Ofd {
   private systemFontsCfg?: fontFlow.SystemFontProvider;
   private defaultFontFamilyCfg?: string;
   private wasmFontSurface?: fontFlow.WasmFontSurface;
+  /** Browser local-font channel (Chromium Local Font Access API). */
+  private localFontProvider?: fontFlow.BrowserLocalFontProvider;
+  private localFontsRequested = false;
+  private localFontsGestureBound = false;
+  private rootContainer?: HTMLElement;
   /** Built-in annotation format panel (null when disabled). */
   private formatPanel?: FormatPanel;
   /** 呈现目标是否 CPU 软渲染回退（wire 时从 wasm 表面读一次定格；
@@ -510,6 +515,7 @@ export class Ofd {
 
     // 6. Create wrapper (proxy + events + watchdog) via the shared wiring.
     const ofd = Ofd.wire(wasmOfd, canvas);
+    ofd.rootContainer = container;
     // bindEvents subscribes ONE onCursorChange (internal IME anchoring
     // wrapping this user hook) - register the hook after wire so the two
     // never overwrite each other.
@@ -698,6 +704,19 @@ export class Ofd {
         this.systemFontsCfg,
         this.defaultFontFamilyCfg,
       );
+    } else if (
+      !this.systemFlow &&
+      typeof (globalThis as { queryLocalFonts?: unknown }).queryLocalFonts ===
+        "function"
+    ) {
+      // Browser stand-in for the desktop system channel: installed fonts are
+      // readable through the Local Font Access API after a user gesture.
+      this.localFontProvider = fontFlow.createBrowserLocalFontProvider();
+      this.systemFlow = await fontFlow.createSystemFlow(
+        wasmFont,
+        this.localFontProvider,
+      );
+      this.bindLocalFontsGesture();
     }
     const ok = await fontFlow.ensureFonts(wasmFont, runtime, {
       defaultFamily: cfg.defaultFamily,
@@ -720,6 +739,66 @@ export class Ofd {
     // 文档已在 init 窗口期间加载的情形：就绪后立即补一拍，watcher 会收集
     // 加载后的需求并补片——runtime 去重使竞争外的情形为空转。
     this.fontWatch?.kick();
+  }
+
+  /** Ask for installed fonts on the first user gesture (the Local Font Access
+   * API rejects calls without transient activation). One-shot per instance. */
+  private bindLocalFontsGesture(): void {
+    const target = this.rootContainer;
+    if (this.localFontsGestureBound || !target) {
+      return;
+    }
+    this.localFontsGestureBound = true;
+    const activate = (): void => {
+      void this.activateLocalFonts();
+    };
+    target.addEventListener("pointerdown", activate, {
+      once: true,
+      capture: true,
+    });
+    target.addEventListener("keydown", activate, {
+      once: true,
+      capture: true,
+    });
+  }
+
+  private async activateLocalFonts(): Promise<void> {
+    if (this.localFontsRequested) {
+      return;
+    }
+    const provider = this.localFontProvider;
+    const flow = this.systemFlow;
+    const surface = this.wasmFontSurface;
+    const runtime = this.fontRuntime;
+    if (!provider || !flow || !surface || !runtime) {
+      return;
+    }
+    this.localFontsRequested = true;
+    try {
+      const entries = await provider.activate();
+      if (entries.length === 0) {
+        return;
+      }
+      fontFlow.addSystemEntries(flow, entries, (name) =>
+        this.wasm.normalizeFontName(name),
+      );
+      await this.pushPanelFontFamilies(runtime);
+      // Load anything the current document/annotations already require.
+      const required = this.wasm.collectFontRequirements();
+      const manifest = await runtime.ready();
+      await fontFlow.satisfySystemFamilies(
+        surface,
+        flow,
+        required.families,
+        fontFlow.manifestFamilyKeys(this.wasm, manifest),
+        (err) =>
+          this.onWarningCb?.([
+            `fonts: ${err.family ? `${err.family} ` : ""}${err.message}`,
+          ]),
+      );
+    } catch {
+      // Permission denied or API unavailable: the name-only catalog remains.
+    }
   }
 
   /** Font panel data face: channel-deliverable families (manifest
