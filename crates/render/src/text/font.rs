@@ -1214,6 +1214,21 @@ mod tests {
     }
 
     #[test]
+    fn chinese_display_name_resolves_to_the_slice_chain() {
+        // The payload stores the display name (宋体); the slice chain is keyed
+        // by the normalized key (simsun), so normalization must bridge them.
+        let mut store = FontStore::from_resources(&Resources::default(), Arc::new(Vec::new()));
+        let font = include_bytes!("../../tests/fixtures/fonts/TestFontCjk.otf") as &[u8];
+        assert!(store.register_font_slice(Arc::new(font.to_vec()), "simsun", "0"));
+        let key_w = store.line_width(&FontId::new("simsun"), "汉字", 12.0);
+        let display_w = store.line_width(&FontId::new("宋体"), "汉字", 12.0);
+        assert!(
+            (key_w - display_w).abs() < 1e-6,
+            "display name must hit the slice chain: {key_w} vs {display_w}"
+        );
+    }
+
+    #[test]
     fn registered_name_for_key_finds_the_fixture_family() {
         let mut store = FontStore::from_resources(&Resources::default(), Arc::new(Vec::new()));
         let ttc = include_bytes!("../../tests/fixtures/fonts/TwoFamily.ttc") as &[u8];
