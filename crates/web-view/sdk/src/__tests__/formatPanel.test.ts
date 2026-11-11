@@ -192,6 +192,21 @@ describe("format panel", () => {
     expect(h.calls).toContain("color:7:#FFFFFF");
   });
 
+  it("resets the menu width when switching from a list to the color palette", () => {
+    const root = document.createElement("div");
+    createFormatPanel(root, host() as never, vp);
+    const pointerdown = (sel: string) =>
+      (root.querySelector(sel) as HTMLElement).dispatchEvent(
+        new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
+      );
+    pointerdown(".rofd-fp-family");
+    const menu = root.querySelector(".rofd-fp-menu") as HTMLElement;
+    expect(menu.style.width).toBe("160px");
+    pointerdown(".rofd-fp-color");
+    expect(menu.style.width).toBe("268px");
+    expect(menu.style.maxHeight).toBe("420px");
+  });
+
   it("shows the style at the start of the text selection", () => {
     const root = document.createElement("div");
     let styled = ["宋体", "4.23", "#000000", "1"];

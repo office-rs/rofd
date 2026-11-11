@@ -32,6 +32,8 @@ export const ANCHOR_MARGIN = 8;
 
 /** WPS-like theme grid: 10 columns per row. */
 const COLOR_COLUMNS = 10;
+/** Width of the sectioned color menu (10 columns x 20px + gaps + padding). */
+const COLOR_MENU_W = 268;
 
 type Menu = "family" | "size" | "color" | null;
 
@@ -114,7 +116,7 @@ const STYLE_TEXT = `
   border-top:5px solid #7A7F87;margin-left:6px;flex:0 0 auto}
 .rofd-fp-menu{position:absolute;top:36px;display:none;background:#fff;border:1px solid #E4E6EB;
   border-radius:6px;box-shadow:0 8px 24px rgba(31,41,55,.16);padding:4px;z-index:11;
-  max-height:320px;overflow-y:auto;box-sizing:border-box}
+  max-height:320px;overflow-x:hidden;overflow-y:auto;box-sizing:border-box}
 .rofd-fp-item{height:28px;line-height:28px;padding:0 10px;border-radius:4px;
   white-space:nowrap;cursor:pointer;overflow:hidden;text-overflow:ellipsis}
 .rofd-fp-item:hover{background:#F2F3F5}
@@ -351,6 +353,10 @@ export function createFormatPanel(
 
   function colorMenu(): void {
     menu.className = "rofd-fp-menu rofd-fp-color-panel";
+    // Reset the inline width a list menu may have left behind, then size the
+    // sectioned palette explicitly (the 10-column grid must not be squeezed).
+    menu.style.width = `${COLOR_MENU_W}px`;
+    menu.style.maxHeight = "420px";
     paletteCache ??= host.textColorPalette();
     standardCache ??= host.textColorStandard();
 
@@ -400,6 +406,9 @@ export function createFormatPanel(
   function rebuildMenu(): void {
     menuKey = `${open ?? ""}|${target ?? ""}`;
     menu.replaceChildren();
+    menu.className = "rofd-fp-menu";
+    menu.style.width = "";
+    menu.style.maxHeight = "";
     menu.style.display = open === null ? "none" : "block";
     const left =
       open === "family"
