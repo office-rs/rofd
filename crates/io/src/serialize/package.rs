@@ -1,13 +1,48 @@
 use std::collections::HashMap;
 
-use rofd_dom::{OfdDocument, TextLayoutHints};
+use rofd_dom::{DocMeta, OfdDocument, TextLayoutHints};
 
 use crate::error::OfdError;
-use crate::serialize::annotation::{object_id_seed, serialize_page_annot};
+use crate::serialize::annotation::{object_id_seed, serialize_page_annot, xml_escape};
 use crate::serialize::annotation_entry::serialize_annotations_entry;
 use crate::serialize::body;
 use crate::serialize::resource;
 use crate::zip_util::write_zip;
+
+/// Synthesize OFD.xml: DocBody with an optional DocInfo (GB/T 33190 places
+/// CT_DocInfo on the OFD.xml DocBody face - the parse side reads it from
+/// there, `parse/ofd_xml.rs`) followed by DocRoot. DocInfo is emitted only
+/// when at least one meta field is set; field order is fixed for
+/// determinism.
+fn ofd_xml(meta: &DocMeta) -> String {
+    let mut s = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    s.push_str("<ofd:OFD xmlns:ofd=\"http://www.ofdspec.org/2016\">\n");
+    s.push_str("  <ofd:DocBody>\n");
+    let any = meta.doc_id.is_some()
+        || meta.title.is_some()
+        || meta.author.is_some()
+        || meta.creation_date.is_some()
+        || meta.mod_date.is_some();
+    if any {
+        s.push_str("    <ofd:DocInfo>\n");
+        for (tag, value) in [
+            ("DocID", &meta.doc_id),
+            ("Title", &meta.title),
+            ("Author", &meta.author),
+            ("CreationDate", &meta.creation_date),
+            ("LastModDate", &meta.mod_date),
+        ] {
+            if let Some(v) = value {
+                s.push_str(&format!("      <ofd:{tag}>{}</ofd:{tag}>\n", xml_escape(v)));
+            }
+        }
+        s.push_str("    </ofd:DocInfo>\n");
+    }
+    s.push_str("    <ofd:DocRoot>Doc_0/Document.xml</ofd:DocRoot>\n");
+    s.push_str("  </ofd:DocBody>\n");
+    s.push_str("</ofd:OFD>");
+    s
+}
 
 /// Full write: construct a fresh .ofd package from the model (generation / conversion).
 ///
@@ -27,11 +62,7 @@ pub fn write_ofd_with_text_layout(
     text_layout: &TextLayoutHints,
 ) -> Result<Vec<u8>, OfdError> {
     let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
-
-    let ofd_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-<ofd:OFD xmlns:ofd=\"http://www.ofdspec.org/2016\">\n  <ofd:DocBody>\n    \
-<ofd:DocRoot>Doc_0/Document.xml</ofd:DocRoot>\n  </ofd:DocBody>\n</ofd:OFD>";
-    entries.push(("OFD.xml".into(), ofd_xml.as_bytes().to_vec()));
+    entries.push(("OFD.xml".into(), ofd_xml(&doc.meta).into_bytes()));
 
     // Pages with annotations (doc order): (page_id, page_index).
     let pages_with_ann: Vec<(rofd_dom::PageId, usize)> = doc

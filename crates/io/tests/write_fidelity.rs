@@ -7,9 +7,9 @@ use std::io::Read;
 use std::sync::Arc;
 
 use rofd_dom::{
-    Color, CompositeObject, Ctm, DrawParam, DrawParamId, FontId, FontRef, ImageId, ImageObject,
-    Layer, LayerType, ObjectId, OfdDocument, Page, PageId, PageObject, PathCommand, PathData,
-    PathObject, Rect, TextCode, TextObject,
+    Color, CompositeObject, Ctm, DocMeta, DrawParam, DrawParamId, FontId, FontRef, ImageId,
+    ImageObject, Layer, LayerType, ObjectId, OfdDocument, Page, PageId, PageObject, PathCommand,
+    PathData, PathObject, Rect, TextCode, TextObject,
 };
 use rofd_io::{parse_ofd, write_ofd};
 
@@ -400,4 +400,81 @@ fn image_object_round_trips() {
         "{xml}"
     );
     assert_round_trip(&doc);
+}
+
+#[test]
+fn doc_meta_round_trips_via_ofd_xml() {
+    let mut doc = OfdDocument::default();
+    doc.pages.push(page_with(vec![]));
+    doc.meta = DocMeta {
+        doc_id: Some("DOC-1".into()),
+        title: Some("验收报告".into()),
+        author: Some("张三".into()),
+        creation_date: Some("2026-11-11".into()),
+        mod_date: Some("2026-11-11T10:00:00".into()),
+    };
+    let bytes = write_ofd(&doc).expect("write_ofd");
+    let ofd = read_entry(&bytes, "OFD.xml");
+    assert!(ofd.contains("<ofd:DocInfo>"), "{ofd}");
+    assert!(ofd.contains("<ofd:Title>验收报告</ofd:Title>"), "{ofd}");
+    assert!(
+        ofd.contains("<ofd:LastModDate>2026-11-11T10:00:00</ofd:LastModDate>"),
+        "{ofd}"
+    );
+    assert_round_trip(&doc);
+}
+
+#[test]
+fn empty_meta_omits_docinfo() {
+    let mut doc = OfdDocument::default();
+    doc.pages.push(page_with(vec![]));
+    let bytes = write_ofd(&doc).expect("write_ofd");
+    let ofd = read_entry(&bytes, "OFD.xml");
+    assert!(!ofd.contains("DocInfo"), "{ofd}");
+    assert_round_trip(&doc);
+}
+
+/// Independently-built identical models must write identical bytes: HashMap
+/// RandomState differs per instance, so any unsorted resource iteration
+/// shows up here, not in a same-instance double write.
+fn resource_heavy_doc() -> OfdDocument {
+    let mut doc = OfdDocument::default();
+    doc.pages.push(page_with(vec![]));
+    for i in 1..=3 {
+        let img = format!("img{i}");
+        let f = format!("f{i}");
+        let dp = format!("dp{i}");
+        doc.resources
+            .images
+            .insert(ImageId::new(img), Arc::new(PNG_MAGIC.to_vec()));
+        doc.resources.fonts.insert(
+            FontId::new(&f),
+            FontRef {
+                id: FontId::new(&f),
+                family_name: Some(format!("Fam{i}")),
+            },
+        );
+        doc.resources
+            .font_data
+            .insert(FontId::new(&f), Arc::new(TTF_MAGIC.to_vec()));
+        doc.resources.draw_params.insert(
+            DrawParamId::new(dp),
+            DrawParam {
+                line_width: Some(0.1 * i as f64),
+                stroke: None,
+                fill: None,
+            },
+        );
+    }
+    doc
+}
+
+#[test]
+fn same_model_writes_identical_bytes() {
+    let a = write_ofd(&resource_heavy_doc()).expect("write first");
+    let b = write_ofd(&resource_heavy_doc()).expect("write second");
+    assert_eq!(
+        a, b,
+        "same model (independent instances) must write identical bytes"
+    );
 }
