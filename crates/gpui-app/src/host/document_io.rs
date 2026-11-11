@@ -2,20 +2,20 @@
 //!
 //! The view layer owns file dialogs and path state; host commands snapshot
 //! the component's document. Loading returns the parsed document together
-//! with the `PackageHandle` surgical save needs. Commands cannot touch the
+//! with the `PackageHandle` passthrough transport needs. Commands cannot
 //! OS clipboard; that path stays in the widget itself.
 
 use std::path::{Path, PathBuf};
 
 use rofd_dom::{OfdDocument, TextLayoutHints};
-use rofd_io::{parse_ofd, save_ofd_with_text_layout, write_ofd_with_text_layout, PackageHandle};
+use rofd_io::{parse_ofd, write_ofd_with_text_layout, PackageHandle};
 
 /// Result of loading an `.ofd` file from disk.
 #[derive(Debug)]
 pub struct LoadedOfd {
     /// Parsed document model.
     pub document: OfdDocument,
-    /// Original package skeleton for surgical save. Always Some for a
+    /// Original package for passthrough transport. Always Some for a
     /// successfully parsed file; Option keeps the host's "new document"
     /// state uniform.
     pub package: Option<PackageHandle>,
@@ -36,8 +36,8 @@ pub fn load_ofd(path: &Path) -> Result<LoadedOfd, String> {
 
 /// Serialize the document and write it back to `path`.
 ///
-/// With a package handle: surgical save (untouched entries byte-preserved).
-/// Without: full write for a new document. The write itself is atomic
+/// Full write with passthrough (unconsumed entries transported verbatim,
+/// spec 2026-11-11 D12). The write itself is atomic
 /// (sibling temp file + rename).
 pub fn save_ofd(
     document: &OfdDocument,
@@ -45,11 +45,8 @@ pub fn save_ofd(
     text_layout: &TextLayoutHints,
     path: &Path,
 ) -> Result<(), String> {
-    let bytes = match package {
-        Some(pkg) => save_ofd_with_text_layout(document, pkg, text_layout),
-        None => write_ofd_with_text_layout(document, None, text_layout),
-    }
-    .map_err(|e| format!("serialize {}: {e}", path.display()))?;
+    let bytes = write_ofd_with_text_layout(document, package, text_layout)
+        .map_err(|e| format!("serialize {}: {e}", path.display()))?;
     write_atomic(path, &bytes)
 }
 

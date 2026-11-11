@@ -229,7 +229,12 @@ fn surgical_save_max_unit_id_covers_minted_object_ids() {
     mod fixtures;
     let original = fixtures::build_minimal_ofd();
     let report = rofd_io::parse_ofd(&original).unwrap();
-    let saved = rofd_io::save_ofd(&report.document, &report.package).unwrap();
+    let saved = rofd_io::write_ofd_with_text_layout(
+        &report.document,
+        Some(&report.package),
+        &rofd_dom::TextLayoutHints::new(),
+    )
+    .unwrap();
     let entries = read_all_entries(&saved).unwrap();
     let doc_xml = String::from_utf8(
         entries

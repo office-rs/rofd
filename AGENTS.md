@@ -28,7 +28,7 @@
 cargo build --workspace          # 全量编译
 cargo test  --workspace --exclude tauri-app --exclude rofd-web-view
 cargo test  -p rofd-io           # 单 crate 测试
-cargo test  -p rofd-io surgical  # 按名过滤（手术刀字节保留测试）
+cargo test  -p rofd-io write_fidelity  # 按名过滤（写保真测试）
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
@@ -145,7 +145,7 @@ converter hosts（CLI/未来绑定）只碰 rofd-convert，与"编辑器宿主�
 | crate            | 路径                 | 职责 | 依赖（rofd 内部） |
 | ---------------- | -------------------- | --- | ----------------- |
 | `rofd-dom`       | `crates/dom`         | 纯数据模型 | — |
-| `rofd-io`        | `crates/io`          | `parse_ofd` / `save_ofd`（手术刀）/ `write_ofd`（全量）+ `PackageHandle` | dom |
+| `rofd-io`        | `crates/io`          | `parse_ofd` / `write_ofd`（全量写 + 未知内容透传）+ `PackageHandle` | dom |
 | `rofd-export`    | `crates/export`      | Scene→krilla PDF 编码器（打印/导出产物转换，imaging+krilla 叶子 crate） | —（无 rofd 内部依赖） |
 | `rofd-render`    | `crates/render`      | `imaging::record::Scene` 构建 + hit_test/caret_rect | dom |
 | `rofd-editor`    | `crates/editor`      | 批注选区、命令模式、Step/Transaction/History | dom |
@@ -178,9 +178,9 @@ converter hosts（CLI/未来绑定）只碰 rofd-convert，与"编辑器宿主�
 
 ### 4.2 body 只读；批注是唯一可变面
 
-### 4.3 手术刀保存：未触碰条目字节级保留
+### 4.3 全量写 + 写保真：解析进模型的必写回，未建模的必透传
 
-`save_ofd(doc, pkg)`：批注条目从 `AnnotationModel` 重新序列化；`Document.xml` 字节级打补丁（`<MaxUnitID>` + 缺失时插入 `<Annotations>` loc，严格阅读器只经此引用发现批注）；其余条目原样拷字节。改 io 保存逻辑后，核心测试（`crates/io/tests/round_trip.rs`、`save_surgical.rs`）必须仍绿。宿主层另有 `crates/xilem-app/tests/c2_save.rs`（#[ignore]，真实样例）。
+`write_ofd_with_text_layout(doc, pkg, hints)`：全量序列化 DOM 为 OFD 包（body 对象 + Resources + 批注，确定性输出，同模型同字节，规范条目名）；未建模的 zip 条目原样搬运、未建模的 XML 子树/属性原样透传（批注内影子表示 drop 名单除外：AllRichText、ParagraphFormat）；已解析对象 ID 稳定，新对象从 `MaxUnitID` 之上取号。改 io 保存逻辑后，写保真测试（解析→写→再解析模型等价 + 透传完整，`crates/io/tests/write_fidelity.rs`）必须仍绿。宿主层另有 `crates/xilem-app/tests/c2_save.rs`（#[ignore]，真实样例）。
 
 ### 4.4 库不取系统时间
 
@@ -254,7 +254,7 @@ converter hosts（CLI/未来绑定）只碰 rofd-convert，与"编辑器宿主�
 ### xilem-app
 
 - 纯 `Xilem::new_simple` 宿主。AppState 为 plain data（命令队列 + file/package 路径 + modified + has_selection + warnings + context_menu），另持一个 `Arc<Mutex<Option<Result<(), String>>>>` 保存结果槽：保存命令回传落盘结果，`app_logic` 开头排空，成功才清 modified、失败保持未保存态。命令队列与结果槽的锁仅在瞬间持有。
-- 文件 I/O 落 `src/host/document_io.rs`：`LoadedOfd{document, package, warnings}`、`load_ofd`、`save_ofd`（Some(pkg) 手术刀 / None 全量；原子写）。Save-As 不产生新 PackageHandle。
+- 文件 I/O 落 `src/host/document_io.rs`：`LoadedOfd{document, package, warnings}`、`load_ofd`、`save_ofd`（全量写 + 透传；原子写）。Save-As 不产生新 PackageHandle。
 
 ---
 
@@ -296,7 +296,7 @@ If you're tempted to reintroduce a winit-layer bridge、canvas-origin 记账、�
 ## 6. 测试约定
 
 - 目标 80% 覆盖，TDD（先红后绿）。
-- 手术刀字节保留是核心测试；真实样例测试保持 `#[ignore]`：
+- 写保真（全量写 + 未知内容透传往返）是核心测试；真实样例测试保持 `#[ignore]`：
   - `cargo test -p xilem-app --test c2_save -- --ignored`
 - 渲染用场景结构断言（对象数/类型，非像素）。
 - xilem-view 无头 harness（masonry_testing，9 个）：打字、双击选词、IME、滚轮、ctrl+wheel、ctrl+wheel 纯横向、Ctrl+C、窗口焦点门控、fit 模式命令与退出。
@@ -340,7 +340,7 @@ superpowers 工作流：spec → plan → TDD → 自审 → 提交，全部 con
 | 宿主 set_clock（Instant 仅用于 blink 动画） | 库内调挂钟 |
 | editor 只改 .annotations | 在 editor 里改 pages |
 | xilem-view 只依赖 component | 往适配器塞 io/业务逻辑 |
-| 改 io 后跑手术刀测试 | 只断言模型相等 |
+| 改 io 后跑写保真测试 | 只断言模型相等 |
 | converter 绑定/CLI 只碰 rofd-convert | 绑定/CLI 直接 import rofd-io/rofd-export/component |
 | SDK 渲染调度经 `RenderScheduler`/kick（真值 = `needs_frame`） | 在 SDK 起恒定 rAF 循环；往 tick 里加经 Proxy 的 wasm 读而不依赖 `inLoopTick` 兜底 |
 

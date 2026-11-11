@@ -1,11 +1,12 @@
-//! Host-layer real-sample integration test for surgical save.
+//! Host-layer real-sample integration test for the full write.
 //!
 //! After the winit bridge removal; the binary crate's helpers are reached
 //! through the `xilem_app` library surface. Exercises the full host path —
 //! `document_io::load_ofd` (retains PackageHandle) →
-//! `document_io::save_ofd` (routes to surgical save for a package) — and
-//! asserts invariant 4.3 (body `Content.xml` byte-identical) at the host
-//! layer.
+//! `document_io::save_ofd` (full write with passthrough transport) — and
+//! asserts write fidelity at the host layer (spec 2026-11-11 D2/D12): the
+//! saved package re-parses to the same model, and entries parse never
+//! consumed (signatures/attachments/unknown files) stay byte-identical.
 //!
 //! Marked `#[ignore]`: `test/ru-yuan-ji-lu.ofd` is gitignored (not in CI).
 //! Run locally:
@@ -19,7 +20,7 @@ use xilem_app::host::document_io::{load_ofd, save_ofd};
 
 #[test]
 #[ignore = "requires the real OFD at ../../test/ru-yuan-ji-lu.ofd"]
-fn host_layer_surgical_save_preserves_body() {
+fn host_layer_full_write_preserves_model_and_unconsumed_entries() {
     // Integration tests run with the package dir as CWD; the workspace
     // root sample is at ../../test (same convention as the io/render tests).
     let source = Path::new("../../test/ru-yuan-ji-lu.ofd");
@@ -39,33 +40,32 @@ fn host_layer_surgical_save_preserves_body() {
     .expect("save_ofd succeeds on real sample");
     let saved = std::fs::read(&target).expect("saved file present");
 
-    // Body Content.xml entries byte-identical before/after (invariant 4.3
-    // at the host layer — surgical save preserves unmodelled body).
-    let orig_entries = read_all_entries(&bytes).expect("read original entries");
-    let saved_entries = read_all_entries(&saved).expect("read saved entries");
-
-    let body_names: Vec<&str> = orig_entries
-        .iter()
-        .filter(|(name, _)| name.ends_with("Content.xml"))
-        .map(|(name, _)| name.as_str())
-        .collect();
-    assert!(
-        !body_names.is_empty(),
-        "real sample has at least one body Content.xml entry"
+    // Write fidelity: the saved package re-parses to the same model.
+    let reparsed = rofd_io::parse_ofd(&saved).expect("saved package re-parses");
+    assert_eq!(
+        reparsed.document.pages, loaded.document.pages,
+        "pages survive the host-layer full write"
+    );
+    assert_eq!(
+        reparsed.document.annotations, loaded.document.annotations,
+        "annotations survive the host-layer full write"
     );
 
-    for name in body_names {
-        let orig = orig_entries
-            .iter()
-            .find(|(n, _)| n == name)
-            .expect("orig entry exists");
+    // Unconsumed entries transport byte-identical (D12).
+    let orig_entries = read_all_entries(&bytes).expect("read original entries");
+    let saved_entries = read_all_entries(&saved).expect("read saved entries");
+    let package = loaded.package.as_ref().expect("package");
+    for (name, data) in &orig_entries {
+        if package.consumed.contains(name.as_str()) {
+            continue;
+        }
         let saved_entry = saved_entries
             .iter()
             .find(|(n, _)| n == name)
-            .unwrap_or_else(|| panic!("saved body entry {name} missing"));
+            .unwrap_or_else(|| panic!("unconsumed entry {name} missing after transport"));
         assert_eq!(
-            orig.1, saved_entry.1,
-            "body {name} byte-identical via host-layer surgical save"
+            &saved_entry.1, data,
+            "unconsumed entry {name} byte-identical"
         );
     }
     let _ = std::fs::remove_file(&target);

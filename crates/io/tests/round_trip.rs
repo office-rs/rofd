@@ -154,7 +154,12 @@ fn load_annotate_save_preserves_body_and_keeps_annotation() {
                 icon: NoteIcon::Note,
             },
         });
-    let saved = rofd_io::save_ofd(&doc, &report.package).unwrap();
+    let saved = rofd_io::write_ofd_with_text_layout(
+        &doc,
+        Some(&report.package),
+        &rofd_dom::TextLayoutHints::new(),
+    )
+    .unwrap();
     let reparsed = rofd_io::parse_ofd(&saved).unwrap();
     // Body preserved (one page, unchanged objects).
     assert_eq!(reparsed.document.pages.len(), 1);

@@ -120,23 +120,23 @@ fn sample_ofd_parses_all_14_annotation_types() {
         _ => panic!("expected Shape payload"),
     }
 
-    // Surgical save: every body Content.xml entry must be byte-identical
-    // (the core fidelity contract - only annotation entries are rewritten).
-    let saved = rofd_io::save_ofd(&report.document, &report.package).expect("save succeeds");
-    let orig_e = rofd_io::zip_util::read_all_entries(&bytes).expect("read orig entries");
-    let save_e = rofd_io::zip_util::read_all_entries(&saved).expect("read saved entries");
-    for name in orig_e
-        .iter()
-        .filter(|(n, _)| n.ends_with("Content.xml"))
-        .map(|(n, _)| n.as_str())
-    {
-        let o = orig_e.iter().find(|(n, _)| n == name).unwrap();
-        let s = save_e
-            .iter()
-            .find(|(n, _)| n == name)
-            .unwrap_or_else(|| panic!("{} missing in saved package", name));
-        assert_eq!(o.1, s.1, "body {} byte-identical", name);
-    }
+    // Full write with passthrough: the saved package re-parses to the same
+    // model (write fidelity, spec 2026-11-11 D2).
+    let saved = rofd_io::write_ofd_with_text_layout(
+        &report.document,
+        Some(&report.package),
+        &rofd_dom::TextLayoutHints::new(),
+    )
+    .expect("write succeeds");
+    let reparsed = rofd_io::parse_ofd(&saved).expect("saved package re-parses");
+    assert_eq!(
+        reparsed.document.pages, report.document.pages,
+        "pages survive the full-write round trip"
+    );
+    assert_eq!(
+        reparsed.document.annotations, report.document.annotations,
+        "annotations survive the full-write round trip"
+    );
 }
 
 #[test]

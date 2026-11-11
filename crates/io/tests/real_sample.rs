@@ -55,28 +55,38 @@ fn real_sample_parses_and_surgically_saves() {
         report.document.max_unit_id
     );
 
-    // Surgical save: body Content.xml entries byte-identical before/after (invariant 4.3).
-    let saved = rofd_io::save_ofd(&report.document, &report.package)
-        .expect("save_ofd succeeds on real sample");
+    // Full write with passthrough (spec 2026-11-11 D12): the saved package
+    // re-parses to the same model, and entries parse never consumed
+    // (signatures/attachments/unknown files) stay byte-identical.
+    let saved = rofd_io::write_ofd_with_text_layout(
+        &report.document,
+        Some(&report.package),
+        &rofd_dom::TextLayoutHints::new(),
+    )
+    .expect("full write succeeds on real sample");
+    let reparsed = rofd_io::parse_ofd(&saved).expect("saved package re-parses");
+    assert_eq!(
+        reparsed.document.pages, report.document.pages,
+        "pages survive the full-write round trip"
+    );
+    assert_eq!(
+        reparsed.document.annotations, report.document.annotations,
+        "annotations survive the full-write round trip"
+    );
+
     let orig_entries = rofd_io::zip_util::read_all_entries(&bytes).expect("read original entries");
     let saved_entries = rofd_io::zip_util::read_all_entries(&saved).expect("read saved entries");
-
-    for name in orig_entries
-        .iter()
-        .filter(|(n, _)| n.ends_with("Content.xml"))
-        .map(|(n, _)| n.as_str())
-    {
-        let orig = orig_entries
-            .iter()
-            .find(|(n, _)| n == name)
-            .expect("orig entry exists");
+    for (name, data) in &orig_entries {
+        if report.package.consumed.contains(name.as_str()) {
+            continue;
+        }
         let saved_entry = saved_entries
             .iter()
             .find(|(n, _)| n == name)
-            .unwrap_or_else(|| panic!("saved entry {name} missing"));
+            .unwrap_or_else(|| panic!("unconsumed entry {name} missing after transport"));
         assert_eq!(
-            orig.1, saved_entry.1,
-            "body {name} byte-identical after surgical save"
+            &saved_entry.1, data,
+            "unconsumed entry {name} byte-identical"
         );
     }
 }
