@@ -5,8 +5,8 @@
 //! fidelity is "parse can read back exactly what we emit".
 
 use rofd_dom::{
-    CompositeObject, Ctm, Layer, LayerType, PageObject, PathCommand, PathData, PathObject, Rect,
-    TextObject,
+    CompositeObject, Ctm, ImageObject, Layer, LayerType, PageObject, PathCommand, PathData,
+    PathObject, Rect, TextObject,
 };
 
 use super::annotation::{color_str, xml_escape, xml_escape_preserving_edges};
@@ -25,9 +25,8 @@ pub(crate) fn layer_xml(layer: &Layer) -> String {
         match obj {
             PageObject::Text(t) => children.push_str(&text_object_xml(t)),
             PageObject::Path(p) => children.push_str(&path_object_xml(p)),
+            PageObject::Image(i) => children.push_str(&image_object_xml(i)),
             PageObject::Composite(c) => children.push_str(&composite_object_xml(c)),
-            // Image arm lands with spec 2026-11-11 ①期 Task 3.
-            _ => {}
         }
     }
     if children.is_empty() {
@@ -184,5 +183,16 @@ pub(crate) fn composite_object_xml(c: &CompositeObject) -> String {
         rect_str(&c.boundary),
         ctm_attr(&c.ctm),
         xml_escape(&c.unit)
+    )
+}
+
+/// One `<ofd:ImageObject>`: ResourceID references a MultiMedia resource.
+pub(crate) fn image_object_xml(i: &ImageObject) -> String {
+    format!(
+        "      <ofd:ImageObject ID=\"{}\" Boundary=\"{}\"{} ResourceID=\"{}\"/>\n",
+        xml_escape(&i.id.0),
+        rect_str(&i.boundary),
+        ctm_attr(&i.ctm),
+        xml_escape(&i.image.0)
     )
 }

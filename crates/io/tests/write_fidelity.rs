@@ -4,10 +4,12 @@
 //! byte determinism (same model, same bytes twice).
 
 use std::io::Read;
+use std::sync::Arc;
 
 use rofd_dom::{
-    Color, CompositeObject, Ctm, DrawParamId, FontId, Layer, LayerType, ObjectId, OfdDocument,
-    Page, PageId, PageObject, PathCommand, PathData, PathObject, Rect, TextCode, TextObject,
+    Color, CompositeObject, Ctm, DrawParam, DrawParamId, FontId, FontRef, ImageId, ImageObject,
+    Layer, LayerType, ObjectId, OfdDocument, Page, PageId, PageObject, PathCommand, PathData,
+    PathObject, Rect, TextCode, TextObject,
 };
 use rofd_io::{parse_ofd, write_ofd};
 
@@ -37,14 +39,32 @@ fn assert_round_trip(doc: &OfdDocument) -> OfdDocument {
 
 /// Extract `Doc_0/Pages/Page_0/Content.xml` from written package bytes.
 fn content_xml(bytes: &[u8]) -> String {
+    read_entry(bytes, "Doc_0/Pages/Page_0/Content.xml")
+}
+
+/// Extract one zip entry's text content.
+fn read_entry(bytes: &[u8], name: &str) -> String {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("zip archive");
     let mut s = String::new();
-    zip.by_name("Doc_0/Pages/Page_0/Content.xml")
-        .expect("Content.xml entry")
+    zip.by_name(name)
+        .unwrap_or_else(|e| panic!("entry {name}: {e}"))
         .read_to_string(&mut s)
         .expect("read entry");
     s
 }
+
+fn has_entry(bytes: &[u8], name: &str) -> bool {
+    let zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("zip archive");
+    let found = zip.file_names().any(|n| n == name);
+    found
+}
+
+/// Minimal PNG-magic payload (sniffing only reads the magic bytes).
+const PNG_MAGIC: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3];
+/// Minimal JPEG-magic payload.
+const JPG_MAGIC: &[u8] = &[0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3];
+/// Minimal sfnt 1.0 (TrueType) payload.
+const TTF_MAGIC: &[u8] = &[0x00, 0x01, 0x00, 0x00, 9, 9];
 
 fn page_with(layers: Vec<Layer>) -> Page {
     Page {
@@ -256,6 +276,127 @@ fn template_round_trips() {
     let xml = content_xml(&bytes);
     assert!(
         xml.contains("<ofd:Template TemplateLoc=\"Pages/Tpl.xml\"/>"),
+        "{xml}"
+    );
+    assert_round_trip(&doc);
+}
+
+#[test]
+fn resources_round_trip() {
+    let mut doc = OfdDocument::default();
+    doc.pages.push(page_with(vec![]));
+    doc.resources
+        .images
+        .insert(ImageId::new("img1"), Arc::new(PNG_MAGIC.to_vec()));
+    doc.resources.fonts.insert(
+        FontId::new("4"),
+        FontRef {
+            id: FontId::new("4"),
+            family_name: Some("SimSun".into()),
+        },
+    );
+    doc.resources
+        .font_data
+        .insert(FontId::new("4"), Arc::new(TTF_MAGIC.to_vec()));
+    doc.resources.draw_params.insert(
+        DrawParamId::new("dp1"),
+        DrawParam {
+            line_width: Some(0.5),
+            stroke: Some(Color::Rgb(255, 0, 0)),
+            fill: Some(Color::Rgb(0, 0, 255)),
+        },
+    );
+
+    let bytes = write_ofd(&doc).expect("write_ofd");
+    let res_xml = read_entry(&bytes, "Doc_0/Res/DocumentRes.xml");
+    assert!(res_xml.contains("Format=\"png\""), "{res_xml}");
+    assert!(
+        res_xml.contains("<ofd:MediaFile>Img_img1.png</ofd:MediaFile>"),
+        "{res_xml}"
+    );
+    assert!(res_xml.contains("FontName=\"SimSun\""), "{res_xml}");
+    assert!(
+        res_xml.contains("<ofd:FontFile>Font_4.ttf</ofd:FontFile>"),
+        "{res_xml}"
+    );
+    assert!(
+        res_xml.contains("<ofd:DrawParam ID=\"dp1\" LineWidth=\"0.5\">"),
+        "{res_xml}"
+    );
+    assert!(has_entry(&bytes, "Doc_0/Res/Img_img1.png"));
+    assert!(has_entry(&bytes, "Doc_0/Res/Font_4.ttf"));
+    let doc_xml = read_entry(&bytes, "Doc_0/Document.xml");
+    assert!(
+        doc_xml.contains("<ofd:DocumentRes BaseLoc=\"Res/DocumentRes.xml\"/>"),
+        "{doc_xml}"
+    );
+
+    let rt = assert_round_trip(&doc);
+    assert_eq!(
+        rt.resources
+            .images
+            .get(&ImageId::new("img1"))
+            .map(|b| b.as_slice()),
+        Some(PNG_MAGIC),
+        "image bytes survive round trip"
+    );
+    assert!(
+        rt.resources.font_data.contains_key(&FontId::new("4")),
+        "font bytes survive round trip"
+    );
+}
+
+#[test]
+fn jpeg_sniffed_as_jpg() {
+    let mut doc = OfdDocument::default();
+    doc.pages.push(page_with(vec![]));
+    doc.resources
+        .images
+        .insert(ImageId::new("img9"), Arc::new(JPG_MAGIC.to_vec()));
+    let bytes = write_ofd(&doc).expect("write_ofd");
+    let res_xml = read_entry(&bytes, "Doc_0/Res/DocumentRes.xml");
+    assert!(res_xml.contains("Format=\"jpg\""), "{res_xml}");
+    assert!(res_xml.contains("Img_img9.jpg"), "{res_xml}");
+    assert_round_trip(&doc);
+}
+
+#[test]
+fn empty_resources_emit_nothing() {
+    let mut doc = OfdDocument::default();
+    doc.pages.push(page_with(vec![]));
+    let bytes = write_ofd(&doc).expect("write_ofd");
+    assert!(!has_entry(&bytes, "Doc_0/Res/DocumentRes.xml"));
+    let doc_xml = read_entry(&bytes, "Doc_0/Document.xml");
+    assert!(!doc_xml.contains("PublicRes"), "{doc_xml}");
+    assert!(!doc_xml.contains("DocumentRes"), "{doc_xml}");
+    assert_round_trip(&doc);
+}
+
+#[test]
+fn image_object_round_trips() {
+    let mut doc = OfdDocument::default();
+    doc.pages.push(page_with(vec![Layer {
+        layer_type: LayerType::Body,
+        objects: vec![PageObject::Image(ImageObject {
+            id: ObjectId::new("i1"),
+            boundary: Rect {
+                x: 10.0,
+                y: 10.0,
+                w: 50.0,
+                h: 20.0,
+            },
+            ctm: None,
+            image: ImageId::new("img1"),
+        })],
+    }]));
+    doc.resources
+        .images
+        .insert(ImageId::new("img1"), Arc::new(PNG_MAGIC.to_vec()));
+
+    let bytes = write_ofd(&doc).expect("write_ofd");
+    let xml = content_xml(&bytes);
+    assert!(
+        xml.contains("<ofd:ImageObject ID=\"i1\" Boundary=\"10 10 50 20\" ResourceID=\"img1\"/>"),
         "{xml}"
     );
     assert_round_trip(&doc);

@@ -6,6 +6,7 @@ use crate::error::OfdError;
 use crate::serialize::annotation::{object_id_seed, serialize_page_annot};
 use crate::serialize::annotation_entry::serialize_annotations_entry;
 use crate::serialize::body;
+use crate::serialize::resource;
 use crate::zip_util::write_zip;
 
 /// Full write: construct a fresh .ofd package from the model (generation / conversion).
@@ -58,12 +59,18 @@ pub fn write_ofd_with_text_layout(
     }
 
     // Document.xml
+    let res = resource::res_entries(doc);
+    let res_loc = if res.is_empty() {
+        ""
+    } else {
+        "<ofd:DocumentRes BaseLoc=\"Res/DocumentRes.xml\"/>"
+    };
     let mut doc_xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     doc_xml.push_str("<ofd:Document xmlns:ofd=\"http://www.ofdspec.org/2016\">\n");
     let pb = doc.pages.first().map(|p| p.physical_box);
     if let Some(r) = pb {
         doc_xml.push_str(&format!(
-            "  <ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>{} {} {} {}</ofd:PhysicalBox></ofd:PageArea><ofd:MaxUnitID>{}</ofd:MaxUnitID></ofd:CommonData>\n",
+            "  <ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>{} {} {} {}</ofd:PhysicalBox></ofd:PageArea><ofd:MaxUnitID>{}</ofd:MaxUnitID>{res_loc}</ofd:CommonData>\n",
             r.x, r.y, r.w, r.h, next_id
         ));
     }
@@ -80,6 +87,9 @@ pub fn write_ofd_with_text_layout(
     }
     doc_xml.push_str("</ofd:Document>");
     entries.push(("Doc_0/Document.xml".into(), doc_xml.into_bytes()));
+
+    // Resource entries (fonts / images / drawparams) + their byte files.
+    entries.extend(res);
 
     // Annotations.xml entry file (GB/T 33190 §15.1).
     if has_annots {
