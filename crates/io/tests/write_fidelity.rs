@@ -491,3 +491,121 @@ fn same_model_writes_identical_bytes() {
         "same model (independent instances) must write identical bytes"
     );
 }
+
+// ---- Passthrough capture (spec 2026-11-11 D3, parse side) ----
+
+fn build_zip(files: &[(&str, &str)]) -> Vec<u8> {
+    use std::io::Write;
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (name, content) in files {
+        w.start_file::<_, ()>(*name, zip::write::SimpleFileOptions::default())
+            .expect("start entry");
+        w.write_all(content.as_bytes()).expect("write entry");
+    }
+    w.finish().expect("finish zip").into_inner()
+}
+
+fn page_package(content_xml: &str, max_unit_id: u64) -> Vec<u8> {
+    build_zip(&[
+        (
+            "OFD.xml",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:OFD xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:DocBody><ofd:DocRoot>Doc_0/Document.xml</ofd:DocRoot></ofd:DocBody></ofd:OFD>",
+        ),
+        (
+            "Doc_0/Document.xml",
+            &format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:Document xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:PageArea><ofd:MaxUnitID>{max_unit_id}</ofd:MaxUnitID></ofd:CommonData><ofd:Pages><ofd:Page ID=\"P0\" BaseLoc=\"Pages/Page_0/Content.xml\"/></ofd:Pages></ofd:Document>"
+            ),
+        ),
+        ("Doc_0/Pages/Page_0/Content.xml", content_xml),
+    ])
+}
+
+const PATH_XML: &str = "<ofd:PathObject ID=\"p1\" LineWidth=\"1\"><ofd:AbbreviatedData>M 0 0 L 1 1</ofd:AbbreviatedData></ofd:PathObject>";
+
+#[test]
+fn raw_fragment_carries_inherited_namespaces() {
+    let content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:Page xmlns:ofd=\"http://www.ofdspec.org/2016\" xmlns:ext=\"urn:x\"><ofd:Content><ofd:Layer Type=\"Body\"><ext:Stamp ID=\"9\" ext:seal=\"1\"><ext:Inner>x</ext:Inner></ext:Stamp></ofd:Layer></ofd:Content></ofd:Page>";
+    let report = parse_ofd(&page_package(content, 10)).expect("parse");
+    let layer = &report.document.pages[0].layers[0];
+    assert_eq!(layer.raw_children.len(), 1);
+    let frag = &layer.raw_children[0];
+    assert_eq!(frag.position, 0);
+    assert!(
+        frag.xml.contains("xmlns:ext=\"urn:x\""),
+        "inherited namespace synthesized into fragment root: {}",
+        frag.xml
+    );
+    assert!(
+        frag.xml.contains("<ext:Inner>x</ext:Inner>"),
+        "verbatim subtree: {}",
+        frag.xml
+    );
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| matches!(w, rofd_dom::OfdWarning::PreservedRaw { element, .. } if element == "ext:Stamp")),
+        "warnings: {:?}",
+        report.warnings
+    );
+    assert!(
+        !report
+            .warnings
+            .iter()
+            .any(|w| matches!(w, rofd_dom::OfdWarning::SkippedObject { .. })),
+        "no SkippedObject for preserved elements: {:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn unknown_object_preserved_with_position() {
+    let content = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:Page xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:Content><ofd:Layer Type=\"Body\">{PATH_XML}<ext:Mark xmlns:ext=\"urn:x\" ID=\"8\"/>{PATH_XML}</ofd:Layer></ofd:Content></ofd:Page>"
+    );
+    let report = parse_ofd(&page_package(&content, 10)).expect("parse");
+    let layer = &report.document.pages[0].layers[0];
+    assert_eq!(layer.objects.len(), 2);
+    assert_eq!(layer.raw_children.len(), 1);
+    assert_eq!(
+        layer.raw_children[0].position, 1,
+        "interleaved between objects"
+    );
+}
+
+#[test]
+fn unknown_attribute_captured_on_known_object() {
+    let content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:Page xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:Content><ofd:Layer Type=\"Body\"><ofd:TextObject ID=\"t1\" Boundary=\"0 0 50 10\" Font=\"4\" Size=\"10\" ReadOrder=\"1\"><ofd:TextCode X=\"0\" Y=\"5\">hi</ofd:TextCode></ofd:TextObject></ofd:Layer></ofd:Content></ofd:Page>";
+    let report = parse_ofd(&page_package(content, 10)).expect("parse");
+    let layer = &report.document.pages[0].layers[0];
+    let PageObject::Text(t) = &layer.objects[0] else {
+        panic!("expected TextObject");
+    };
+    assert_eq!(
+        t.raw_attrs,
+        vec![("ReadOrder".to_string(), "1".to_string())],
+        "unmodelled attribute captured verbatim"
+    );
+}
+
+#[test]
+fn object_id_seed_scans_raw_fragment_ids() {
+    let doc = OfdDocument {
+        max_unit_id: 5,
+        pages: vec![page_with(vec![Layer {
+            layer_type: LayerType::Body,
+            objects: vec![],
+            raw_children: vec![rofd_dom::RawFragment {
+                position: 0,
+                xml: "<ext:Stamp ID=\"9999\"/>".into(),
+            }],
+        }])],
+        ..OfdDocument::default()
+    };
+    assert_eq!(
+        rofd_io::serialize::annotation::object_id_seed(&doc),
+        9999,
+        "raw fragment IDs must seed the allocator"
+    );
+}

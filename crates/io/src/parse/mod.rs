@@ -3,6 +3,7 @@ pub mod annotation_entry;
 pub mod document;
 pub mod ofd_xml;
 pub mod page;
+pub mod raw;
 pub mod resource;
 
 use std::sync::Arc;

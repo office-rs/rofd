@@ -165,6 +165,7 @@ fn kind_key(w: &rofd_dom::OfdWarning) -> String {
             format!("FontSubstituted:{requested}->{used}")
         }
         OfdWarning::ResourceNotFound { kind, id } => format!("ResourceNotFound:{kind:?}:{id}"),
+        OfdWarning::PreservedRaw { element, .. } => format!("PreservedRaw:{element}"),
     }
 }
 

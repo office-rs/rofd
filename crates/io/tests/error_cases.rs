@@ -50,15 +50,25 @@ fn template_annotation_emits_missing_feature_warning() {
 }
 
 #[test]
-fn unknown_page_element_emits_skipped_object_warning() {
+fn unknown_page_element_emits_preserved_raw_warning() {
+    // Spec 2026-11-11 D3: unknown elements are captured verbatim as raw
+    // passthrough fragments and warn PreservedRaw (formerly SkippedObject).
     let bytes = fixtures::build_ofd_with_unknown_page_element();
     let report = parse_ofd(&bytes).expect("parse succeeds (unknown element is a warning)");
     assert!(
         report
             .warnings
             .iter()
+            .any(|w| matches!(w, OfdWarning::PreservedRaw { .. })),
+        "unknown element -> PreservedRaw warning, got {:?}",
+        report.warnings
+    );
+    assert!(
+        !report
+            .warnings
+            .iter()
             .any(|w| matches!(w, OfdWarning::SkippedObject { .. })),
-        "unknown element -> SkippedObject warning, got {:?}",
+        "preserved elements are not 'skipped', got {:?}",
         report.warnings
     );
 }

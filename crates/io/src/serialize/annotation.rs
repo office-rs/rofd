@@ -57,7 +57,39 @@ pub fn object_id_seed(doc: &OfdDocument) -> u64 {
             seed = seed.max(n);
         }
     }
+    // Passthrough fragments may carry object IDs the model never saw; a
+    // stale MaxUnitID in a foreign file must not let freshly minted
+    // annotation IDs collide with them (spec 2026-11-11 D2-③).
+    for page in &doc.pages {
+        let raws = page
+            .raw_children
+            .iter()
+            .chain(page.layers.iter().flat_map(|l| l.raw_children.iter()));
+        for frag in raws {
+            seed = seed.max(max_id_attr(&frag.xml, seed));
+        }
+    }
     seed
+}
+
+/// Highest `ID="<u64>"` attribute value in a raw fragment (0-level scan,
+/// no XML re-parse; single-quoted IDs are not covered - rare in the wild).
+fn max_id_attr(xml: &str, floor: u64) -> u64 {
+    let mut m = floor;
+    let mut rest = xml;
+    while let Some(i) = rest.find("ID=\"") {
+        rest = &rest[i + 4..];
+        match rest.find('"') {
+            Some(j) => {
+                if let Ok(n) = rest[..j].parse::<u64>() {
+                    m = m.max(n);
+                }
+                rest = &rest[j..];
+            }
+            None => break,
+        }
+    }
+    m
 }
 
 /// Reserve the next document-wide object ID from the allocator.

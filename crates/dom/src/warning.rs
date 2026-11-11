@@ -39,6 +39,10 @@ pub enum OfdWarning {
     /// An unknown/unmodelled object was skipped on a page (e.g. an unrecognized
     /// XML element). Parse continues without it.
     SkippedObject { page: PageId, reason: String },
+    /// An unrecognized element was preserved verbatim as a raw passthrough
+    /// fragment (spec 2026-11-11 D3). Parse continues; the fragment
+    /// round-trips byte-for-byte on save.
+    PreservedRaw { entry: String, element: String },
     /// A requested font was not found in the package; a default font is used.
     FontSubstituted { requested: String, used: String },
     /// A resource (image/font) referenced by the document is missing from the
@@ -58,6 +62,12 @@ impl std::fmt::Display for OfdWarning {
             }
             OfdWarning::SkippedObject { page, reason } => {
                 write!(f, "skipped object on page {}: {reason}", page.0)
+            }
+            OfdWarning::PreservedRaw { entry, element } => {
+                write!(
+                    f,
+                    "preserved unknown element '{element}' in {entry} verbatim"
+                )
             }
             OfdWarning::FontSubstituted { requested, used } => {
                 write!(f, "font '{requested}' not found; substituted with '{used}'")

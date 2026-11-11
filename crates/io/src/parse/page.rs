@@ -10,7 +10,9 @@ use crate::abbreviated::parse_abbreviated;
 use crate::error::{OfdError, OfdWarning};
 use crate::parse::attr;
 use crate::parse::document::DocHeader;
+use crate::parse::raw::{capture_raw_empty, capture_raw_subtree, raw_attrs_of, NsScope};
 use crate::parse::{parse_bool_value, parse_color_value, parse_rect_ws};
+use rofd_dom::RawFragment;
 
 pub fn parse_page(
     page_id: PageId,
@@ -50,9 +52,16 @@ pub fn parse_page(
     // address glyphs (shape would return .notdef and the text would vanish).
     let mut in_glyphs = false;
     let mut pending_glyph_ids: Option<Vec<u32>> = None;
+    // Namespace scope for raw-fragment capture (spec 2026-11-11 D3):
+    // declarations pushed/popped on every element Start/End.
+    let mut ns = NsScope::default();
     loop {
+        // Byte offset of the NEXT event - the slice anchor for capturing
+        // unknown subtrees verbatim.
+        let pos_before = reader.buffer_position() as usize;
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
+                ns.start(&e);
                 let local = e.name().local_name();
                 if local.as_ref() == b"PhysicalBox" {
                     in_physical_box = true;
@@ -69,7 +78,7 @@ pub fn parse_page(
                     // raw (round-trips through write_ofd) and parse_ofd
                     // emits a MissingFeature warning.
                     page.template = Some(attr(&e, "TemplateLoc").unwrap_or_default());
-                } else {
+                } else if is_known_content_element(local.as_ref()) {
                     handle_element_start(
                         &e,
                         &mut current_layer,
@@ -80,9 +89,20 @@ pub fn parse_page(
                         &mut text_origin,
                         &mut in_glyphs,
                         &mut pending_glyph_ids,
-                        &page_id,
-                        warnings,
                     );
+                } else {
+                    // Unknown element -> capture the subtree verbatim (spec
+                    // 2026-11-11 D3). All uses of `e` must happen before
+                    // the capture call re-borrows the event buffer.
+                    let element = String::from_utf8_lossy(e.name().as_ref()).into_owned();
+                    let frag_xml =
+                        capture_raw_subtree(&mut reader, &mut buf, page_xml, pos_before, &ns)?;
+                    ns.end(); // the subtree root's own declarations end with it
+                    push_raw_fragment(&mut page, &mut current_layer, frag_xml);
+                    warnings.push(OfdWarning::PreservedRaw {
+                        entry: page_id.0.clone(),
+                        element,
+                    });
                 }
             }
             Ok(Event::Empty(e)) => {
@@ -102,7 +122,7 @@ pub fn parse_page(
                     });
                 } else if local.as_ref() == b"Template" {
                     page.template = Some(attr(&e, "TemplateLoc").unwrap_or_default());
-                } else {
+                } else if is_known_content_element(local.as_ref()) {
                     handle_element_start(
                         &e,
                         &mut current_layer,
@@ -113,9 +133,15 @@ pub fn parse_page(
                         &mut text_origin,
                         &mut in_glyphs,
                         &mut pending_glyph_ids,
-                        &page_id,
-                        warnings,
                     );
+                } else {
+                    let element = String::from_utf8_lossy(e.name().as_ref()).into_owned();
+                    let frag_xml = capture_raw_empty(&reader, page_xml, pos_before, &ns);
+                    push_raw_fragment(&mut page, &mut current_layer, frag_xml);
+                    warnings.push(OfdWarning::PreservedRaw {
+                        entry: page_id.0.clone(),
+                        element,
+                    });
                 }
             }
             Ok(Event::Text(t)) => {
@@ -144,49 +170,52 @@ pub fn parse_page(
                     }
                 }
             }
-            Ok(Event::End(e)) => match e.name().local_name().as_ref() {
-                b"TextCode" => {
-                    if let Some(t) = current_text.as_mut() {
-                        let body = pending_text_body.take().unwrap_or_default();
-                        let glyph_ids = pending_glyph_ids.take().unwrap_or_default();
-                        // DeltaX lists per-glyph advances; glyph count is the
-                        // glyph_ids len (subset font, CGTransform) or the char
-                        // count (shaping a cmap font with no CGTransform).
-                        let glyph_count = if !glyph_ids.is_empty() {
-                            glyph_ids.len()
-                        } else {
-                            body.chars().count()
-                        };
-                        let deltas = parse_delta_x(pending_text_delta.as_deref(), glyph_count);
-                        t.codes.push(TextCode {
-                            glyph_ids,
-                            deltas,
-                            text: body,
-                            x: text_origin.0,
-                            y: text_origin.1,
-                        });
+            Ok(Event::End(e)) => {
+                ns.end();
+                match e.name().local_name().as_ref() {
+                    b"TextCode" => {
+                        if let Some(t) = current_text.as_mut() {
+                            let body = pending_text_body.take().unwrap_or_default();
+                            let glyph_ids = pending_glyph_ids.take().unwrap_or_default();
+                            // DeltaX lists per-glyph advances; glyph count is the
+                            // glyph_ids len (subset font, CGTransform) or the char
+                            // count (shaping a cmap font with no CGTransform).
+                            let glyph_count = if !glyph_ids.is_empty() {
+                                glyph_ids.len()
+                            } else {
+                                body.chars().count()
+                            };
+                            let deltas = parse_delta_x(pending_text_delta.as_deref(), glyph_count);
+                            t.codes.push(TextCode {
+                                glyph_ids,
+                                deltas,
+                                text: body,
+                                x: text_origin.0,
+                                y: text_origin.1,
+                            });
+                        }
+                        pending_text_delta = None;
+                        in_text_code = false;
                     }
-                    pending_text_delta = None;
-                    in_text_code = false;
-                }
-                b"Glyphs" => in_glyphs = false,
-                // CGTransform is a container for Glyphs; nothing to do on End.
-                b"CGTransform" => {}
-                b"TextObject" => {
-                    if let (Some(t), Some(l)) = (current_text.take(), current_layer.as_mut()) {
-                        l.objects.push(PageObject::Text(t));
+                    b"Glyphs" => in_glyphs = false,
+                    // CGTransform is a container for Glyphs; nothing to do on End.
+                    b"CGTransform" => {}
+                    b"TextObject" => {
+                        if let (Some(t), Some(l)) = (current_text.take(), current_layer.as_mut()) {
+                            l.objects.push(PageObject::Text(t));
+                        }
                     }
-                }
-                b"Layer" => {
-                    if let Some(l) = current_layer.take() {
-                        page.layers.push(l);
+                    b"Layer" => {
+                        if let Some(l) = current_layer.take() {
+                            page.layers.push(l);
+                        }
                     }
+                    b"PhysicalBox" => in_physical_box = false,
+                    b"CropBox" => in_crop_box = false,
+                    b"ApplicationBox" | b"ContentBox" | b"BloodBox" => in_ignored_box = false,
+                    _ => {}
                 }
-                b"PhysicalBox" => in_physical_box = false,
-                b"CropBox" => in_crop_box = false,
-                b"ApplicationBox" | b"ContentBox" | b"BloodBox" => in_ignored_box = false,
-                _ => {}
-            },
+            }
             Ok(Event::Eof) => break,
             Err(e) => {
                 return Err(OfdError::Xml {
@@ -222,8 +251,6 @@ fn handle_element_start(
     text_origin: &mut (f64, f64),
     in_glyphs: &mut bool,
     pending_glyph_ids: &mut Option<Vec<u32>>,
-    page_id: &PageId,
-    warnings: &mut Vec<OfdWarning>,
 ) {
     match e.name().local_name().as_ref() {
         b"Layer" => {
@@ -240,7 +267,10 @@ fn handle_element_start(
         }
         b"TextObject" => {
             *current_text = Some(TextObject {
-                raw_attrs: Vec::new(),
+                raw_attrs: raw_attrs_of(
+                    e,
+                    &[b"ID", b"Boundary", b"CTM", b"Font", b"Size", b"DrawParam"],
+                ),
                 id: ObjectId::new(attr(e, "ID").unwrap_or_default()),
                 boundary: parse_rect_attr(e, "Boundary"),
                 ctm: attr(e, "CTM").and_then(parse_ctm),
@@ -285,7 +315,7 @@ fn handle_element_start(
         b"ImageObject" => {
             if let Some(l) = current_layer.as_mut() {
                 l.objects.push(PageObject::Image(ImageObject {
-                    raw_attrs: Vec::new(),
+                    raw_attrs: raw_attrs_of(e, &[b"ID", b"Boundary", b"CTM", b"ResourceID"]),
                     id: ObjectId::new(attr(e, "ID").unwrap_or_default()),
                     boundary: parse_rect_attr(e, "Boundary"),
                     ctm: attr(e, "CTM").and_then(parse_ctm),
@@ -296,7 +326,18 @@ fn handle_element_start(
         b"PathObject" => {
             if let Some(l) = current_layer.as_mut() {
                 l.objects.push(PageObject::Path(PathObject {
-                    raw_attrs: Vec::new(),
+                    raw_attrs: raw_attrs_of(
+                        e,
+                        &[
+                            b"ID",
+                            b"Boundary",
+                            b"CTM",
+                            b"LineWidth",
+                            b"DrawParam",
+                            b"Stroke",
+                            b"Fill",
+                        ],
+                    ),
                     id: ObjectId::new(attr(e, "ID").unwrap_or_default()),
                     boundary: parse_rect_attr(e, "Boundary"),
                     ctm: attr(e, "CTM").and_then(parse_ctm),
@@ -345,13 +386,46 @@ fn handle_element_start(
         b"Area" | b"Content" | b"Page" | b"CropBox" | b"ApplicationBox" | b"ContentBox"
         | b"BloodBox" => {}
         _ => {
-            // Unknown element -> skip + warning (not fatal, AGENTS.md §4.6).
-            let name = String::from_utf8_lossy(e.name().local_name().as_ref()).into_owned();
-            warnings.push(OfdWarning::SkippedObject {
-                page: page_id.clone(),
-                reason: format!("unknown element <{name}>"),
-            });
+            // Unreachable: unknown elements are captured verbatim in
+            // parse_page before handle_element_start is called (spec
+            // 2026-11-11 D3).
         }
+    }
+}
+
+/// Elements recognized inside a page (everything else is captured verbatim
+/// as a passthrough fragment).
+fn is_known_content_element(local: &[u8]) -> bool {
+    matches!(
+        local,
+        b"Layer"
+            | b"TextObject"
+            | b"FillColor"
+            | b"StrokeColor"
+            | b"TextCode"
+            | b"ImageObject"
+            | b"PathObject"
+            | b"CompositeObject"
+            | b"AbbreviatedData"
+            | b"CGTransform"
+            | b"Glyphs"
+            | b"Area"
+            | b"Content"
+            | b"Page"
+    )
+}
+
+/// Store a captured raw fragment on its parent: inside the open layer (or
+/// on the page root when none is open), with its interleaved position.
+fn push_raw_fragment(page: &mut Page, current_layer: &mut Option<Layer>, xml: String) {
+    let position = match current_layer.as_ref() {
+        Some(l) => l.objects.len() + l.raw_children.len(),
+        None => page.layers.len() + page.raw_children.len(),
+    };
+    let frag = RawFragment { position, xml };
+    match current_layer {
+        Some(l) => l.raw_children.push(frag),
+        None => page.raw_children.push(frag),
     }
 }
 

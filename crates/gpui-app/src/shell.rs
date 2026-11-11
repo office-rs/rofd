@@ -1822,6 +1822,7 @@ fn warning_text(warning: &rofd_dom::OfdWarning) -> String {
             format!("字体替换：{requested} → {used}")
         }
         OfdWarning::ResourceNotFound { kind, id } => format!("资源缺失：{kind} {id}"),
+        OfdWarning::PreservedRaw { element, .. } => format!("原样保留未知元素：{element}"),
     }
 }
 
