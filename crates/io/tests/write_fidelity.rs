@@ -6,8 +6,8 @@
 use std::io::Read;
 
 use rofd_dom::{
-    Color, Ctm, FontId, Layer, LayerType, ObjectId, OfdDocument, Page, PageId, PageObject, Rect,
-    TextCode, TextObject,
+    Color, CompositeObject, Ctm, DrawParamId, FontId, Layer, LayerType, ObjectId, OfdDocument,
+    Page, PageId, PageObject, PathCommand, PathData, PathObject, Rect, TextCode, TextObject,
 };
 use rofd_io::{parse_ofd, write_ofd};
 
@@ -116,5 +116,147 @@ fn layer_without_objects_emits_self_closing() {
     let bytes = write_ofd(&doc).expect("write_ofd");
     let xml = content_xml(&bytes);
     assert!(xml.contains("<ofd:Layer Type=\"Body\"/>"), "{xml}");
+    assert_round_trip(&doc);
+}
+
+#[test]
+fn path_object_round_trips() {
+    let mut doc = OfdDocument::default();
+    doc.pages.push(page_with(vec![Layer {
+        layer_type: LayerType::Body,
+        objects: vec![
+            PageObject::Path(PathObject {
+                id: ObjectId::new("p1"),
+                boundary: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 10.0,
+                    h: 10.0,
+                },
+                ctm: None,
+                fill: Some(Color::Rgb(255, 0, 0)),
+                stroke: Some(Color::Rgb(0, 0, 255)),
+                line_width: 0.5,
+                data: PathData {
+                    commands: vec![
+                        PathCommand::M(0.0, 0.0),
+                        PathCommand::Q(5.0, 5.0, 10.0, 0.0),
+                        PathCommand::C(1.0, 2.0, 3.0, 4.0, 5.0, 6.0),
+                    ],
+                },
+                draw_param: None,
+                stroke_enabled: Some(false),
+                fill_enabled: Some(true),
+            }),
+            PageObject::Path(PathObject {
+                id: ObjectId::new("p2"),
+                boundary: Rect {
+                    x: 0.0,
+                    y: 8.0,
+                    w: 100.0,
+                    h: 1.0,
+                },
+                ctm: None,
+                fill: None,
+                stroke: None,
+                line_width: 0.48,
+                data: PathData {
+                    commands: vec![PathCommand::M(0.24, 8.0), PathCommand::L(90.0, 8.0)],
+                },
+                draw_param: Some(DrawParamId::new("dp1")),
+                stroke_enabled: None,
+                fill_enabled: None,
+            }),
+        ],
+    }]));
+
+    let bytes = write_ofd(&doc).expect("write_ofd");
+    let xml = content_xml(&bytes);
+    // Explicit Stroke/Fill booleans are written; absent ones (p2) are not.
+    assert!(xml.contains("Stroke=\"false\""), "{xml}");
+    assert!(
+        xml.contains("<ofd:PathObject ID=\"p2\" Boundary=\"0 8 100 1\" LineWidth=\"0.48\" DrawParam=\"dp1\">"),
+        "{xml}"
+    );
+    assert!(xml.contains("<ofd:FillColor Value=\"255 0 0\"/>"), "{xml}");
+    assert!(
+        xml.contains("<ofd:StrokeColor Value=\"0 0 255\"/>"),
+        "{xml}"
+    );
+    assert!(xml.contains("Q 5 5 10 0"), "{xml}");
+    assert_round_trip(&doc);
+}
+
+#[test]
+fn path_z_round_trips_as_z() {
+    let mut doc = OfdDocument::default();
+    doc.pages.push(page_with(vec![Layer {
+        layer_type: LayerType::Body,
+        objects: vec![PageObject::Path(PathObject {
+            id: ObjectId::new("p1"),
+            boundary: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 10.0,
+                h: 10.0,
+            },
+            ctm: None,
+            fill: None,
+            stroke: None,
+            line_width: 0.35,
+            data: PathData {
+                commands: vec![
+                    PathCommand::M(0.0, 0.0),
+                    PathCommand::L(10.0, 0.0),
+                    PathCommand::Z,
+                ],
+            },
+            draw_param: None,
+            stroke_enabled: None,
+            fill_enabled: None,
+        })],
+    }]));
+
+    let bytes = write_ofd(&doc).expect("write_ofd");
+    let xml = content_xml(&bytes);
+    // Fidelity: Z emits as a close operator, not an L back to the start
+    // (annotation-side path_to_abbrev deliberately expands; body must not).
+    assert!(xml.contains("M 0 0 L 10 0 Z"), "{xml}");
+    assert_round_trip(&doc);
+}
+
+#[test]
+fn composite_round_trips() {
+    let mut doc = OfdDocument::default();
+    doc.pages.push(page_with(vec![Layer {
+        layer_type: LayerType::Body,
+        objects: vec![PageObject::Composite(CompositeObject {
+            id: ObjectId::new("c1"),
+            boundary: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 50.0,
+                h: 20.0,
+            },
+            ctm: None,
+            unit: "Page_2/Content.xml".into(),
+        })],
+    }]));
+    assert_round_trip(&doc);
+}
+
+#[test]
+fn template_round_trips() {
+    let mut doc = OfdDocument::default();
+    let mut page = page_with(vec![]);
+    page.template = Some("Pages/Tpl.xml".into());
+    doc.pages.push(page);
+
+    let bytes = write_ofd(&doc).expect("write_ofd");
+    let xml = content_xml(&bytes);
+    assert!(
+        xml.contains("<ofd:Template TemplateLoc=\"Pages/Tpl.xml\"/>"),
+        "{xml}"
+    );
     assert_round_trip(&doc);
 }

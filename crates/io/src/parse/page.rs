@@ -2,8 +2,8 @@ use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
 
 use rofd_dom::{
-    Ctm, DrawParamId, FontId, ImageId, ImageObject, Layer, LayerType, ObjectId, Page, PageId,
-    PageObject, PathData, PathObject, Rect, TextCode, TextObject,
+    CompositeObject, Ctm, DrawParamId, FontId, ImageId, ImageObject, Layer, LayerType, ObjectId,
+    Page, PageId, PageObject, PathData, PathObject, Rect, TextCode, TextObject,
 };
 
 use crate::abbreviated::parse_abbreviated;
@@ -64,9 +64,10 @@ pub fn parse_page(
                     in_ignored_box = true;
                 } else if local.as_ref() == b"Template" {
                     // GB/T 33190 §7.5: <ofd:Template> references a template
-                    // page. v1 does not expand templates; capture a marker so
-                    // parse_ofd can emit a MissingFeature warning.
-                    page.template = Some(String::new());
+                    // page. v1 does not expand templates; the loc is stored
+                    // raw (round-trips through write_ofd) and parse_ofd
+                    // emits a MissingFeature warning.
+                    page.template = Some(attr(&e, "TemplateLoc").unwrap_or_default());
                 } else {
                     handle_element_start(
                         &e,
@@ -98,7 +99,7 @@ pub fn parse_page(
                         objects: vec![],
                     });
                 } else if local.as_ref() == b"Template" {
-                    page.template = Some(String::new());
+                    page.template = Some(attr(&e, "TemplateLoc").unwrap_or_default());
                 } else {
                     handle_element_start(
                         &e,
@@ -304,6 +305,18 @@ fn handle_element_start(
                     // render 层解析;这里只记录文件里实际写了什么。
                     stroke_enabled: attr(e, "Stroke").and_then(|s| parse_bool_value(&s)),
                     fill_enabled: attr(e, "Fill").and_then(|s| parse_bool_value(&s)),
+                }));
+            }
+        }
+        b"CompositeObject" => {
+            // v1 keeps composites unresolved (render skips them), but the
+            // model round-trips them: ResourceID is the raw unit reference.
+            if let Some(l) = current_layer.as_mut() {
+                l.objects.push(PageObject::Composite(CompositeObject {
+                    id: ObjectId::new(attr(e, "ID").unwrap_or_default()),
+                    boundary: parse_rect_attr(e, "Boundary"),
+                    ctm: attr(e, "CTM").and_then(parse_ctm),
+                    unit: attr(e, "ResourceID").unwrap_or_default(),
                 }));
             }
         }

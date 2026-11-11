@@ -4,7 +4,10 @@
 //! the parser is the source of truth for the wire format, so round-trip
 //! fidelity is "parse can read back exactly what we emit".
 
-use rofd_dom::{Ctm, Layer, LayerType, PageObject, Rect, TextObject};
+use rofd_dom::{
+    CompositeObject, Ctm, Layer, LayerType, PageObject, PathCommand, PathData, PathObject, Rect,
+    TextObject,
+};
 
 use super::annotation::{color_str, xml_escape, xml_escape_preserving_edges};
 
@@ -19,11 +22,13 @@ pub(crate) fn layer_xml(layer: &Layer) -> String {
     };
     let mut children = String::new();
     for obj in &layer.objects {
-        if let PageObject::Text(t) = obj {
-            children.push_str(&text_object_xml(t));
+        match obj {
+            PageObject::Text(t) => children.push_str(&text_object_xml(t)),
+            PageObject::Path(p) => children.push_str(&path_object_xml(p)),
+            PageObject::Composite(c) => children.push_str(&composite_object_xml(c)),
+            // Image arm lands with spec 2026-11-11 ①期 Task 3.
+            _ => {}
         }
-        // Path/Image/Composite arms land with the following tasks
-        // (spec 2026-11-11 ①期 Task 2/3).
     }
     if children.is_empty() {
         format!("    <ofd:Layer Type=\"{ty}\"/>\n")
@@ -103,4 +108,81 @@ fn ctm_attr(c: &Option<Ctm>) -> String {
         Some(c) => format!(" CTM=\"{} {} {} {} {} {}\"", c.a, c.b, c.c, c.d, c.e, c.f),
         None => String::new(),
     }
+}
+
+/// One `<ofd:PathObject>`: attributes ID/Boundary/CTM?/LineWidth plus the
+/// explicit Stroke/Fill booleans only when the model carries `Some` (absent
+/// attributes keep the spec defaults open), then FillColor/StrokeColor
+/// children and the AbbreviatedData payload.
+pub(crate) fn path_object_xml(p: &PathObject) -> String {
+    let mut s = format!(
+        "      <ofd:PathObject ID=\"{}\" Boundary=\"{}\"{} LineWidth=\"{}\"",
+        xml_escape(&p.id.0),
+        rect_str(&p.boundary),
+        ctm_attr(&p.ctm),
+        p.line_width
+    );
+    if let Some(v) = p.stroke_enabled {
+        s.push_str(&format!(" Stroke=\"{v}\""));
+    }
+    if let Some(v) = p.fill_enabled {
+        s.push_str(&format!(" Fill=\"{v}\""));
+    }
+    if let Some(dp) = &p.draw_param {
+        s.push_str(&format!(" DrawParam=\"{}\"", xml_escape(&dp.0)));
+    }
+    s.push_str(">\n");
+    if let Some(c) = p.fill {
+        s.push_str(&format!(
+            "        <ofd:FillColor Value=\"{}\"/>\n",
+            color_str(c)
+        ));
+    }
+    if let Some(c) = p.stroke {
+        s.push_str(&format!(
+            "        <ofd:StrokeColor Value=\"{}\"/>\n",
+            color_str(c)
+        ));
+    }
+    s.push_str(&format!(
+        "        <ofd:AbbreviatedData>{}</ofd:AbbreviatedData>\n",
+        abbrev_fidelity(&p.data)
+    ));
+    s.push_str("      </ofd:PathObject>\n");
+    s
+}
+
+/// PathData -> AbbreviatedData, fidelity variant. Unlike the annotation-side
+/// `path_to_abbrev` (which expands closure into an L back to the subpath
+/// start because reference authoring tools ignore close operators), body
+/// round-trip keeps `Z` as a close operator: the parser reads it back.
+/// The A arc writes the GB/T 7-parameter form with large-arc pinned to 0 -
+/// the same quarter-arc assumption the parser makes when it drops that flag.
+pub(crate) fn abbrev_fidelity(p: &PathData) -> String {
+    let mut s = String::new();
+    for c in &p.commands {
+        match c {
+            PathCommand::M(x, y) => s.push_str(&format!("M {x} {y} ")),
+            PathCommand::L(x, y) => s.push_str(&format!("L {x} {y} ")),
+            PathCommand::C(a, b, c, d, e, g) => s.push_str(&format!("C {a} {b} {c} {d} {e} {g} ")),
+            PathCommand::Q(a, b, c, d) => s.push_str(&format!("Q {a} {b} {c} {d} ")),
+            PathCommand::A(a, b, c, d, e, f) => {
+                s.push_str(&format!("A {a} {b} {c} 0 {d} {e} {f} "))
+            }
+            PathCommand::Z => s.push_str("Z "),
+        }
+    }
+    s
+}
+
+/// One `<ofd:CompositeObject>`: the unit reference is stored raw in the
+/// model and round-trips via ResourceID (mirroring the parser arm).
+pub(crate) fn composite_object_xml(c: &CompositeObject) -> String {
+    format!(
+        "      <ofd:CompositeObject ID=\"{}\" Boundary=\"{}\"{} ResourceID=\"{}\"/>\n",
+        xml_escape(&c.id.0),
+        rect_str(&c.boundary),
+        ctm_attr(&c.ctm),
+        xml_escape(&c.unit)
+    )
 }

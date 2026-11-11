@@ -99,7 +99,11 @@ pub fn write_ofd_with_text_layout(
         for layer in &page.layers {
             page_xml.push_str(&body::layer_xml(layer));
         }
-        page_xml.push_str("  </ofd:Content>\n</ofd:Page>");
+        page_xml.push_str("  </ofd:Content>\n");
+        if let Some(loc) = &page.template {
+            page_xml.push_str(&format!("  <ofd:Template TemplateLoc=\"{loc}\"/>\n"));
+        }
+        page_xml.push_str("</ofd:Page>");
         entries.push((
             format!("Doc_0/Pages/Page_{i}/Content.xml"),
             page_xml.into_bytes(),
