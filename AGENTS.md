@@ -43,7 +43,7 @@ cargo run -p xilem-app -- test/ru-yuan-ji-lu.ofd  # 打开根目录 test/ 下的
 cargo run -p xilem-app --example print_to_file -- test/ru-yuan-ji-lu.ofd target/print-probe.out  # 打印手测通道（Pages 载荷经 GDI lpszOutput 落文件）
 ```
 
-命令行路径参数经宿主 `host::document_io::load_ofd` 加载。native 宿主以空字体配置启动（`OfdConfig::new(Arc::new(vec![]))`，见 `crates/xilem-app/src/main.rs`），字形交给系统字体回退；仓库自带的 CJK 字体位于 `crates/web-app/public/fonts/`（git 跟踪，无需下载）。
+命令行路径参数经宿主 `host::document_io::load_ofd` 加载。native 宿主以空字体配置启动（`OfdConfig::new(Arc::new(vec![]))`，见 `crates/xilem-app/src/main.rs`），字形交给系统字体回退；`crates/web-app/public/fonts/` 是本机字体测试目录（**gitignored**，新 clone 不带，也不作为交付物分发）。
 
 ### 运行 gpui 桌面宿主
 
@@ -68,7 +68,7 @@ npm run smoke:nogpu       # 无 GPU 冒烟（headless Chrome --disable-gpu 必�
 ```
 
 `build:sdk` 等价于 `cd ../web-view && wasm-pack build --target web --out-dir sdk/dist`。
-字体通道：Noto 两族经 `@office-rs/font-runtime/vite` 从 npm 切片按需加载，商用六族走本机切片 `public/fonts-sliced/`（gitignored，裸 `Ofd.init` 不再默认拉 CDN 字体）——详见 `crates/web-app/README.md`。`file:` 过渡依赖需要 sibling 检出 `D:/code/fonts`（spec 2026-10-17 §7：npm 包上线后切 `^1.0.0`，届时移除本注记）。
+字体通道：Noto 两族经 `@office-rs/font-runtime/vite` 从 npm 切片按需加载，商用六族走本机切片 `public/fonts-sliced/`（gitignored，裸 `Ofd.init` 不再默认拉 CDN 字体）——详见 `crates/web-app/README.md`。批注格式面板的字体下拉 = 通道可交付族（manifest + 桌面系统清单）∪ `fontCatalog.ts` 的**通用族名目录**（仅名字，不含/不拉字体字节；浏览器取不到的族选中后回退默认字体，桌面走系统字体懒加载）。`file:` 过渡依赖需要 sibling 检出 `D:/code/fonts`（spec 2026-10-17 §7：npm 包上线后切 `^1.0.0`，届时移除本注记）。
 
 ### 构建 / 运行 tauri 桌面宿主
 

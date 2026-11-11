@@ -11,6 +11,7 @@ import { RenderScheduler } from "./scheduler";
 import { withKick } from "./with-kick";
 import { printViaIframe } from "./print";
 import { createFormatPanel, type FormatPanel } from "./formatPanel";
+import { mergeFontFamilyCatalog } from "./fontCatalog";
 import * as fontFlow from "./fontFlow";
 import type { FontSlicesConfig, SystemFontProvider } from "./fontFlow";
 
@@ -670,6 +671,7 @@ export class Ofd {
     // 桌面纯系统通道（draft D4）manifests 为空：切片流上膛不拉，系统流仍须
     // 启动——只有"无活清单且无系统通道"才回 off（浏览器降级不变）。
     if (live.length === 0 && !this.systemFontsCfg) {
+      await this.pushPanelFontFamilies(null);
       this.fontFlowState = "off";
       return;
     }
@@ -702,28 +704,13 @@ export class Ofd {
       onError,
       system: this.systemFlow,
     });
+    // The picker also gets the name-only catalog (no font bytes involved):
+    // browsers cannot enumerate system fonts, and the channel may deliver only
+    // a couple of manifest families.
+    await this.pushPanelFontFamilies(runtime);
     if (!ok) {
       this.fontFlowState = "off";
       return;
-    }
-    // Font panel data face: manifest families (key + displayName) plus the
-    // desktop system-font names, so the dropdown lists what CAN be loaded,
-    // not only what is already registered.
-    try {
-      const manifest = await runtime.ready();
-      const pairs: string[][] = Object.entries(manifest.families).map(([k, f]) => [
-        k,
-        (f as { displayName: string }).displayName,
-      ]);
-      for (const name of this.systemFlow?.familiesRaw ?? []) {
-        pairs.push([name, name]);
-      }
-      const surface = this.wasm as unknown as {
-        setAvailableFontFamilies?: (pairs: string[][]) => void;
-      };
-      surface.setAvailableFontFamilies?.(pairs);
-    } catch {
-      // Best-effort: the panel still lists declared/registered families.
     }
     this.fontWatch = fontFlow.scheduleFontWatch(wasmFont, runtime, {
       onError,
@@ -733,6 +720,32 @@ export class Ofd {
     // 文档已在 init 窗口期间加载的情形：就绪后立即补一拍，watcher 会收集
     // 加载后的需求并补片——runtime 去重使竞争外的情形为空转。
     this.fontWatch?.kick();
+  }
+
+  /** Font panel data face: channel-deliverable families (manifest
+   * key+displayName, desktop system names) merged with the name-only common
+   * catalog. Names only - no font bytes are bundled or fetched here. */
+  private async pushPanelFontFamilies(
+    runtime: FontRuntime | null,
+  ): Promise<void> {
+    const pairs: string[][] = [];
+    if (runtime) {
+      try {
+        const manifest = await runtime.ready();
+        for (const [key, family] of Object.entries(manifest.families)) {
+          pairs.push([key, (family as { displayName: string }).displayName]);
+        }
+      } catch {
+        // Manifest not ready: the catalog below still fills the picker.
+      }
+    }
+    for (const name of this.systemFlow?.familiesRaw ?? []) {
+      pairs.push([name, name]);
+    }
+    const surface = this.wasm as unknown as {
+      setAvailableFontFamilies?: (pairs: string[][]) => void;
+    };
+    surface.setAvailableFontFamilies?.(mergeFontFamilyCatalog(pairs));
   }
 
   /** 补载遍立跑（draft §4.2 入口之三：打开文档不等防抖窗）。settled 集合

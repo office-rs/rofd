@@ -146,7 +146,9 @@ xilem-view        gpui-view          web-view SDK
      `__rofs_*`。首次调用会触发系统字体扫描，结果缓存在组件里。
    - wasm：fontique 的系统后端为空，改由 SDK 把 manifest 的**可加载族**
      （规范键 + `displayName`）经 `set_available_font_families()` 推给组件，
-     再并上文档声明族与已注册族（过滤 `__rofs_*`）。
+     再并上文档声明族与已注册族（过滤 `__rofs_*`）。**2026-11-11 补充**：SDK 另推
+     `fontCatalog.ts` 的通用族名目录（仅名字，不含字体字节；浏览器取不到的族选中
+     后回退默认字体，桌面经系统字体懒加载真正生效），使下拉与桌面 office 观感一致。
    - 去重按规范键，声明族 / SDK 提供项优先保留 display。
 3. `FontStore::family_display_name(&FontId) -> Option<String>`：注册族名 → 声明族名 →
    `None`。
