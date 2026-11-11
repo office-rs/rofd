@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,17 +22,20 @@ pub struct PkgEntry {
     pub bytes: Arc<Vec<u8>>,
 }
 
-/// Original package skeleton retained for surgical save.
-/// On `save_ofd`, annotation entries are re-serialized from the model;
-/// every other entry is copied from `bytes` byte-identical.
+/// Original package skeleton retained for passthrough transport
+/// (spec 2026-11-11 D12): `consumed` records every entry parse actually
+/// read into the model; the full-write transport copies the remaining
+/// (unconsumed) entries verbatim.
 #[derive(Debug, Clone, Default)]
 pub struct PackageHandle {
     pub entries: Vec<PkgEntry>,
+    /// Entry names parse consumed (pages/resources/annotations/...).
+    pub consumed: BTreeSet<String>,
 }
 
 impl PackageHandle {
     pub fn empty() -> Self {
-        Self { entries: vec![] }
+        Self::default()
     }
 
     pub fn find(&self, name: &str) -> Option<&PkgEntry> {

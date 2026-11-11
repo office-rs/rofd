@@ -609,3 +609,97 @@ fn object_id_seed_scans_raw_fragment_ids() {
         "raw fragment IDs must seed the allocator"
     );
 }
+
+// ---- Document-level passthrough capture (spec 2026-11-11 §6.2, Task 7) ----
+
+fn custom_package(
+    ofd_xml: &str,
+    doc_xml: &str,
+    content_xml: &str,
+    extra: &[(&str, &str)],
+) -> Vec<u8> {
+    let mut files = vec![
+        ("OFD.xml", ofd_xml),
+        ("Doc_0/Document.xml", doc_xml),
+        ("Doc_0/Pages/Page_0/Content.xml", content_xml),
+    ];
+    files.extend_from_slice(extra);
+    build_zip(&files)
+}
+
+const PLAIN_CONTENT: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:Page xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:Area><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:Area><ofd:Content><ofd:Layer Type=\"Body\"/></ofd:Content></ofd:Page>";
+
+#[test]
+fn document_root_unknown_children_preserved() {
+    let doc_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:Document xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:PageArea><ofd:MaxUnitID>10</ofd:MaxUnitID></ofd:CommonData><ofd:Pages><ofd:Page ID=\"P0\" BaseLoc=\"Pages/Page_0/Content.xml\"/></ofd:Pages><ofd:Bookmarks><ofd:Outline Title=\"ch1\"/></ofd:Bookmarks></ofd:Document>";
+    let ofd_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:OFD xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:DocBody><ofd:DocRoot>Doc_0/Document.xml</ofd:DocRoot></ofd:DocBody></ofd:OFD>";
+    let report = parse_ofd(&custom_package(ofd_xml, doc_xml, PLAIN_CONTENT, &[])).expect("parse");
+    let raws = &report.document.raw_doc_children;
+    assert_eq!(raws.len(), 1);
+    assert_eq!(raws[0].position, 2, "after CommonData(0) and Pages(1)");
+    assert!(
+        raws[0].xml.contains("<ofd:Outline Title=\"ch1\"/>"),
+        "{}",
+        raws[0].xml
+    );
+}
+
+#[test]
+fn ofd_xml_body_and_docinfo_raws_preserved() {
+    let ofd_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:OFD xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:DocBody><ofd:DocInfo><ofd:DocID>D1</ofd:DocID><ofd:Subject>s</ofd:Subject></ofd:DocInfo><ofd:DocRoot>Doc_0/Document.xml</ofd:DocRoot><ofd:Version>1.1</ofd:Version></ofd:DocBody></ofd:OFD>";
+    let doc_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:Document xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:PageArea><ofd:MaxUnitID>10</ofd:MaxUnitID></ofd:CommonData><ofd:Pages><ofd:Page ID=\"P0\" BaseLoc=\"Pages/Page_0/Content.xml\"/></ofd:Pages></ofd:Document>";
+    let report = parse_ofd(&custom_package(ofd_xml, doc_xml, PLAIN_CONTENT, &[])).expect("parse");
+    let body = &report.document.raw_ofd_body_children;
+    assert_eq!(body.len(), 1);
+    assert!(body[0].xml.contains("1.1</ofd:Version>"), "{}", body[0].xml);
+    assert!(
+        body[0].xml.contains("xmlns:ofd="),
+        "fragment carries the injected namespace: {}",
+        body[0].xml
+    );
+    let info = &report.document.meta.raw_info_children;
+    assert_eq!(info.len(), 1);
+    assert!(info[0].xml.contains("s</ofd:Subject>"), "{}", info[0].xml);
+    assert_eq!(
+        report.document.meta.doc_id.as_deref(),
+        Some("D1"),
+        "modelled DocID still parsed"
+    );
+}
+
+#[test]
+fn consumed_set_records_modeled_entries() {
+    let res_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:Res xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:MultiMedias><ofd:MultiMedia Type=\"Image\" Format=\"png\" ID=\"i1\"><ofd:MediaFile>img.png</ofd:MediaFile></ofd:MultiMedia></ofd:MultiMedias></ofd:Res>";
+    let doc_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:Document xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:PageArea><ofd:MaxUnitID>10</ofd:MaxUnitID></ofd:CommonData><ofd:Pages><ofd:Page ID=\"P0\" BaseLoc=\"Pages/Page_0/Content.xml\"/><ofd:Page ID=\"P1\" BaseLoc=\"Pages/Page_1/Content.xml\"/></ofd:Pages></ofd:Document>";
+    let ofd_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ofd:OFD xmlns:ofd=\"http://www.ofdspec.org/2016\"><ofd:DocBody><ofd:DocRoot>Doc_0/Document.xml</ofd:DocRoot></ofd:DocBody></ofd:OFD>";
+    let bytes = custom_package(
+        ofd_xml,
+        doc_xml,
+        PLAIN_CONTENT,
+        &[
+            ("Doc_0/Pages/Page_1/Content.xml", PLAIN_CONTENT),
+            ("Doc_0/Res/DocumentRes.xml", res_xml),
+            ("Doc_0/Res/img.png", "\u{89}PNG-rest"),
+            ("Attachments/file.dat", "blob"),
+        ],
+    );
+    let report = parse_ofd(&bytes).expect("parse");
+    let consumed = &report.package.consumed;
+    for expected in [
+        "OFD.xml",
+        "Doc_0/Document.xml",
+        "Doc_0/Pages/Page_0/Content.xml",
+        "Doc_0/Pages/Page_1/Content.xml",
+        "Doc_0/Res/DocumentRes.xml",
+        "Doc_0/Res/img.png",
+    ] {
+        assert!(
+            consumed.contains(expected),
+            "consumed must contain {expected}: {consumed:?}"
+        );
+    }
+    assert!(
+        !consumed.contains("Attachments/file.dat"),
+        "unconsumed entries stay out: {consumed:?}"
+    );
+}

@@ -527,6 +527,7 @@ mod tests {
                 meta: DocMeta::default(),
                 max_unit_id: 0,
                 annotations_loc: None,
+                ..DocHeader::default()
             },
             &mut Vec::new(),
         )
@@ -576,6 +577,7 @@ mod tests {
                 meta: DocMeta::default(),
                 max_unit_id: 0,
                 annotations_loc: None,
+                ..DocHeader::default()
             },
             &mut Vec::new(),
         )
@@ -634,6 +636,7 @@ mod tests {
                 meta: DocMeta::default(),
                 max_unit_id: 0,
                 annotations_loc: None,
+                ..DocHeader::default()
             },
             &mut warnings,
         )

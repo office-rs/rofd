@@ -84,19 +84,27 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
     }
     let doc_root = ofd_xml::parse_doc_root(&ofd_xml)?;
     let meta = ofd_xml::parse_doc_meta(&ofd_xml)?;
+    // Passthrough raws from OFD.xml (DocBody/DocInfo level, spec §6.2).
+    let (ofd_body_raws, ofd_info_raws) = ofd_xml::parse_ofd_xml_raws(&ofd_xml);
+    // Consumed-entry set for full-write transport filtering (spec D12).
+    let mut consumed = std::collections::BTreeSet::new();
+    consumed.insert("OFD.xml".to_string());
     let doc_xml = entry_str(&entries, &doc_root)?;
-    let header = document::parse_document(&doc_xml)?;
+    consumed.insert(doc_root.clone());
+    let mut header = document::parse_document(&doc_xml)?;
     let mut doc = OfdDocument {
-        raw_doc_children: Vec::new(),
-        raw_common_children: Vec::new(),
-        raw_ofd_body_children: Vec::new(),
+        raw_doc_children: std::mem::take(&mut header.raw_children),
+        raw_common_children: std::mem::take(&mut header.raw_common_children),
+        raw_ofd_body_children: ofd_body_raws,
         meta,
         ..OfdDocument::default()
     };
+    doc.meta.raw_info_children = ofd_info_raws;
     doc.max_unit_id = header.max_unit_id;
     for pref in &header.pages {
         let page_path = join(&doc_root, &pref.base_loc);
         let page_xml = entry_str(&entries, &page_path)?;
+        consumed.insert(page_path.clone());
         let page = page::parse_page(pref.id.clone(), &page_xml, &header, &mut warnings)?;
         // Template handling: if page.template is Some, emit warning (v1 doesn't expand).
         if page.template.is_some() {
@@ -115,6 +123,7 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
         if name.ends_with("DocumentRes.xml") || name.ends_with("PublicRes.xml") {
             let xml = String::from_utf8_lossy(&e.bytes).into_owned();
             let parsed = resource::parse_res(&xml)?;
+            consumed.insert(e.name.clone());
             let res_dir = e.name.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
             let base_dir = if parsed.base_loc.is_empty() {
                 res_dir.to_string()
@@ -133,6 +142,7 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
                     format!("{base_dir}/{media_file}")
                 };
                 if let Some(fe) = entries.iter().find(|x| x.name == path) {
+                    consumed.insert(fe.name.clone());
                     doc.resources.images.insert(id, fe.bytes.clone());
                 } else {
                     warnings.push(OfdWarning::ResourceNotFound {
@@ -151,6 +161,7 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
                         format!("{base_dir}/{rel}")
                     };
                     if let Some(fe) = entries.iter().find(|x| x.name == path) {
+                        consumed.insert(fe.name.clone());
                         doc.resources.font_data.insert(id, fe.bytes.clone());
                     } else {
                         warnings.push(OfdWarning::FontSubstituted {
@@ -166,6 +177,7 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
     for e in &entries {
         if e.name.ends_with("/Res/Font.xml") {
             let xml = String::from_utf8_lossy(&e.bytes).into_owned();
+            consumed.insert(e.name.clone());
             let font_dir = e.name.rsplit_once('/').map(|(d, _)| d).unwrap_or(""); // .../Res
             for (id, fref, font_file) in resource::parse_font_res(&xml)? {
                 let family_name = fref.family_name.clone();
@@ -178,6 +190,7 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
                         format!("{font_dir}/{rel}")
                     };
                     if let Some(fe) = entries.iter().find(|x| x.name == font_path) {
+                        consumed.insert(fe.name.clone());
                         doc.resources.font_data.insert(id, fe.bytes.clone());
                     } else {
                         warnings.push(OfdWarning::FontSubstituted {
@@ -200,6 +213,7 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
             .find(|e| e.name == entry_path)
             .map(|e| String::from_utf8_lossy(&e.bytes).into_owned())
         {
+            consumed.insert(entry_path.clone());
             let entry_dir = entry_path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
             for pref in annotation_entry::parse_annotations_entry(&entry_xml)? {
                 // FileLoc is relative to the entry file's own directory.
@@ -211,6 +225,7 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
                 // Match by PageID against the parsed pages.
                 if let Some(page) = doc.pages.iter().find(|p| p.id.0 == pref.page_id) {
                     if let Some(fe) = entries.iter().find(|e| e.name == page_path) {
+                        consumed.insert(fe.name.clone());
                         let xml = String::from_utf8_lossy(&fe.bytes).into_owned();
                         let anns = annotation::parse_page_annot_with_warnings(
                             &xml,
@@ -245,6 +260,7 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
                 if let Some(idx) = page_idx {
                     if let Some(page) = doc.pages.get(idx) {
                         let xml = String::from_utf8_lossy(&e.bytes).into_owned();
+                        consumed.insert(e.name.clone());
                         let anns = annotation::parse_page_annot_with_warnings(
                             &xml,
                             &page.id,
@@ -262,7 +278,7 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
             }
         }
     }
-    let package = PackageHandle { entries };
+    let package = PackageHandle { entries, consumed };
     Ok(LoadReport::new(doc, package, warnings))
 }
 
