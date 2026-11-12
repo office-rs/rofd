@@ -127,15 +127,21 @@ pub fn write_ofd_with_text_layout(
     let pb = doc.pages.first().map(|p| p.physical_box);
     let mut root_known: Vec<String> = Vec::new();
     if let Some(r) = pb {
-        let mut common_known: Vec<String> = vec![
-            format!(
-                "<ofd:PageArea><ofd:PhysicalBox>{} {} {} {}</ofd:PhysicalBox></ofd:PageArea>",
-                r.x, r.y, r.w, r.h
-            ),
-            format!("<ofd:MaxUnitID>{next_id}</ofd:MaxUnitID>"),
-        ];
-        if !res.is_empty() {
-            common_known.push("<ofd:DocumentRes BaseLoc=\"Res/DocumentRes.xml\"/>".into());
+        // GB/T 33190 CT_CommonData child order: MaxUnitID, PageArea, then
+        // the resource loc elements - locs are element TEXT (the form WPS
+        // and other strict readers locate resources by; an attribute form
+        // is silently ignored).
+        let mut common_known: Vec<String> =
+            vec![format!("<ofd:MaxUnitID>{next_id}</ofd:MaxUnitID>")];
+        common_known.push(format!(
+            "<ofd:PageArea><ofd:PhysicalBox>{} {} {} {}</ofd:PhysicalBox></ofd:PageArea>",
+            r.x, r.y, r.w, r.h
+        ));
+        if res.public_res {
+            common_known.push("<ofd:PublicRes>Res/PublicRes.xml</ofd:PublicRes>".into());
+        }
+        if res.document_res {
+            common_known.push("<ofd:DocumentRes>Res/DocumentRes.xml</ofd:DocumentRes>".into());
         }
         let mut common_inner = String::new();
         for child in interleave(common_known.len(), &doc.raw_common_children) {
@@ -170,7 +176,7 @@ pub fn write_ofd_with_text_layout(
     entries.push(("Doc_0/Document.xml".into(), doc_xml.into_bytes()));
 
     // Resource entries (fonts / images / drawparams) + their byte files.
-    entries.extend(res);
+    entries.extend(res.entries);
 
     // Annotations.xml entry file (GB/T 33190 §15.1).
     if has_annots {

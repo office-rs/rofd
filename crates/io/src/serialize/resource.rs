@@ -45,17 +45,31 @@ fn font_ext(bytes: &[u8]) -> &'static str {
     }
 }
 
-/// Resource zip entries for the document: `Doc_0/Res/DocumentRes.xml` plus
-/// the font/image byte files it references. Empty vec when the document has
-/// no resources at all (then the writer emits no Res entry and no CommonData
-/// DocumentRes loc either).
-pub(crate) fn res_entries(doc: &OfdDocument) -> Vec<(String, Vec<u8>)> {
+/// Resource emission: the conventional two-file split real producers use -
+/// fonts + drawparams in `Doc_0/Res/PublicRes.xml`, images in
+/// `Doc_0/Res/DocumentRes.xml` - plus the byte files they reference. The
+/// flags tell the Document.xml writer which CommonData loc elements to
+/// emit (GB/T locs are element TEXT: `<ofd:PublicRes>Res/PublicRes.xml
+/// </ofd:PublicRes>` - WPS does not read an attribute form).
+pub(crate) struct ResEmit {
+    pub entries: Vec<(String, Vec<u8>)>,
+    /// Emit the `<ofd:PublicRes>` loc (fonts/drawparams exist).
+    pub public_res: bool,
+    /// Emit the `<ofd:DocumentRes>` loc (images exist).
+    pub document_res: bool,
+}
+
+pub(crate) fn res_entries(doc: &OfdDocument) -> ResEmit {
     if doc.resources.images.is_empty()
         && doc.resources.fonts.is_empty()
         && doc.resources.font_data.is_empty()
         && doc.resources.draw_params.is_empty()
     {
-        return Vec::new();
+        return ResEmit {
+            entries: Vec::new(),
+            public_res: false,
+            document_res: false,
+        };
     }
     // Sorted iteration everywhere: same model -> same bytes (parse side
     // reads into HashMaps, so emission order is ours to fix).
@@ -73,13 +87,15 @@ pub(crate) fn res_entries(doc: &OfdDocument) -> Vec<(String, Vec<u8>)> {
         doc.resources.draw_params.iter().collect();
     draw_params.sort_by(|a, b| a.0 .0.cmp(&b.0 .0));
 
-    let mut xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-    xml.push_str("<ofd:Res xmlns:ofd=\"http://www.ofdspec.org/2016\">\n");
+    let mut public_xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    public_xml.push_str("<ofd:Res xmlns:ofd=\"http://www.ofdspec.org/2016\">\n");
+    let mut doc_xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    doc_xml.push_str("<ofd:Res xmlns:ofd=\"http://www.ofdspec.org/2016\">\n");
 
     if !draw_params.is_empty() {
-        xml.push_str("  <ofd:DrawParams>\n");
+        public_xml.push_str("  <ofd:DrawParams>\n");
         for (id, dp) in &draw_params {
-            xml.push_str(&format!(
+            public_xml.push_str(&format!(
                 "    <ofd:DrawParam ID=\"{}\"{}>",
                 xml_escape(&id.0),
                 dp.line_width
@@ -87,32 +103,32 @@ pub(crate) fn res_entries(doc: &OfdDocument) -> Vec<(String, Vec<u8>)> {
                     .unwrap_or_default()
             ));
             if let Some(c) = dp.fill {
-                xml.push_str(&format!("<ofd:FillColor Value=\"{}\"/>", color_str(c)));
+                public_xml.push_str(&format!("<ofd:FillColor Value=\"{}\"/>", color_str(c)));
             }
             if let Some(c) = dp.stroke {
-                xml.push_str(&format!("<ofd:StrokeColor Value=\"{}\"/>", color_str(c)));
+                public_xml.push_str(&format!("<ofd:StrokeColor Value=\"{}\"/>", color_str(c)));
             }
-            xml.push_str("</ofd:DrawParam>\n");
+            public_xml.push_str("</ofd:DrawParam>\n");
         }
-        xml.push_str("  </ofd:DrawParams>\n");
+        public_xml.push_str("  </ofd:DrawParams>\n");
     }
 
     if !images.is_empty() {
-        xml.push_str("  <ofd:MultiMedias>\n");
+        doc_xml.push_str("  <ofd:MultiMedias>\n");
         for (id, bytes) in &images {
             let fmt = sniff_image_format(bytes);
             let ext = ext_of(fmt);
-            xml.push_str(&format!(
+            doc_xml.push_str(&format!(
                 "    <ofd:MultiMedia Type=\"Image\" Format=\"{fmt}\" ID=\"{}\"><ofd:MediaFile>Img_{}.{ext}</ofd:MediaFile></ofd:MultiMedia>\n",
                 xml_escape(&id.0),
                 xml_escape(&id.0)
             ));
         }
-        xml.push_str("  </ofd:MultiMedias>\n");
+        doc_xml.push_str("  </ofd:MultiMedias>\n");
     }
 
     if !font_ids.is_empty() {
-        xml.push_str("  <ofd:Fonts>\n");
+        public_xml.push_str("  <ofd:Fonts>\n");
         for id in &font_ids {
             let family = doc
                 .resources
@@ -120,29 +136,44 @@ pub(crate) fn res_entries(doc: &OfdDocument) -> Vec<(String, Vec<u8>)> {
                 .get(*id)
                 .and_then(|f| f.family_name.clone());
             match family {
-                Some(f) => xml.push_str(&format!(
+                Some(f) => public_xml.push_str(&format!(
                     "    <ofd:Font ID=\"{}\" FontName=\"{}\"",
                     xml_escape(&id.0),
                     xml_escape(&f)
                 )),
-                None => xml.push_str(&format!("    <ofd:Font ID=\"{}\"", xml_escape(&id.0))),
+                None => public_xml.push_str(&format!("    <ofd:Font ID=\"{}\"", xml_escape(&id.0))),
             }
             if let Some(bytes) = doc.resources.font_data.get(*id) {
                 let ext = font_ext(bytes);
-                xml.push_str(&format!(
+                public_xml.push_str(&format!(
                     ">\n      <ofd:FontFile>Font_{}.{ext}</ofd:FontFile>\n    </ofd:Font>\n",
                     xml_escape(&id.0)
                 ));
             } else {
-                xml.push_str("/>\n");
+                public_xml.push_str("/>\n");
             }
         }
-        xml.push_str("  </ofd:Fonts>\n");
+        public_xml.push_str("  </ofd:Fonts>\n");
     }
 
-    xml.push_str("</ofd:Res>");
+    public_xml.push_str("</ofd:Res>");
+    doc_xml.push_str("</ofd:Res>");
 
-    let mut entries = vec![("Doc_0/Res/DocumentRes.xml".to_string(), xml.into_bytes())];
+    let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
+    let public_res = !draw_params.is_empty() || !font_ids.is_empty();
+    let document_res = !images.is_empty();
+    if public_res {
+        entries.push((
+            "Doc_0/Res/PublicRes.xml".to_string(),
+            public_xml.into_bytes(),
+        ));
+    }
+    if document_res {
+        entries.push((
+            "Doc_0/Res/DocumentRes.xml".to_string(),
+            doc_xml.into_bytes(),
+        ));
+    }
     for (id, bytes) in &images {
         entries.push((
             format!(
@@ -161,5 +192,9 @@ pub(crate) fn res_entries(doc: &OfdDocument) -> Vec<(String, Vec<u8>)> {
             ));
         }
     }
-    entries
+    ResEmit {
+        entries,
+        public_res,
+        document_res,
+    }
 }

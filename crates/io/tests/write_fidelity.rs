@@ -336,26 +336,27 @@ fn resources_round_trip() {
     );
 
     let bytes = write_ofd(&doc).expect("write_ofd");
+    let public_xml = read_entry(&bytes, "Doc_0/Res/PublicRes.xml");
     let res_xml = read_entry(&bytes, "Doc_0/Res/DocumentRes.xml");
     assert!(res_xml.contains("Format=\"PNG\""), "{res_xml}");
     assert!(
         res_xml.contains("<ofd:MediaFile>Img_img1.png</ofd:MediaFile>"),
         "{res_xml}"
     );
-    assert!(res_xml.contains("FontName=\"SimSun\""), "{res_xml}");
+    assert!(public_xml.contains("FontName=\"SimSun\""), "{public_xml}");
     assert!(
-        res_xml.contains("<ofd:FontFile>Font_4.ttf</ofd:FontFile>"),
-        "{res_xml}"
+        public_xml.contains("<ofd:FontFile>Font_4.ttf</ofd:FontFile>"),
+        "{public_xml}"
     );
     assert!(
-        res_xml.contains("<ofd:DrawParam ID=\"dp1\" LineWidth=\"0.5\">"),
-        "{res_xml}"
+        public_xml.contains("<ofd:DrawParam ID=\"dp1\" LineWidth=\"0.5\">"),
+        "{public_xml}"
     );
     assert!(has_entry(&bytes, "Doc_0/Res/Img_img1.png"));
     assert!(has_entry(&bytes, "Doc_0/Res/Font_4.ttf"));
     let doc_xml = read_entry(&bytes, "Doc_0/Document.xml");
     assert!(
-        doc_xml.contains("<ofd:DocumentRes BaseLoc=\"Res/DocumentRes.xml\"/>"),
+        doc_xml.contains("<ofd:PublicRes>Res/PublicRes.xml</ofd:PublicRes>"),
         "{doc_xml}"
     );
 
@@ -993,7 +994,7 @@ fn nonstandard_entry_names_canonicalized_no_duplicates() {
     )
     .expect("write");
 
-    let zip = zip::ZipArchive::new(std::io::Cursor::new(&out)).unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&out)).unwrap();
     let names: Vec<&str> = zip.file_names().collect();
     let mut sorted = names.clone();
     sorted.sort_unstable();
@@ -1170,4 +1171,120 @@ fn template_precedes_content() {
     let tpl = xml.find("<ofd:Template").expect("template");
     let content_at = xml.find("<ofd:Content>").expect("content");
     assert!(tpl < content_at, "Template before Content: {xml}");
+}
+
+#[test]
+fn diag_sample_roundtrip_keepall() {
+    let bytes = std::fs::read("../../test/sample.ofd").expect("sample");
+    let report = parse_ofd(&bytes).expect("parse");
+    let out = rofd_io::write_ofd_with_text_layout(
+        &report.document,
+        Some(&report.package),
+        &rofd_dom::TextLayoutHints::new(),
+    )
+    .expect("write");
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&out)).unwrap();
+    let names: Vec<&str> = zip.file_names().collect();
+    let src = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+    let src_names: Vec<String> = src.file_names().map(|s| s.to_string()).collect();
+    // unconsumed entries transported?
+    for n in &src_names {
+        if report.package.consumed.contains(n.as_str()) {
+            continue;
+        }
+        assert!(
+            names.contains(&n.as_str()),
+            "unconsumed {n} must transport; consumed={:?}; names={names:?}",
+            report.package.consumed
+        );
+    }
+    // all declared font ids survive?
+    let mut zip2 = zip::ZipArchive::new(std::io::Cursor::new(&out)).unwrap();
+    let res_xml = String::from_utf8(
+        zip2.by_name("Doc_0/Res/PublicRes.xml")
+            .unwrap()
+            .bytes()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap(),
+    )
+    .unwrap();
+    for fid in report.document.resources.fonts.keys() {
+        assert!(
+            res_xml.contains(&format!("ID=\"{}\"", fid.0)),
+            "font {} missing from write; model fonts={:?}",
+            fid.0,
+            report
+                .document
+                .resources
+                .fonts
+                .keys()
+                .map(|k| k.0.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn res_locs_are_element_text_standard_form() {
+    // WPS/strict readers locate resources via the CT_CommonData loc
+    // elements' TEXT (`<ofd:PublicRes>Res/PublicRes.xml</ofd:PublicRes>`),
+    // not an attribute. GB/T child order: MaxUnitID, PageArea, then locs.
+    let mut doc = OfdDocument::default();
+    doc.pages.push(page_with(vec![]));
+    doc.resources
+        .images
+        .insert(ImageId::new("img1"), Arc::new(PNG_MAGIC.to_vec()));
+    doc.resources.fonts.insert(
+        FontId::new("4"),
+        FontRef {
+            id: FontId::new("4"),
+            family_name: Some("SimSun".into()),
+        },
+    );
+    doc.resources
+        .font_data
+        .insert(FontId::new("4"), Arc::new(TTF_MAGIC.to_vec()));
+    doc.resources.draw_params.insert(
+        DrawParamId::new("dp1"),
+        DrawParam {
+            line_width: Some(0.5),
+            stroke: None,
+            fill: None,
+        },
+    );
+
+    let bytes = write_ofd(&doc).expect("write_ofd");
+    let doc_xml = read_entry(&bytes, "Doc_0/Document.xml");
+    assert!(
+        doc_xml.contains("<ofd:PublicRes>Res/PublicRes.xml</ofd:PublicRes>"),
+        "PublicRes loc must be element text (WPS form): {doc_xml}"
+    );
+    assert!(
+        doc_xml.contains("<ofd:DocumentRes>Res/DocumentRes.xml</ofd:DocumentRes>"),
+        "DocumentRes loc must be element text (WPS form): {doc_xml}"
+    );
+    assert!(
+        !doc_xml.contains("BaseLoc=\"Res/"),
+        "no attribute-form resource locs in CommonData: {doc_xml}"
+    );
+    let max_at = doc_xml.find("<ofd:MaxUnitID>").expect("MaxUnitID");
+    let area_at = doc_xml.find("<ofd:PageArea>").expect("PageArea");
+    let pres_at = doc_xml.find("<ofd:PublicRes>").expect("PublicRes");
+    assert!(
+        max_at < area_at && area_at < pres_at,
+        "GB/T child order: {doc_xml}"
+    );
+
+    // Conventional split: fonts + drawparams in PublicRes, images in
+    // DocumentRes (the form real producers emit).
+    let public_xml = read_entry(&bytes, "Doc_0/Res/PublicRes.xml");
+    assert!(public_xml.contains("FontName=\"SimSun\""), "{public_xml}");
+    assert!(public_xml.contains("<ofd:DrawParam "), "{public_xml}");
+    assert!(!public_xml.contains("MultiMedia"), "{public_xml}");
+    let docres_xml = read_entry(&bytes, "Doc_0/Res/DocumentRes.xml");
+    assert!(docres_xml.contains("Img_img1.png"), "{docres_xml}");
+    assert!(!docres_xml.contains("FontName"), "{docres_xml}");
+    assert!(has_entry(&bytes, "Doc_0/Res/Font_4.ttf"));
+    assert!(has_entry(&bytes, "Doc_0/Res/Img_img1.png"));
+    assert_round_trip(&doc);
 }
