@@ -7963,6 +7963,7 @@ mod tests {
                     fill: None,
                     codes,
                     draw_param: None,
+                    clip: None,
                 })],
             }],
             template: None,

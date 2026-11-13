@@ -52,6 +52,11 @@ pub fn parse_page(
     // address glyphs (shape would return .notdef and the text would vanish).
     let mut in_glyphs = false;
     let mut pending_glyph_ids: Option<Vec<u32>> = None;
+    // <Clip> child of an object (GB/T 33190, spec 2026-11-12 D14): its
+    // AbbreviatedData text is captured here and applied to the enclosing
+    // object at the Clip End event.
+    let mut in_clip = false;
+    let mut pending_clip: Option<PathData> = None;
     // Namespace scope for raw-fragment capture (spec 2026-11-11 D3):
     // declarations pushed/popped on every element Start/End.
     let mut ns = NsScope::default();
@@ -89,6 +94,7 @@ pub fn parse_page(
                         &mut text_origin,
                         &mut in_glyphs,
                         &mut pending_glyph_ids,
+                        &mut in_clip,
                         &ns,
                     );
                 } else {
@@ -130,6 +136,9 @@ pub fn parse_page(
                     });
                 } else if local.as_ref() == b"Template" {
                     page.template = Some(attr(&e, "TemplateLoc").unwrap_or_default());
+                } else if local.as_ref() == b"Clip" {
+                    // Self-closing <Clip/> carries no AbbreviatedData; a no-op
+                    // (setting in_clip here would strand it: no End event).
                 } else if is_known_content_element(local.as_ref()) {
                     handle_element_start(
                         &e,
@@ -141,6 +150,7 @@ pub fn parse_page(
                         &mut text_origin,
                         &mut in_glyphs,
                         &mut pending_glyph_ids,
+                        &mut in_clip,
                         &ns,
                     );
                 } else {
@@ -168,6 +178,11 @@ pub fn parse_page(
                     // next TextCode (OFD subset-font glyph mapping, §8.3.3).
                     pending_glyph_ids = Some(parse_glyph_ids(&s));
                     in_glyphs = false;
+                } else if in_clip {
+                    // <Clip><AbbreviatedData> text = the clip path; routed to
+                    // pending so it cannot be mistaken for the object's own
+                    // AbbreviatedData (which lands on the last PathObject).
+                    pending_clip = Some(parse_abbreviated(&s));
                 } else if in_text_code {
                     pending_text_body = Some(s);
                 } else if !s.is_empty() {
@@ -209,6 +224,25 @@ pub fn parse_page(
                     b"Glyphs" => in_glyphs = false,
                     // CGTransform is a container for Glyphs; nothing to do on End.
                     b"CGTransform" => {}
+                    // Apply a captured clip to the enclosing object: the
+                    // TextObject when one is open, else the layer's last
+                    // object (Path/Image are pushed at their Start).
+                    b"Clip" => {
+                        in_clip = false;
+                        if let Some(data) = pending_clip.take() {
+                            if let Some(t) = current_text.as_mut() {
+                                t.clip = Some(data);
+                            } else if let Some(l) = current_layer.as_mut() {
+                                match l.objects.last_mut() {
+                                    Some(PageObject::Text(t)) => t.clip = Some(data),
+                                    Some(PageObject::Path(p)) => p.clip = Some(data),
+                                    Some(PageObject::Image(i)) => i.clip = Some(data),
+                                    // Composites keep no clip model (v1).
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
                     b"TextObject" => {
                         if let (Some(t), Some(l)) = (current_text.take(), current_layer.as_mut()) {
                             l.objects.push(PageObject::Text(t));
@@ -260,6 +294,7 @@ fn handle_element_start(
     text_origin: &mut (f64, f64),
     in_glyphs: &mut bool,
     pending_glyph_ids: &mut Option<Vec<u32>>,
+    in_clip: &mut bool,
     ns: &NsScope,
 ) {
     match e.name().local_name().as_ref() {
@@ -291,6 +326,7 @@ fn handle_element_start(
                 fill: None,
                 codes: vec![],
                 draw_param: attr(e, "DrawParam").map(DrawParamId::new),
+                clip: None,
             });
         }
         b"FillColor" | b"StrokeColor" => {
@@ -332,6 +368,7 @@ fn handle_element_start(
                     boundary: parse_rect_attr(e, "Boundary"),
                     ctm: attr(e, "CTM").and_then(parse_ctm),
                     image: ImageId::new(attr(e, "ResourceID").unwrap_or_default()),
+                    clip: None,
                 }));
             }
         }
@@ -365,6 +402,7 @@ fn handle_element_start(
                     // render 层解析;这里只记录文件里实际写了什么。
                     stroke_enabled: attr(e, "Stroke").and_then(|s| parse_bool_value(&s)),
                     fill_enabled: attr(e, "Fill").and_then(|s| parse_bool_value(&s)),
+                    clip: None,
                 }));
             }
         }
@@ -392,6 +430,11 @@ fn handle_element_start(
         }
         b"Glyphs" => {
             *in_glyphs = true;
+        }
+        // Object-level clip: its <AbbreviatedData> text is captured in the
+        // Text event and applied to the enclosing object at the Clip End.
+        b"Clip" => {
+            *in_clip = true;
         }
         // Structural/container elements that are expected but have no direct
         // object representation - silently pass through (not unknown objects).
@@ -423,6 +466,7 @@ fn is_known_content_element(local: &[u8]) -> bool {
             | b"AbbreviatedData"
             | b"CGTransform"
             | b"Glyphs"
+            | b"Clip"
             | b"Area"
             | b"Content"
             | b"Page"

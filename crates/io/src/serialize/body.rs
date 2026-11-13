@@ -104,6 +104,9 @@ pub(crate) fn text_object_xml(t: &TextObject) -> String {
             xml_escape_preserving_edges(&code.text)
         ));
     }
+    if let Some(clip) = &t.clip {
+        s.push_str(&clip_xml(clip));
+    }
     s.push_str("      </ofd:TextObject>\n");
     s
 }
@@ -115,6 +118,16 @@ fn raw_attrs_str(raws: &[(String, String)]) -> String {
         s.push_str(&format!(" {k}=\"{}\"", xml_escape(v)));
     }
     s
+}
+
+/// Object-level clip child (GB/T 33190, spec 2026-11-12 D14): one line, the
+/// clip path as AbbreviatedData. Emitted after the object's other children
+/// at a fixed position for determinism.
+fn clip_xml(clip: &PathData) -> String {
+    format!(
+        "        <ofd:Clip><ofd:AbbreviatedData>{}</ofd:AbbreviatedData></ofd:Clip>\n",
+        abbrev_fidelity(clip)
+    )
 }
 
 fn rect_str(r: &Rect) -> String {
@@ -167,6 +180,9 @@ pub(crate) fn path_object_xml(p: &PathObject) -> String {
         "        <ofd:AbbreviatedData>{}</ofd:AbbreviatedData>\n",
         abbrev_fidelity(&p.data)
     ));
+    if let Some(clip) = &p.clip {
+        s.push_str(&clip_xml(clip));
+    }
     s.push_str("      </ofd:PathObject>\n");
     s
 }
@@ -208,13 +224,19 @@ pub(crate) fn composite_object_xml(c: &CompositeObject) -> String {
 }
 
 /// One `<ofd:ImageObject>`: ResourceID references a MultiMedia resource.
+/// With a clip the element gets children and a closing tag (spec 2026-11-12
+/// D14); without one it stays self-closing.
 pub(crate) fn image_object_xml(i: &ImageObject) -> String {
-    format!(
-        "      <ofd:ImageObject ID=\"{}\" Boundary=\"{}\"{} ResourceID=\"{}\"{}/>\n",
+    let head = format!(
+        "      <ofd:ImageObject ID=\"{}\" Boundary=\"{}\"{} ResourceID=\"{}\"{}",
         xml_escape(&i.id.0),
         rect_str(&i.boundary),
         ctm_attr(&i.ctm),
         xml_escape(&i.image.0),
         raw_attrs_str(&i.raw_attrs)
-    )
+    );
+    match &i.clip {
+        Some(clip) => format!("{head}>\n{}      </ofd:ImageObject>\n", clip_xml(clip)),
+        None => format!("{head}/>\n"),
+    }
 }

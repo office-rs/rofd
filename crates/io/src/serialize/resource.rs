@@ -95,12 +95,28 @@ pub(crate) fn res_entries(doc: &OfdDocument) -> ResEmit {
     if !draw_params.is_empty() {
         public_xml.push_str("  <ofd:DrawParams>\n");
         for (id, dp) in &draw_params {
+            // Dash attributes (GB/T 33190 Ct_DrawParam, spec 2026-11-12 D14):
+            // pattern lengths and offset in mm, emitted only when modeled.
+            let dash = dp
+                .dash
+                .as_ref()
+                .map(|d| {
+                    let pattern = d
+                        .pattern
+                        .iter()
+                        .map(|v| v.to_string())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    format!(" DashPattern=\"{pattern}\" DashOffset=\"{}\"", d.offset)
+                })
+                .unwrap_or_default();
             public_xml.push_str(&format!(
-                "    <ofd:DrawParam ID=\"{}\"{}>",
+                "    <ofd:DrawParam ID=\"{}\"{}{}>",
                 xml_escape(&id.0),
                 dp.line_width
                     .map(|lw| format!(" LineWidth=\"{lw}\""))
-                    .unwrap_or_default()
+                    .unwrap_or_default(),
+                dash
             ));
             if let Some(c) = dp.fill {
                 public_xml.push_str(&format!("<ofd:FillColor Value=\"{}\"/>", color_str(c)));

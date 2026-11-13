@@ -51,6 +51,10 @@ pub struct TextObject {
     /// `DrawParam` attribute (GB/T 33190): id of a `DrawParam` in `Resources`
     /// supplying fallback fill/stroke/line_width when inline colors are absent.
     pub draw_param: Option<DrawParamId>,
+    /// Object-level clip (GB/T 33190): the object renders clipped to this
+    /// path (page-local mm). `None` = no clip element (spec 2026-11-12 D14).
+    #[serde(default)]
+    pub clip: Option<PathData>,
     /// Unmodelled attributes on the element, verbatim (passthrough,
     /// spec 2026-11-11 D3).
     #[serde(default)]
@@ -63,6 +67,9 @@ pub struct ImageObject {
     pub boundary: Rect,
     pub ctm: Option<Ctm>,
     pub image: ImageId,
+    /// Object-level clip (GB/T 33190), page-local mm (spec 2026-11-12 D14).
+    #[serde(default)]
+    pub clip: Option<PathData>,
     /// Unmodelled attributes on the element, verbatim (passthrough).
     #[serde(default)]
     pub raw_attrs: Vec<(String, String)>,
@@ -86,6 +93,9 @@ pub struct PathObject {
     /// `Fill` attribute (GB/T 33190 表35): whether the path is filled.
     /// `None` = attribute absent - the spec default is `false`.
     pub fill_enabled: Option<bool>,
+    /// Object-level clip (GB/T 33190), page-local mm (spec 2026-11-12 D14).
+    #[serde(default)]
+    pub clip: Option<PathData>,
     /// Unmodelled attributes on the element, verbatim (passthrough).
     #[serde(default)]
     pub raw_attrs: Vec<(String, String)>,
@@ -126,6 +136,7 @@ mod tests {
             fill: None,
             codes: vec![],
             draw_param: None,
+            clip: None,
             raw_attrs: Vec::new(),
         };
         let _clone = t.clone();
@@ -145,6 +156,7 @@ mod tests {
             draw_param: None,
             stroke_enabled: None,
             fill_enabled: None,
+            clip: None,
             raw_attrs: Vec::new(),
         });
         assert!(matches!(p, PageObject::Path(_)));

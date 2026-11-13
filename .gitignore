@@ -46,3 +46,5 @@ crates/convert-node/rofd_convert_node.node
 crates/convert-wasm/pkg/
 crates/convert-wasm/sdk/dist/
 crates/convert-wasm/demo/assets/
+
+.worktrees/

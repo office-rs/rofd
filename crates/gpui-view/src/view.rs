@@ -747,6 +747,7 @@ mod tests {
                     },
                     ctm: None,
                     image: ImageId::new("I1"),
+                    clip: None,
                 })],
             }],
             template: None,

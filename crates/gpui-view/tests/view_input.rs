@@ -76,6 +76,7 @@ fn body_text_doc() -> OfdDocument {
         raw_children: Vec::new(),
         layer_type: LayerType::Body,
         objects: vec![PageObject::Text(TextObject {
+            clip: None,
             raw_attrs: Vec::new(),
             id: ObjectId::new("t1"),
             boundary: Rect {

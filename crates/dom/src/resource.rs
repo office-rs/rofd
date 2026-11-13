@@ -19,11 +19,23 @@ pub struct ImageRef {
     pub format: String,
 }
 
+/// Line dash style (GB/T 33190 Ct_DrawParam): alternating on/off lengths in
+/// mm plus the offset into the pattern (spec 2026-11-12 D14).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct DashSpec {
+    /// Alternating on/off lengths, page-local mm. Empty = solid.
+    pub pattern: Vec<f64>,
+    /// Offset into the pattern where the stroke starts, mm.
+    pub offset: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct DrawParam {
     pub line_width: Option<f64>,
     pub stroke: Option<Color>,
     pub fill: Option<Color>,
+    #[serde(default)]
+    pub dash: Option<DashSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

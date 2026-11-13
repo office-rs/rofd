@@ -86,6 +86,7 @@ fn text_glyph_ids_used_when_present() {
             y: 179.5313,
         }],
         draw_param: None,
+        clip: None,
     };
     let page = Page {
         raw_children: Vec::new(),
@@ -158,6 +159,7 @@ fn text_glyph_transform_includes_boundary_origin() {
             y: 179.5313,
         }],
         draw_param: None,
+        clip: None,
     };
     let page = Page {
         raw_children: Vec::new(),

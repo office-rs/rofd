@@ -7,9 +7,9 @@ use std::io::Read;
 use std::sync::Arc;
 
 use rofd_dom::{
-    Color, CompositeObject, Ctm, DocMeta, DrawParam, DrawParamId, FontId, FontRef, ImageId,
-    ImageObject, Layer, LayerType, ObjectId, OfdDocument, Page, PageId, PageObject, PathCommand,
-    PathData, PathObject, Rect, TextCode, TextObject,
+    Color, CompositeObject, Ctm, DashSpec, DocMeta, DrawParam, DrawParamId, FontId, FontRef,
+    ImageId, ImageObject, Layer, LayerType, ObjectId, OfdDocument, Page, PageId, PageObject,
+    PathCommand, PathData, PathObject, Rect, TextCode, TextObject,
 };
 use rofd_io::{parse_ofd, write_ofd};
 
@@ -128,6 +128,7 @@ fn text_object_round_trips() {
                 y: 1.79,
             }],
             draw_param: None,
+            clip: None,
         })],
     }]));
 
@@ -188,6 +189,7 @@ fn path_object_round_trips() {
                 draw_param: None,
                 stroke_enabled: Some(false),
                 fill_enabled: Some(true),
+                clip: None,
             }),
             PageObject::Path(PathObject {
                 raw_attrs: Vec::new(),
@@ -208,6 +210,7 @@ fn path_object_round_trips() {
                 draw_param: Some(DrawParamId::new("dp1")),
                 stroke_enabled: None,
                 fill_enabled: None,
+                clip: None,
             }),
         ],
     }]));
@@ -259,6 +262,7 @@ fn path_z_round_trips_as_z() {
             draw_param: None,
             stroke_enabled: None,
             fill_enabled: None,
+            clip: None,
         })],
     }]));
 
@@ -332,6 +336,7 @@ fn resources_round_trip() {
             line_width: Some(0.5),
             stroke: Some(Color::Rgb(255, 0, 0)),
             fill: Some(Color::Rgb(0, 0, 255)),
+            dash: None,
         },
     );
 
@@ -419,6 +424,7 @@ fn image_object_round_trips() {
             },
             ctm: None,
             image: ImageId::new("img1"),
+            clip: None,
         })],
     }]));
     doc.resources
@@ -496,6 +502,7 @@ fn resource_heavy_doc() -> OfdDocument {
                 line_width: Some(0.1 * i as f64),
                 stroke: None,
                 fill: None,
+                dash: None,
             },
         );
     }
@@ -753,6 +760,7 @@ fn layer_raw_children_interleave_in_write() {
                 stroke_enabled: None,
                 fill_enabled: None,
                 raw_attrs: Vec::new(),
+                clip: None,
             }),
             PageObject::Path(PathObject {
                 id: ObjectId::new("p2"),
@@ -773,6 +781,7 @@ fn layer_raw_children_interleave_in_write() {
                 stroke_enabled: None,
                 fill_enabled: None,
                 raw_attrs: Vec::new(),
+                clip: None,
             }),
         ],
         raw_children: vec![rofd_dom::RawFragment {
@@ -817,6 +826,7 @@ fn object_raw_attrs_reemitted() {
                 y: 5.0,
             }],
             draw_param: None,
+            clip: None,
             raw_attrs: vec![("ReadOrder".into(), "1".into())],
         })],
         raw_children: Vec::new(),
@@ -1250,6 +1260,7 @@ fn res_locs_are_element_text_standard_form() {
             line_width: Some(0.5),
             stroke: None,
             fill: None,
+            dash: None,
         },
     );
 
@@ -1287,4 +1298,164 @@ fn res_locs_are_element_text_standard_form() {
     assert!(has_entry(&bytes, "Doc_0/Res/Font_4.ttf"));
     assert!(has_entry(&bytes, "Doc_0/Res/Img_img1.png"));
     assert_round_trip(&doc);
+}
+
+#[test]
+fn clip_on_objects_and_dash_on_draw_param_round_trip() {
+    // GB/T 33190: objects (Text/Path/Image) carry an optional <ofd:Clip>
+    // child (its AbbreviatedData clips the object's rendering), and
+    // Ct_DrawParam carries DashPattern/DashOffset dash attributes
+    // (spec 2026-11-12-ofd-export D14). Both must survive the full write.
+    let clip = PathData {
+        commands: vec![
+            PathCommand::M(10.0, 10.0),
+            PathCommand::L(100.0, 10.0),
+            PathCommand::L(100.0, 50.0),
+            PathCommand::Z,
+        ],
+    };
+    let mut doc = OfdDocument::default();
+    doc.pages.push(page_with(vec![Layer {
+        raw_attrs: Vec::new(),
+        raw_children: Vec::new(),
+        layer_type: LayerType::Body,
+        objects: vec![
+            PageObject::Text(TextObject {
+                raw_attrs: Vec::new(),
+                id: ObjectId::new("t1"),
+                boundary: Rect {
+                    x: 10.0,
+                    y: 10.0,
+                    w: 90.0,
+                    h: 40.0,
+                },
+                ctm: None,
+                font: FontId::new("4"),
+                size: 4.0,
+                fill: Some(Color::Rgb(0, 0, 0)),
+                codes: vec![TextCode {
+                    glyph_ids: vec![],
+                    // Non-zero advances: an empty deltas vec is written with
+                    // no DeltaX attribute and re-parsed as all-zero per-char
+                    // deltas (7 chars), never as empty.
+                    deltas: vec![(2.0, 0.0); 7],
+                    text: "clipped".into(),
+                    x: 12.0,
+                    y: 20.0,
+                }],
+                draw_param: None,
+                clip: Some(clip.clone()),
+            }),
+            PageObject::Path(PathObject {
+                raw_attrs: Vec::new(),
+                id: ObjectId::new("p1"),
+                boundary: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 200.0,
+                    h: 10.0,
+                },
+                ctm: None,
+                fill: None,
+                stroke: Some(Color::Rgb(0, 0, 255)),
+                line_width: 0.35,
+                data: PathData {
+                    commands: vec![PathCommand::M(0.0, 5.0), PathCommand::L(200.0, 5.0)],
+                },
+                draw_param: Some(DrawParamId::new("dp1")),
+                stroke_enabled: Some(true),
+                fill_enabled: None,
+                clip: Some(clip.clone()),
+            }),
+            PageObject::Image(ImageObject {
+                raw_attrs: Vec::new(),
+                id: ObjectId::new("i1"),
+                boundary: Rect {
+                    x: 20.0,
+                    y: 20.0,
+                    w: 50.0,
+                    h: 50.0,
+                },
+                ctm: None,
+                image: ImageId::new("img1"),
+                clip: Some(clip),
+            }),
+        ],
+    }]));
+    doc.resources
+        .images
+        .insert(ImageId::new("img1"), Arc::new(PNG_MAGIC.to_vec()));
+    doc.resources.draw_params.insert(
+        DrawParamId::new("dp1"),
+        DrawParam {
+            line_width: None,
+            stroke: None,
+            fill: None,
+            dash: Some(DashSpec {
+                pattern: vec![4.0, 3.0],
+                offset: 0.0,
+            }),
+        },
+    );
+
+    // Model round-trip (write -> parse -> equality) plus wire-form pins.
+    let back = assert_round_trip(&doc);
+    let page = &back.pages[0];
+    let objects = &page.layers[0].objects;
+    assert_eq!(objects.len(), 3);
+    match &objects[0] {
+        PageObject::Text(t) => assert!(
+            t.clip.is_some(),
+            "TextObject clip must survive the round trip"
+        ),
+        other => panic!("expected TextObject, got {other:?}"),
+    }
+    match &objects[1] {
+        PageObject::Path(p) => {
+            assert!(p.clip.is_some(), "PathObject clip must survive");
+            assert_eq!(p.draw_param.as_ref().map(|d| d.0.as_str()), Some("dp1"));
+        }
+        other => panic!("expected PathObject, got {other:?}"),
+    }
+    match &objects[2] {
+        PageObject::Image(i) => assert!(
+            i.clip.is_some(),
+            "ImageObject clip must survive the round trip"
+        ),
+        other => panic!("expected ImageObject, got {other:?}"),
+    }
+    let dp = back
+        .resources
+        .draw_params
+        .get(&DrawParamId::new("dp1"))
+        .expect("DrawParam survives");
+    assert_eq!(
+        dp.dash,
+        Some(DashSpec {
+            pattern: vec![4.0, 3.0],
+            offset: 0.0
+        }),
+        "dash pattern must survive the round trip"
+    );
+
+    // Wire form: the Clip child element and the dash attributes.
+    let bytes = write_ofd(&doc).expect("write_ofd");
+    let content = content_xml(&bytes);
+    assert!(
+        content.matches("<ofd:Clip>").count() >= 3,
+        "every clipped object emits a Clip child: {content}"
+    );
+    assert!(
+        content.contains("<ofd:AbbreviatedData>M 10 10 L 100 10 L 100 50 Z"),
+        "clip payload is abbreviated path data: {content}"
+    );
+    let public_xml = read_entry(&bytes, "Doc_0/Res/PublicRes.xml");
+    assert!(
+        public_xml.contains("DashPattern=\"4 3\""),
+        "DashPattern attribute on DrawParam: {public_xml}"
+    );
+    assert!(
+        public_xml.contains("DashOffset=\"0\""),
+        "DashOffset attribute on DrawParam: {public_xml}"
+    );
 }

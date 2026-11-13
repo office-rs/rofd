@@ -47,13 +47,49 @@ pub fn draw_body(
     for layer in &page.layers {
         for obj in &layer.objects {
             match obj {
-                PageObject::Text(t) => draw_text(painter, t, res, fonts, page_origin, zoom),
-                PageObject::Path(p) => draw_path(painter, p, res, page_origin, zoom),
-                PageObject::Image(i) => draw_image_obj(painter, i, res, page_origin, zoom),
+                PageObject::Text(t) => {
+                    draw_with_clip(painter, t.clip.as_ref(), page_origin, zoom, |pt| {
+                        draw_text(pt, t, res, fonts, page_origin, zoom)
+                    })
+                }
+                PageObject::Path(p) => {
+                    draw_with_clip(painter, p.clip.as_ref(), page_origin, zoom, |pt| {
+                        draw_path(pt, p, res, page_origin, zoom)
+                    })
+                }
+                PageObject::Image(i) => {
+                    draw_with_clip(painter, i.clip.as_ref(), page_origin, zoom, |pt| {
+                        draw_image_obj(pt, i, res, page_origin, zoom)
+                    })
+                }
                 // v1: skip composite objects. The caller can emit an OfdWarning
                 // (SkippedObject) for each composite; the drawer just omits them.
                 PageObject::Composite(_) => {}
             }
+        }
+    }
+}
+
+/// Run one object's draws, wrapped in its clip when it carries one (spec
+/// 2026-11-12-ofd-export D14: Word-style table-cell overflow clips). The
+/// clip path is page-local mm, so it is transformed by the page transform
+/// only (origin × zoom); the object's own affine (Boundary × CTM) stays
+/// per-draw inside, exactly as the unclipped path applies it.
+fn draw_with_clip<S>(
+    painter: &mut Painter<Scene>,
+    clip: Option<&rofd_dom::PathData>,
+    page_origin: (f64, f64),
+    zoom: f64,
+    draw: S,
+) where
+    S: FnOnce(&mut Painter<Scene>),
+{
+    match clip {
+        None => draw(painter),
+        Some(data) => {
+            let mut bez = crate::path::path_to_bezpath(data);
+            bez.apply_affine(kurbo::Affine::translate(page_origin) * kurbo::Affine::scale(zoom));
+            painter.with_clip(imaging::ClipRef::fill(bez), draw);
         }
     }
 }
@@ -183,9 +219,15 @@ fn draw_path(
         painter.fill(&bez, to_peniko(c)).transform(affine).draw();
     }
     if let Some(c) = stroke {
-        let stroke = imaging::kurbo::Stroke::new(line_width);
+        let mut style = imaging::kurbo::Stroke::new(line_width);
+        // Dash resolves from the DrawParam only (GB/T Ct_DrawParam carries
+        // DashPattern/DashOffset; the path object itself has no dash form).
+        if let Some(d) = dp.and_then(|d| d.dash.as_ref()) {
+            style.dash_pattern = imaging::kurbo::Dashes::from_slice(&d.pattern);
+            style.dash_offset = d.offset;
+        }
         painter
-            .stroke(&bez, &stroke, to_peniko(c))
+            .stroke(&bez, &style, to_peniko(c))
             .transform(affine)
             .draw();
     }
@@ -288,6 +330,7 @@ mod tests {
                     boundary,
                     ctm,
                     image: ImageId::new("I1"),
+                    clip: None,
                 })],
             }],
             template: None,
@@ -484,6 +527,7 @@ mod tests {
     #[test]
     fn path_object_strokes_into_scene() {
         let path = PathObject {
+            clip: None,
             raw_attrs: Vec::new(),
             id: ObjectId::new("p1"),
             boundary: Rect {
@@ -528,6 +572,7 @@ mod tests {
     #[test]
     fn text_object_shapes_and_draws_into_scene() {
         let text = TextObject {
+            clip: None,
             raw_attrs: Vec::new(),
             id: ObjectId::new("t1"),
             boundary: Rect {
@@ -595,6 +640,7 @@ mod tests {
     #[test]
     fn missing_image_id_skips_silently() {
         let img_obj = rofd_dom::ImageObject {
+            clip: None,
             raw_attrs: Vec::new(),
             id: ObjectId::new("i1"),
             boundary: Rect {
@@ -626,6 +672,7 @@ mod tests {
     #[test]
     fn ctm_applied_per_object() {
         let path = PathObject {
+            clip: None,
             raw_attrs: Vec::new(),
             id: ObjectId::new("p1"),
             boundary: Rect::default(),
@@ -678,6 +725,7 @@ mod tests {
         let png_bytes = Arc::new(buf.into_inner());
 
         let img_obj = rofd_dom::ImageObject {
+            clip: None,
             raw_attrs: Vec::new(),
             id: ObjectId::new("i1"),
             boundary: Rect {
@@ -717,6 +765,7 @@ mod tests {
         let png_bytes = Arc::new(buf.into_inner());
 
         let img_obj = rofd_dom::ImageObject {
+            clip: None,
             raw_attrs: Vec::new(),
             id: ObjectId::new("i1"),
             boundary: Rect {
@@ -753,12 +802,158 @@ mod tests {
         let _ = build(&page, &res, &fonts);
     }
 
+    /// Clip rects recorded in the scene (transform-applied bboxes of every
+    /// pushed fill clip), in command order.
+    fn scene_clips(scene: &Scene) -> Vec<kurbo::Rect> {
+        use imaging::kurbo::Shape as _;
+        use imaging::record::Clip;
+        let mut out = vec![];
+        for cmd in scene.commands() {
+            if let Command::PushClip(id) = cmd {
+                if let Clip::Fill {
+                    transform, shape, ..
+                } = scene.clip(*id)
+                {
+                    let bb = shape.to_path(1e-3).bounding_box();
+                    let p0 = *transform * kurbo::Point::new(bb.x0, bb.y0);
+                    let p1 = *transform * kurbo::Point::new(bb.x1, bb.y1);
+                    out.push(kurbo::Rect::from_points(p0, p1));
+                }
+            }
+        }
+        out
+    }
+
+    /// Dash patterns of dashed stroke draws: (pattern lengths, offset).
+    fn scene_dashes(scene: &Scene) -> Vec<(Vec<f64>, f64)> {
+        let mut out = vec![];
+        for cmd in scene.commands() {
+            if let Command::Draw(id) = cmd {
+                if let Draw::Stroke { stroke, .. } = scene.draw_op(*id) {
+                    if !stroke.dash_pattern.is_empty() {
+                        out.push((stroke.dash_pattern.as_slice().to_vec(), stroke.dash_offset));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn clipped_object_wraps_its_draws_in_a_clip() {
+        // spec 2026-11-12-ofd-export D14: an object carrying <ofd:Clip>
+        // must render with its draws wrapped in a clip (Word-style table
+        // cell overflow). The clip is page-local mm; at page_origin (0,0)
+        // and zoom 1 the recorded clip bbox equals the model's path bbox.
+        let path = PathObject {
+            clip: None,
+            raw_attrs: Vec::new(),
+            id: ObjectId::new("p1"),
+            boundary: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 10.0,
+            },
+            ctm: None,
+            fill: None,
+            stroke: Some(rofd_dom::Color::Rgb(0, 0, 0)),
+            line_width: 0.5,
+            data: PathData {
+                commands: vec![PathCommand::M(0.0, 5.0), PathCommand::L(200.0, 5.0)],
+            },
+            draw_param: None,
+            stroke_enabled: Some(true),
+            fill_enabled: None,
+        };
+        let clipped = PathObject {
+            clip: Some(PathData {
+                commands: vec![
+                    PathCommand::M(10.0, 0.0),
+                    PathCommand::L(90.0, 0.0),
+                    PathCommand::L(90.0, 10.0),
+                    PathCommand::Z,
+                ],
+            }),
+            ..path.clone()
+        };
+        let scene = build(
+            &path_page(clipped),
+            &Resources::default(),
+            &test_font_store(),
+        );
+        let clips = scene_clips(&scene);
+        assert_eq!(clips.len(), 1, "one clip for one clipped object");
+        let r = clips[0];
+        assert!((r.x0 - 10.0).abs() < 1e-3, "x0 = {}", r.x0);
+        assert!((r.x1 - 90.0).abs() < 1e-3, "x1 = {}", r.x1);
+        assert!((r.y0 - 0.0).abs() < 1e-3, "y0 = {}", r.y0);
+        assert!((r.y1 - 10.0).abs() < 1e-3, "y1 = {}", r.y1);
+        // The stroke itself still draws (inside the clip).
+        assert_eq!(scene_strokes(&scene).len(), 1);
+
+        // Unclipped control: same object without a clip records no clip ops.
+        let plain = build(&path_page(path), &Resources::default(), &test_font_store());
+        assert!(
+            scene_clips(&plain).is_empty(),
+            "no clip without a model clip"
+        );
+    }
+
+    #[test]
+    fn dashed_draw_param_strokes_with_dash_pattern() {
+        // spec 2026-11-12-ofd-export D14: a DrawParam with a dash style
+        // must stroke with that dash pattern and offset (Word-style dashed
+        // borders). Dash lives only on DrawParam (GB/T Ct_DrawParam), not
+        // on the path object itself.
+        let path = PathObject {
+            clip: None,
+            raw_attrs: Vec::new(),
+            id: ObjectId::new("p1"),
+            boundary: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 10.0,
+            },
+            ctm: None,
+            fill: None,
+            stroke: None,
+            line_width: 0.0,
+            data: PathData {
+                commands: vec![PathCommand::M(0.0, 5.0), PathCommand::L(100.0, 5.0)],
+            },
+            draw_param: Some(rofd_dom::DrawParamId::new("dp1")),
+            stroke_enabled: Some(true),
+            fill_enabled: None,
+        };
+        let mut res = Resources::default();
+        res.draw_params.insert(
+            rofd_dom::DrawParamId::new("dp1"),
+            rofd_dom::DrawParam {
+                line_width: Some(0.5),
+                stroke: Some(rofd_dom::Color::Rgb(0, 0, 0)),
+                fill: None,
+                dash: Some(rofd_dom::DashSpec {
+                    pattern: vec![4.0, 3.0],
+                    offset: 1.5,
+                }),
+            },
+        );
+        let scene = build(&path_page(path), &res, &test_font_store());
+        let dashes = scene_dashes(&scene);
+        assert_eq!(dashes.len(), 1, "one dashed stroke, got {dashes:?}");
+        assert_eq!(dashes[0].0, vec![4.0, 3.0], "dash pattern");
+        assert_eq!(dashes[0].1, 1.5, "dash offset");
+    }
+
     #[test]
     fn path_draw_param_resolves_color_when_no_inline() {
         // Path with DrawParam="5" but no inline fill/stroke. The DrawParam (in
         // res) supplies the stroke color + line_width, so the path strokes into
         // the scene instead of being skipped.
         let path = PathObject {
+            clip: None,
             raw_attrs: Vec::new(),
             id: ObjectId::new("p1"),
             boundary: Rect {
@@ -797,6 +992,7 @@ mod tests {
                 line_width: Some(2.0),
                 stroke: Some(rofd_dom::Color::Rgb(255, 0, 0)),
                 fill: None,
+                dash: None,
             },
         );
         let fonts = test_font_store();
@@ -814,6 +1010,7 @@ mod tests {
         // being skipped (the old `no stroke color => draw nothing` dropped all
         // table lines, whose producers rely on the spec defaults).
         let path = PathObject {
+            clip: None,
             raw_attrs: Vec::new(),
             id: ObjectId::new("51"),
             boundary: Rect {
@@ -877,6 +1074,7 @@ mod tests {
         // Stroke="false" must win even though 表35 would otherwise default the
         // stroke on.
         let path = PathObject {
+            clip: None,
             raw_attrs: Vec::new(),
             id: ObjectId::new("79"),
             boundary: Rect {
@@ -934,6 +1132,7 @@ mod tests {
         // 表35: Fill 缺省 false。FillColor 子元素存在但 Fill 属性缺失 ->
         // 不填充(与 ofdrw getFill() 缺省 false 一致)。
         let path = PathObject {
+            clip: None,
             raw_attrs: Vec::new(),
             id: ObjectId::new("p1"),
             boundary: Rect {

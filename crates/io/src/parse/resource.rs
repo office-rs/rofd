@@ -1,7 +1,7 @@
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
-use rofd_dom::{DrawParam, DrawParamId, FontId, FontRef, ImageId};
+use rofd_dom::{DashSpec, DrawParam, DrawParamId, FontId, FontRef, ImageId};
 
 use crate::error::OfdError;
 use crate::parse::{attr, parse_color_value};
@@ -96,12 +96,26 @@ pub fn parse_res(xml: &str) -> Result<ParsedRes, OfdError> {
                 b"DrawParam" => {
                     let id = DrawParamId::new(attr(&e, "ID").unwrap_or_default());
                     let line_width = attr(&e, "LineWidth").and_then(|s| s.parse().ok());
+                    // Dash pattern/offset (GB/T 33190 Ct_DrawParam, spec
+                    // 2026-11-12 D14): whitespace-separated mm lengths.
+                    let pattern = attr(&e, "DashPattern").map(|s| {
+                        s.split_whitespace()
+                            .filter_map(|v| v.parse::<f64>().ok())
+                            .collect::<Vec<f64>>()
+                    });
+                    let dash = pattern.filter(|p| !p.is_empty()).map(|pattern| DashSpec {
+                        pattern,
+                        offset: attr(&e, "DashOffset")
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(0.0),
+                    });
                     cur_dp = Some((
                         id,
                         DrawParam {
                             line_width,
                             stroke: None,
                             fill: None,
+                            dash,
                         },
                     ));
                 }
