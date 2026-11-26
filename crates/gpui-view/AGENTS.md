@@ -22,3 +22,9 @@ the IME bridge + the print-dialog state machine / discover-only services.
 - Pins gpui-pre `=0.3.10` / gpui-kit `=0.8.1` — **batch-bump only, never
   singly** (docs/agents/workflow.md §pinned dependencies).
 - Print manual test: `cargo run -p gpui-app --example gpui_print_to_file`.
+- Seal placement (spec 2026-11-23 §11, docs/agents/sign.md):
+  `GpuiOfdHandle::begin_seal_placement` / `cancel_seal_placement` /
+  `seal_placement_active`; the click and the cancellation arrive as
+  `OfdGpuiEvent::SealPlaced(SealPlacement)` / `SealPlacementCancelled`
+  through the event queue. The adapter does not depend on `rofd-sign` — the
+  host signs.

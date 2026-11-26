@@ -17,15 +17,30 @@ imaging = { workspace = true }
 # the native backends join through the `print-backend` feature below.
 office-rs-print = { workspace = true }
 serde = { workspace = true }
+# Signing from the component (spec 2026-11-23 §17.11): OfdComponent::sign
+# and its two-phase form. Optional - see the `sign` feature.
+rofd-sign = { workspace = true, optional = true }
 
 [features]
 default = ["print-backend"]
 print-backend = ["office-rs-print/backend"]
+# The component signs and verifies the document that is open (spec
+# 2026-11-23 §17.13): `OfdComponent::sign`, `sign_pfx`, `verify_signatures`,
+# `sign_refusal`, and the two-phase `prepare_sign` / `finish_sign`. Off by
+# default: only a host that signs needs rofd-sign, and the editor kernel -
+# the convert line and its bindings included - does not make every user
+# compile the cryptography for it.
+sign = ["dep:rofd-sign"]
 
 [dev-dependencies]
 # Migrated sample_drag_select parses the real fixture and builds points.
 rofd-io = { workspace = true }
 kurbo = { workspace = true }
+# Seal-placement tests encode a PNG for the preview; nothing in the library
+# encodes images.
+image = { workspace = true }
+# The signing tests sign with the test CA.
+rofd-sign = { workspace = true, features = ["test-ca"] }
 
 # Monotonic animation clock for the wasm target (blink deadline). See the
 # matching entry in the root Cargo.toml for why web-time and not std.

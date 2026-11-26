@@ -46,6 +46,34 @@ pub fn parse_doc_root(ofd_xml: &str) -> Result<String, OfdError> {
     })
 }
 
+/// Extract the `<Signatures>` loc from OFD.xml's DocBody, when declared.
+///
+/// Matches the local name only, so both the `ofd:` prefix and a default
+/// namespace work. Returns the trimmed element text; an empty text still
+/// counts as declared (the element is what the preserving save keys on).
+pub fn parse_signatures_loc(ofd_xml: &str) -> Option<String> {
+    let mut reader = Reader::from_str(ofd_xml);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut in_signatures = false;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"Signatures" => {
+                in_signatures = true
+            }
+            Ok(Event::Empty(_)) => {}
+            Ok(Event::Text(e)) if in_signatures => {
+                let text = e.unescape().map(|c| c.into_owned()).unwrap_or_default();
+                return Some(text.trim().to_owned());
+            }
+            Ok(Event::End(_)) => in_signatures = false,
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Extract DocInfo (DocID/Title/Author/CreationDate/LastModDate) from OFD.xml.
 ///
 /// Walks `<ofd:DocInfo>` children, tracking the currently-open element name so

@@ -23,3 +23,30 @@ npm run smoke:nogpu # no-GPU smoke (headless Chrome --disable-gpu must land in t
 - Transitional dep: the SDK's `file:` font package needs a sibling checkout
   of `D:/code/fonts` (switch to `^1.0.0` once the npm package ships, then
   drop this note).
+- Signing line (spec 2026-11-23 §13, docs/agents/sign.md): `src/sign/` —
+  the dialog's pure decisions (`signDialogState.ts`, `signatureStatus.ts`),
+  the IndexedDB certificate store (`certStore.ts`), the built-in seal
+  pictures (`public/seals/`, drawn by
+  `crates/sign/examples/gen_builtin_seals.rs`), `SignDialog.vue` /
+  `SignatureDetail.vue`. `App.vue` owns the flow: verify on open, the
+  pre-save check in `save()`, and signing (`signDocument`): `ofd.isSignBlocked()`
+  is asked first (the file cannot take the annotations being edited), then
+  `ofd.sign(pfx, password, options)` — one call; the signature goes into
+  the document that is open, nothing is loaded again, so the view, the
+  selection and the undo history stay (spec §17.11) — and nothing is
+  written (the status bar shows 签章未保存) until the user saves — M13 as
+  revised on 2026-11-24. `save()` is an ordinary preserving save: the
+  signature already sits in the package the document carries. Verifying is
+  of the document that is open (`verifyDocument` → `ofd.verifySignatures()`,
+  spec §17.13): on open, after a save, and from the 验签 button and the
+  status chip (`openSignatureDetail`) — saved or not, the status bar speaks
+  about the current document. File bytes are verified only in the pre-save
+  check, over what a save would write (`verifySignatures(bytes)` +
+  `newlyInvalidated`, both from the SDK; the host has no copy of them).
+  `e2e/sign.spec.ts` drives the real wasm on the WebGPU and the CPU path,
+  including the signing dialog; it guards what native tests cannot see.
+  Rebuild the wasm (`npm run build:sdk`) before running it. The dev server
+  and the e2e run the SDK's TypeScript source (a Vite alias), but `vue-tsc`
+  reads the compiled wrapper in `sdk/dist`: after changing
+  `crates/web-view/sdk/src`, run `npm run build:ts` there, or `vue-tsc`
+  reports members that exist.

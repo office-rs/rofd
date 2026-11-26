@@ -124,7 +124,7 @@ fn sample_ofd_parses_all_14_annotation_types() {
     // model (write fidelity, spec 2026-11-11 D2).
     let saved = rofd_io::write_ofd_with_text_layout(
         &report.document,
-        Some(&report.package),
+        Some(report.document.package.as_ref().expect("package")),
         &rofd_dom::TextLayoutHints::new(),
     )
     .expect("write succeeds");

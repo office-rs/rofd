@@ -171,3 +171,46 @@ fn delete_annotation_reports_existence(cx: &mut TestAppContext) {
     );
     assert!(!cx.update(|cx| handle.delete_annotation(AnnotationId::new("nope"), cx)));
 }
+
+// ---- seal placement (spec 2026-11-23 §11) ----
+
+fn seal_png() -> Arc<Vec<u8>> {
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::from_pixel(4, 4, image::Rgba([200, 30, 30, 255]))
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .expect("PNG");
+    Arc::new(bytes.into_inner())
+}
+
+#[gpui::test]
+fn handle_begin_and_cancel_seal_placement(cx: &mut TestAppContext) {
+    use rofd_component::SealPreview;
+    let handle = handle_with(cx, |view| {
+        view.component.load_document(page_doc());
+    });
+    assert!(!cx.update(|cx| handle.seal_placement_active(cx)));
+
+    let preview = SealPreview {
+        png: seal_png(),
+        width_mm: 40.0,
+        height_mm: 40.0,
+    };
+    assert!(cx.update(|cx| handle.begin_seal_placement(preview.clone(), cx)));
+    assert!(cx.update(|cx| handle.seal_placement_active(cx)));
+
+    cx.update(|cx| handle.cancel_seal_placement(cx));
+    assert!(!cx.update(|cx| handle.seal_placement_active(cx)));
+
+    // A picture that cannot be decoded is refused: the state is not entered.
+    let undecodable = SealPreview {
+        png: Arc::new(b"not a png".to_vec()),
+        width_mm: 40.0,
+        height_mm: 40.0,
+    };
+    assert!(!cx.update(|cx| handle.begin_seal_placement(undecodable, cx)));
+    assert!(!cx.update(|cx| handle.seal_placement_active(cx)));
+
+    // Cancelling when nothing is placed is harmless.
+    cx.update(|cx| handle.cancel_seal_placement(cx));
+    assert!(!cx.update(|cx| handle.seal_placement_active(cx)));
+}

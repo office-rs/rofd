@@ -18,6 +18,7 @@ mod host;
 mod print_dialog;
 mod sessions;
 mod shell;
+mod signing;
 
 use shell::ExitFullscreen;
 

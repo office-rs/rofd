@@ -3,7 +3,8 @@
 > When to read: any task touching annotation tools, text layout, rich text,
 > selection, IME, or the format panel. Authoritative specs:
 > `2026-11-09-annotation-text-wrap`, `2026-11-10-annotation-format-panel`,
-> `2026-11-10-annotation-rich-text`.
+> `2026-11-10-annotation-rich-text`. The seal placement state and what a
+> save does on a signed document: [sign.md](sign.md).
 
 The kernel lives in `rofd-component` (`OfdComponent`) + `rofd-editor` +
 `rofd-render`; the body is read-only and annotations are the only mutable
@@ -66,6 +67,33 @@ the Hand tool still move the box** (not select text).
   source and rofd reads neither — the drop list, see [io.md](io.md)).
 - Reopening restores the logical text from `Remark`; widening reflows
   (flowed layout, not fixed-geometry replay).
+- A save keeps the original package and rewrites only the annotation
+  entries ([io.md](io.md#preserving-save-spec-2026-11-23)), so annotations
+  can still be added to a signed document.
+
+## IDs on a signed document (spec 2026-11-23 M14)
+
+Signing raises an unsigned document's `MaxUnitID` by 65 536 — the ID
+reserve — because Document.xml must not change afterwards. On a document
+that declares signatures `create_annotation` therefore numbers from the
+highest known ID upward and leaves `max_unit_id` alone (it is a ceiling
+now, not the highest ID in use); on an unsigned one from `max_unit_id + 1`
+as before. A document signed by another tool has no reserve: its new IDs
+run above `MaxUnitID` (known limitation, spec W5b). "Highest known"
+means every ID of the document: page objects, page IDs, document-level
+passthrough fragments, resource IDs and annotation IDs
+(`OfdDocument::highest_known_object_id`) — a page with no object still has
+an ID, and an ID missed there is an ID two objects share.
+
+## Seal placement state (spec 2026-11-23 §11)
+
+`begin_seal_placement(preview) -> bool` enters a modal state in which the
+next left click on a page reports `SealPlacement { page_index, page_id,
+boundary }` (page millimetres) through `on_seal_placed`; Esc or the right
+button reports `on_seal_placement_cancelled`; a document swap ends it
+silently. While it lasts nothing can be selected, edited or typed. The
+component only reports the position — signing is the host's job
+([sign.md](sign.md)).
 
 ## Format panel (spec 2026-11-10)
 

@@ -231,7 +231,7 @@ fn surgical_save_max_unit_id_covers_minted_object_ids() {
     let report = rofd_io::parse_ofd(&original).unwrap();
     let saved = rofd_io::write_ofd_with_text_layout(
         &report.document,
-        Some(&report.package),
+        Some(report.document.package.as_ref().expect("package")),
         &rofd_dom::TextLayoutHints::new(),
     )
     .unwrap();

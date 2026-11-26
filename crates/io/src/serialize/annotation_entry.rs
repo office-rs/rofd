@@ -6,18 +6,32 @@
 
 use rofd_dom::PageId;
 
+use crate::serialize::annotation::xml_escape;
+
 /// Serialize the Annotations.xml entry file.
 ///
 /// `pages`: list of `(page_id, page_index)` pairs for pages that have
 /// annotations, in document order. The `FileLoc` for each is
 /// `Page_{index}/Annotation.xml` (relative to the entry file's directory).
 pub fn serialize_annotations_entry(pages: &[(PageId, usize)]) -> String {
+    let listed: Vec<(PageId, String)> = pages
+        .iter()
+        .map(|(pid, idx)| (pid.clone(), format!("Page_{idx}/Annotation.xml")))
+        .collect();
+    serialize_annotations_entry_with(&listed)
+}
+
+/// Serialize the entry file with each page's `FileLoc` given explicitly
+/// (relative to the entry file's own directory). The preserving save uses
+/// this to keep the original file names.
+pub fn serialize_annotations_entry_with(pages: &[(PageId, String)]) -> String {
     let mut s = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     s.push_str("<ofd:Annotations xmlns:ofd=\"http://www.ofdspec.org/2016\">");
-    for (pid, idx) in pages {
+    for (pid, file_loc) in pages {
         s.push_str(&format!(
-            "<ofd:Page PageID=\"{}\"><ofd:FileLoc>Page_{}/Annotation.xml</ofd:FileLoc></ofd:Page>",
-            pid.0, idx
+            "<ofd:Page PageID=\"{}\"><ofd:FileLoc>{}</ofd:FileLoc></ofd:Page>",
+            xml_escape(&pid.0),
+            xml_escape(file_loc)
         ));
     }
     s.push_str("</ofd:Annotations>");

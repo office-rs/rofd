@@ -20,5 +20,8 @@ pub mod print_services;
 pub mod view;
 
 pub use events_surface::OfdGpuiEvent;
+// The seal placement types, so a host needs no direct rofd-component
+// dependency to enter the state and read the event.
 pub use handle::GpuiOfdHandle;
+pub use rofd_component::{SealPlacement, SealPreview};
 pub use view::OfdGpuiView;

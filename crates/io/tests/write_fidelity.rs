@@ -638,6 +638,43 @@ fn object_id_seed_scans_raw_fragment_ids() {
     );
 }
 
+#[test]
+fn preserving_id_seed_ignores_reserve_on_signed_documents() {
+    use rofd_dom::{Annotation, AnnotationId, AnnotationKind, AnnotationPayload, NoteIcon};
+    let mut doc = OfdDocument {
+        max_unit_id: 65_545,
+        ..OfdDocument::default()
+    };
+    doc.annotations.insert(Annotation {
+        id: AnnotationId::from_int(9),
+        kind: AnnotationKind::Note,
+        page: PageId::new("1"),
+        creator: "tester".into(),
+        created: 0,
+        modified: 0,
+        reply_to: None,
+        payload: AnnotationPayload::Note {
+            rect: Rect::default(),
+            color: Color::Rgb(0, 0, 0),
+            content: "note".into(),
+            icon: NoteIcon::Note,
+        },
+    });
+    let seed = rofd_io::serialize::annotation::preserving_id_seed;
+    assert_eq!(seed(&doc), 65_545, "unsigned: the seed is object_id_seed");
+    doc.signatures.declared = true;
+    assert_eq!(
+        seed(&doc),
+        9,
+        "signed: MaxUnitID is the reserve ceiling, not the highest id in use"
+    );
+    assert_eq!(
+        rofd_io::serialize::annotation::object_id_seed(&doc),
+        65_545,
+        "object_id_seed keeps its meaning"
+    );
+}
+
 // ---- Document-level passthrough capture (spec 2026-11-11 §6.2, Task 7) ----
 
 fn custom_package(
@@ -712,7 +749,7 @@ fn consumed_set_records_modeled_entries() {
         ],
     );
     let report = parse_ofd(&bytes).expect("parse");
-    let consumed = &report.package.consumed;
+    let consumed = &report.document.package.as_ref().expect("package").consumed;
     for expected in [
         "OFD.xml",
         "Doc_0/Document.xml",
@@ -952,7 +989,7 @@ fn unconsumed_entries_transport_verbatim() {
     .expect("parse");
     let out = rofd_io::write_ofd_with_text_layout(
         &report.document,
-        Some(&report.package),
+        Some(report.document.package.as_ref().expect("package")),
         &rofd_dom::TextLayoutHints::new(),
     )
     .expect("write");
@@ -999,12 +1036,12 @@ fn nonstandard_entry_names_canonicalized_no_duplicates() {
     );
     let out = rofd_io::write_ofd_with_text_layout(
         &report.document,
-        Some(&report.package),
+        Some(report.document.package.as_ref().expect("package")),
         &rofd_dom::TextLayoutHints::new(),
     )
     .expect("write");
 
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&out)).unwrap();
+    let zip = zip::ZipArchive::new(std::io::Cursor::new(&out)).unwrap();
     let names: Vec<&str> = zip.file_names().collect();
     let mut sorted = names.clone();
     sorted.sort_unstable();
@@ -1189,35 +1226,38 @@ fn diag_sample_roundtrip_keepall() {
     let report = parse_ofd(&bytes).expect("parse");
     let out = rofd_io::write_ofd_with_text_layout(
         &report.document,
-        Some(&report.package),
+        Some(report.document.package.as_ref().expect("package")),
         &rofd_dom::TextLayoutHints::new(),
     )
     .expect("write");
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&out)).unwrap();
+    let zip = zip::ZipArchive::new(std::io::Cursor::new(&out)).unwrap();
     let names: Vec<&str> = zip.file_names().collect();
     let src = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
     let src_names: Vec<String> = src.file_names().map(|s| s.to_string()).collect();
     // unconsumed entries transported?
     for n in &src_names {
-        if report.package.consumed.contains(n.as_str()) {
+        if report
+            .document
+            .package
+            .as_ref()
+            .expect("package")
+            .consumed
+            .contains(n.as_str())
+        {
             continue;
         }
         assert!(
             names.contains(&n.as_str()),
             "unconsumed {n} must transport; consumed={:?}; names={names:?}",
-            report.package.consumed
+            report.document.package.as_ref().expect("package").consumed
         );
     }
     // all declared font ids survive?
     let mut zip2 = zip::ZipArchive::new(std::io::Cursor::new(&out)).unwrap();
-    let res_xml = String::from_utf8(
-        zip2.by_name("Doc_0/Res/PublicRes.xml")
-            .unwrap()
-            .bytes()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap(),
-    )
-    .unwrap();
+    let mut entry = zip2.by_name("Doc_0/Res/PublicRes.xml").unwrap();
+    let mut raw = Vec::new();
+    entry.read_to_end(&mut raw).unwrap();
+    let res_xml = String::from_utf8(raw).unwrap();
     for fid in report.document.resources.fonts.keys() {
         assert!(
             res_xml.contains(&format!("ID=\"{}\"", fid.0)),

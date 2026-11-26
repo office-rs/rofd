@@ -179,3 +179,94 @@ fn warnings_route_to_queue() {
     component.fire_warnings(std::slice::from_ref(&warning));
     assert_eq!(queue.drain(), vec![OfdGpuiEvent::Warned(vec![warning])]);
 }
+
+// ---- seal placement (spec 2026-11-23 §11) ----
+
+/// A small opaque PNG for the seal preview.
+fn seal_png() -> Arc<Vec<u8>> {
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::from_pixel(4, 4, image::Rgba([200, 30, 30, 255]))
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .expect("PNG");
+    Arc::new(bytes.into_inner())
+}
+
+fn seal_preview() -> rofd_component::SealPreview {
+    rofd_component::SealPreview {
+        png: seal_png(),
+        width_mm: 40.0,
+        height_mm: 40.0,
+    }
+}
+
+fn click(x: f64, y: f64) -> ViewEvent {
+    ViewEvent::PointerDown {
+        button: MouseButton::Left,
+        x,
+        y,
+        modifiers: Modifiers::default(),
+        click_count: 1,
+    }
+}
+
+#[test]
+fn seal_placement_events_reach_the_queue() {
+    // Zoom 1 and no gap, so a click at (100, 100) is 100 mm into the page.
+    let mut component = OfdComponent::new_native(OfdConfig {
+        page_gap: 0.0,
+        ..OfdConfig::new(Arc::new(vec![])).with_zoom(1.0)
+    });
+    let queue = EventQueue::new();
+    install(&mut component, &queue);
+    component.load_document(doc_with_page(200.0, 200.0));
+    component.set_viewport_size(200.0, 200.0);
+    let _ = queue.drain();
+
+    assert!(component.begin_seal_placement(seal_preview()));
+    component.handle_event(&ViewEvent::PointerMove { x: 100.0, y: 100.0 });
+    assert!(
+        queue.drain().is_empty(),
+        "moving the pointer reports nothing"
+    );
+
+    // The click that places the seal: one event, with page and boundary.
+    component.handle_event(&click(100.0, 100.0));
+    assert_eq!(
+        queue.drain(),
+        vec![OfdGpuiEvent::SealPlaced(rofd_component::SealPlacement {
+            page_index: 0,
+            page_id: PageId::new("P0"),
+            boundary: Rect {
+                x: 80.0,
+                y: 80.0,
+                w: 40.0,
+                h: 40.0
+            },
+        })]
+    );
+
+    // Esc cancels and reports it.
+    component.begin_seal_placement(seal_preview());
+    component.handle_event(&ViewEvent::KeyDown {
+        key: Key::Escape,
+        modifiers: Modifiers::default(),
+    });
+    assert_eq!(queue.drain(), vec![OfdGpuiEvent::SealPlacementCancelled]);
+
+    // The right button cancels too, and opens no context menu.
+    component.begin_seal_placement(seal_preview());
+    component.handle_event(&ViewEvent::PointerDown {
+        button: MouseButton::Right,
+        x: 100.0,
+        y: 100.0,
+        modifiers: Modifiers::default(),
+        click_count: 1,
+    });
+    assert_eq!(queue.drain(), vec![OfdGpuiEvent::SealPlacementCancelled]);
+
+    // A document swap ends the state without reporting anything.
+    component.begin_seal_placement(seal_preview());
+    component.load_document(doc_with_page(200.0, 200.0));
+    let _ = queue.drain();
+    assert!(!component.seal_placement_active());
+}

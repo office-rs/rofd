@@ -16,8 +16,18 @@ impl Editor {
         page: PageId,
         payload: AnnotationPayload,
     ) -> AnnotationId {
-        let n = self.document.max_unit_id + 1;
-        self.document.max_unit_id = n;
+        // A signed document can no longer change Document.xml, so its new
+        // ids stay under the reserve written at signing time instead of
+        // pushing MaxUnitID up (spec 2026-11-23 M14).
+        let signed = self.document.signatures.declared;
+        let n = if signed {
+            self.document.highest_known_object_id() + 1
+        } else {
+            self.document.max_unit_id + 1
+        };
+        if !signed {
+            self.document.max_unit_id = n;
+        }
         let id = AnnotationId::from_int(n);
         let ann = Annotation {
             id: id.clone(),
@@ -208,5 +218,47 @@ mod tests {
         assert_ne!(a, b, "ids 唯一");
         assert_eq!(a.0, "101");
         assert_eq!(b.0, "102");
+    }
+
+    #[test]
+    fn create_annotation_on_signed_document_allocates_above_known_ids_and_keeps_max_unit_id() {
+        // 65_545 is the reserve written into Document.xml at signing time;
+        // Document.xml can no longer change, so new ids must fit under it.
+        let mut e = editor_with_max_id(65_545);
+        e.document.signatures.declared = true;
+        e.document.annotations.insert(rofd_dom::Annotation {
+            id: rofd_dom::AnnotationId::from_int(9),
+            kind: AnnotationKind::Note,
+            page: PageId::new("1"),
+            creator: "tester".into(),
+            created: 0,
+            modified: 0,
+            reply_to: None,
+            payload: AnnotationPayload::Note {
+                rect: Rect::default(),
+                color: Color::Rgb(0, 0, 0),
+                content: "earlier".into(),
+                icon: NoteIcon::Note,
+            },
+        });
+        let note = |content: &str| AnnotationPayload::Note {
+            rect: Rect::default(),
+            color: Color::Rgb(0, 0, 0),
+            content: content.to_owned(),
+            icon: NoteIcon::Note,
+        };
+        let first = e.create_annotation(AnnotationKind::Note, PageId::new("1"), note("first"));
+        assert_eq!(
+            first.0, "10",
+            "a signed document allocates above the highest known id"
+        );
+        assert_eq!(
+            e.document().max_unit_id,
+            65_545,
+            "the reserve ceiling is left alone"
+        );
+        let second = e.create_annotation(AnnotationKind::Note, PageId::new("1"), note("second"));
+        assert_eq!(second.0, "11", "ids stay unique and consecutive");
+        assert_eq!(e.document().max_unit_id, 65_545);
     }
 }

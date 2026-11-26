@@ -363,6 +363,9 @@ pub struct OfdComponent {
     /// `notify_document_change`); `begin_print` snapshots it so the detached
     /// `PrintSession` can report `is_stale`.
     print_gen: Arc<AtomicU64>,
+    /// The modal seal placement state (spec 2026-11-23 §11), while a seal is
+    /// waiting for the click that says where it goes. None otherwise.
+    pub(crate) seal_placement: Option<crate::seal_placement::SealPlacementState>,
 }
 
 /// Host save snapshot (spec 2026-11-09 §1.5): the document to serialize plus
@@ -433,6 +436,7 @@ impl OfdComponent {
             caret_line: None,
             body_font_req: FontRequirements::default(),
             print_gen: Arc::new(AtomicU64::new(0)),
+            seal_placement: None,
         }
     }
 
@@ -497,6 +501,9 @@ impl OfdComponent {
     }
 
     pub fn load_document(&mut self, doc: OfdDocument) {
+        // A seal being placed belonged to the previous document: end it
+        // without reporting anything.
+        self.drop_seal_placement();
         // Clear any in-progress drag (Pan/Move/Resize) from the previous
         // document; its geometry is meaningless after the swap.
         self.drag = None;
@@ -530,6 +537,7 @@ impl OfdComponent {
     }
 
     pub fn new_document(&mut self) {
+        self.drop_seal_placement();
         self.drag = None;
         self.preedit = None;
         // A new document starts at the top (zoom is intentionally kept - the
@@ -578,6 +586,26 @@ impl OfdComponent {
 
     pub fn document(&self) -> &OfdDocument {
         self.editor.document()
+    }
+
+    /// The seal picture of every signature of the document, in the order of
+    /// the signature list - the order the verification reports have. `None`
+    /// for a digital signature, or a picture that could not be read. For a
+    /// host's signature detail view; the pictures are the ones the model
+    /// holds, not copies.
+    pub fn seal_pictures(&self) -> Vec<Option<Arc<Vec<u8>>>> {
+        self.editor
+            .document()
+            .signatures
+            .items
+            .iter()
+            .map(|signature| {
+                signature
+                    .seal_picture
+                    .as_ref()
+                    .map(|picture| Arc::clone(&picture.png))
+            })
+            .collect()
     }
 
     /// Snapshot for saving (spec 2026-11-09 §1.5): clone the document, then
@@ -1016,6 +1044,10 @@ impl OfdComponent {
     /// its text being edited. Public so a host can render custom tooltip UI
     /// from the same state (poll instead of callback, spec §2.2).
     pub fn tooltip_lines(&self) -> Option<Vec<String>> {
+        // No tooltip while a seal is being placed (spec 2026-11-23 §11).
+        if self.seal_placement.is_some() {
+            return None;
+        }
         let hover = self.hover.as_ref()?;
         if self.drag.is_some() {
             return None;
@@ -1085,7 +1117,7 @@ impl OfdComponent {
 
     /// Update the pointer-cursor UI state and fire `on_pointer_cursor` when it
     /// actually changed (mirrors the zoom-change guard).
-    fn set_pointer_cursor(&mut self, cursor: PointerCursor) {
+    pub(crate) fn set_pointer_cursor(&mut self, cursor: PointerCursor) {
         if self.pointer_cursor != cursor {
             self.pointer_cursor = cursor;
             if let Some(cb) = &self.callbacks.on_pointer_cursor {
@@ -1095,7 +1127,7 @@ impl OfdComponent {
     }
 
     /// Cursor implied by the current tool alone (scrollbar hover overrides it).
-    fn set_tool_pointer_cursor(&mut self) {
+    pub(crate) fn set_tool_pointer_cursor(&mut self) {
         let cursor = match self.tool {
             Tool::Hand => PointerCursor::Grab,
             // Text tool cursor varies with the hover target; blank area = arrow.
@@ -1423,7 +1455,10 @@ impl OfdComponent {
                     && e.body_revision == doc.body_revision
             });
             if !fresh {
-                let scene = rofd_render::page_body_scene(page, &doc.resources, &fonts, vp.zoom);
+                // Body first, then the signature seals: both are page
+                // content fixed in the file, so they share the page cache.
+                let mut scene = rofd_render::page_body_scene(page, &doc.resources, &fonts, vp.zoom);
+                rofd_render::draw_seals(&mut scene, doc, &page.id, vp.zoom);
                 self.page_scenes.insert(
                     page.id.clone(),
                     PageSceneEntry {
@@ -1521,6 +1556,13 @@ impl OfdComponent {
         }
         // Preedit preview is inline in the page scene (draw_annotations): it
         // shapes the composition into the text flow, so nothing is painted here.
+        // The seal preview follows the pointer while a seal is being placed.
+        // Scrollbars and the caret paint above it.
+        if let Some(rect) = self.seal_preview_rect() {
+            if let Some(image) = self.seal_preview_image() {
+                crate::seal_placement::paint_seal_preview(&mut overlay, image, rect);
+            }
+        }
         // Hover tooltip paints last - above pages, handles and scrollbars
         // (spec 2026-09-18 §3.3). Skips itself when suppressed/no font.
         if let Some(lines) = self.tooltip_lines() {
@@ -1901,6 +1943,13 @@ impl OfdComponent {
 
     pub fn handle_event(&mut self, event: &crate::event::ViewEvent) -> EventOutcome {
         use crate::event::{MouseButton, ScrollDirection, ViewEvent};
+        // The seal placement state is modal (spec 2026-11-23 §11): it takes
+        // the event, or lets the view-only ones through.
+        if self.seal_placement.is_some() {
+            if let Some(outcome) = self.handle_seal_placement_event(event) {
+                return outcome;
+            }
+        }
         // An in-progress composition must be committed before the next
         // press/key is dispatched, so the gesture acts on the committed
         // document.
@@ -3202,7 +3251,7 @@ impl OfdComponent {
     // and fire `on_change` (the host invalidates caches + repaints). Used
     // directly by the selection-preserving paths (apply_markup, undo, redo)
     // where the body-text selection must survive untouched.
-    fn notify_document_change(&mut self) {
+    pub(crate) fn notify_document_change(&mut self) {
         self.modified = true;
         // Print staleness (spec 2026-10-31 §2.5): every annotation mutation
         // invalidates detached print sessions — the single bump point.

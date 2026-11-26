@@ -73,7 +73,7 @@ fn real_sample_parses_and_surgically_saves() {
     // (signatures/attachments/unknown files) stay byte-identical.
     let saved = rofd_io::write_ofd_with_text_layout(
         &report.document,
-        Some(&report.package),
+        Some(report.document.package.as_ref().expect("package")),
         &rofd_dom::TextLayoutHints::new(),
     )
     .expect("full write succeeds on real sample");
@@ -90,7 +90,14 @@ fn real_sample_parses_and_surgically_saves() {
     let orig_entries = rofd_io::zip_util::read_all_entries(&bytes).expect("read original entries");
     let saved_entries = rofd_io::zip_util::read_all_entries(&saved).expect("read saved entries");
     for (name, data) in &orig_entries {
-        if report.package.consumed.contains(name.as_str()) {
+        if report
+            .document
+            .package
+            .as_ref()
+            .expect("package")
+            .consumed
+            .contains(name.as_str())
+        {
             continue;
         }
         let saved_entry = saved_entries

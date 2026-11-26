@@ -6,7 +6,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-An OFD (GB/T 33190) **view + annotate** editor **library**, written in Rust, dual-platform (native + WASM).
+An OFD (GB/T 33190) **view + annotate + sign** editor **library**, written in Rust, dual-platform (native + WASM).
 
 ---
 
@@ -101,6 +101,61 @@ fn main() -> Result<(), xilem::winit::error::EventLoopError> {
 ```
 
 The editor is a first-class masonry widget: focus, pointer capture, IME sessions, clipboard shortcuts, and ctrl+wheel zoom are handled inside — the host never touches winit. Two channels connect host and editor: component callbacks surface as chainable `.on_change` / `.on_context_menu` / `.on_save_request` / … handlers, and imperative calls (toolbar buttons, programmatic edits) are `Arc<dyn Fn(&mut OfdComponent)>` commands pushed onto a queue the view drains on every rebuild. The full reference implementation (toolbar, context menu, file I/O, zoom) is in [`crates/xilem-app`](crates/xilem-app).
+
+### Signing (`rofd-sign`)
+
+Verify the signatures of a file on opening, and sign it with a certificate
+file; the library never reads the clock and never holds a key. For a file
+that is not in an editor, bytes in, bytes out:
+
+```rust
+use rofd_sign::{sign, verify, PfxSigner, SealImage, SignOptions, VerifyOptions};
+
+let reports = verify(&ofd_bytes, &VerifyOptions::default()); // one per signature
+
+let mut signer = PfxSigner::open(&pfx_bytes, "password")?;
+let signed = sign(&ofd_bytes, &mut signer, &SignOptions {
+    seal: Some(SealImage { png, size_mm: 40.0 }),
+    ..SignOptions::new("2026-11-24 10:30:00") // the signing time, read by the host
+})?;
+```
+
+A signed document can still be annotated: a signature never protects the
+annotation layer (GB/T 48666-2026), and saving keeps every other entry byte
+for byte. On the web the same is `verifySignatures` / `signOfd` in
+`@office-rs/rofd`.
+
+For the document that is open, verify and sign through the component —
+the signature goes into it in place: one call, no second document and no
+reload, so the view, the selection and the undo history stay where they
+are. Nothing is written until the user saves, and that save is an ordinary
+save. The types come with the component:
+
+```rust
+// rofd-component, behind its `sign` feature: the host lends the key and the time.
+use rofd_component::signing::{SealImage, SignOptions, VerifyOptions};
+
+// Verify what is open, saved or not - no save made, no file read.
+let reports = component.verify_signatures(&VerifyOptions::default());
+
+// Sign with a certificate file (or `component.sign(&mut signer, &options)`
+// for a signer of your own); ask `component.sign_refusal()` first.
+let reports = component.sign_pfx(&pfx_bytes, "password", &SignOptions {
+    seal: Some(SealImage { png, size_mm: 40.0 }),
+    ..SignOptions::new("2026-11-24 10:30:00") // the signing time, read by the host
+})?;
+```
+
+The component and the web SDK are the library's two exits and offer the
+same capabilities — under the same names where both take the same thing
+(`verify_signatures` / `ofd.verifySignatures()`, `PreparedSignature`,
+`SignStep`), and paired where the web cannot take a Rust signer:
+`component.sign_pfx(pfx, password, options)` is
+`ofd.sign(pfx, password, options)` (ask `ofd.isSignBlocked()` first), and
+`component.sign(&mut signer, options)` becomes `ofd.prepareSign` + `apply`.
+The table is in `docs/agents/sign.md`. The sample apps (web, xilem, gpui)
+show the full flow — certificate import, seal placement with a click,
+status bar, pre-save check.
 
 ---
 

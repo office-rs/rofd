@@ -6,7 +6,7 @@ license = "Apache-2.0"
 
 [dependencies]
 rofd-xilem-view = { workspace = true }
-rofd-component = { workspace = true }
+rofd-component = { workspace = true, features = ["sign"] }
 rofd-dom = { workspace = true }
 rofd-io = { workspace = true }
 rofd-export = { workspace = true }
@@ -15,6 +15,20 @@ rofd-export = { workspace = true }
 rofd-convert = { workspace = true }
 xilem = { workspace = true }
 rfd = { workspace = true }
+# Electronic-seal and signature line (spec 2026-11-23): the host signs
+# and verifies; the adapter only carries the seal placement state.
+rofd-sign = { workspace = true }
+# Seal pictures: the user's own file is read as any image and offered to
+# the component as PNG.
+image = { workspace = true }
+# The signing time: the HOST reads the clock and formats it for rofd-sign
+# (the library never does). `clock` is a host-only feature.
+chrono = { workspace = true, features = ["clock"] }
 office-rs-print = { workspace = true }
 wgpu = { workspace = true }
 pollster = { workspace = true }
+
+[dev-dependencies]
+# A signing test makes a file another tool signed (protecting the
+# annotation entries), with the test CA.
+rofd-sign = { workspace = true, features = ["test-ca"] }

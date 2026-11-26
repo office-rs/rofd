@@ -18,3 +18,5 @@ dpi = "0.1"
 masonry_testing = { workspace = true }
 # Harness fixtures construct dom models.
 rofd-dom = { workspace = true }
+# The seal-placement harness test encodes a preview picture.
+image = { workspace = true }

@@ -28,13 +28,23 @@
   then green).
 - **Write fidelity is the core test** (must stay green after any io save
   change — see [io.md](io.md)): `crates/io/tests/write_fidelity.rs` +
-  `round_trip.rs`; real samples are `#[ignore]`:
-  `cargo test -p xilem-app --test c2_save -- --ignored`.
+  `round_trip.rs` + the preserving save `preserving_save.rs`; real samples
+  are `#[ignore]`: `cargo test -p xilem-app --test c2_save -- --ignored`.
 - Rendering uses **scene structure assertions** (object counts/types), not
   pixels.
-- The xilem-view headless harness (masonry_testing, 9 cases): typing,
+- The xilem-view headless harness (masonry_testing, 10 cases): typing,
   double-click word select, IME, wheel, ctrl+wheel, pure-horizontal
-  ctrl+wheel, Ctrl+C, window-focus gating, fit-mode commands and exit.
+  ctrl+wheel, Ctrl+C, window-focus gating, fit-mode commands and exit,
+  seal placement click → `SealPlaced`.
+- **Signing** ([sign.md](sign.md)): `cargo test -p rofd-sign` for the
+  crate; `cargo test -p rofd-component --features sign` for the component
+  (its signing module is compiled out without the feature, so the plain
+  workspace run never executes those tests); the failure class only wasm
+  shows (a wall-clock read inside a
+  dependency, a paint the CPU renderer refuses) is covered by the web-app
+  e2e `e2e/sign.spec.ts` alone — run it after touching `rofd-sign` or the
+  seal preview. The independent arbiter is ofdrw's validator
+  (`tools/ofdverify`).
 - convert parity: `crates/convert/tests/parity.rs` pins byte-identical PDF
   output with the editor's export; the four binding demos' acceptance =
   pooled conversion == CLI bytes (one sha256 across five runtimes is on
@@ -53,6 +63,7 @@
 | `napi` / `napi-derive` / `napi-build` | crates.io | `2` (convert-node) |
 | `pyo3` | crates.io | `0.30` (convert-py, abi3-py39) |
 | `krilla` | crates.io | `0.8` (feature `pdf`) |
+| `sm2` / `sm3` | crates.io | `0.14` / `0.5` (rofd-sign; RustCrypto, `sm2` with default features off: arithmetic / dsa / pkcs8 / std / precomputed-tables) |
 | `gpui-pre` / `gpui-pre-platform` | crates.io | `=0.3.10` (zed@08cbb88 snapshot re-publish; the official crates.io gpui 0.2.2 lacks the Windows/IME fixes — do not swap) |
 | `gpui-kit` / `gpui-kit-assets` | crates.io | `=0.8.1` (icons via `with_assets(AllAssets)`) |
 

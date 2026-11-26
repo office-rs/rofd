@@ -21,6 +21,7 @@ pub mod layers;
 pub mod page_raster_cache;
 pub mod path;
 pub mod scrollbar;
+pub mod seal_scene;
 pub mod text;
 pub mod tooltip;
 pub mod viewport;
@@ -54,6 +55,7 @@ pub use scrollbar::{
     ScrollbarVisual, ARROW_LEN, ARROW_STEP_RATIO, SCROLLBAR_THICKNESS, THUMB_INSET, THUMB_MIN_LEN,
     TRACK_PAGE_RATIO,
 };
+pub use seal_scene::{draw_seals, draw_seals_at};
 pub use text::layout_runs;
 pub use text::{normalize_family_key, PICKER_ALIASES};
 pub use text::{

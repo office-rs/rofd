@@ -35,6 +35,23 @@ impl Editor {
         self.history = History::new(100);
     }
 
+    /// A change to the document that is neither an annotation command nor
+    /// another document (spec 2026-11-23 §17.11): a signature appended to the
+    /// package it carries. `revise` gets the document, and what it returns is
+    /// returned. The selection, the text cursor and the history are not
+    /// touched, and no page is invalidated - call [`Self::invalidate_pages`]
+    /// when the content of the pages changed (a seal is page content).
+    pub fn revise_document<T>(&mut self, revise: impl FnOnce(&mut OfdDocument) -> T) -> T {
+        revise(&mut self.document)
+    }
+
+    /// The content of the pages changed: every cached page is stale. The
+    /// page scenes and the CPU fallback's page bitmaps key on the body
+    /// revision.
+    pub fn invalidate_pages(&mut self) {
+        self.document.body_revision += 1;
+    }
+
     /// Caller-supplied author + timestamp. The library never reads a system clock.
     pub fn set_clock(&mut self, author: String, ts: i64) {
         self.author = author;
@@ -227,5 +244,73 @@ mod tests {
         assert_eq!((c.offset, c.preferred_x), (3, Some(4.5)));
         e.set_cursor(AnnotationId::from_int(1), 3);
         assert_eq!(e.text_cursor().unwrap().preferred_x, None);
+    }
+}
+
+#[cfg(test)]
+mod revising_tests {
+    use super::*;
+    use crate::steps::annotation_steps::InsertAnnotationStep;
+    use rofd_dom::{Annotation, AnnotationKind, AnnotationPayload, Color, NoteIcon, PageId, Rect};
+
+    fn note_ann(id: &str) -> Annotation {
+        Annotation {
+            id: AnnotationId::new(id),
+            kind: AnnotationKind::Note,
+            page: PageId::new("P0"),
+            creator: "t".into(),
+            created: 0,
+            modified: 0,
+            reply_to: None,
+            payload: AnnotationPayload::Note {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 1.0,
+                    h: 1.0,
+                },
+                color: Color::Rgb(0, 0, 0),
+                content: "x".into(),
+                icon: NoteIcon::Note,
+            },
+        }
+    }
+
+    #[test]
+    fn revising_keeps_the_selection_the_cursor_and_the_history() {
+        let mut e = Editor::new();
+        let ann = note_ann("21");
+        e.execute_transaction(Transaction {
+            steps: vec![Box::new(InsertAnnotationStep {
+                annotation: ann.clone(),
+            })],
+            selection_before: AnnotationSelection::None,
+            selection_after: AnnotationSelection::Single(ann.id.clone()),
+            text_cursor_before: None,
+            text_cursor_after: None,
+        });
+        e.set_cursor(ann.id.clone(), 2);
+
+        let highest = e.revise_document(|document| document.highest_known_object_id());
+
+        assert_eq!(highest, 21);
+        assert!(e.can_undo());
+        assert_eq!(
+            e.selection().clone(),
+            AnnotationSelection::Single(ann.id.clone())
+        );
+        assert_eq!(e.text_cursor().map(|cursor| cursor.offset), Some(2));
+        assert_eq!(
+            e.document().body_revision,
+            0,
+            "revising alone moves no page"
+        );
+    }
+
+    #[test]
+    fn invalidating_pages_moves_the_body_revision() {
+        let mut e = Editor::new();
+        e.invalidate_pages();
+        assert_eq!(e.document().body_revision, 1);
     }
 }

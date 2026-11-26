@@ -1,0 +1,58 @@
+[package]
+name = "rofd-sign"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.96"
+license = "Apache-2.0"
+authors = ["ravenq"]
+description = "Electronic-seal and signature verification and creation for OFD (GB/T 33190) packages: SES v4 seals, GB/T 35275 digital signatures, SM2/SM3."
+repository = "https://github.com/office-rs/rofd"
+homepage = "https://github.com/office-rs/rofd#readme"
+keywords = ["ofd", "gbt-33190", "signature", "seal", "sm2"]
+categories = ["cryptography", "parser-implementations"]
+readme = "README.md"
+
+[features]
+# The test CA: an SM2 key pair and a self-signed certificate derived from a
+# seed. For tests, examples and manual trials, never a production signing path.
+test-ca = []
+
+[dependencies]
+rofd-io = { workspace = true }
+rofd-dom = { workspace = true }
+# Chinese national cryptography: the SM3 digest and the SM2 DSA (sign and
+# verify only). Pure Rust, so the crate builds for wasm32-unknown-unknown.
+sm3 = { workspace = true }
+sm2 = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = "1"
+base64 = "0.22"
+quick-xml = { workspace = true }
+image = { workspace = true }
+zeroize = "1"
+# PKCS#12 (pfx) certificate files: PBES1, PBES2 and PBMAC1 with the Bouncy Castle
+# presets, which is what Chinese CA tools write. Pure Rust.
+keystore-pkcs12 = "1"
+# The keystore types the PKCS#12 codec works with (password, bags, DER bytes).
+keystore-core = "1"
+# The integrity check of files whose encoding had to be rewritten from BER to
+# DER (ber.rs): the check covers the original bytes, which the codec above can
+# no longer see. Only `MacData::verify_mac` is used; the crate's own PFX reader
+# reads a nonstandard wrapping and is not.
+p12 = "0.6"
+# The ASN.1 reader the integrity-check data is parsed with.
+yasna = "0.5"
+# `p12` depends on getrandom, which does not build for wasm32-unknown-unknown unless
+# its `js` feature is on. Nothing in this crate ever draws a random number.
+getrandom = { version = "0.2", features = ["js"] }
+
+[dev-dependencies]
+# The integration tests use the test CA.
+rofd-sign = { path = ".", features = ["test-ca"] }
+# Key generation for the round-trip tests and the test CA only: the library
+# itself never generates keys.
+sm2 = { workspace = true, features = ["getrandom"] }
+# Tests only: archives with directory entries, which rofd-io's writer does not
+# produce and other tools do.
+zip = { workspace = true }

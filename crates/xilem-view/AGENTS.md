@@ -23,7 +23,7 @@ OfdWidget (masonry Widget)    owns OfdComponent, pending queue, effective focus,
 OfdComponent (rofd-component)
 ```
 
-Nine key contracts:
+Ten key contracts:
 
 1. **Host→widget commands**: `OfdCommand = Arc<dyn Fn(&mut OfdComponent) + Send + Sync>`;
    `OfdCommandQueue = Arc<Mutex<Vec<OfdCommand>>>`, drained via
@@ -68,12 +68,19 @@ Nine key contracts:
    self-drawn scrollbars belong to the component; no portal, no
    CANVAS_CONTENT_HEIGHT.
 9. **Accessibility**: `Role::Document`.
+10. **Seal placement** (spec 2026-11-23 §11): entering and cancelling are
+   host commands (`component.begin_seal_placement(..)` /
+   `cancel_seal_placement()` through the queue — no new API); the click and
+   the cancellation come back as `OfdWidgetAction::SealPlaced(SealPlacement)`
+   / `SealPlacementCancelled`, wired by `.on_seal_placed(..)` /
+   `.on_seal_placement_cancelled(..)`. The adapter does not depend on
+   `rofd-sign`: the host signs (docs/agents/sign.md).
 
 If you are tempted to reintroduce a winit-layer bridge, canvas-origin
 bookkeeping, or a per-frame force_repaint ordering — **don't**; the widget
 is the entire platform adapter.
 
-Tests: the masonry_testing headless harness, 9 cases (list in
+Tests: the masonry_testing headless harness, 10 cases (list in
 docs/agents/workflow.md §test conventions).
 
 Pending: the annotation format-panel UI (spec 2026-11-10 §5.3; gpui-view

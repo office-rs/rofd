@@ -148,22 +148,28 @@ pub fn parse_color(s: &str) -> rofd_dom::Color {
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_impl {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
+    use std::sync::Arc;
 
     use office_rs_print::{PageRange, Parity, PrintSettings};
     // Shared PDF page assembly (spec §8/D18): the export path's page loop
     // lives once, in rofd-convert, with every other host export path.
+    use crate::sign_wasm::{
+        parse_sign_options, parse_verify_options, reports_json, step_result, StepOutcome,
+    };
     use rofd_component::render_target::SceneLayers;
+    use rofd_component::PreparedSignature as ComponentPreparedSignature;
     use rofd_component::{
         BodyTextSelection, ContextTarget, FrameNeed, Modifiers, MouseButton, OfdComponent,
-        OfdConfig, PointerCursor, PrintContent, RenderTarget, ScrollDirection, ViewEvent, ZoomMode,
+        OfdConfig, PointerCursor, PrintContent, RenderTarget, ScrollDirection, SealPlacement,
+        SealPreview, ViewEvent, ZoomMode,
     };
     use rofd_convert::{pdf_pages, pdf_pages_at};
     use rofd_dom::{AnnotationId, AnnotationSelection, OfdDocument, OfdWarning};
     use rofd_editor::TextCursor;
     use rofd_export::pdf_from_page_scenes;
-    use rofd_io::{parse_ofd, write_ofd_with_text_layout, PackageHandle};
+    use rofd_io::{parse_ofd, save_ofd as preserving_save, write_ofd_with_text_layout};
     use rofd_render::Scene;
     use wasm_bindgen::prelude::*;
     // 单调钟（AGENTS §4.4 动画例外）：wasm = performance.now()，与
@@ -263,6 +269,8 @@ mod wasm_impl {
         pub on_pointer_cursor: Rc<RefCell<Option<js_sys::Function>>>,
         pub on_copy: Rc<RefCell<Option<js_sys::Function>>>,
         pub on_text_selection_change: Rc<RefCell<Option<js_sys::Function>>>,
+        pub on_seal_placed: Rc<RefCell<Option<js_sys::Function>>>,
+        pub on_seal_placement_cancelled: Rc<RefCell<Option<js_sys::Function>>>,
     }
 
     /// wasm-bindgen editor surface for the web.
@@ -277,7 +285,65 @@ mod wasm_impl {
         component: OfdComponent,
         render_target: RenderTargetKind,
         callbacks: JsCallbacks,
-        package: Option<PackageHandle>,
+        /// What the last `saveOfd` had to do (spec 2026-11-23 §7.2, M16/M20).
+        save_blocked: Cell<bool>,
+        save_reserve_exhausted: Cell<bool>,
+        save_full_write_fallback: Cell<bool>,
+    }
+
+    /// A signature prepared on the open document for a signer outside
+    /// this process: what `prepareSign` returns.
+    #[wasm_bindgen]
+    pub struct PreparedSignature {
+        inner: ComponentPreparedSignature,
+    }
+
+    #[wasm_bindgen]
+    impl PreparedSignature {
+        /// What the signer signs in this round.
+        #[wasm_bindgen(js_name = toSign)]
+        pub fn to_sign(&self) -> Vec<u8> {
+            self.inner.to_sign().to_vec()
+        }
+    }
+
+    /// What `finishSign` returns: the document is signed, or there is a
+    /// next round to sign.
+    #[wasm_bindgen]
+    pub struct SignatureStepResult {
+        /// The next round; `None` once the signature is in the document.
+        more: Option<PreparedSignature>,
+        /// The reports of every signature, as a JSON array; `None` until the
+        /// signature is in the document.
+        reports: Option<String>,
+    }
+
+    #[wasm_bindgen]
+    impl SignatureStepResult {
+        /// Whether the signature is in the document.
+        #[wasm_bindgen(getter, js_name = done)]
+        pub fn done(&self) -> bool {
+            self.more.is_none()
+        }
+
+        /// The reports of every signature of the document, as a JSON array,
+        /// once the signature is in it; `null` while there is a next round.
+        #[wasm_bindgen(getter, js_name = reports)]
+        pub fn reports(&self) -> Option<String> {
+            self.reports.clone()
+        }
+
+        /// The next round to sign; `undefined` once the signature is in
+        /// the document. Consumes the step result.
+        #[wasm_bindgen(js_name = next)]
+        pub fn next(self) -> Option<PreparedSignature> {
+            self.more
+        }
+    }
+
+    /// A signing error for JS: its message. The host shows it.
+    fn js_error(error: rofd_sign::SignError) -> JsValue {
+        JsValue::from_str(&error.to_string())
     }
 
     #[wasm_bindgen]
@@ -848,14 +914,14 @@ mod wasm_impl {
 
         // ─── Document I/O ───────────────────────────────────────────────────
 
-        /// Load an OFD document from raw `.ofd` package bytes. Retains the
-        /// parsed `PackageHandle` so subsequent `saveOfd` calls can perform a
-        /// surgical save (preserving unmodelled body bytes byte-for-byte).
+        /// Load an OFD document from raw `.ofd` package bytes. The document
+        /// carries the package it came from (spec 2026-11-23 §17.11), which
+        /// is what `saveOfd` preserves: the original entries byte for byte,
+        /// only the annotation entries rewritten.
         #[wasm_bindgen(js_name = loadOfd)]
         pub fn load_ofd(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
             let report =
                 parse_ofd(bytes).map_err(|e| JsValue::from_str(&format!("parse failed: {e}")))?;
-            self.package = Some(report.package);
             self.component.load_document(report.document);
             // Relay any degraded-load warnings to the host via on_warning
             // (AGENTS.md §4.6: non-fatal issues surface via callback, not Result).
@@ -863,18 +929,203 @@ mod wasm_impl {
             Ok(())
         }
 
-        /// Serialize the current document to OFD package bytes: full write
-        /// with passthrough (unconsumed entries of the loaded package are
-        /// transported verbatim, spec 2026-11-11 D12).
+        // ─── Signing (spec 2026-11-23 §17.11) ─────────────────────────────
+
+        /// Sign the document that is open with a certificate file (`.pfx`,
+        /// `.p12`) and its password: the signature goes into the document
+        /// (the seal is on its page at the next frame; the viewport, the
+        /// selection and the undo history stay) and nothing is written - the
+        /// file is the host's `saveOfd`. Returns the reports of every
+        /// signature afterwards, as `verifySignatures` gives them. Rejects
+        /// with a reason when the password is wrong, an option is unusable,
+        /// or the document's file cannot take its annotations (`isSignBlocked`
+        /// says so beforehand); nothing changes then.
+        #[wasm_bindgen(js_name = sign)]
+        pub fn sign(
+            &mut self,
+            pfx: &[u8],
+            password: &str,
+            options_json: &str,
+        ) -> Result<String, JsValue> {
+            let options = parse_sign_options(options_json).map_err(js_error)?;
+            let mut signer = rofd_sign::PfxSigner::open(pfx, password).map_err(js_error)?;
+            let reports = self
+                .component
+                .sign(&mut signer, &options)
+                .map_err(js_error)?;
+            reports_json(&reports).map_err(js_error)
+        }
+
+        /// Verify every signature of the document that is open (spec 2026-11-23
+        /// §17.13): what the document carries now, saved or not. The reports as
+        /// a JSON array; `[]` when the options are not valid, as the module
+        /// function gives - verification reports, it does not fail.
+        #[wasm_bindgen(js_name = verifySignatures)]
+        pub fn verify_signatures(&self, options_json: &str) -> String {
+            let reports = parse_verify_options(options_json)
+                .map(|options| self.component.verify_signatures(&options))
+                .unwrap_or_default();
+            reports_json(&reports).unwrap_or_else(|_| "[]".to_owned())
+        }
+
+        /// What stops a signature of the document right now: its file
+        /// declares signatures and declares no annotation entry, and the
+        /// document has annotations to write. Ask before `sign`, to tell the
+        /// user in the host's own words.
+        #[wasm_bindgen(js_name = isSignBlocked)]
+        pub fn sign_blocked(&self) -> bool {
+            self.component.sign_refusal().is_err()
+        }
+
+        /// Start a signature for a signer outside this process: the
+        /// two-phase form of `sign`. `certificate_der` is the signer's
+        /// certificate; the rounds are handed to `finishSign`. Preparing
+        /// changes nothing of the document.
+        #[wasm_bindgen(js_name = prepareSign)]
+        pub fn prepare_sign(
+            &self,
+            certificate_der: &[u8],
+            options_json: &str,
+        ) -> Result<PreparedSignature, JsValue> {
+            let options = parse_sign_options(options_json).map_err(js_error)?;
+            self.component
+                .prepare_sign(certificate_der, &options)
+                .map(|inner| PreparedSignature { inner })
+                .map_err(js_error)
+        }
+
+        /// Take the signature of `PreparedSignature.toSign` and go on: the
+        /// next round, or - once the signature is complete - the reports of
+        /// every signature of the document, the signature being in the
+        /// document then, with everything `sign` does after one.
+        #[wasm_bindgen(js_name = finishSign)]
+        pub fn finish_sign(
+            &mut self,
+            prepared: PreparedSignature,
+            signature: &[u8],
+        ) -> Result<SignatureStepResult, JsValue> {
+            let (more, reports) = match step_result(
+                self.component
+                    .finish_sign(prepared.inner, signature)
+                    .map_err(js_error)?,
+            )
+            .map_err(js_error)?
+            {
+                StepOutcome::Next(next) => (Some(PreparedSignature { inner: next }), None),
+                StepOutcome::Landed(json) => (None, Some(json)),
+            };
+            Ok(SignatureStepResult { more, reports })
+        }
+
+        /// Serialize the current document to OFD package bytes. The
+        /// preserving save (spec 2026-11-23 §7): with the loaded package
+        /// every entry stays byte-identical except the annotation entries,
+        /// rewritten in place; without one the full write generates the
+        /// package.
         #[wasm_bindgen(js_name = saveOfd)]
         pub fn save_ofd(&self) -> Result<Vec<u8>, JsValue> {
             let snapshot = self.component.save_snapshot();
+            preserving_save(&snapshot.document, &snapshot.text_layout)
+                .map(|preserved| {
+                    // What this save had to do, for the host to read back.
+                    self.save_blocked.set(preserved.blocked_by_signature);
+                    self.save_reserve_exhausted.set(preserved.reserve_exhausted);
+                    self.save_full_write_fallback
+                        .set(preserved.full_write_fallback);
+                    preserved.bytes
+                })
+                .map_err(|e| JsValue::from_str(&format!("save failed: {e}")))
+        }
+
+        /// Whether the document declares signatures, has no annotation entry
+        /// and annotations had to be written: `saveOfd` returned the package
+        /// unchanged (spec 2026-11-23 M16). The host asks whether to save
+        /// the other way, see [`Self::save_ofd_full_write`].
+        #[wasm_bindgen(js_name = isSaveBlockedBySignature)]
+        pub fn save_blocked_by_signature(&self) -> bool {
+            self.save_blocked.get()
+        }
+
+        /// Whether the IDs of the last save went past the reserve written at
+        /// signing time (spec 2026-11-23 M14). The annotations were written.
+        #[wasm_bindgen(js_name = isSaveReserveExhausted)]
+        pub fn save_reserve_exhausted(&self) -> bool {
+            self.save_reserve_exhausted.get()
+        }
+
+        /// Whether the last save fell back to the full write because an
+        /// unsigned package had no anchor for a required patch (spec
+        /// 2026-11-23 M20): more bytes changed than usual.
+        #[wasm_bindgen(js_name = isSaveFullWriteFallback)]
+        pub fn save_full_write_fallback(&self) -> bool {
+            self.save_full_write_fallback.get()
+        }
+
+        /// The seal picture of every signature of the document, in the
+        /// order of the signature list (the order the verification reports
+        /// have); `null` for a digital signature, or a picture that could not
+        /// be read. The PNG bytes, for the host's signature detail view.
+        #[wasm_bindgen(js_name = sealPictures)]
+        pub fn seal_pictures(&self) -> js_sys::Array {
+            let pictures = js_sys::Array::new();
+            for picture in self.component.seal_pictures() {
+                pictures.push(&match picture {
+                    Some(png) => js_sys::Uint8Array::from(png.as_slice()).into(),
+                    None => JsValue::NULL,
+                });
+            }
+            pictures
+        }
+
+        /// The full write, for after the host confirmed that saving may
+        /// invalidate the signatures (spec 2026-11-23 M16): every modelled
+        /// entry is generated again. What the package holds and the model
+        /// does not is carried along.
+        #[wasm_bindgen(js_name = saveOfdFullWrite)]
+        pub fn save_ofd_full_write(&self) -> Result<Vec<u8>, JsValue> {
+            let snapshot = self.component.save_snapshot();
             write_ofd_with_text_layout(
                 &snapshot.document,
-                self.package.as_ref(),
+                snapshot.document.package.as_ref(),
                 &snapshot.text_layout,
             )
             .map_err(|e| JsValue::from_str(&format!("save failed: {e}")))
+        }
+
+        // ─── Seal placement (spec 2026-11-23 §11) ──────────────────────────
+
+        /// Enter the seal placement state: the next left click on a page
+        /// reports where the seal goes (`onSealPlaced`). `false`: the
+        /// picture cannot be decoded, and the state was not entered.
+        #[wasm_bindgen(js_name = beginSealPlacement)]
+        pub fn begin_seal_placement(&mut self, png: &[u8], width_mm: f64, height_mm: f64) -> bool {
+            self.component.begin_seal_placement(SealPreview {
+                png: Arc::new(png.to_vec()),
+                width_mm,
+                height_mm,
+            })
+        }
+
+        /// End the seal placement state; `onSealPlacementCancelled` is
+        /// reported unless no seal was being placed.
+        #[wasm_bindgen(js_name = cancelSealPlacement)]
+        pub fn cancel_seal_placement(&mut self) {
+            self.component.cancel_seal_placement();
+        }
+
+        /// Register the callback for a seal the user placed by clicking. JS
+        /// receives `{ pageIndex, pageId, boundary: { x, y, w, h } }`, the
+        /// boundary in page millimetres. Pass `null` to remove it.
+        #[wasm_bindgen(js_name = setOnSealPlaced)]
+        pub fn set_on_seal_placed(&mut self, callback: Option<js_sys::Function>) {
+            *self.callbacks.on_seal_placed.borrow_mut() = callback;
+        }
+
+        /// Register the callback for a seal placement the user cancelled
+        /// (Esc or the right mouse button). Pass `null` to remove it.
+        #[wasm_bindgen(js_name = setOnSealPlacementCancelled)]
+        pub fn set_on_seal_placement_cancelled(&mut self, callback: Option<js_sys::Function>) {
+            *self.callbacks.on_seal_placement_cancelled.borrow_mut() = callback;
         }
 
         /// Whether there are undoable operations in the history.
@@ -1144,7 +1395,9 @@ mod wasm_impl {
                 component,
                 render_target,
                 callbacks: JsCallbacks::default(),
-                package: None,
+                save_blocked: Cell::new(false),
+                save_reserve_exhausted: Cell::new(false),
+                save_full_write_fallback: Cell::new(false),
             };
             editor.setup_bridge_callbacks();
             Ok(editor)
@@ -1247,6 +1500,24 @@ mod wasm_impl {
                     call_js0(&on_text_selection_change_js);
                 },
             ));
+
+            let on_seal_placed_js = self.callbacks.on_seal_placed.clone();
+            self.component
+                .on_seal_placed(Box::new(move |placement: SealPlacement| {
+                    let boundary = placement.boundary;
+                    let payload = serde_json::json!({
+                        "pageIndex": placement.page_index,
+                        "pageId": placement.page_id.0,
+                        "boundary": { "x": boundary.x, "y": boundary.y, "w": boundary.w, "h": boundary.h },
+                    });
+                    call_js1_json(&on_seal_placed_js, &payload.to_string());
+                }));
+
+            let on_seal_placement_cancelled_js = self.callbacks.on_seal_placement_cancelled.clone();
+            self.component
+                .on_seal_placement_cancelled(Box::new(move || {
+                    call_js0(&on_seal_placement_cancelled_js);
+                }));
         }
     }
 
@@ -1272,6 +1543,16 @@ mod wasm_impl {
                 &JsValue::from_f64(y),
                 &id_val,
             );
+        }
+    }
+
+    /// Invoke a JS callback slot with one argument: the JSON text parsed
+    /// into a JS value. No-op if the slot is empty or the text is not JSON.
+    fn call_js1_json(slot: &Rc<RefCell<Option<js_sys::Function>>>, json: &str) {
+        if let Ok(value) = js_sys::JSON::parse(json) {
+            if let Some(ref js_fn) = *slot.borrow() {
+                let _ = js_fn.call1(&JsValue::null(), &value);
+            }
         }
     }
 

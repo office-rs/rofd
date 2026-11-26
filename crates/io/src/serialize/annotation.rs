@@ -47,49 +47,23 @@ pub fn serialize_page_annot(
 /// Seed for the document-wide object ID allocator: the highest ID that any
 /// object in the document may already use. Well-formed files guarantee
 /// `MaxUnitID` covers every body object, but a foreign writer may leave it
-/// stale, so also cover the annotation IDs rofd knows about - appearance
+/// stale, so the IDs the model knows about are covered too - appearance
 /// object IDs must be unique document-wide no matter what the input looked
-/// like.
+/// like (spec 2026-11-11 D2-③).
 pub fn object_id_seed(doc: &OfdDocument) -> u64 {
-    let mut seed = doc.max_unit_id;
-    for ann in doc.annotations.by_page.values().flatten() {
-        if let Ok(n) = ann.id.0.parse::<u64>() {
-            seed = seed.max(n);
-        }
-    }
-    // Passthrough fragments may carry object IDs the model never saw; a
-    // stale MaxUnitID in a foreign file must not let freshly minted
-    // annotation IDs collide with them (spec 2026-11-11 D2-③).
-    for page in &doc.pages {
-        let raws = page
-            .raw_children
-            .iter()
-            .chain(page.layers.iter().flat_map(|l| l.raw_children.iter()));
-        for frag in raws {
-            seed = seed.max(max_id_attr(&frag.xml, seed));
-        }
-    }
-    seed
+    doc.max_unit_id.max(doc.highest_known_object_id())
 }
 
-/// Highest `ID="<u64>"` attribute value in a raw fragment (0-level scan,
-/// no XML re-parse; single-quoted IDs are not covered - rare in the wild).
-fn max_id_attr(xml: &str, floor: u64) -> u64 {
-    let mut m = floor;
-    let mut rest = xml;
-    while let Some(i) = rest.find("ID=\"") {
-        rest = &rest[i + 4..];
-        match rest.find('"') {
-            Some(j) => {
-                if let Ok(n) = rest[..j].parse::<u64>() {
-                    m = m.max(n);
-                }
-                rest = &rest[j..];
-            }
-            None => break,
-        }
+/// Seed for the preserving save. On a signed document `MaxUnitID` is the
+/// reserve written at signing time, not the highest ID in use: new IDs must
+/// be minted above the IDs actually in use so they stay under that reserve
+/// (spec 2026-11-23 M14). Unsigned documents use [`object_id_seed`].
+pub fn preserving_id_seed(doc: &OfdDocument) -> u64 {
+    if doc.signatures.declared {
+        doc.highest_known_object_id()
+    } else {
+        object_id_seed(doc)
     }
-    m
 }
 
 /// Reserve the next document-wide object ID from the allocator.

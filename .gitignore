@@ -35,6 +35,10 @@ TODO.md
 # never a member of the root workspace)
 crates/convert/fuzz/target/
 
+# ofdrw cross-check build output (tools/ofdverify)
+tools/ofdverify/out/
+tools/ofdverify/cp.txt
+
 # convert-java demo staging (compiled demo classes + fat-jar native staging)
 crates/convert-java/demo/classes/
 crates/convert-java/demo/native-stage/

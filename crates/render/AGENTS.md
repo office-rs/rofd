@@ -19,3 +19,7 @@
 - `layers.rs` `page_body_scene`: assembles the scene per OFD layer
   semantics; equivalence is pinned by `tests/layers_equivalence.rs`. Tests
   use scene structure assertions (object counts/types), not pixels.
+- `seal_scene.rs`: the seals of a signed document are **page content** —
+  drawn into the cached page scene after the body, before annotations
+  (docs/agents/sign.md). An image must never be drawn with a per-draw
+  opacity: the CPU fallback renderer (vello_cpu) panics on it.

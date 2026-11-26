@@ -12,7 +12,7 @@ otherwise. The shell is bash (Unix syntax).
 cargo build --workspace
 cargo test --workspace --exclude tauri-app --exclude rofd-web-view
 cargo test -p rofd-io                       # crate-scoped tests
-cargo test -p rofd-io write_fidelity        # filter by name (write fidelity)
+cargo test -p rofd-io --test write_fidelity # one test binary by name (`--test`); a bare `write_fidelity` is a name filter and runs nothing
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 cargo llvm-cov --workspace                  # coverage (needs cargo-llvm-cov; target 80%)
@@ -38,6 +38,48 @@ cargo run -p gpui-app --example gpui_print_to_file -- test/ru-yuan-ji-lu.ofd tar
 Manual checklist:
 `docs/superpowers/manual/2026-11-01-gpui-app-windows-checklist.md`.
 
+## Signing line
+
+```bash
+cargo test -p rofd-sign --features test-ca               # the crate (verification, encoders, signing, certificate files)
+cargo test -p rofd-sign --features test-ca --test sign in_place   # a signature appended in place: the model equals a reload, the file verifies after an ordinary save
+cargo test -p rofd-io --test preserving_save --test document_package   # the preserving save (PS series); the document carries its package
+cargo test -p rofd-component seal_placement              # the modal seal placement state
+cargo test -p rofd-component --features sign             # the component signs and verifies the open document (the module is compiled out without the feature)
+cargo test -p rofd-component --test seal_visibility      # a file's seal is painted
+cargo test -p rofd-web-view --lib sign_wasm              # the wasm options / report JSON
+cargo test -p rofd-web-view --lib a_finished_step        # the two-phase step carries the reports (a filter is a test name: `--lib step_result` runs nothing, exit 0)
+cargo test -p gpui-app signing && cargo test -p xilem-app signing   # the hosts' signing flow
+cargo build -p rofd-web-view --target wasm32-unknown-unknown         # rofd-sign must build for wasm32
+cargo run -p rofd-sign --example gen_builtin_seals -- crates/web-app/public/seals   # redraw the built-in seal pictures (then copy to crates/*/assets/seals)
+```
+
+The signing e2e (`cd crates/web-app && npm run e2e -- e2e/sign.spec.ts`)
+runs the wasm in `crates/web-view/sdk/dist`: rebuild it first
+(`npm run build:sdk` in web-app), or it tests the previous build. The e2e
+and the dev server run the SDK's TypeScript source (a Vite alias), so a
+change to `sdk/src` needs no build; a type check of the web app (`vue-tsc`)
+does — it reads the compiled wrapper in `sdk/dist`, so run `npm run
+build:ts` in `crates/web-view/sdk` first, or it reports members that exist.
+
+The reader-side acceptance (does the reference reader show and accept rofd's
+signatures) is manual:
+`docs/superpowers/manual/2026-11-24-sign-reader-checklist.md`.
+
+## Independent cross-check of signatures (ofdrw)
+
+Validates packages with ofdrw's own validator — the reference
+implementation of the archive chain. Needs a JDK, Maven and ofdrw-sign from
+Maven Central (or `~/.m2`). Run it after touching the encoders or the
+References logic; it has caught what rofd's tests could not:
+
+```bash
+cd tools/ofdverify
+mvn -q dependency:build-classpath -Dmdep.outputFile=cp.txt
+javac -encoding UTF-8 -cp "$(cat cp.txt)" -d out src/main/java/Verify.java   # mkdir -p out first
+java -Dfile.encoding=UTF-8 -cp "out;$(cat cp.txt)" Verify <file.ofd>...      # VALID via <container> / INVALID
+```
+
 ## web host
 
 ```bash
@@ -48,6 +90,7 @@ npm run build:sdk       # wasm-pack build ../web-view --target web -> sdk/dist
 npm run dev             # vite dev server
 npm run build           # vite production build
 npm run smoke:nogpu     # no-GPU smoke (headless Chrome --disable-gpu must land in the CPU fallback)
+npm run e2e -- e2e/sign.spec.ts   # signing on the real wasm: WebGPU and CPU fallback paths
 ```
 
 Font channel details: [fonts.md](fonts.md) and `crates/web-app/README.md`.
@@ -136,3 +179,12 @@ The release-lockstep checklist (on `rofd-convert-v*` tags):
   4. D-drive pressure: the main checkout's `target/` can reach 168G+;
      linker LNK1108/LNK1318 ≈ disk-full signal — free space fast with
      `rm -rf target/debug/incremental`.
+- **vitest reports below the counts** (verified 2026-11-24): a listener
+  that throws is printed as `Errors 1 error` under `Tests N passed` and
+  makes the run exit 1. A `| grep "Tests"` filter hides that line and the
+  pipe hides the exit code: the SDK suite was red for two weeks while
+  every note said "98 green". Take each command's exit code; when a log
+  has to be grepped, use `grep -a` (a test that prints a control byte
+  turns the log "binary" otherwise).
+- **Commit messages with backticks**: write them to a file and commit with
+  `-F`; inside `-m "..."` the shell runs what the backticks enclose.

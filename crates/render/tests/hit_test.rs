@@ -32,6 +32,8 @@ fn doc_with_page_and_anns(phys: Rect, anns: Vec<Annotation>) -> OfdDocument {
         raw_doc_children: Vec::new(),
         raw_common_children: Vec::new(),
         raw_ofd_body_children: Vec::new(),
+        signatures: rofd_dom::SignatureSet::default(),
+        package: None,
         meta: Default::default(),
         pages: vec![page],
         resources: Default::default(),

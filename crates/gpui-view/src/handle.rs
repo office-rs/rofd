@@ -16,8 +16,8 @@
 use gpui::{App, Entity};
 use office_rs_print::{JobHandle, PrintSettings};
 use rofd_component::{
-    default_tooltip_lines, AnnotationSelection, PrintContent, ScrollDirection, Tool, ViewEvent,
-    ZoomMode,
+    default_tooltip_lines, AnnotationSelection, PrintContent, ScrollDirection, SealPreview, Tool,
+    ViewEvent, ZoomMode,
 };
 use rofd_dom::{AnnotationId, AnnotationKind, Color, OfdDocument};
 
@@ -103,6 +103,29 @@ impl GpuiOfdHandle {
             cx.notify();
             count
         })
+    }
+
+    // -- Seal placement (spec 2026-11-23 §11) --
+
+    /// Enter the seal placement state: the next left click on a page
+    /// reports where the seal goes as [`OfdGpuiEvent::SealPlaced`]. Until
+    /// then the view is modal (no selection, edit or shortcut), while
+    /// scrolling and zooming go on. Returns `false` when the picture cannot
+    /// be decoded: the state was not entered.
+    pub fn begin_seal_placement(&self, preview: SealPreview, cx: &mut App) -> bool {
+        self.simple(cx, |c| c.begin_seal_placement(preview))
+    }
+
+    /// End the seal placement state;
+    /// [`OfdGpuiEvent::SealPlacementCancelled`] follows unless no seal was
+    /// being placed.
+    pub fn cancel_seal_placement(&self, cx: &mut App) {
+        self.simple(cx, |c| c.cancel_seal_placement());
+    }
+
+    /// Whether a seal is waiting for the click that says where it goes.
+    pub fn seal_placement_active(&self, cx: &App) -> bool {
+        self.entity.read(cx).component.seal_placement_active()
     }
 
     // -- History --
