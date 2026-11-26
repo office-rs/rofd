@@ -1,6 +1,7 @@
 use rofd_dom::{Annotation, AnnotationId, OfdDocument, OfdWarning};
 use rofd_editor::{AnnotationSelection, TextCursor};
 
+use crate::seal_placement::SealPlacement;
 use crate::zoom_mode::ZoomMode;
 
 // The callback types. on_change passes &OfdDocument; on_selection_change
@@ -11,7 +12,8 @@ use crate::zoom_mode::ZoomMode;
 // passes ZoomMode; on_warning passes
 // &[OfdWarning]; on_pointer_cursor passes PointerCursor; on_copy passes
 // String (the selected body text); on_text_selection_change passes
-// Option<&rofd_render::BodyTextSelection>.
+// Option<&rofd_render::BodyTextSelection>; on_seal_placed passes
+// SealPlacement (page millimetres); on_seal_placement_cancelled passes ().
 //
 // Target-gated `Send`: the host (Phase 4b native) requires `Send` callbacks. On native
 // targets the aliases below add `+ Send`; on wasm they do not (wasm is single-threaded).
@@ -47,6 +49,10 @@ pub type OnTextSelectionChange = dyn Fn(Option<&rofd_render::BodyTextSelection>)
 #[cfg(not(target_arch = "wasm32"))]
 pub type OnWarning = dyn Fn(&[OfdWarning]) + Send;
 #[cfg(not(target_arch = "wasm32"))]
+pub type OnSealPlaced = dyn Fn(SealPlacement) + Send;
+#[cfg(not(target_arch = "wasm32"))]
+pub type OnSealPlacementCancelled = dyn Fn() + Send;
+#[cfg(not(target_arch = "wasm32"))]
 pub type TooltipFormatter = dyn Fn(&Annotation) -> Vec<String> + Send;
 pub type OnCopy = dyn Fn(String);
 
@@ -76,6 +82,10 @@ pub type OnPointerCursor = dyn Fn(PointerCursor);
 pub type OnTextSelectionChange = dyn Fn(Option<&rofd_render::BodyTextSelection>);
 #[cfg(target_arch = "wasm32")]
 pub type OnWarning = dyn Fn(&[OfdWarning]);
+#[cfg(target_arch = "wasm32")]
+pub type OnSealPlaced = dyn Fn(SealPlacement);
+#[cfg(target_arch = "wasm32")]
+pub type OnSealPlacementCancelled = dyn Fn();
 #[cfg(target_arch = "wasm32")]
 pub type TooltipFormatter = dyn Fn(&Annotation) -> Vec<String>;
 // `OnCopy` has no wasm variant - it is defined once above (non-Send on all targets).
@@ -130,6 +140,8 @@ pub struct Callbacks {
     pub on_text_selection_change: Option<Box<OnTextSelectionChange>>,
     pub on_warning: Option<Box<OnWarning>>,
     pub on_copy: Option<Box<OnCopy>>,
+    pub on_seal_placed: Option<Box<OnSealPlaced>>,
+    pub on_seal_placement_cancelled: Option<Box<OnSealPlacementCancelled>>,
     /// Hover-tooltip text provider (spec 2026-09-18 §3.2). None = tooltip
     /// hidden. Not an event callback - a host-injected provider, installed by
     /// the adapters' default assembly (UTC native / local-tz web).

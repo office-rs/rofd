@@ -23,7 +23,68 @@ export type {
 // --- wasm module shape (wasm-pack --target web) ---
 // `default` is the async init; `create_wasm_ofd` is the WebGPU factory,
 // `create_wasm_ofd_cpu` the CPU soft-render fallback factory (Task 8).
-type WasmModule = {
+/** The signing line as free functions (spec 2026-11-23 §12). The options
+ * and the reports cross the boundary as JSON; the SDK's functions parse
+ * and produce it. */
+interface SignModule {
+  /** The verification reports as a JSON array (snake_case fields); `[]`
+   * when the package cannot be opened or declares no signature. */
+  verifySignatures(ofd: Uint8Array, optionsJson: string): string;
+  /** The signed package. `optionsJson` is the camelCase form of the wasm
+   * signing options; the input is not changed. Throws on failure. */
+  signOfd(
+    ofd: Uint8Array,
+    pfx: Uint8Array,
+    password: string,
+    optionsJson: string,
+  ): Uint8Array;
+  /** What the certificate store shows for a certificate file, as JSON.
+   * Throws when the password is wrong. */
+  certificateInfo(pfx: Uint8Array, password: string): string;
+  /** A package prepared up to the first signature a signer outside the
+   * process has to produce. `certificateDer` is the signer's certificate. */
+  signPrepare(
+    ofd: Uint8Array,
+    certificateDer: Uint8Array,
+    optionsJson: string,
+  ): WasmPreparedSign;
+}
+
+interface WasmPreparedSign {
+  /** What the signer signs in this round. */
+  toSign(): Uint8Array;
+  /** Take that signature and go on. */
+  apply(signature: Uint8Array): WasmStepResult;
+}
+
+interface WasmStepResult {
+  readonly done: boolean;
+  /** The signed package; empty unless `done`. */
+  readonly bytes: Uint8Array;
+  /** The next round to sign; `undefined` once the package is signed. */
+  next(): WasmPreparedSign | undefined;
+}
+
+/** A round of the two-phase form on the open document (what `prepareSign`
+ * returns). */
+interface WasmPreparedSignature {
+  toSign(): Uint8Array;
+}
+
+/** What `finishSign` returns: the signature is in the document, or there is
+ * a next round. */
+interface WasmSignatureStep {
+  readonly done: boolean;
+  /** The reports of every signature, as a JSON array; `null` until the
+   * signature is in the document (the generated getter says `undefined`
+   * where the Rust side says `null`). */
+  readonly reports: string | null | undefined;
+  /** The next round to sign; `undefined` once the signature is in the
+   * document. Consumes the step result. */
+  next(): WasmPreparedSignature | undefined;
+}
+
+type WasmModule = SignModule & {
   default(): Promise<void>;
   create_wasm_ofd(canvas: HTMLCanvasElement): Promise<WasmOfd>;
   create_wasm_ofd_cpu(
@@ -90,7 +151,38 @@ interface WasmOfd {
   handleFocusGained(): void;
   handleFocusLost(): void;
   loadOfd(bytes: Uint8Array): void;
+  /** Sign the document that is open with a certificate file and its
+   * password; the reports of every signature afterwards, as a JSON array. */
+  sign(pfx: Uint8Array, password: string, optionsJson: string): string;
+  /** Verify every signature of the document that is open (spec 2026-11-23
+   * §17.13), saved or not; the reports as a JSON array. */
+  verifySignatures(optionsJson: string): string;
+  /** What stops a signature of the document right now (spec 2026-11-23
+   * §17.11): its file cannot take its annotations. */
+  isSignBlocked(): boolean;
+  /** Start the two-phase form on the document that is open; the rounds go
+   * back in through `finishSign`. */
+  prepareSign(certificateDer: Uint8Array, optionsJson: string): WasmPreparedSignature;
+  finishSign(prepared: WasmPreparedSignature, signature: Uint8Array): WasmSignatureStep;
+  /** The preserving save (spec 2026-11-23 §7): every entry of the loaded
+   * package stays byte-identical except the annotation entries. What the
+   * save had to do is read back with the `isSave*` methods. */
   saveOfd(): Uint8Array;
+  /** The full write: every modelled entry generated again. For after the
+   * host confirmed that saving may invalidate the signatures (M16). */
+  saveOfdFullWrite(): Uint8Array;
+  isSaveBlockedBySignature(): boolean;
+  isSaveReserveExhausted(): boolean;
+  isSaveFullWriteFallback(): boolean;
+  /** The seal picture of every signature, in the order of the signature
+   * list; `null` for a digital signature or an unreadable picture. */
+  sealPictures(): (Uint8Array | null)[];
+  /** Enter the seal placement state (spec 2026-11-23 §11). `false`: the
+   * picture cannot be decoded, and the state was not entered. */
+  beginSealPlacement(png: Uint8Array, widthMm: number, heightMm: number): boolean;
+  cancelSealPlacement(): void;
+  setOnSealPlaced(cb: ((placement: SealPlacement) => void) | null): void;
+  setOnSealPlacementCancelled(cb: (() => void) | null): void;
   /** IME composition surface (spec: the component owns the preedit state
    * machine; the browser's CompositionEvent carries no caret range). */
   handleImePreedit(text: string): void;
@@ -296,6 +388,494 @@ function deferCb<A extends unknown[]>(
   };
 }
 
+// --- the signing line (spec 2026-11-23 §12) ---
+
+/** The wasm module, loaded on first use. `Ofd.init` goes through here too,
+ * so the module-level functions and the instances share one module. */
+let signModule: Promise<WasmModule> | null = null;
+
+/** Where the module comes from when none is loaded: the page's chunk,
+ * unless a test installs a source of its own. */
+let moduleSource: (() => Promise<WasmModule>) | null = null;
+
+async function importSignModule(): Promise<WasmModule> {
+  const mod = (await import("../dist/rofd_web_view.js")) as unknown as WasmModule;
+  await mod.default();
+  return mod;
+}
+
+function loadSignModule(): Promise<WasmModule> {
+  if (signModule === null) {
+    const loading = moduleSource === null ? importSignModule() : moduleSource();
+    // A load that failed is not kept: the next caller tries again. One
+    // failed fetch must not leave the page without a document, without
+    // verification and without signing until it is reloaded.
+    signModule = loading.catch((error: unknown) => {
+      signModule = null;
+      throw error;
+    });
+  }
+  return signModule;
+}
+
+/** @internal Test seam: the wasm module the signing functions use. */
+export function __testSetSignModule(mod: WasmModule | null): void {
+  signModule = mod === null ? null : Promise.resolve(mod);
+}
+
+/** @internal Test seam: where `loadSignModule` loads from when no module is
+ * set; `null` is the page's chunk. */
+export function __testSetSignLoader(source: (() => Promise<WasmModule>) | null): void {
+  moduleSource = source;
+}
+
+/** Millimetres on a page: the `StampAnnot@Boundary` of a signature. */
+export interface MmRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** A seal picture: PNG (or JPEG) bytes, or their base64. `sizeMm` is its
+ * long side on the page; left out means 40. */
+export interface SealOptions {
+  png: Uint8Array | string;
+  sizeMm?: number;
+}
+
+/** Where a seal goes. `at`: one page (numbered from 1) and its boundary,
+ * taken as given. `bottomRight`: the last page or every page, at the given
+ * distances from the right and the bottom edges. Left out: the last page's
+ * bottom right corner, 10 mm from each edge. */
+export type SignPlacement =
+  | { at: { page: number; boundary: MmRect } }
+  | {
+      bottomRight: { pages: "last" | "all"; rightMm: number; bottomMm: number };
+    };
+
+/** Who signed, as the signature records it. Left out: `rofd`. */
+export interface SignProvider {
+  name: string;
+  company?: string | null;
+  version?: string | null;
+}
+
+/** What a signature needs besides the document and the signer. `now` is
+ * `YYYY-MM-DD HH:mm:ss`: the library never reads the clock. Without `seal`
+ * the result is a digital signature - no picture, no placement. */
+export interface SignOptions {
+  seal?: SealOptions | null;
+  placement?: SignPlacement | null;
+  now: string;
+  provider?: SignProvider;
+}
+
+/** The JSON the wasm side parses: camelCase, a seal's bytes as an array. */
+function signOptionsJson(options: SignOptions): string {
+  const seal =
+    options.seal === undefined || options.seal === null
+      ? null
+      : {
+          png:
+            typeof options.seal.png === "string"
+              ? options.seal.png
+              : Array.from(options.seal.png),
+          sizeMm: options.seal.sizeMm ?? 0,
+        };
+  return JSON.stringify({
+    seal,
+    placement: options.placement ?? null,
+    now: options.now,
+    ...(options.provider === undefined ? {} : { provider: options.provider }),
+  });
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let text = "";
+  const chunk = 0x8000;
+  for (let at = 0; at < bytes.length; at += chunk) {
+    text += String.fromCharCode(...bytes.subarray(at, at + chunk));
+  }
+  return btoa(text);
+}
+
+/** The verdict on one signature: every check that could run passed; a
+ * check failed; nothing failed but a check could not run for lack of
+ * material; the signature's own files are missing or unreadable; the format
+ * is recognised but not supported. */
+export type SignatureOverall =
+  | "Valid"
+  | "Invalid"
+  | "Unverified"
+  | "Unparseable"
+  | "Unsupported";
+
+/** `Seal`: an electronic seal with a picture. `Sign`: a digital signature. */
+export type SignatureKind = "Seal" | "Sign";
+
+/** What kind of signature value file a signature has. */
+export type SignatureVariant =
+  | "SesV1"
+  | "SesV4"
+  | "SesV5"
+  | "Gbt35275"
+  | "Digital"
+  | "Unknown";
+
+export type SignatureValueStatus = "Ok" | "Fail" | "Unverifiable";
+
+/** One protected file whose digest no longer matches. */
+export interface IntegrityFailure {
+  /** The `FileRef` as written in the signature. */
+  file_ref: string;
+  /** The digest recorded in the signature, base64. */
+  expected: string;
+  /** The digest computed from the package, base64; empty when the file is missing. */
+  actual: string;
+}
+
+/** Layer 1: do the protected files still hash to the recorded values. */
+export interface IntegrityResult {
+  /** False when a protected file changed or is missing, and when the
+   * signature names no file at all. */
+  ok: boolean;
+  failures: IntegrityFailure[];
+  /** How many files the reference list names. Zero means the signature
+   * protects nothing, whatever else verifies. */
+  protected_files: number;
+}
+
+/** Layer 3: does the signature value verify. */
+export interface SignatureValue {
+  status: SignatureValueStatus;
+  /** Why the status is what it is, when it is not `Ok`. */
+  reason: string | null;
+}
+
+/** What the signature says about its certificate. The chain is never
+ * validated here (`chain_validated` is always false). */
+export interface CertificateReport {
+  subject: string;
+  issuer: string;
+  /** The serial number as upper-case hex. */
+  serial: string;
+  not_before: string | null;
+  not_after: string | null;
+  /** Whether the certificate was valid at the supplied time; null when no
+   * time was supplied. Never changes the verdict. */
+  valid_at: boolean | null;
+  chain_validated: boolean;
+}
+
+/** The verdict on one signature of a package. The field names are the
+ * wasm side's (snake_case); the order of the array is the signature list's. */
+export interface SignatureReport {
+  id: string;
+  kind: SignatureKind;
+  variant: SignatureVariant;
+  overall: SignatureOverall;
+  integrity: IntegrityResult;
+  /** Whether the standalone seal file equals the seal embedded in the
+   * signature value; null when there is nothing to compare. */
+  seal_match: boolean | null;
+  signature_value: SignatureValue;
+  /** Null when no certificate is available. */
+  certificate: CertificateReport | null;
+  provider: string | null;
+  /** `SignatureDateTime` as written. */
+  date_time: string | null;
+}
+
+/** What verification may be given. */
+export interface VerifySignaturesOptions {
+  /** `YYYY-MM-DD HH:mm:ss`: the time to judge certificate validity against.
+   * Left out: validity is not judged. */
+  now?: string;
+  /** Certificates a digital signature does not carry, by signature ID:
+   * DER bytes, or their base64. */
+  certs?: Record<string, Uint8Array | string>;
+}
+
+/** The JSON the wasm side parses for verification: `{ now?, certs? }`, a
+ * certificate as base64. Shared by the module function and the instance
+ * method, so both cross the boundary the same way. */
+function verifyOptionsJson(options: VerifySignaturesOptions): string {
+  const certs =
+    options.certs === undefined
+      ? {}
+      : {
+          certs: Object.fromEntries(
+            Object.entries(options.certs).map(([id, certificate]) => [
+              id,
+              typeof certificate === "string" ? certificate : bytesToBase64(certificate),
+            ]),
+          ),
+        };
+  return JSON.stringify({
+    ...(options.now === undefined ? {} : { now: options.now }),
+    ...certs,
+  });
+}
+
+/** Verify every signature of an OFD package (spec 2026-11-23 §9).
+ * Verification never fails, it reports: a package that cannot be opened, or
+ * that declares no signature, gives an empty array. Rejects only when the
+ * wasm module cannot be loaded. For the document that is open in an editor
+ * use `ofd.verifySignatures`, which needs no bytes. */
+export async function verifySignatures(
+  ofd: Uint8Array,
+  options: VerifySignaturesOptions = {},
+): Promise<SignatureReport[]> {
+  const mod = await loadSignModule();
+  return JSON.parse(mod.verifySignatures(ofd, verifyOptionsJson(options))) as SignatureReport[];
+}
+
+/** The signatures that were valid in `before` and are no longer in `after`
+ * (spec 2026-11-23 M17): their IDs, in the order of `before`. A signature
+ * `after` does not carry counts as no longer valid; one that was not valid
+ * before is not reported again. It reads the reports and changes nothing. */
+export function newlyInvalidated(
+  before: SignatureReport[],
+  after: SignatureReport[],
+): string[] {
+  return before
+    .map((report, index) => ({ report, index }))
+    .filter(({ report, index }) => {
+      if (report.overall !== "Valid") {
+        return false;
+      }
+      const later = after.find((candidate) => candidate.id === report.id) ?? after[index];
+      return later === undefined || later.overall !== "Valid";
+    })
+    .map(({ report }) => report.id);
+}
+
+/** Sign a package with a certificate file (`.pfx`, `.p12`) and its password
+ * (spec 2026-11-23 §10): a seal, or a digital signature without a picture.
+ * Returns the signed package; the input is not changed. This is for a
+ * package that is not open in an editor - a file on its way through a
+ * server, a batch. For the document that is open use `ofd.sign`, which puts
+ * the signature into it without a package being made. Rejects when the
+ * password is wrong, an option is unusable (a picture that does not decode,
+ * a position the seal does not fit into), or the package cannot be read. */
+export async function signOfd(
+  ofd: Uint8Array,
+  pfx: Uint8Array,
+  password: string,
+  options: SignOptions,
+): Promise<Uint8Array> {
+  const mod = await loadSignModule();
+  return mod.signOfd(ofd, pfx, password, signOptionsJson(options));
+}
+
+/** What the certificate store shows for an imported certificate. */
+export interface CertificateEntry {
+  id: string;
+  /** A name for lists: the subject's common name. */
+  label: string;
+  subject_cn: string;
+  issuer_cn: string;
+  /** The serial number as upper-case hex. */
+  serial: string;
+  not_before: string | null;
+  not_after: string | null;
+}
+
+/** Open a certificate file once with its password and read what to show
+ * for it. The key is dropped again; the app keeps the file, still encrypted,
+ * and asks for the password when signing (spec 2026-11-23 M7). */
+export async function certificateInfo(
+  pfx: Uint8Array,
+  password: string,
+): Promise<CertificateEntry> {
+  const mod = await loadSignModule();
+  return JSON.parse(mod.certificateInfo(pfx, password)) as CertificateEntry;
+}
+
+/** One round's outcome of signing a package's bytes in two phases: the
+ * `signOfd` side of it. The package is signed, or there is a next round. */
+export interface SignOfdStep {
+  /** The package is signed, and `bytes` holds it. */
+  done: boolean;
+  bytes: Uint8Array | null;
+  /** The next round to sign; null once the package is signed. */
+  next: PreparedSignOfd | null;
+}
+
+/** A package with everything a signature needs but the signature itself:
+ * for a signer that is not in this process (spec 2026-11-23 §10.4). A seal
+ * takes two rounds, a digital signature one. Made by `signPrepare`; the
+ * two-phase form on the document that is open is `Ofd.prepareSign`. */
+export class PreparedSignOfd {
+  #inner: WasmPreparedSign | undefined;
+
+  /** @internal Made by `signPrepare`. */
+  constructor(inner: WasmPreparedSign) {
+    this.#inner = inner;
+  }
+
+  /** What the signer signs in this round. */
+  toSign(): Uint8Array {
+    return this.#left().toSign();
+  }
+
+  /** Take the signature of `toSign()` and go on. A signature that does not
+   * verify with the signer's certificate is refused: nothing is written. */
+  apply(signature: Uint8Array): SignOfdStep {
+    const step = this.#take().apply(signature);
+    if (step.done) {
+      return { done: true, bytes: step.bytes, next: null };
+    }
+    const next = step.next();
+    if (next === undefined) {
+      throw new Error(
+        "rofd: the signing step returned neither a package nor a next round",
+      );
+    }
+    return { done: false, bytes: null, next: new PreparedSignOfd(next) };
+  }
+
+  /** The round that is left, to read from. */
+  #left(): WasmPreparedSign {
+    if (this.#inner === undefined) {
+      throw new Error(ALREADY_USED);
+    }
+    return this.#inner;
+  }
+
+  /** The round that is left, to hand to wasm. Each one is good for one
+   * `apply`: wasm takes it before it answers, whatever comes back - the
+   * round accepted, refused, or an error - and the next one is what `apply`
+   * returned. Marked spent first, so a refusal leaves nothing to retry on. */
+  #take(): WasmPreparedSign {
+    const inner = this.#left();
+    this.#inner = undefined;
+    return inner;
+  }
+}
+
+/** Said when a two-phase class is used for a second `apply`. A round is
+ * spent by the first one whether it was accepted, refused or failed: wasm
+ * has taken it, and there may be no `next` to go on with. */
+const ALREADY_USED =
+  "rofd: this signing step was already used (applied, or refused and dropped); " +
+  "use the `next` the last apply() returned, or prepare again";
+
+/** Start signing for a signer outside this process. `certificateDer` is the
+ * signer's certificate, DER; every signature handed to `apply` must verify
+ * against it. */
+export async function signPrepare(
+  ofd: Uint8Array,
+  certificateDer: Uint8Array,
+  options: SignOptions,
+): Promise<PreparedSignOfd> {
+  const mod = await loadSignModule();
+  return new PreparedSignOfd(
+    mod.signPrepare(ofd, certificateDer, signOptionsJson(options)),
+  );
+}
+
+/** One round's outcome of signing the open document in two phases - the
+ * same name and shape as the component's `SignStep`. The signature is in
+ * the document, or there is a next round. Nothing is written to a file
+ * either way: that is the host's `saveOfd`. */
+export interface SignStep {
+  /** The signature is in the document. */
+  done: boolean;
+  /** The reports of every signature of the document once `done` (what
+   * `ofd.sign` gives); `null` while there is a next round. */
+  reports: SignatureReport[] | null;
+  /** The next round to sign; null once the signature is in the document. */
+  next: PreparedSignature | null;
+}
+
+/** A signature prepared on the document that is open, for a signer that is
+ * not in this process (spec 2026-11-23 §17.11): the two-phase form of
+ * `ofd.sign`, made by `Ofd.prepareSign`. It is bound to that `Ofd`: the
+ * rounds go back in through it, and when they are done the signature is in
+ * its document - no package is made. A seal takes two rounds, a digital
+ * signature one. */
+export class PreparedSignature {
+  #inner: WasmPreparedSignature | undefined;
+  readonly #finish: (
+    inner: WasmPreparedSignature,
+    signature: Uint8Array,
+  ) => WasmSignatureStep;
+
+  /** @internal Made by `Ofd.prepareSign`. */
+  constructor(
+    inner: WasmPreparedSignature,
+    finish: (
+      inner: WasmPreparedSignature,
+      signature: Uint8Array,
+    ) => WasmSignatureStep,
+  ) {
+    this.#inner = inner;
+    this.#finish = finish;
+  }
+
+  /** What the signer signs in this round. */
+  toSign(): Uint8Array {
+    return this.#left().toSign();
+  }
+
+  /** Take the signature of `toSign()` and go on. A signature that does not
+   * verify with the signer's certificate is refused: nothing is written, and
+   * the round is spent with it - prepare again to retry. */
+  apply(signature: Uint8Array): SignStep {
+    const step = this.#finish(this.#take(), signature);
+    if (step.done) {
+      if (step.reports === null || step.reports === undefined) {
+        // The signature is in the document. To say it has none would be a
+        // lie about it; an older glue or a bug, and it is not papered over.
+        throw new Error(
+          "rofd: the signing step finished, but came back without reports",
+        );
+      }
+      return {
+        done: true,
+        reports: JSON.parse(step.reports) as SignatureReport[],
+        next: null,
+      };
+    }
+    const next = step.next();
+    if (next === undefined) {
+      throw new Error(
+        "rofd: the signing step returned neither a finished signature nor a next round",
+      );
+    }
+    return { done: false, reports: null, next: new PreparedSignature(next, this.#finish) };
+  }
+
+  /** The round that is left, to read from. */
+  #left(): WasmPreparedSignature {
+    if (this.#inner === undefined) {
+      throw new Error(ALREADY_USED);
+    }
+    return this.#inner;
+  }
+
+  /** The round that is left, to hand to wasm. Each one is good for one
+   * `apply`: wasm takes it before it answers, whatever comes back - the
+   * round accepted, refused, or an error - and the next one is what `apply`
+   * returned. Marked spent first, so a refusal leaves nothing to retry on. */
+  #take(): WasmPreparedSignature {
+    const inner = this.#left();
+    this.#inner = undefined;
+    return inner;
+  }
+}
+
+/** Where the user placed a seal by clicking: the page (index from 0) and the
+ * boundary in page millimetres. Pass `pageIndex + 1` and the boundary as the
+ * `at` placement of `signOfd`. */
+export interface SealPlacement {
+  pageIndex: number;
+  pageId: string;
+  boundary: MmRect;
+}
+
 /**
  * rofd web OFD surface. Created via [`Ofd.init`]; the SDK owns the canvas,
  * the wasm surface, DOM event binding, and the on-demand render scheduler.
@@ -387,9 +967,7 @@ export class Ofd {
    */
   static async init(container: HTMLElement, config?: OfdConfig): Promise<Ofd> {
     // 1. Load wasm module (--target web: fetch-based, auto-resolves .wasm).
-    const wasm =
-      (await import("../dist/rofd_web_view.js")) as unknown as WasmModule;
-    await wasm.default();
+    const wasm = await loadSignModule();
 
     // 2. Create canvas inside container. The canvas is NOT keyboard-focus
     //    - a hidden input (created in bindEvents) owns keyboard + IME.
@@ -1112,9 +1690,136 @@ export class Ofd {
     }
   }
 
-  /** Serialize the current document to OFD package bytes. */
+  /** Serialize the current document to OFD package bytes: the preserving
+   * save. What the save had to do is read back right after, with the
+   * `isSave*` methods. */
   saveOfd(): Uint8Array {
     return this.wasm.saveOfd();
+  }
+
+  /** Sign the document that is open with a certificate file (`.pfx`, `.p12`)
+   * and its password (spec 2026-11-23 §17.11): a seal, or a digital
+   * signature without a picture. The signature goes into the document that
+   * is open - the seal shows on its page at the next frame; the view, the
+   * selection and the undo history stay - and `saveOfd` carries it from
+   * here on. Nothing is written: the file is the host's save. Resolves to
+   * the reports of every signature afterwards (what `verifySignatures`
+   * gives). Rejects when the password is wrong, an option is unusable, or
+   * the document's file cannot take its annotations (`isSignBlocked` says so
+   * beforehand); the document is as it was then. */
+  async sign(
+    pfx: Uint8Array,
+    password: string,
+    options: SignOptions,
+  ): Promise<SignatureReport[]> {
+    return JSON.parse(
+      this.wasm.sign(pfx, password, signOptionsJson(options)),
+    ) as SignatureReport[];
+  }
+
+  /** Verify every signature of the document that is open (spec 2026-11-23
+   * §17.13): what the document carries now, saved or not - the signature
+   * `sign` just made included. No bytes to hand in and no file read; the
+   * module-level `verifySignatures(bytes)` is for a package that is not
+   * open here. Verification never fails, it reports: one entry per
+   * signature, in the order of the signature list. */
+  async verifySignatures(
+    options: VerifySignaturesOptions = {},
+  ): Promise<SignatureReport[]> {
+    return JSON.parse(
+      this.wasm.verifySignatures(verifyOptionsJson(options)),
+    ) as SignatureReport[];
+  }
+
+  /** What stops a signature of the document right now: its file declares
+   * signatures and declares no annotation entry, and the document has
+   * annotations to write. Ask before `sign`, to tell the user why. */
+  isSignBlocked(): boolean {
+    return this.wasm.isSignBlocked();
+  }
+
+  /** Start signing the document that is open for a signer outside this
+   * process: the two-phase form of `sign`. `certificateDer` is the signer's
+   * certificate, DER; every signature handed to `apply` must verify against
+   * it. Preparing changes nothing of the document. */
+  prepareSign(
+    certificateDer: Uint8Array,
+    options: SignOptions,
+  ): PreparedSignature {
+    const finish = (
+      inner: WasmPreparedSignature,
+      signature: Uint8Array,
+    ): WasmSignatureStep => this.wasm.finishSign(inner, signature);
+    return new PreparedSignature(
+      this.wasm.prepareSign(certificateDer, signOptionsJson(options)),
+      finish,
+    );
+  }
+
+  /** Whether the last `saveOfd()` could not write the annotations: the
+   * document declares signatures, has no annotation entry, and declaring one
+   * would change a protected file (spec 2026-11-23 M16). `saveOfd()` then
+   * returned the package unchanged. Tell the user that saving would
+   * invalidate the signatures, and only then call `saveOfdFullWrite()`. */
+  isSaveBlockedBySignature(): boolean {
+    return this.wasm.isSaveBlockedBySignature();
+  }
+
+  /** Whether the IDs of the last `saveOfd()` went past the reserve written
+   * at signing time (spec 2026-11-23 M14). The annotations were written. */
+  isSaveReserveExhausted(): boolean {
+    return this.wasm.isSaveReserveExhausted();
+  }
+
+  /** Whether the last `saveOfd()` wrote the whole package instead of only
+   * the annotation entries: an unsigned package had no place for a required
+   * patch (spec 2026-11-23 M20). More bytes changed than usual. */
+  isSaveFullWriteFallback(): boolean {
+    return this.wasm.isSaveFullWriteFallback();
+  }
+
+  /** The full write: every modelled entry is generated again, which
+   * invalidates the signatures of the package. Only after the user agreed
+   * (see `isSaveBlockedBySignature`). */
+  saveOfdFullWrite(): Uint8Array {
+    return this.wasm.saveOfdFullWrite();
+  }
+
+  /** The seal picture of every signature of the document that is open, in
+   * the order of the signature list - the order `ofd.verifySignatures()`
+   * reports. `null` for a digital signature or an unreadable picture (spec
+   * 2026-11-23 §13: the detail view's thumbnails). */
+  sealPictures(): (Uint8Array | null)[] {
+    return this.wasm.sealPictures().map((picture) => picture ?? null);
+  }
+
+  /** Enter the seal placement state (spec 2026-11-23 §11): the next left
+   * click on a page reports where the seal goes, to the handler set with
+   * `setOnSealPlaced`. Until then nothing can be selected, edited or typed;
+   * scrolling and zooming go on, and the seal preview follows the pointer.
+   * Returns `false` when the picture cannot be decoded: the state was not
+   * entered. */
+  beginSealPlacement(png: Uint8Array, widthMm: number, heightMm: number): boolean {
+    return this.wasm.beginSealPlacement(png, widthMm, heightMm);
+  }
+
+  /** End the seal placement state; the handler set with
+   * `setOnSealPlacementCancelled` runs. */
+  cancelSealPlacement(): void {
+    this.wasm.cancelSealPlacement();
+  }
+
+  /** Handle a seal the user placed by clicking. The handler runs in a
+   * microtask, so it may call back into rofd (for instance `sign`, which
+   * puts the seal where the handler says). `null` removes the handler. */
+  setOnSealPlaced(cb: ((placement: SealPlacement) => void) | null): void {
+    this.wasm.setOnSealPlaced(cb === null ? null : deferCb(cb));
+  }
+
+  /** Handle a seal placement the user cancelled (Esc or the right mouse
+   * button), or the app cancelled with `cancelSealPlacement`. */
+  setOnSealPlacementCancelled(cb: (() => void) | null): void {
+    this.wasm.setOnSealPlacementCancelled(cb === null ? null : deferCb(cb));
   }
 
   /** Export the document as PDF bytes (vector, produced by the same layout

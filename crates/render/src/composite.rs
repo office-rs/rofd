@@ -236,6 +236,15 @@ impl RenderEngine {
             // into each draw call (no cached sub-scenes - see module docs).
             draw_body(&mut painter, page, &doc.resources, fonts, origin, vp.zoom);
 
+            // Signature seals: page content fixed at signing time, above
+            // the body and under the annotations.
+            crate::seal_scene::draw_seals_at(
+                &mut painter,
+                doc,
+                &page.id,
+                crate::ctm::compose_transform(origin, vp.zoom, None),
+            );
+
             // Body-text selection highlight: drawn after the body (the
             // highlight pads on top of the text) but before the annotation
             // overlay (annotations stay on top of the selection).
@@ -556,6 +565,8 @@ mod tests {
             raw_doc_children: Vec::new(),
             raw_common_children: Vec::new(),
             raw_ofd_body_children: Vec::new(),
+            signatures: rofd_dom::SignatureSet::default(),
+            package: None,
             meta: Default::default(),
             pages: vec![page],
             resources: Default::default(),

@@ -156,7 +156,7 @@ fn load_annotate_save_preserves_body_and_keeps_annotation() {
         });
     let saved = rofd_io::write_ofd_with_text_layout(
         &doc,
-        Some(&report.package),
+        Some(report.document.package.as_ref().expect("package")),
         &rofd_dom::TextLayoutHints::new(),
     )
     .unwrap();

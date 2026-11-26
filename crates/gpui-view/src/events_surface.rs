@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use rofd_component::{
     AnnotationId, AnnotationSelection, ContextTarget, OfdComponent, OfdWarning, PointerCursor,
-    ZoomMode,
+    SealPlacement, ZoomMode,
 };
 
 /// The kernel callback surface as one gpui-subscribable event enum.
@@ -45,6 +45,13 @@ pub enum OfdGpuiEvent {
     Warned(Vec<OfdWarning>),
     PointerCursorChanged(PointerCursor),
     CopyRequested,
+    /// The user placed a seal by clicking (spec 2026-11-23 §11): the page
+    /// (index from 0) and the boundary in page millimetres. The host signs
+    /// with it and reloads the document.
+    SealPlaced(SealPlacement),
+    /// A seal placement ended without a seal: Esc, the right mouse
+    /// button, or `GpuiOfdHandle::cancel_seal_placement`.
+    SealPlacementCancelled,
 }
 
 /// Thread-safe event queue: kernel callbacks push (from inside
@@ -69,7 +76,7 @@ impl EventQueue {
     }
 }
 
-/// Register all 14 kernel callbacks, each routing into `queue`.
+/// Register every kernel callback, each routing into `queue`.
 /// Standalone (component-level) so the routing is headless-testable; the
 /// view's constructor calls it with its shared queue.
 pub fn install(component: &mut OfdComponent, queue: &EventQueue) {
@@ -130,5 +137,16 @@ pub fn install(component: &mut OfdComponent, queue: &EventQueue) {
     component.on_copy({
         let queue = queue.clone();
         move |_text| queue.push(OfdGpuiEvent::CopyRequested)
+    });
+    // Seal placement (spec 2026-11-23 §11): entering and cancelling are the
+    // handle's verbs; where the seal went, and that it was cancelled,
+    // arrive here.
+    component.on_seal_placed({
+        let queue = queue.clone();
+        move |placement| queue.push(OfdGpuiEvent::SealPlaced(placement))
+    });
+    component.on_seal_placement_cancelled({
+        let queue = queue.clone();
+        move || queue.push(OfdGpuiEvent::SealPlacementCancelled)
     });
 }

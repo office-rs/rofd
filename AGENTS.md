@@ -12,11 +12,12 @@ conflicts with code + spec, code + spec win, then come back and fix this file.
 **rofd** is an OFD (GB/T 33190) **view + annotate** editor **library**, in
 Rust, dual-platform (native + WASM).
 
-- **v1 scope**: view + annotate. The body renders read-only; annotations are
-  the only mutable layer. Non-goals: editing the body, creating/verifying
-  e-seals, full-fidelity rendering (template inheritance / JBIG2 / tiled
-  images are on-demand, v1 stubs), real-time collaboration. Doors left open
-  for the B/C/D scenarios, not implemented.
+- **v1 scope**: view + annotate + sign. The body renders read-only;
+  annotations are the mutable layer; signatures (seals and digital
+  signatures) are appended, never edited, and verified on opening.
+  Non-goals: editing the body, full-fidelity rendering (template
+  inheritance / JBIG2 / tiled images are on-demand, v1 stubs), real-time
+  collaboration. Doors left open for the B/C/D scenarios, not implemented.
 - **Library shape**: `OfdComponent` is the only integration entry (think
   `<textarea>`); the host owns the message loop and forwards events. The
   library never reads the system clock and depends on no GUI framework.
@@ -38,12 +39,15 @@ Rust, dual-platform (native + WASM).
    Editor hosts only touch `rofd-component`; converter hosts (bindings/CLI)
    only touch `rofd-convert`. Reaching past a facade is a bug — file a
    redesign instead.
-2. **The body is read-only; annotations are the only mutable face** (the
-   editor only mutates `.annotations`, never pages).
-3. **Full write + write fidelity**: everything parsed into the model must be
-   written back; everything unmodelled must pass through (details in
-   docs/agents/io.md). After changing io save logic, the write-fidelity
-   tests (`crates/io/tests/write_fidelity.rs`) must stay green.
+2. **Annotations are mutable, signatures are append-only, and a save never
+   touches what a signature protects** (the editor only mutates
+   `.annotations`, never pages; signature files travel byte for byte).
+3. **Two writes, both faithful**: a save keeps the original package and
+   rewrites only the annotation entries; a generation (no original package)
+   writes everything the model holds, with everything unmodelled passing
+   through (docs/agents/io.md). After changing io save logic, the
+   write-fidelity tests (`crates/io/tests/write_fidelity.rs`) and the
+   preserving-save tests (`preserving_save.rs`) must stay green.
 4. **The library never reads the wall clock**: no `Date::now()` /
    `SystemTime::now()`; hosts inject via `set_clock(author, ts)`. Sole
    exception: the monotonic `Instant` (`web_time` on wasm) drives the caret
@@ -55,8 +59,9 @@ Rust, dual-platform (native + WASM).
    winit/web-sys/wgpu/arboard deps; xilem-view / web-view / gpui-view are
    the only three platform bindings.
 7. **convert and below depend on no platform crate** (same law as
-   component); io deps never sink into the component, and native-side io
-   calls live in the host layer.
+   component); the component's own code never touches io (rofd-sign joins
+   it only behind the `sign` feature), and native-side io calls live in the
+   host layer.
 8. **Errors are explicitly layered, never silently swallowed**: parse
    failures are `OfdError`, degradable inputs are `OfdWarning` (surfaced to
    hosts via callbacks/warning streams) — details in docs/agents/io.md.
@@ -83,7 +88,8 @@ coverage, release lockstep, dev-machine pitfalls):
 ```bash
 cargo build --workspace
 cargo test --workspace --exclude tauri-app --exclude rofd-web-view
-cargo test -p rofd-io write_fidelity   # write fidelity (the core test)
+cargo test -p rofd-io --test write_fidelity --test preserving_save --test document_package   # io saves (`--test` names a binary; a bare filter runs nothing)
+cargo test -p rofd-component --features sign   # the component's signing tests (off without the feature)
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 cargo run -p xilem-app -- test/ru-yuan-ji-lu.ofd   # xilem native host
@@ -102,7 +108,10 @@ convert session layer. Full diagram, crate table, print architecture:
 component ─► render ─► dom          io ─► dom        export (Scene→PDF leaf, no rofd-internal deps)
 component ─► editor ─► dom
 convert (session layer) ─► component + io + render + export + dom
-xilem-view / web-view / gpui-view ─► component (web-view also holds io/editor/export/convert)
+sign ─► io ─► dom                    (verify + create signatures, in place on the package a document carries)
+component ─► sign (feature `sign`)    (the component signs the open document; the host lends the key and the time)
+xilem-view / web-view / gpui-view ─► component (web-view also holds io/editor/export/convert/sign)
+xilem-app / gpui-app ─► sign         (status bar, pre-save check, certificate store; adapters never sign)
 hosts: xilem-app / gpui-app / web-app / tauri-app (not deliverables)
 ```
 
@@ -114,7 +123,8 @@ Read the matching file BEFORE working in an area:
 |---|---|
 | Any `crates/` subtree | that crate's nested `AGENTS.md` (auto-loaded) |
 | Layering / crate boundaries / print architecture / cross-repo surface | [docs/agents/architecture.md](docs/agents/architecture.md) |
-| io full write / write fidelity / passthrough / ID conventions / error layering | [docs/agents/io.md](docs/agents/io.md) |
+| io full write / preserving save / write fidelity / passthrough / ID conventions / error layering | [docs/agents/io.md](docs/agents/io.md) |
+| Signing / verification / seal placement / certificate files / pre-save check | [docs/agents/sign.md](docs/agents/sign.md) |
 | Annotation editing / flowed text layout / rich text / format panel / IME | [docs/agents/editing.md](docs/agents/editing.md) |
 | Fonts (any crate) | [docs/agents/fonts.md](docs/agents/fonts.md) |
 | Render pipeline / Scene IR / CPU fallback | [docs/agents/rendering.md](docs/agents/rendering.md) |
@@ -122,6 +132,7 @@ Read the matching file BEFORE working in an area:
 | Full command reference / dev-machine pitfalls | [docs/agents/commands.md](docs/agents/commands.md) |
 | Rulings / doc-audit duty / known risks | [docs/agents/conventions.md](docs/agents/conventions.md) |
 | gpui Windows manual checklist | [docs/superpowers/manual/2026-11-01-gpui-app-windows-checklist.md](docs/superpowers/manual/2026-11-01-gpui-app-windows-checklist.md) |
+| Signing manual acceptance (the reader is the arbiter) | [docs/superpowers/manual/2026-11-24-sign-reader-checklist.md](docs/superpowers/manual/2026-11-24-sign-reader-checklist.md) |
 
 ## Environment Gotchas (this dev machine)
 

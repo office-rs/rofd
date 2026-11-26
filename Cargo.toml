@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/dom", "crates/io", "crates/render", "crates/editor", "crates/component", "crates/xilem-view", "crates/gpui-view", "crates/web-view", "crates/export", "crates/convert", "crates/convert-cli", "crates/convert-java", "crates/convert-node", "crates/convert-py", "crates/convert-wasm", "crates/xilem-app", "crates/gpui-app", "crates/tauri-app/src-tauri"]
+members = ["crates/dom", "crates/io", "crates/render", "crates/sign", "crates/editor", "crates/component", "crates/xilem-view", "crates/gpui-view", "crates/web-view", "crates/export", "crates/convert", "crates/convert-cli", "crates/convert-java", "crates/convert-node", "crates/convert-py", "crates/convert-wasm", "crates/xilem-app", "crates/gpui-app", "crates/tauri-app/src-tauri"]
 
 [workspace.dependencies]
 # 发布到 crates.io 的 crate 必须带 `version` 字段（cargo publish 拒绝
@@ -8,6 +8,7 @@ members = ["crates/dom", "crates/io", "crates/render", "crates/editor", "crates/
 # 的 crate 保持 path-only。
 rofd-dom = { version = "0.1.0", path = "crates/dom" }
 rofd-io = { version = "0.1.0", path = "crates/io" }
+rofd-sign = { version = "0.1.0", path = "crates/sign" }
 rofd-render = { version = "0.1.0", path = "crates/render" }
 rofd-editor = { version = "0.1.0", path = "crates/editor" }
 rofd-component = { path = "crates/component" }
@@ -51,6 +52,11 @@ console_error_panic_hook = "0.1"
 # build on wasm32-unknown-unknown. `std` provides from_timestamp_millis /
 # parse_from_str / format / and_utc / timestamp_millis / and_hms_opt — all dateutil needs.
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+# Chinese national cryptography for the signing line (rofd-sign): SM2 with
+# SM3 only (the DSA), no key exchange or encryption; pure Rust, so the
+# crate builds for wasm32-unknown-unknown.
+sm3 = "0.5"
+sm2 = { version = "0.14", default-features = false, features = ["arithmetic", "dsa", "pkcs8", "std", "precomputed-tables"] }
 # web_time::Instant — performance.now() on wasm (std Instant::now() is a hard
 # panic on wasm32-unknown-unknown); a std re-export on native. Only the
 # monotonic blink animation clock uses it (AGENTS §4.4).

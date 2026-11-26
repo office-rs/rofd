@@ -181,6 +181,11 @@ impl PrintSession {
         let page = &self.doc.pages[n];
         let mut scene =
             rofd_render::page_body_scene(page, &self.doc.resources, &self.fonts, PRINT_ZOOM);
+        // Signature seals are page content fixed at signing time; the
+        // content flag governs them like a stamp annotation.
+        if self.content.seal {
+            rofd_render::draw_seals(&mut scene, &self.doc, &page.id, PRINT_ZOOM);
+        }
         let filtered: Vec<Annotation> = self
             .doc
             .annotations
@@ -601,6 +606,71 @@ mod tests {
             image_fills(&seal_off_session.page_scene(0)),
             0,
             "seal off: the stamp draw disappears"
+        );
+    }
+
+    /// A document carrying one signature seal on P0.
+    fn sealed_doc() -> OfdDocument {
+        let mut doc = OfdDocument::default();
+        doc.pages.push(a4_page("P0"));
+        doc.signatures.items.push(rofd_dom::SignatureInfo {
+            id: "1".to_owned(),
+            kind: rofd_dom::SignatureKind::Seal,
+            base_loc: String::new(),
+            stamps: vec![rofd_dom::StampAnnot {
+                page_id: PageId::new("P0"),
+                boundary: Rect {
+                    x: 10.0,
+                    y: 10.0,
+                    w: 30.0,
+                    h: 15.0,
+                },
+                clip: None,
+            }],
+            seal_picture: Some(rofd_dom::SealPicture {
+                png: Arc::new(TINY_PNG.to_vec()),
+                width: 30.0,
+                height: 15.0,
+            }),
+        });
+        doc
+    }
+
+    fn image_fill_count(scene: &imaging::record::Scene) -> usize {
+        draws(scene)
+            .iter()
+            .filter(|d| {
+                matches!(
+                    d,
+                    Draw::Fill {
+                        brush: imaging::peniko::Brush::Image(_),
+                        ..
+                    }
+                )
+            })
+            .count()
+    }
+
+    /// A signature seal is page content fixed at signing time: the `seal`
+    /// content flag governs it exactly like a stamp annotation.
+    #[test]
+    fn signature_seals_follow_the_seal_toggle() {
+        let c = component_with(sealed_doc());
+        let mut seal_on = c.begin_print(PrintContent::default());
+        assert_eq!(
+            image_fill_count(&seal_on.page_scene(0)),
+            1,
+            "seal on: the signature seal prints"
+        );
+        let seal_off = PrintContent {
+            seal: false,
+            ..PrintContent::default()
+        };
+        let mut session = c.begin_print(seal_off);
+        assert_eq!(
+            image_fill_count(&session.page_scene(0)),
+            0,
+            "seal off: no seal"
         );
     }
 

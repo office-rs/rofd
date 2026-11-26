@@ -6,7 +6,7 @@
 
 [English](README.md) | **简体中文**
 
-OFD（GB/T 33190）**查看 + 批注**编辑器**库**，Rust 实现，native + WASM 双平台。
+OFD（GB/T 33190）**查看 + 批注 + 签章**编辑器**库**，Rust 实现，native + WASM 双平台。
 
 ---
 
@@ -96,6 +96,52 @@ fn main() -> Result<(), xilem::winit::error::EventLoopError> {
 ```
 
 编辑器是一个标准 masonry widget：焦点、指针捕获、IME 会话、剪贴板快捷键、ctrl+wheel 缩放全部在内部处理——宿主无需接触 winit。宿主与编辑器之间有两条通道：component 回调体现为可链式调用的 `.on_change` / `.on_context_menu` / `.on_save_request` / … 处理器；命令式调用（工具栏按钮、程序化编辑）则是推入队列的 `Arc<dyn Fn(&mut OfdComponent)>` 命令，view 在每次 rebuild 时排空执行。完整参考实现（工具栏、右键菜单、文件 I/O、缩放）位于 [`crates/xilem-app`](crates/xilem-app)。
+
+### 签章（`rofd-sign`）
+
+打开文件即验签；用证书文件签章，库不读时钟、不持有密钥。不在编辑器里的文件，字节进、字节出：
+
+```rust
+use rofd_sign::{sign, verify, PfxSigner, SealImage, SignOptions, VerifyOptions};
+
+let reports = verify(&ofd_bytes, &VerifyOptions::default()); // 每条签名一份报告
+
+let mut signer = PfxSigner::open(&pfx_bytes, "口令")?;
+let signed = sign(&ofd_bytes, &mut signer, &SignOptions {
+    seal: Some(SealImage { png, size_mm: 40.0 }),
+    ..SignOptions::new("2026-11-24 10:30:00") // 签章时间，由宿主读取
+})?;
+```
+
+签过章的文档仍可加批注：签名不保护批注层（GB/T 48666-2026），存盘时其余条目逐字节不变。
+Web 端对应 `@office-rs/rofd` 的 `verifySignatures` / `signOfd`。
+
+给当前打开的文档验签、签章，都通过组件：签名就地落进文档——一次调用，不产生第二个文档、不重新载入，
+视图、选区和撤销历史都留在原处。用户保存之前不写文件，保存就是一次普通保存。
+要用的类型随组件一起给出：
+
+```rust
+// rofd-component 的 `sign` feature：密钥和时间由宿主提供。
+use rofd_component::signing::{SealImage, SignOptions, VerifyOptions};
+
+// 验当前打开的文档，存没存盘都行：不存盘，也不读文件。
+let reports = component.verify_signatures(&VerifyOptions::default());
+
+// 用证书文件签章；自己的签名器用 `component.sign(&mut signer, &options)`。
+// 签之前先问一句 `component.sign_refusal()`。
+let reports = component.sign_pfx(&pfx_bytes, "口令", &SignOptions {
+    seal: Some(SealImage { png, size_mm: 40.0 }),
+    ..SignOptions::new("2026-11-24 10:30:00") // 签章时间，由宿主读取
+})?;
+```
+
+组件和 Web SDK 是这个库的两个出口，提供同样的能力：两边收的东西一样时用同样的名字
+（`verify_signatures` / `ofd.verifySignatures()`、`PreparedSignature`、`SignStep`）；
+Web 端收不了 Rust 签名器的地方则成对出现——`component.sign_pfx(pfx, password, options)`
+对应 `ofd.sign(pfx, password, options)`（签之前先问一句 `ofd.isSignBlocked()`），
+`component.sign(&mut signer, options)` 对应 `ofd.prepareSign` 加 `apply`。
+对照表在 `docs/agents/sign.md`。
+三个示例应用（web / xilem / gpui）有完整流程——证书导入、点击落位、状态栏、存盘预检。
 
 ---
 

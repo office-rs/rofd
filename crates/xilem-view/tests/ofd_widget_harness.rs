@@ -471,3 +471,117 @@ fn fit_mode_command_actions_and_exit() {
         "ctrl+wheel must exit to Custom, got {actions:?}"
     );
 }
+
+// 10. Seal placement (spec 2026-11-23 §11): the host enters the state
+// through the command queue; the click that places the seal submits
+// SealPlaced, Esc and the right button submit SealPlacementCancelled.
+#[test]
+fn seal_placement_click_submits_action() {
+    use rofd_component::{SealPlacement, SealPreview};
+    let mut harness = create_harness();
+    run_setup(&mut harness);
+    harness.focus_on(Some(harness.root_id()));
+
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::from_pixel(4, 4, image::Rgba([200, 30, 30, 255]))
+        .write_to(&mut png, image::ImageFormat::Png)
+        .expect("PNG");
+    let preview = SealPreview {
+        png: Arc::new(png.into_inner()),
+        width_mm: 40.0,
+        height_mm: 40.0,
+    };
+    fn enter(preview: &SealPreview) -> OfdCommand {
+        let preview = preview.clone();
+        Arc::new(move |c| assert!(c.begin_seal_placement(preview.clone())))
+    }
+    fn cancelled(actions: &[OfdWidgetAction]) -> usize {
+        actions
+            .iter()
+            .filter(|a| matches!(a, OfdWidgetAction::SealPlacementCancelled))
+            .count()
+    }
+
+    // Page-local (100, 100) mm: inside the fixture's TextBox, which must
+    // not be touched while a seal is being placed.
+    let (x, y) = (ORIGIN_X + 100.0 * BASE, ORIGIN_Y + 100.0 * BASE);
+    let state = PointerState {
+        position: PhysicalPosition::new(x, y),
+        ..PointerState::default()
+    };
+
+    harness.edit_root_widget(|mut w| OfdWidget::with_component(&mut w, &enter(&preview)));
+    let _ = drain_actions::<OfdWidgetAction>(&mut harness);
+    harness.process_pointer_event(PointerEvent::Move(xilem::masonry::core::PointerUpdate {
+        pointer: MOUSE,
+        current: state.clone(),
+        coalesced: vec![],
+        predicted: vec![],
+    }));
+    click(&mut harness, x, y, 1);
+    let actions = drain_actions::<OfdWidgetAction>(&mut harness);
+    let placed: Vec<SealPlacement> = actions
+        .iter()
+        .filter_map(|a| match a {
+            OfdWidgetAction::SealPlaced(p) => Some(p.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        placed,
+        vec![SealPlacement {
+            page_index: 0,
+            page_id: PageId::new("P0"),
+            boundary: Rect {
+                x: 80.0,
+                y: 80.0,
+                w: 40.0,
+                h: 40.0
+            },
+        }],
+        "the click reports where the seal goes"
+    );
+    assert_eq!(textbox_text(&mut harness), "", "the TextBox was not edited");
+    let _ = drain_actions::<OfdWidgetAction>(&mut harness);
+
+    // Esc cancels and reports it.
+    harness.edit_root_widget(|mut w| OfdWidget::with_component(&mut w, &enter(&preview)));
+    let _ = drain_actions::<OfdWidgetAction>(&mut harness);
+    harness.process_text_event(TextEvent::Keyboard(KeyboardEvent {
+        state: KeyState::Down,
+        key: MasonryKey::Named(xilem::masonry::core::keyboard::NamedKey::Escape),
+        ..KeyboardEvent::default()
+    }));
+    let actions = drain_actions::<OfdWidgetAction>(&mut harness);
+    assert_eq!(
+        cancelled(&actions),
+        1,
+        "Esc reports a cancellation: {actions:?}"
+    );
+
+    // The right button cancels too, and opens no context menu.
+    harness.edit_root_widget(|mut w| OfdWidget::with_component(&mut w, &enter(&preview)));
+    let _ = drain_actions::<OfdWidgetAction>(&mut harness);
+    harness.process_pointer_event(PointerEvent::Down(PointerButtonEvent {
+        pointer: MOUSE,
+        button: Some(PointerButton::Secondary),
+        state: state.clone(),
+    }));
+    harness.process_pointer_event(PointerEvent::Up(PointerButtonEvent {
+        pointer: MOUSE,
+        button: Some(PointerButton::Secondary),
+        state,
+    }));
+    let actions = drain_actions::<OfdWidgetAction>(&mut harness);
+    assert_eq!(
+        cancelled(&actions),
+        1,
+        "the right button cancels: {actions:?}"
+    );
+    assert!(
+        !actions
+            .iter()
+            .any(|a| matches!(a, OfdWidgetAction::ContextMenu { .. })),
+        "no context menu while a seal is being placed: {actions:?}"
+    );
+}

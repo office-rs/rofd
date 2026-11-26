@@ -1,4 +1,3 @@
-use crate::package::PackageHandle;
 use rofd_dom::OfdDocument;
 
 // OfdWarning and ResourceKind are defined in rofd-dom (not io) so that both io
@@ -31,20 +30,18 @@ pub enum OfdError {
     Io(#[from] std::io::Error),
 }
 
+/// What parsing a package gives: the document, which carries the package it
+/// came from (`OfdDocument.package`, spec 2026-11-23 §17.11), and the
+/// degradations met on the way.
 #[derive(Debug, Clone)]
 pub struct LoadReport {
     pub document: OfdDocument,
-    pub package: PackageHandle,
     pub warnings: Vec<OfdWarning>,
 }
 
 impl LoadReport {
-    pub fn new(document: OfdDocument, package: PackageHandle, warnings: Vec<OfdWarning>) -> Self {
-        Self {
-            document,
-            package,
-            warnings,
-        }
+    pub fn new(document: OfdDocument, warnings: Vec<OfdWarning>) -> Self {
+        Self { document, warnings }
     }
 }
 
@@ -53,8 +50,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn load_report_carries_document_and_package() {
-        let report = LoadReport::new(OfdDocument::default(), PackageHandle::empty(), vec![]);
+    fn load_report_carries_document_and_warnings() {
+        let report = LoadReport::new(OfdDocument::default(), vec![]);
         assert!(report.document.pages.is_empty());
         assert!(report.warnings.is_empty());
     }

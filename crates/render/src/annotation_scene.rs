@@ -1933,6 +1933,8 @@ mod tests {
             raw_doc_children: Vec::new(),
             raw_common_children: Vec::new(),
             raw_ofd_body_children: Vec::new(),
+            signatures: rofd_dom::SignatureSet::default(),
+            package: None,
             pages: vec![rofd_dom::Page {
                 raw_children: Vec::new(),
                 id: rofd_dom::PageId::new("P0"),

@@ -26,6 +26,14 @@ per OFD layer semantics; equivalence is pinned by
 `crates/render/tests/layers_equivalence.rs`. Render tests use **scene
 structure assertions** (object counts/types), never pixel comparison.
 
+The seals of a signed document are **page content** (spec 2026-11-23 §8.3):
+`draw_seals` (`crates/render/src/seal_scene.rs`) draws them into the cached
+page scene after the body and before annotations, so they invalidate with
+the page (and ride the CPU fallback's page bitmap cache); print and PDF
+export gate them with `PrintContent.seal`. The seal **preview** of the
+placement state is different — it follows the pointer, so it lives in the
+per-frame overlay ([sign.md](sign.md)).
+
 ## Shaping determinism
 
 TTC multi-family names anchor to the canonical name by the lowest face
@@ -50,6 +58,11 @@ kick mechanism: `crates/web-view/AGENTS.md`.
   breaks. The chain is guarded by the `npm run smoke:nogpu` smoke test
   (headless Chrome --disable-gpu must land in the CPU fallback); do not
   revert to "bind the surface first, probe later".
+- **vello_cpu refuses opacity on an image draw** ("not implemented:
+  Applying opacity to image commands" — a panic). Anything translucent
+  that is an image must carry the opacity in its pixels: the seal preview
+  multiplies it into the picture's alpha channel. The web-app e2e
+  `sign.spec.ts` paints that preview on the CPU path.
 
 ## v1 stubs (non-goals)
 

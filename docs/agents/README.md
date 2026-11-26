@@ -10,7 +10,8 @@ routing table in the root `AGENTS.md`; subtree-specific rules live in nested
 | [commands.md](commands.md) | Before running anything beyond the core commands; full command reference + dev-machine pitfalls |
 | [workflow.md](workflow.md) | Git / commits / release lockstep / pinned versions / test conventions |
 | [architecture.md](architecture.md) | Changing crate boundaries, public APIs, or crossing layers; full crate map + print architecture |
-| [io.md](io.md) | io full write / write fidelity / three-layer passthrough / ID conventions / error layering |
+| [io.md](io.md) | io preserving save / full write / write fidelity / three-layer passthrough / ID conventions / error layering |
+| [sign.md](sign.md) | Signing: verification, creating signatures, certificate files, seal placement, the pre-save check |
 | [editing.md](editing.md) | Annotation editing, flowed text layout, rich text, format panel, IME |
 | [fonts.md](fonts.md) | Anything touching fonts (slice chains, system channels, process registry, fallback chain) |
 | [rendering.md](rendering.md) | Render pipeline, Scene IR, shaping determinism, CPU fallback |

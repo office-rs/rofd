@@ -146,6 +146,10 @@ describe("IME composition wiring", () => {
       renderFrame: vi.fn(() => -1),
       handleImeCommit: vi.fn(() => {}),
       handleImePreedit: vi.fn(() => {}),
+      // Focusing the input below reaches the focus bridge; the real surface
+      // always carries both verbs, so the synthetic one does too.
+      handleFocusGained: vi.fn(() => {}),
+      handleFocusLost: vi.fn(() => {}),
       caretRect: vi.fn(() => [5, 5, 2, 16]),
       setOnCursorChange: vi.fn((cb: () => void) => {
         captured = cb;

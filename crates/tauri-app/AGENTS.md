@@ -21,6 +21,10 @@ the SDK lazy-loads local bytes per declared family (a system-only channel:
 zero redistribution, no allowlist); the default font is SimSun; the browser
 path stays byte-identical.
 
+The signing UI arrives with the web-app sources: its certificate store is
+the browser's IndexedDB and its signed bytes go out through the native file
+bridge. Not exercised on this host yet.
+
 Platforms: Windows (WebView2) works out of the box; macOS/Linux are gated
 on WebKit's WebGPU progress. Product naming is uniformly `rofd`
 (release-tauri.yml).

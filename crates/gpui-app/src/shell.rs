@@ -35,6 +35,8 @@ use crate::print_dialog::{print_panel_overlay, PrintPanelState, SubmitBlock};
 use crate::sessions::{
     AppAction, AppActionBridge, BridgeEvent, DocumentSession, SessionManager, INITIAL_ZOOM,
 };
+use crate::signing::{self, panel as sign_panel, SaveConfirm, SigningState};
+use rofd_sign::SignatureOverall;
 
 // Exit-fullscreen action (Esc). Registered as a key binding in main.
 gpui_kit::actions!([ExitFullscreen]);
@@ -95,10 +97,11 @@ pub struct AppShell {
     /// session; applied to the editor wrapper's hover cursor).
     pointer_cursor: PointerCursor,
     /// Editor that should take keyboard focus at the next render. Set from
-    /// paths that have no `&mut Window` (async open/close completion);
-    /// consumed at the top of Render, where a window is available —
-    /// otherwise keyboard focus dies with a closed editor until a click.
-    pending_focus: Option<Entity<OfdGpuiView>>,
+    /// paths that have no `&mut Window` (async open/close completion), and
+    /// by the signing dialog when it closes (`signing::flow`); consumed at
+    /// the top of Render, where a window is available — otherwise keyboard
+    /// focus dies with a closed editor until a click.
+    pub(crate) pending_focus: Option<Entity<OfdGpuiView>>,
     /// Open print panel (Task 13); None = no dialog. Bound to the session
     /// active at open — a tab switch closes it (modal reset).
     pub(crate) print_panel: Option<PrintPanelState>,
@@ -107,6 +110,14 @@ pub struct AppShell {
     /// mirrors the value into the open panel's settings, and the range
     /// chip syncs pre-fills INTO it — `pub(crate)` for the panel glue).
     pub(crate) print_spec_input: Entity<InputState>,
+    /// The signing line (spec 2026-11-23 §13): the dialog, the detail
+    /// panel, the certificate store, a seal placement in progress.
+    pub(crate) signing: SigningState,
+    /// The signing dialog's password field (one entity, reused; its
+    /// Change subscription mirrors the value into the open dialog).
+    pub(crate) sign_password_input: Entity<InputState>,
+    /// A save waiting for the user's word (M16, M17); None = none.
+    pub(crate) save_confirm: Option<SaveConfirm>,
 }
 
 impl AppShell {
@@ -178,9 +189,29 @@ impl AppShell {
             .detach();
             state
         };
+        let sign_password_input = {
+            let state = cx.new(|cx| InputState::new(window, cx).placeholder("签名证书的口令"));
+            cx.subscribe_in(
+                &state,
+                window,
+                |this, input, event: &InputEvent, _window, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        let value = input.read(cx).value().to_string();
+                        if let Some(dialog) = this.signing.dialog.as_mut() {
+                            dialog.password = value;
+                        }
+                    }
+                },
+            )
+            .detach();
+            state
+        };
+        // The certificate store as it was left; one that cannot be read is
+        // an empty one for this run, and the status line says so.
+        let (store, store_error) = signing::store_file::load_store();
         let mut shell = Self {
             sessions: SessionManager::default(),
-            status: "就绪".to_string(),
+            status: store_error.clone().unwrap_or_else(|| "就绪".to_string()),
             font_config,
             file_menu_open: false,
             shape_menu_open: false,
@@ -195,7 +226,16 @@ impl AppShell {
             pending_focus: None,
             print_panel: None,
             print_spec_input,
+            signing: SigningState {
+                store,
+                ..SigningState::default()
+            },
+            sign_password_input,
+            save_confirm: None,
         };
+        if let Some(error) = store_error {
+            eprintln!("[warning] {error}");
+        }
         if let Some(path) = cli_path {
             match host::document_io::load_ofd(&path) {
                 Ok(loaded) => shell.install_loaded_session(loaded, path, cx),
@@ -337,6 +377,11 @@ impl AppShell {
             // The kernel paints focus rings/selection handles itself;
             // these notifications need no shell mirror for v1.
             SelectionChanged(_) | AnnotationFocused(_) | AnnotationInteracted(_) => {}
+            // Seal placement (spec 2026-11-23 §11): the click that placed
+            // the seal signs the document (signing/flow.rs); a cancelled
+            // placement is forgotten.
+            SealPlaced(placement) => self.on_seal_placed(idx, placement.clone(), cx),
+            SealPlacementCancelled => self.on_seal_placement_cancelled(cx),
         }
         cx.notify();
     }
@@ -344,7 +389,7 @@ impl AppShell {
     // -- Session lifecycle --
 
     /// Insert a loaded document as a new ACTIVE session and subscribe it.
-    fn install_loaded_session(
+    pub(crate) fn install_loaded_session(
         &mut self,
         loaded: host::document_io::LoadedOfd,
         path: PathBuf,
@@ -369,11 +414,10 @@ impl AppShell {
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "文档".to_string());
-        let idx = self
-            .sessions
-            .open_file(name, path.clone(), loaded.package, editor.clone());
+        let idx = self.sessions.open_file(name, path.clone(), editor.clone());
         let session = &mut self.sessions.sessions[idx];
         session.warnings = loaded.warnings;
+        session.signatures = loaded.signatures;
         session.page = 1;
         self.on_active_changed(cx);
         // Focus repair: install runs from a windowless async path — the
@@ -427,46 +471,21 @@ impl AppShell {
             self.save_session_as(idx, close_after, cx);
             return;
         }
-        let path = self.sessions.sessions[idx]
-            .path
-            .clone()
-            .expect("checked above");
-        let package = self.sessions.sessions[idx].package.clone();
-        let snapshot = self.sessions.sessions[idx]
-            .editor
-            .read(cx)
-            .component
-            .save_snapshot();
-        match host::document_io::save_ofd(
-            &snapshot.document,
-            package.as_ref(),
-            &snapshot.text_layout,
-            &path,
-        ) {
-            Ok(()) => {
-                self.sessions.sessions[idx].modified = false;
-                self.status = format!("已保存 {}", path.display());
-                if close_after {
-                    self.close_session(idx, cx);
-                }
-            }
-            Err(e) => {
-                self.status = format!("保存失败：{e}");
-                eprintln!("[ERROR] save failed: {e}");
-            }
-        }
-        cx.notify();
+        // The pre-save check (spec 2026-11-23 M16, M17) comes first: the
+        // save writes, or asks (signing/flow.rs).
+        self.save_checked(idx, None, close_after, cx);
     }
 
-    /// 文件菜单「另存为」: new-path prompt -> save (surgical when the
-    /// session has a package, full write otherwise) -> rebind the session
-    /// path. Save-As never mints a PackageHandle (xilem precedent).
+    /// File menu "Save as": new-path prompt -> save (the preserving save
+    /// when the document carries a package, the full write otherwise) ->
+    /// rebind the session path. Save-As never gives the document a package
+    /// (xilem precedent): a document that had none still saves by the full
+    /// write.
     fn save_session_as(&mut self, idx: usize, close_after: bool, cx: &mut Context<Self>) {
         let Some(session) = self.sessions.sessions.get(idx) else {
             return;
         };
         let editor = session.editor.clone();
-        let package = session.package.clone();
         let (dir, suggested) = save_prompt_target(session);
         let receiver = cx.prompt_for_new_path(&dir, suggested.as_deref());
         cx.spawn(async move |this, cx| {
@@ -479,35 +498,8 @@ impl AppShell {
                 let Some(idx) = shell.sessions.index_of(&editor) else {
                     return;
                 };
-                let snapshot = shell.sessions.sessions[idx]
-                    .editor
-                    .read(cx)
-                    .component
-                    .save_snapshot();
-                match host::document_io::save_ofd(
-                    &snapshot.document,
-                    package.as_ref(),
-                    &snapshot.text_layout,
-                    &path,
-                ) {
-                    Ok(()) => {
-                        let stem = path.file_stem().map(|s| s.to_string_lossy().to_string());
-                        let session = &mut shell.sessions.sessions[idx];
-                        session.modified = false;
-                        session.path = Some(path.clone());
-                        if let Some(stem) = stem {
-                            session.file_name = stem;
-                        }
-                        shell.status = format!("已保存 {}", path.display());
-                        if close_after {
-                            shell.close_session(idx, cx);
-                        }
-                    }
-                    Err(e) => {
-                        shell.status = format!("保存失败：{e}");
-                        eprintln!("[ERROR] save failed: {e}");
-                    }
-                }
+                // The same pre-save check as an in-place save (M16, M17).
+                shell.save_checked(idx, Some(path), close_after, cx);
                 cx.notify();
             });
         })
@@ -765,7 +757,7 @@ impl AppShell {
     }
 
     /// Close a session; the last close auto-opens a blank (spec §7).
-    fn close_session(&mut self, idx: usize, cx: &mut Context<Self>) {
+    pub(crate) fn close_session(&mut self, idx: usize, cx: &mut Context<Self>) {
         let active_before = self.sessions.active_editor();
         self.confirm_close = None;
         self.context_menu = None;
@@ -811,6 +803,13 @@ impl AppShell {
             panel.request_exit();
         }
         self.print_panel = None;
+        // A seal placement, the signing dialog and the panels of the
+        // signing line belong to the session that was active; a tab switch
+        // ends them (the placement state lives in that session's editor).
+        self.cancel_pending_placement(cx);
+        self.signing.dialog = None;
+        self.signing.detail_open = false;
+        self.save_confirm = None;
         cx.notify();
     }
 
@@ -897,6 +896,22 @@ impl AppShell {
             AppAction::Print => self.open_print_dialog(window, cx),
             AppAction::PrintSubmit => self.submit_print(cx),
             AppAction::PrintCancel => self.cancel_print(cx),
+            // Signing (spec 2026-11-23 §13): signing/flow.rs.
+            AppAction::OpenSignDialog => self.open_sign_dialog(window, cx),
+            AppAction::SignConfirm => self.confirm_sign_dialog(cx),
+            AppAction::SignCancel => self.cancel_sign_dialog(cx),
+            AppAction::ImportCertificate => self.import_certificate(cx),
+            AppAction::ImportCertificateConfirm => self.confirm_import_certificate(cx),
+            AppAction::PickSealImage => self.pick_seal_image(cx),
+            AppAction::ToggleSignatureDetail => {
+                self.signing.detail_open = !self.signing.detail_open;
+                cx.notify();
+            }
+            AppAction::SaveInvalidatedConfirm => self.save_invalidated_confirmed(cx),
+            AppAction::SaveBlockedConfirm => self.save_blocked_confirmed(cx),
+            AppAction::SaveInvalidatedCancel | AppAction::SaveBlockedCancel => {
+                self.save_confirm_cancelled(cx);
+            }
             AppAction::PickShape(kind) => {
                 self.set_tool(Tool::Create(CreateKind::Shape(kind)), cx);
             }
@@ -984,6 +999,74 @@ impl Render for AppShell {
             .print_panel
             .as_mut()
             .map(|panel| print_panel_overlay(panel, &print_spec_input, page, cx));
+
+        // -- Signing line (spec 2026-11-23 §13): the 签章 / 验签 group, the
+        // status bar's entry, and the panels. --
+        let detail_open = self.signing.detail_open;
+        let sign_group = group(vec![
+            tool_btn(
+                "sign-open",
+                IconName::Stamp,
+                "签章",
+                false,
+                false,
+                |_this, _e, _w, cx| AppActionBridge::push(AppAction::OpenSignDialog, cx),
+                cx,
+            ),
+            tool_btn(
+                "sign-detail",
+                IconName::ShieldCheck,
+                "验签",
+                detail_open,
+                false,
+                |this, _e, _w, cx| {
+                    this.signing.detail_open = !this.signing.detail_open;
+                    cx.notify();
+                },
+                cx,
+            ),
+        ]);
+        let signature_status: Option<AnyElement> = active
+            .filter(|session| !session.signatures.is_empty())
+            .map(|session| {
+                let invalid = session
+                    .signatures
+                    .iter()
+                    .any(|report| report.overall == SignatureOverall::Invalid);
+                div()
+                    .id("status-signatures")
+                    .px_2()
+                    .rounded(px(3.))
+                    .cursor_pointer()
+                    .when(invalid, |d| d.bg(rgb(0xFFF2F0)).text_color(rgb(0xCF1322)))
+                    .when(!invalid, |d| d.bg(rgb(0xF6FFED)).text_color(rgb(0x389E0D)))
+                    .on_click(cx.listener(|this, _e: &ClickEvent, _w, cx| {
+                        this.signing.detail_open = !this.signing.detail_open;
+                        cx.notify();
+                    }))
+                    .child(signing::summary_text(&session.signatures).unwrap_or_default())
+                    .into_any_element()
+            });
+        let sign_password_input = self.sign_password_input.clone();
+        let sign_overlay =
+            self.signing.dialog.is_some().then(|| {
+                sign_panel::sign_panel_overlay(&mut self.signing, &sign_password_input, cx)
+            });
+        let detail_overlay = self.signing.detail_open.then(|| {
+            let pictures: Vec<Option<std::sync::Arc<gpui::RenderImage>>> = editor
+                .read(cx)
+                .component
+                .seal_pictures()
+                .into_iter()
+                .map(|picture| picture.and_then(|png| sign_panel::thumbnail(&png)))
+                .collect();
+            let reports = active.map_or(&[][..], |session| session.signatures.as_slice());
+            sign_panel::signature_detail_overlay(reports, &pictures)
+        });
+        let save_confirm_overlay = self
+            .save_confirm
+            .as_ref()
+            .map(sign_panel::save_confirm_overlay);
 
         // -- Toolbar groups (built as Vec<AnyElement> + .children(); spec
         // pitfall 1) --
@@ -1188,7 +1271,8 @@ impl Render for AppShell {
                     .child(markup_group)
                     .child(history_group)
                     .child(zoom_group)
-                    .child(view_group),
+                    .child(view_group)
+                    .child(sign_group),
             )
             // == Editor (flex_1 + overflow_hidden keeps the editor's
             // relative(1.0) element clipped to its slot; hover cursor from
@@ -1254,6 +1338,7 @@ impl Render for AppShell {
                     .bg(rgb(0xFAFAFA))
                     .border_t_1()
                     .border_color(rgb(0xDDDDDD))
+                    .children(signature_status)
                     .child(format!("第 {page} 页"))
                     .child(format!("{zoom_percent}%"))
                     .when(modified, |this| this.child("● 未保存"))
@@ -1273,6 +1358,11 @@ impl Render for AppShell {
             })
             // == Print panel (Task 13): centered modal overlay.
             .children(print_overlay)
+            // == Signing panel, signature detail, save confirm (spec
+            // 2026-11-23 §13): centered modal overlays.
+            .children(sign_overlay)
+            .children(detail_overlay)
+            .children(save_confirm_overlay)
     }
 }
 

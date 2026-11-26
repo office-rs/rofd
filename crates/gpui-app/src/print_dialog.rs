@@ -467,7 +467,7 @@ fn printer_display(panel: &PrintPanelState) -> String {
 }
 
 /// One label + control row.
-fn field_row(label: &str, control: impl IntoElement) -> gpui::Div {
+pub(crate) fn field_row(label: &str, control: impl IntoElement) -> gpui::Div {
     div()
         .flex()
         .flex_row()
@@ -503,7 +503,7 @@ fn cycle_chip(
 }
 
 /// Chip without the cycle hint (e.g. the copies +/− steppers).
-fn plain_chip(
+pub(crate) fn plain_chip(
     id: &'static str,
     text: String,
     on_click: impl Fn(&mut AppShell, &ClickEvent, &mut gpui::Window, &mut Context<AppShell>) + 'static,
@@ -526,7 +526,7 @@ fn plain_chip(
 }
 
 /// Toggle chip: label + check state.
-fn toggle_chip(
+pub(crate) fn toggle_chip(
     id: &'static str,
     label: &str,
     checked: bool,
@@ -732,7 +732,9 @@ pub fn print_panel_overlay(
     // Custom-range spec input: only mounted in Custom mode; the shell's
     // InputEvent::Change subscription mirrors its value into the settings.
     let spec_control: AnyElement = match &range {
+        // Located by the tests, in debug builds only.
         PageRange::Custom { .. } => div()
+            .debug_selector(|| "pp-spec".to_owned())
             .flex()
             .flex_row()
             .items_center()
@@ -821,6 +823,10 @@ pub fn print_panel_overlay(
         .id("print-backdrop")
         .absolute()
         .inset_0()
+        // Modal: block the mouse for everything painted before it, the
+        // editor included - its press handler would otherwise take the focus
+        // back from the page-range input on every click.
+        .occlude()
         .flex()
         .items_center()
         .justify_center()

@@ -15,7 +15,7 @@ crate-type = ["cdylib", "rlib"]
 wasm-opt = false
 
 [dependencies]
-rofd-component = { workspace = true }
+rofd-component = { workspace = true, features = ["sign"] }
 rofd-io = { workspace = true }
 rofd-dom = { workspace = true }
 rofd-editor = { workspace = true }
@@ -36,6 +36,13 @@ js-sys = { workspace = true }
 console_error_panic_hook = { workspace = true }
 imaging = { workspace = true }
 imaging_vello = { workspace = true }
+# Electronic-seal and signature line (spec 2026-11-23 §12): verification,
+# signing and the two-phase form are wasm free functions; the options and
+# the reports cross the boundary as JSON.
+rofd-sign = { workspace = true }
+serde = { workspace = true }
+serde_json = "1"
+base64 = "0.22"
 # CPU 回退呈现（CpuCanvasRenderTarget）：vello_cpu 软栅格 + web_time 单调钟。
 imaging_vello_cpu = { workspace = true }
 web-time = { workspace = true }
@@ -47,3 +54,8 @@ features = ["webgpu", "wgsl", "fragile-send-sync-non-atomic-wasm"]
 [dependencies.web-sys]
 workspace = true
 features = ["HtmlCanvasElement", "Element", "DomRect", "console"]
+
+[dev-dependencies]
+# The signing tests encode a seal picture; nothing in the adapter encodes
+# images.
+image = { workspace = true }

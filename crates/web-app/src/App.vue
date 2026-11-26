@@ -378,14 +378,13 @@
           </RibbonGroup>
         </div>
 
-        <!-- ═══════════════ 签章（v1 非目标，禁用占位） ═══════════════ -->
+        <!-- ═══════════════ 签章（spec 2026-11-23） ═══════════════ -->
         <div v-show="activeTab === 'sign'" class="tb-row">
           <RibbonGroup>
             <ToolButton
               label="签章"
-              tooltip="v1 暂未开放：电子签章"
-              disabled
-              has-dropdown
+              tooltip="电子签章：选择证书与章图"
+              @click="openSignDialog"
             >
               <StampIcon />
             </ToolButton>
@@ -394,8 +393,8 @@
           <RibbonGroup>
             <ToolButton
               label="验签"
-              tooltip="v1 暂未开放：电子签章验签"
-              disabled
+              tooltip="验签：每一条签名的结果"
+              @click="openSignatureDetail"
             >
               <VerifySealIcon />
             </ToolButton>
@@ -582,6 +581,27 @@
 
     <!-- ── 底部状态栏 ── -->
     <footer class="statusbar">
+      <!-- 签章验签结果（spec 2026-11-23 M12）：说文档当前字节的事；没有签章
+           时不显示；点击看详情。 -->
+      <button
+        v-if="signatureText"
+        type="button"
+        class="sb-sign"
+        :class="signatureTone"
+        title="点击查看签章详情"
+        @click="openSignatureDetail"
+      >
+        {{ signatureText }}
+      </button>
+      <!-- 签了章还没保存（M13 的 2026-11-24 修订）：签章已在文档里，文件要等
+           用户保存才写。 -->
+      <span
+        v-if="signatureUnsaved"
+        class="sb-sign-unsaved"
+        title="签章已在文档里，还没写进文件：保存（Ctrl+S）后生效"
+      >
+        签章未保存
+      </span>
       <span>第 {{ pageIndex + 1 }} 页</span>
       <span>{{ zoomPercent }}%</span>
     </footer>
@@ -621,6 +641,22 @@
       :ofd="ofd"
       :current-page="pageIndex"
     />
+
+    <!-- 签章对话框（spec 2026-11-23 §13）：证书 / 口令 / 章图 / 自动盖章。 -->
+    <SignDialog
+      v-model:open="signDialogOpen"
+      :certificates="certificates"
+      :seals="BUILTIN_SEALS"
+      :services="signServices"
+      @submit="onSignSubmit"
+    />
+
+    <!-- 签章详情：逐条签名的三层结果与证书。 -->
+    <SignatureDetail
+      v-model:open="signatureDetailOpen"
+      :reports="signatureReports"
+      :seals="sealPictures"
+    />
   </div>
 </template>
 
@@ -633,12 +669,39 @@ import {
   ref,
   shallowRef,
 } from "vue";
-import { message } from "ant-design-vue";
+import { message, Modal } from "ant-design-vue";
 import type { Component } from "vue";
-import { Ofd, type MarkupKind, type ZoomMode } from "@office-rs/rofd";
+import {
+  certificateInfo,
+  newlyInvalidated,
+  Ofd,
+  signOfd,
+  verifySignatures,
+  type CertificateEntry,
+  type MarkupKind,
+  type SealPlacement,
+  type SignOptions,
+  type SignatureReport,
+  type ZoomMode,
+} from "@office-rs/rofd";
 import { resolveFontConfig } from "./config/fonts";
 import { buildPrintOptions } from "./print/panelOptions";
 import PrintDialog from "./print/PrintDialog.vue";
+import SignDialog from "./sign/SignDialog.vue";
+import SignatureDetail from "./sign/SignatureDetail.vue";
+import { BUILTIN_SEALS } from "./sign/builtinSeals";
+import { WebCertStore, indexedDbStorage } from "./sign/certStore";
+import {
+  directSignOptions,
+  formatNow,
+  placedSignOptions,
+  sealSizeMm,
+  SEAL_SIZE_MM,
+  signsDirectly,
+  type SignDialogRequest,
+  type SignDialogServices,
+} from "./sign/signDialogState";
+import { saveNotes, summaryText } from "./sign/signatureStatus";
 import RibbonGroup from "./components/RibbonGroup.vue";
 import ToolButton from "./components/ToolButton.vue";
 import FileMenu from "./components/FileMenu.vue";
@@ -798,6 +861,96 @@ const printPanel = reactive({
  * spool) instead of the browser flag panel; browsers keep the panel. */
 const isTauri = "__TAURI_INTERNALS__" in window;
 const printDialogOpen = ref(false);
+
+// ─── 签章（spec 2026-11-23） ────────────────────────────────────────────────
+
+/** A signature was made and not saved yet (M13 as revised on 2026-11-24):
+ * it is in the document, and the file is written when the user saves. The
+ * signature sits in the open document itself (spec §17.11); the document
+ * keeps no "signature waiting to be written" state - this flag is only the
+ * status bar's light. */
+const signatureUnsaved = ref(false);
+const signatureReports = ref<SignatureReport[]>([]);
+const signatureText = computed(() => summaryText(signatureReports.value));
+const signatureTone = computed(() => ({
+  invalid: signatureReports.value.some((r) => r.overall === "Invalid"),
+}));
+const sealPictures = ref<(Uint8Array | null)[]>([]);
+const signatureDetailOpen = ref(false);
+const signDialogOpen = ref(false);
+const certificates = ref<CertificateEntry[]>([]);
+
+/** 证书库：IndexedDB 里的一份字节（spec §13）。 */
+const certStore = new WebCertStore(indexedDbStorage());
+
+/** A seal placement in progress: what to sign with once the user clicks. */
+let pendingSign: {
+  request: SignDialogRequest;
+  pfx: Uint8Array;
+  picture: Uint8Array;
+  now: string;
+} | null = null;
+
+function describe(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+const signServices: SignDialogServices = {
+  async importCertificate(file, password) {
+    const entry = await certStore.import(file, password);
+    await refreshCertificates();
+    return entry;
+  },
+  async checkPassword(certificateId, password) {
+    // M7：口令只在这里用一次——打开证书文件读信息，随即丢弃私钥。
+    const file = await certStore.signerBytes(certificateId);
+    if (file === null) {
+      throw new Error("证书已不存在，请重新导入");
+    }
+    await certificateInfo(file, password);
+  },
+};
+
+async function refreshCertificates(): Promise<void> {
+  certificates.value = await certStore.list();
+}
+
+/** Verify: the reports and the seal pictures, both in the order of the
+ * signature list, of the document that is open (spec §17.13). Saved or not -
+ * a signature `sign` made is in it before the file has it; nothing is saved
+ * and no file is read for this. The pre-save check verifies the bytes a save
+ * would write instead. */
+async function verifyDocument(): Promise<void> {
+  const ofdInst = ofd.value;
+  if (!ofdInst) {
+    signatureReports.value = [];
+    sealPictures.value = [];
+    return;
+  }
+  const [reports, pictures] = await Promise.all([
+    ofdInst.verifySignatures(),
+    Promise.resolve(ofdInst.sealPictures()),
+  ]);
+  signatureReports.value = reports;
+  sealPictures.value = pictures;
+}
+
+function openSignDialog(): void {
+  void refreshCertificates().catch((e: unknown) =>
+    message.warning(`证书库无法读取：${describe(e)}`, 6),
+  );
+  signDialogOpen.value = true;
+}
+
+/** The verify button and the status chip: verify the document that is open,
+ * then show the detail. */
+function openSignatureDetail(): void {
+  void verifyDocument()
+    .then(() => {
+      signatureDetailOpen.value = true;
+    })
+    .catch((e: unknown) => message.error(`验签失败：${describe(e)}`));
+}
 
 // ─── 工具栏动作 ─────────────────────────────────────────────────────────────
 
@@ -1045,14 +1198,199 @@ function pickBackground(color: string): void {
 
 async function openFile(): Promise<void> {
   const bytes = await fileHost.open();
-  if (bytes) ofd.value?.loadOfd(bytes);
+  if (bytes) {
+    await loadFile(bytes);
+  }
+}
+
+/** Load a document's bytes and verify the signatures it carries (verified
+ * on open, U12). These bytes replace the previous document: a signature that
+ * was not saved goes with it. Signing does not pass through here - the
+ * signature lands in the open document (`signDocument`). */
+async function loadFile(bytes: Uint8Array): Promise<void> {
+  const ofdInst = ofd.value;
+  if (!ofdInst) return;
+  ofdInst.loadOfd(bytes);
+  signatureUnsaved.value = false;
+  refreshHistoryState();
+  await verifyDocument();
+}
+
+/** antd 的确认框，包成 Promise。 */
+function confirmSave(title: string, content: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    Modal.confirm({
+      title,
+      content,
+      okText: "仍然保存",
+      cancelText: "取消",
+      onOk: () => resolve(true),
+      onCancel: () => resolve(false),
+    });
+  });
 }
 
 async function save(): Promise<void> {
   const ofdInst = ofd.value;
   if (!ofdInst) return;
-  const ok = await fileHost.save(ofdInst.saveOfd(), "document.ofd");
-  if (ok) message.success("已保存 document.ofd");
+  // An ordinary preserving save: a signature already sits in the package the
+  // document carries and goes out with it.
+  // The pre-save check (M16, M17) runs over the bytes about to be written.
+  const preserved = ofdInst.saveOfd();
+  let bytes = preserved;
+  try {
+    if (ofdInst.isSaveBlockedBySignature()) {
+      // 没有批注入口的已签章文件：保真存盘写不进批注。不替用户做破章的
+      // 决定——确认后才走全量写。
+      const goOn = await confirmSave(
+        "保存会使签章失效",
+        "该文件没有批注入口，保存会使签章失效。",
+      );
+      if (!goOn) return;
+      bytes = ofdInst.saveOfdFullWrite();
+    } else {
+      const invalidated = newlyInvalidated(
+        signatureReports.value,
+        await verifySignatures(preserved),
+      );
+      if (invalidated.length > 0) {
+        const goOn = await confirmSave(
+          "保存会使签章失效",
+          `保存后 ${invalidated.length} 个签章将失效。`,
+        );
+        if (!goOn) return;
+      }
+    }
+  } catch (e) {
+    message.error(`验签失败：${describe(e)}`);
+    return;
+  }
+  const ok = await fileHost.save(bytes, "document.ofd");
+  if (!ok) return;
+  signatureUnsaved.value = false;
+  message.success("已保存 document.ofd");
+  // 存盘的另外两句话（M14、M20）：预留段用完、回退全量写。只在走了保真存盘的
+  // 那条路上读——标志位说的是最后一次 saveOfd()。
+  if (bytes === preserved) {
+    for (const note of saveNotes({
+      reserveExhausted: ofdInst.isSaveReserveExhausted(),
+      fullWriteFallback: ofdInst.isSaveFullWriteFallback(),
+    })) {
+      message.warning(note, 8);
+    }
+  }
+  await verifyDocument();
+}
+
+/** 签章对话框的确定（口令已校验）：能直接签的就签；否则进入签章状态，
+ * 等左键落位。 */
+async function onSignSubmit(
+  request: SignDialogRequest,
+  picture: Uint8Array | null,
+): Promise<void> {
+  const ofdInst = ofd.value;
+  const pfx = await certStore.signerBytes(request.certificateId).catch(() => null);
+  if (!ofdInst || pfx === null) {
+    message.error("证书已不存在，请重新导入");
+    return;
+  }
+  const now = formatNow(new Date());
+  if (signsDirectly(request)) {
+    await signDocument(
+      ofdInst,
+      pfx,
+      request.password,
+      directSignOptions(request, picture, now),
+    );
+    return;
+  }
+  try {
+    if (picture === null) throw new Error("没有章图");
+    const size = await pictureSize(picture);
+    if (!ofdInst.beginSealPlacement(picture, size.widthMm, size.heightMm)) {
+      throw new Error("章图无法读取");
+    }
+  } catch (e) {
+    message.error(`签章失败：${describe(e)}`);
+    return;
+  }
+  pendingSign = { request, pfx, picture, now };
+  message.info("请在页面上点击左键放置签章（Esc 或右键取消）", 5);
+}
+
+/** 章图的页面上尺寸：长边 40 mm，短边按像素比例（与签名时的规则一致）。 */
+function pictureSize(png: Uint8Array): Promise<{ widthMm: number; heightMm: number }> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(new Blob([png as BlobPart]));
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(sealSizeMm(image.naturalWidth, image.naturalHeight));
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("章图无法读取"));
+    };
+    image.src = url;
+  });
+}
+
+function onSealPlaced(placement: SealPlacement): void {
+  const ofdInst = ofd.value;
+  const pending = pendingSign;
+  pendingSign = null;
+  if (!ofdInst || pending === null) return;
+  void signDocument(
+    ofdInst,
+    pending.pfx,
+    pending.request.password,
+    placedSignOptions(
+      pending.request,
+      pending.picture,
+      placement.pageIndex,
+      placement.boundary,
+      pending.now,
+    ),
+  );
+}
+
+function onSealPlacementCancelled(): void {
+  if (pendingSign !== null) {
+    pendingSign = null;
+    message.info("已取消签章");
+  }
+}
+
+/** Sign (the password was checked, the position is known): the signature is
+ * appended to the open document in place (spec §17.11) - one call, no new
+ * package. The seal shows on the page and the status bar shows the reports
+ * that come back; the view stays where it is, and so do the selection and
+ * the undo history. Nothing is written: the signature reaches the file when
+ * the user saves (M13 as revised on 2026-11-24), and until then the status
+ * bar shows 签章未保存. The library refuses a file whose annotation layer
+ * cannot be written; the check here comes first so that the reason is said
+ * in Chinese. */
+async function signDocument(
+  ofdInst: Ofd,
+  pfx: Uint8Array,
+  password: string,
+  options: SignOptions,
+): Promise<void> {
+  if (ofdInst.isSignBlocked()) {
+    message.error(
+      "签章失败：该文件没有批注入口，编辑中的批注无法签进文件：请先处理保存",
+      6,
+    );
+    return;
+  }
+  try {
+    signatureReports.value = await ofdInst.sign(pfx, password, options);
+    sealPictures.value = ofdInst.sealPictures();
+    signatureUnsaved.value = true;
+    message.success("签章完成，尚未写入文件：保存（Ctrl+S）后生效", 6);
+  } catch (e) {
+    message.error(`签章失败：${describe(e)}`, 6);
+  }
 }
 
 /** Export as PDF (file menu): all content layers on (convert spec D17),
@@ -1182,12 +1520,23 @@ onMounted(async () => {
     // e2e seam：dev 态暴露实例，测试断言网络预算/驱动 loadOfd。
     if (import.meta.env.DEV) {
       (window as unknown as { __ofd: unknown }).__ofd = ofdInst;
+      (window as unknown as { __rofdSign: unknown }).__rofdSign = {
+        verifySignatures,
+        signOfd,
+        certificateInfo,
+      };
     }
     ofdInst.setClock("rofd", Date.now());
+    // 签章落位与取消（spec 2026-11-23 §11）。
+    ofdInst.setOnSealPlaced((placement) => onSealPlaced(placement));
+    ofdInst.setOnSealPlacementCancelled(() => onSealPlacementCancelled());
+    void refreshCertificates().catch((e: unknown) =>
+      console.warn("[rofd] certificate store unreadable:", e),
+    );
     // 默认打开示例文档（public/sample.ofd），失败不阻塞空编辑器。
     try {
       const res = await fetch(`${BASE}sample.ofd`);
-      if (res.ok) ofdInst.loadOfd(new Uint8Array(await res.arrayBuffer()));
+      if (res.ok) await loadFile(new Uint8Array(await res.arrayBuffer()));
     } catch (e) {
       console.warn("[rofd] sample.ofd 加载失败:", e);
     }
@@ -1227,6 +1576,30 @@ body,
 }
 
 /* ─── 功能区（页签行 + 工具行） ───────────────────────────────────────── */
+
+.sb-sign {
+  border: none;
+  background: #f6ffed;
+  color: #389e0d;
+  border-radius: 3px;
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 20px;
+  cursor: pointer;
+}
+.sb-sign.invalid {
+  background: #fff2f0;
+  color: #cf1322;
+}
+.sb-sign-unsaved {
+  background: #fff7e6;
+  color: #d46b08;
+  border-radius: 3px;
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 20px;
+  cursor: help;
+}
 
 .ribbon {
   flex: none;

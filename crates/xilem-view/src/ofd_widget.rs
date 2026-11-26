@@ -19,6 +19,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use rofd_component::SealPlacement;
 use rofd_component::{
     AnnotationId, AnnotationSelection, BodyTextSelection, ContextTarget, MouseButton, OfdComponent,
     OfdConfig, OfdWarning, PointerCursor, TextCursor, ViewEvent, ZoomMode,
@@ -87,6 +88,12 @@ pub enum OfdWidgetAction {
     ZoomModeChanged(ZoomMode),
     TextSelectionChanged(Option<BodyTextSelection>),
     Warnings(Vec<OfdWarning>),
+    /// The user placed a seal by clicking (spec 2026-11-23 §11): the page
+    /// and the boundary in page millimetres. The host signs with it.
+    SealPlaced(SealPlacement),
+    /// A seal placement ended without a seal (Esc, the right mouse
+    /// button, or `cancel_seal_placement` through the command queue).
+    SealPlacementCancelled,
     PointerCursorChanged(PointerCursor),
     /// Internal wake: host commands were drained during `rebuild`; rerun
     /// app logic once so the host observes command results such as the
@@ -232,6 +239,16 @@ impl OfdWidget {
         let p = pending.clone();
         component.on_pointer_cursor(move |cursor| {
             queue(&p, OfdWidgetAction::PointerCursorChanged(cursor))
+        });
+        // Seal placement (spec 2026-11-23 §11): the host enters and
+        // cancels through the command queue; where the seal went, and
+        // that it was cancelled, come back as actions.
+        let p = pending.clone();
+        component
+            .on_seal_placed(move |placement| queue(&p, OfdWidgetAction::SealPlaced(placement)));
+        let p = pending.clone();
+        component.on_seal_placement_cancelled(move || {
+            queue(&p, OfdWidgetAction::SealPlacementCancelled)
         });
 
         // Align the component with the widget's actual unfocused state.

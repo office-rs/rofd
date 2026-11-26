@@ -21,7 +21,7 @@ use std::marker::PhantomData;
 
 use rofd_component::{
     AnnotationId, AnnotationSelection, BodyTextSelection, ContextTarget, OfdConfig, OfdWarning,
-    TextCursor, ZoomMode,
+    SealPlacement, TextCursor, ZoomMode,
 };
 use xilem::core::{MessageCtx, MessageResult, Mut, View, ViewMarker};
 use xilem::{Pod, ViewCtx};
@@ -51,6 +51,8 @@ pub struct OfdView<State> {
     on_zoom_mode_change: Option<Handler<State, ZoomMode>>,
     on_text_selection_change: Option<Handler<State, Option<BodyTextSelection>>>,
     on_warnings: Option<Handler<State, Vec<OfdWarning>>>,
+    on_seal_placed: Option<Handler<State, SealPlacement>>,
+    on_seal_placement_cancelled: Option<Handler<State, ()>>,
     phantom: PhantomData<fn() -> State>,
 }
 
@@ -79,6 +81,8 @@ pub fn ofd_with_config<State: 'static>(
         on_zoom_mode_change: None,
         on_text_selection_change: None,
         on_warnings: None,
+        on_seal_placed: None,
+        on_seal_placement_cancelled: None,
         phantom: PhantomData,
     }
 }
@@ -168,6 +172,28 @@ impl<State: 'static> OfdView<State> {
         f: impl Fn(&mut State, Vec<OfdWarning>) + Send + Sync + 'static,
     ) -> Self {
         self.on_warnings = Some(Box::new(f));
+        self
+    }
+
+    /// The user placed a seal by clicking (spec 2026-11-23 §11), after the
+    /// host entered the state with `begin_seal_placement` through the
+    /// command queue. The handler signs with the placement and reloads
+    /// the document.
+    pub fn on_seal_placed(
+        mut self,
+        f: impl Fn(&mut State, SealPlacement) + Send + Sync + 'static,
+    ) -> Self {
+        self.on_seal_placed = Some(Box::new(f));
+        self
+    }
+
+    /// A seal placement ended without a seal: Esc, the right mouse button,
+    /// or `cancel_seal_placement` through the command queue.
+    pub fn on_seal_placement_cancelled(
+        mut self,
+        f: impl Fn(&mut State) + Send + Sync + 'static,
+    ) -> Self {
+        self.on_seal_placement_cancelled = Some(Box::new(move |state, ()| f(state)));
         self
     }
 }
@@ -293,6 +319,18 @@ impl<State: 'static> View<State, (), ViewCtx> for OfdView<State> {
             OfdWidgetAction::Warnings(warnings) => {
                 if let Some(f) = &self.on_warnings {
                     f(app_state, warnings);
+                    handled = true;
+                }
+            }
+            OfdWidgetAction::SealPlaced(placement) => {
+                if let Some(f) = &self.on_seal_placed {
+                    f(app_state, placement);
+                    handled = true;
+                }
+            }
+            OfdWidgetAction::SealPlacementCancelled => {
+                if let Some(f) = &self.on_seal_placement_cancelled {
+                    f(app_state, ());
                     handled = true;
                 }
             }

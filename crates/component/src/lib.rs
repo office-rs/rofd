@@ -8,6 +8,9 @@ pub mod ofd_component;
 pub mod preedit;
 pub mod print_session;
 pub mod render_target;
+mod seal_placement;
+#[cfg(feature = "sign")]
+pub mod signing;
 pub mod text_format;
 pub mod tooltip_text;
 pub mod zoom_mode;
@@ -19,6 +22,9 @@ pub use font_req::FontRequirements;
 pub use ofd_component::{CreateKind, FrameNeed, OfdComponent, SaveSnapshot, Tool};
 pub use print_session::{PrintContent, PrintSession, PRINT_ZOOM};
 pub use render_target::RenderTarget;
+pub use seal_placement::{SealPlacement, SealPreview, SEAL_PREVIEW_ALPHA};
+#[cfg(feature = "sign")]
+pub use signing::{PreparedSignature, SignStep};
 pub use text_format::{
     color_hex, hex_color, mm_to_pt, pt_to_mm, size_display, AnnotationTextStyle, SizeEntry,
     TEXT_COLOR_PALETTE, TEXT_COLOR_STANDARD, TEXT_SIZES,

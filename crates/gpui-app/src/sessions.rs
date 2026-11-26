@@ -1,13 +1,12 @@
 //! Multi-document session management (ported from rword@4e0b25b6
-//! crates/gpui-app/src/sessions.rs — rofd divergences: per-session
-//! `PackageHandle` for surgical save, plus per-session event/tool mirror
-//! rows; spec 2026-10-31 §7).
+//! crates/gpui-app/src/sessions.rs - rofd divergence: per-session event/tool
+//! mirror rows; spec 2026-10-31 §7).
 //!
 //! One `Entity<OfdGpuiView>` per open document; the shell renders the
 //! ACTIVE entity. Switching tabs swaps which entity fills the editor slot
-//! (each keeps its own scroll/zoom/cursor — gpui entities retain state).
-//! The `PackageHandle` for surgical save lives HERE, per session (io stays
-//! host-side; the handle only ever comes from parsing a file).
+//! (each keeps its own scroll/zoom/cursor - gpui entities retain state).
+//! The package a save preserves is not kept here: the document in the
+//! editor carries it (spec 2026-11-23 §17.11).
 
 use std::path::PathBuf;
 
@@ -15,7 +14,7 @@ use gpui::Entity;
 use rofd_component::{Tool, ZoomMode};
 use rofd_dom::{OfdWarning, ShapeKind};
 use rofd_gpui_view::OfdGpuiView;
-use rofd_io::PackageHandle;
+use rofd_sign::SignatureReport;
 
 /// Initial viewport zoom mirror (px per mm) — the component's initial zoom
 /// (same value rofd-render defines as PX_PER_MM; gpui-app does not depend
@@ -31,9 +30,6 @@ pub struct DocumentSession {
     pub file_name: String,
     /// Path for save-in-place; None = never saved (blank document).
     pub path: Option<PathBuf>,
-    /// Package skeleton for surgical save; None until a file was parsed
-    /// (Save-As never mints one — xilem-app precedent, spec §4.4).
-    pub package: Option<PackageHandle>,
     /// Unsaved-changes mirror (on_change sets it; a successful save clears).
     pub modified: bool,
     /// True for a never-edited, never-loaded blank document.
@@ -54,6 +50,11 @@ pub struct DocumentSession {
     /// host toolbar, so the shell copy is authoritative; the toolbar
     /// renders the active session's row without a kernel round-trip).
     pub tool: Tool,
+    /// The signatures of the document as it was opened, last saved or
+    /// signed, with their verdicts (spec 2026-11-23 M12): what the status
+    /// bar says, and what a save is checked against. Never about unsaved
+    /// edits.
+    pub signatures: Vec<SignatureReport>,
 }
 
 impl DocumentSession {
@@ -61,7 +62,6 @@ impl DocumentSession {
         Self {
             file_name: name,
             path: None,
-            package: None,
             modified: false,
             pristine: true,
             editor,
@@ -71,6 +71,7 @@ impl DocumentSession {
             has_text_selection: false,
             warnings: Vec::new(),
             tool: Tool::Text,
+            signatures: Vec::new(),
         }
     }
 
@@ -105,13 +106,7 @@ impl SessionManager {
 
     /// Insert a session for an opened file, activate, return its index.
     /// The display name drops the extension ("doc.ofd" -> "doc").
-    pub fn open_file(
-        &mut self,
-        name: String,
-        path: PathBuf,
-        package: Option<PackageHandle>,
-        editor: Entity<OfdGpuiView>,
-    ) -> usize {
+    pub fn open_file(&mut self, name: String, path: PathBuf, editor: Entity<OfdGpuiView>) -> usize {
         let name = name
             .rsplit_once('.')
             .map(|(base, _)| base.to_string())
@@ -119,7 +114,6 @@ impl SessionManager {
         self.sessions.push(DocumentSession {
             file_name: name,
             path: Some(path),
-            package,
             modified: false,
             pristine: false,
             editor,
@@ -129,6 +123,7 @@ impl SessionManager {
             has_text_selection: false,
             warnings: Vec::new(),
             tool: Tool::Text,
+            signatures: Vec::new(),
         });
         let idx = self.sessions.len() - 1;
         self.active = idx;
@@ -187,6 +182,23 @@ pub enum AppAction {
     Print,
     PrintSubmit,
     PrintCancel,
+    // Signing (spec 2026-11-23 §13): the dialog, its confirm and cancel,
+    // the certificate import (pick a file, then confirm its password), the
+    // user's own seal picture, the signature detail panel.
+    OpenSignDialog,
+    SignConfirm,
+    SignCancel,
+    ImportCertificate,
+    ImportCertificateConfirm,
+    PickSealImage,
+    ToggleSignatureDetail,
+    // A save that would invalidate signatures (M17), or that cannot write
+    // the annotations of a package without an annotation entry (M16): the
+    // user's word decides.
+    SaveInvalidatedConfirm,
+    SaveInvalidatedCancel,
+    SaveBlockedConfirm,
+    SaveBlockedCancel,
     // Shape dropdown (图形批注子工具).
     PickShape(ShapeKind),
     // Zoom dropdown (fit modes + percent presets).
@@ -268,7 +280,6 @@ mod tests {
         assert_eq!(mgr.sessions[1].file_name, "批注文稿2");
         assert!(mgr.sessions.iter().all(|s| s.pristine));
         assert!(mgr.sessions.iter().all(|s| s.path.is_none()));
-        assert!(mgr.sessions.iter().all(|s| s.package.is_none()));
     }
 
     #[gpui::test]
@@ -279,7 +290,6 @@ mod tests {
         let idx = mgr.open_file(
             "ru-yuan-ji-lu.ofd".into(),
             PathBuf::from(r"D:\tmp\ru-yuan-ji-lu.ofd"),
-            None,
             e.clone(),
         );
         assert_eq!(idx, 1);
@@ -287,7 +297,6 @@ mod tests {
         let s = mgr.active().unwrap();
         assert_eq!(s.file_name, "ru-yuan-ji-lu");
         assert_eq!(s.path, Some(PathBuf::from(r"D:\tmp\ru-yuan-ji-lu.ofd")));
-        assert!(s.package.is_none(), "test passes None through unchanged");
         assert!(!s.pristine);
         assert!(!s.modified);
         // The editor of the active session is the one just opened.
@@ -299,7 +308,7 @@ mod tests {
     fn open_file_keeps_extensionless_name(cx: &mut TestAppContext) {
         let mut mgr = SessionManager::default();
         let e = editor(cx);
-        mgr.open_file("untitled".into(), PathBuf::from("/tmp/untitled"), None, e);
+        mgr.open_file("untitled".into(), PathBuf::from("/tmp/untitled"), e);
         assert_eq!(mgr.sessions[0].file_name, "untitled");
     }
 

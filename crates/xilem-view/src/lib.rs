@@ -13,3 +13,6 @@ pub mod print_services;
 
 pub use ofd_view::{ofd, ofd_with_config, OfdContextMenu, OfdView};
 pub use ofd_widget::{command_queue, OfdCommand, OfdCommandQueue, OfdWidget, OfdWidgetAction};
+// The seal placement types, so a host needs no direct rofd-component
+// dependency to enter the state and read the action.
+pub use rofd_component::{SealPlacement, SealPreview};

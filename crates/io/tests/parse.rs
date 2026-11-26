@@ -29,7 +29,16 @@ fn parse_records_annotation_entry_in_package() {
     let bytes = fixtures::build_minimal_ofd();
     let report = rofd_io::parse_ofd(&bytes).unwrap();
     // Two annotation entries: Annotations.xml (entry) + Page_0/Annotation.xml (per-page).
-    assert_eq!(report.package.annotation_entries().count(), 2);
+    assert_eq!(
+        report
+            .document
+            .package
+            .as_ref()
+            .expect("package")
+            .annotation_entries()
+            .count(),
+        2
+    );
 }
 
 #[test]

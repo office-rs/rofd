@@ -5,12 +5,15 @@ pub mod ofd_xml;
 pub mod page;
 pub mod raw;
 pub mod resource;
+pub mod signature;
 
 use std::sync::Arc;
 
 use quick_xml::events::BytesStart;
 
-use rofd_dom::{Color, OfdDocument, Rect};
+use rofd_dom::{
+    Color, DocMeta, OfdDocument, PageId, RawFragment, Rect, SignatureSet, TextLayoutHints,
+};
 
 use crate::error::{LoadReport, OfdError, OfdWarning, ResourceKind};
 use crate::package::{EntryKind, PackageHandle, PkgEntry};
@@ -72,7 +75,7 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
     let mut entries: Vec<PkgEntry> = Vec::with_capacity(raw.len());
     let mut ofd_xml = String::new();
     for (name, data) in &raw {
-        let kind = classify(name);
+        let kind = EntryKind::of(name);
         if name == "OFD.xml" {
             ofd_xml = String::from_utf8_lossy(data).into_owned();
         }
@@ -83,29 +86,24 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
         });
     }
     let doc_root = ofd_xml::parse_doc_root(&ofd_xml)?;
-    let meta = ofd_xml::parse_doc_meta(&ofd_xml)?;
-    // Passthrough raws from OFD.xml (DocBody/DocInfo level, spec §6.2).
-    let (ofd_body_raws, ofd_info_raws) = ofd_xml::parse_ofd_xml_raws(&ofd_xml);
     // Consumed-entry set for full-write transport filtering (spec D12).
     let mut consumed = std::collections::BTreeSet::new();
     consumed.insert("OFD.xml".to_string());
-    let doc_xml = entry_str(&entries, &doc_root)?;
     consumed.insert(doc_root.clone());
-    let mut header = document::parse_document(&doc_xml)?;
+    let mut level = document_level(&doc_root, &ofd_xml, &entries)?;
     let mut doc = OfdDocument {
-        raw_doc_children: std::mem::take(&mut header.raw_children),
-        raw_common_children: std::mem::take(&mut header.raw_common_children),
-        raw_ofd_body_children: ofd_body_raws,
-        meta,
+        meta: level.meta,
+        raw_doc_children: std::mem::take(&mut level.header.raw_children),
+        raw_common_children: std::mem::take(&mut level.header.raw_common_children),
+        raw_ofd_body_children: level.raw_ofd_body_children,
+        max_unit_id: level.header.max_unit_id,
         ..OfdDocument::default()
     };
-    doc.meta.raw_info_children = ofd_info_raws;
-    doc.max_unit_id = header.max_unit_id;
-    for pref in &header.pages {
+    for pref in &level.header.pages {
         let page_path = join(&doc_root, &pref.base_loc);
         let page_xml = entry_str(&entries, &page_path)?;
         consumed.insert(page_path.clone());
-        let page = page::parse_page(pref.id.clone(), &page_xml, &header, &mut warnings)?;
+        let page = page::parse_page(pref.id.clone(), &page_xml, &level.header, &mut warnings)?;
         // Template handling: if page.template is Some, emit warning (v1 doesn't expand).
         if page.template.is_some() {
             warnings.push(OfdWarning::MissingFeature {
@@ -206,26 +204,35 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
     // -> Annotations.xml entry -> per-page PageAnnot files. Falls back to a
     // scan of entries ending in `/Annotation.xml` (+ warning) when the doc
     // has no annotations_loc (residual old-format files).
-    if let Some(ann_loc) = header.annotations_loc.as_deref() {
-        let entry_path = join(&doc_root, ann_loc);
+    // The located paths are recorded on the package for the preserving save
+    // (spec 2026-11-23 §7): it rewrites the annotation entries in place,
+    // under their original names.
+    let mut annotations_entry: Option<String> = None;
+    let mut annotation_files: Vec<(PageId, String)> = Vec::new();
+    if let Some(ann_loc) = level.header.annotations_loc.as_deref() {
+        // Recorded from the declaration alone: the preserving save writes
+        // the entry file where Document.xml says even when the package does
+        // not carry it yet.
+        let document_dir = doc_root.rsplit_once('/').map_or("", |(dir, _)| dir);
+        let entry_path = crate::paths::resolve_loc(ann_loc, document_dir);
+        annotations_entry = Some(entry_path.clone());
         if let Some(entry_xml) = entries
             .iter()
             .find(|e| e.name == entry_path)
             .map(|e| String::from_utf8_lossy(&e.bytes).into_owned())
         {
             consumed.insert(entry_path.clone());
-            let entry_dir = entry_path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+            let entry_dir = entry_path.rsplit_once('/').map_or("", |(d, _)| d);
             for pref in annotation_entry::parse_annotations_entry(&entry_xml)? {
-                // FileLoc is relative to the entry file's own directory.
-                let page_path = if entry_dir.is_empty() {
-                    pref.file_loc.clone()
-                } else {
-                    format!("{entry_dir}/{}", pref.file_loc)
-                };
+                // A page's FileLoc is relative to the entry file's own
+                // directory; `.` and `..` are part of a loc (GB/T 33190
+                // table 2), so the path is resolved, not joined.
+                let page_path = crate::paths::resolve_loc(&pref.file_loc, entry_dir);
                 // Match by PageID against the parsed pages.
                 if let Some(page) = doc.pages.iter().find(|p| p.id.0 == pref.page_id) {
                     if let Some(fe) = entries.iter().find(|e| e.name == page_path) {
                         consumed.insert(fe.name.clone());
+                        annotation_files.push((page.id.clone(), fe.name.clone()));
                         let xml = String::from_utf8_lossy(&fe.bytes).into_owned();
                         let anns = annotation::parse_page_annot_with_warnings(
                             &xml,
@@ -261,6 +268,7 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
                     if let Some(page) = doc.pages.get(idx) {
                         let xml = String::from_utf8_lossy(&e.bytes).into_owned();
                         consumed.insert(e.name.clone());
+                        annotation_files.push((page.id.clone(), e.name.clone()));
                         let anns = annotation::parse_page_annot_with_warnings(
                             &xml,
                             &page.id,
@@ -278,25 +286,152 @@ pub fn parse_ofd(bytes: &[u8]) -> Result<LoadReport, OfdError> {
             }
         }
     }
-    let package = PackageHandle { entries, consumed };
-    Ok(LoadReport::new(doc, package, warnings))
+    // Signature entries are only read, never consumed: a save carries them
+    // through byte for byte and the projection is never written back.
+    let (signatures, signatures_entry) = signatures_of(&ofd_xml, &entries, &mut warnings);
+    doc.signatures = signatures;
+    // The document carries its package (spec 2026-11-23 §17.11): a host
+    // keeps no second handle, and a save reads it from here.
+    doc.package = Some(PackageHandle {
+        entries,
+        consumed,
+        document_entry: Some(doc_root),
+        annotations_entry,
+        annotation_files,
+        signatures_declared: doc.signatures.declared,
+        signatures_entry,
+    });
+    Ok(LoadReport::new(doc, warnings))
 }
 
-fn classify(name: &str) -> EntryKind {
-    if name.ends_with("Annotation.xml")
-        || name.ends_with("Annotations.xml")
-        || name.contains("/Annots/")
-    {
-        EntryKind::Annotation
-    } else if name.ends_with("Page.xml") || name.ends_with("Document.xml") || name == "OFD.xml" {
-        EntryKind::Body
-    } else if name.starts_with("Doc_") && name.contains("/Signs/") {
-        EntryKind::Signature
-    } else if name.contains("/Res/") {
-        EntryKind::Resource
-    } else {
-        EntryKind::Other
+/// What the model keeps of OFD.xml and Document.xml (spec 2026-11-23 §17.11):
+/// the document-level fields of [`OfdDocument`] and the page references,
+/// read without a single page.
+struct DocumentLevel {
+    meta: DocMeta,
+    header: document::DocHeader,
+    raw_ofd_body_children: Vec<RawFragment>,
+}
+
+fn document_level(
+    doc_root: &str,
+    ofd_xml: &str,
+    entries: &[PkgEntry],
+) -> Result<DocumentLevel, OfdError> {
+    let mut meta = ofd_xml::parse_doc_meta(ofd_xml)?;
+    // Passthrough raws from OFD.xml (DocBody/DocInfo level, spec §6.2).
+    let (ofd_body_raws, ofd_info_raws) = ofd_xml::parse_ofd_xml_raws(ofd_xml);
+    let doc_xml = entry_str(entries, doc_root)?;
+    let header = document::parse_document(&doc_xml)?;
+    meta.raw_info_children = ofd_info_raws;
+    Ok(DocumentLevel {
+        meta,
+        header,
+        raw_ofd_body_children: ofd_body_raws,
+    })
+}
+
+/// The projection of the signature entries, and the package path of the list
+/// OFD.xml declares. Signature entries are only read, never consumed: a save
+/// carries them through byte for byte and the projection is never written
+/// back.
+fn signatures_of(
+    ofd_xml: &str,
+    entries: &[PkgEntry],
+    warnings: &mut Vec<OfdWarning>,
+) -> (SignatureSet, Option<String>) {
+    let signatures_entry =
+        ofd_xml::parse_signatures_loc(ofd_xml).map(|loc| signature::resolve_loc(&loc, ""));
+    // The declaration alone tells the editor and the preserving save that
+    // Document.xml must not change; the signature list fills in the items.
+    let mut signatures = SignatureSet {
+        declared: signatures_entry.is_some(),
+        items: Vec::new(),
+    };
+    if let Some(loc) = signatures_entry.as_deref() {
+        signatures.items = signature::parse_signatures(entries, loc, warnings);
     }
+    (signatures, signatures_entry)
+}
+
+/// Read again what the model keeps of OFD.xml, Document.xml and the signature
+/// entries, from the package the document carries (spec 2026-11-23 §17.11):
+/// `meta`, the three passthrough fragment lists, `max_unit_id` and the
+/// signature list - and, on the handle, the two flags that say what OFD.xml
+/// declares about signatures. Not a single page is read, and nothing else of
+/// the document changes. Returns the warnings of the signature projection.
+///
+/// A signature appended to the package in place calls this, so that the
+/// document-level fields, and the handle, are what loading the package again
+/// would give.
+///
+/// Everything that can fail comes before the first field is written. The
+/// caller - the landing in rofd-sign - has already put the new package in
+/// the document's place when it calls, and on an error it puts the old one
+/// back; it must then find the model untouched. Keep every fallible read
+/// above the assignments.
+pub fn refresh_document_level(document: &mut OfdDocument) -> Result<Vec<OfdWarning>, OfdError> {
+    let Some(package) = document.package.as_ref() else {
+        return Err(OfdError::Schema {
+            entry: "package".into(),
+            reason: "the document has no package to read from".into(),
+        });
+    };
+    let ofd_xml = entry_str(&package.entries, "OFD.xml")?;
+    let doc_root = ofd_xml::parse_doc_root(&ofd_xml)?;
+    let mut warnings = Vec::new();
+    let level = document_level(&doc_root, &ofd_xml, &package.entries)?;
+    document.meta = level.meta;
+    document.raw_doc_children = level.header.raw_children;
+    document.raw_common_children = level.header.raw_common_children;
+    document.raw_ofd_body_children = level.raw_ofd_body_children;
+    document.max_unit_id = level.header.max_unit_id;
+    let (signatures, signatures_entry) = signatures_of(&ofd_xml, &package.entries, &mut warnings);
+    document.signatures = signatures;
+    // What a load makes of the handle, too. A package OFD.xml does not
+    // declare the signatures of stays that way, whatever was appended to it.
+    if let Some(package) = document.package.as_mut() {
+        package.signatures_declared = document.signatures.declared;
+        package.signatures_entry = signatures_entry;
+    }
+    Ok(warnings)
+}
+
+/// A package the full write made, as a handle, with what reading that
+/// package back warned about (spec 2026-11-23 §17.13).
+#[derive(Debug)]
+pub struct GeneratedPackage {
+    pub package: PackageHandle,
+    /// The warnings of parsing the package that was written. They are the
+    /// caller's to pass on: whatever the model carries that rofd degrades
+    /// when it reads it, the caller hears it from here and from nowhere else.
+    pub warnings: Vec<OfdWarning>,
+}
+
+/// The package a full write of `document` produces, as a handle (spec
+/// 2026-11-23 §17.11): for a document that has no package, or none that can
+/// take what has to be patched into Document.xml. What the model does not
+/// carry passes through from the document's own package, when it has one.
+/// The package is read back to find its layout, and what that reading warns
+/// about is returned with it.
+pub fn generate_package(
+    document: &OfdDocument,
+    text_layout: &TextLayoutHints,
+) -> Result<GeneratedPackage, OfdError> {
+    let bytes = crate::serialize::package::write_ofd_with_text_layout(
+        document,
+        document.package.as_ref(),
+        text_layout,
+    )?;
+    let LoadReport {
+        document: mut parsed,
+        warnings,
+    } = parse_ofd(&bytes)?;
+    let package = parsed.package.take().ok_or_else(|| OfdError::Schema {
+        entry: "package".into(),
+        reason: "a parsed document carries its package".into(),
+    })?;
+    Ok(GeneratedPackage { package, warnings })
 }
 
 fn entry_str(entries: &[PkgEntry], name: &str) -> Result<String, OfdError> {

@@ -10,6 +10,7 @@
 //! wake task, and no manual MasonryState/AppDriver.
 
 mod preflight;
+mod signing;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -21,7 +22,6 @@ use rofd_component::{
     ContextTarget, CreateKind, OfdConfig, PrintContent, Tool, ViewEvent, ZoomMode,
 };
 use rofd_dom::{AnnotationId, AnnotationKind, ShapeKind};
-use rofd_io::PackageHandle;
 use rofd_xilem_view::print_dialog::{print_dialog_view, HasPrintUi, PrintMaterial, PrintUi};
 use rofd_xilem_view::print_dialog_state::{advance, DialogEvent, DiscoverState, PrintServices};
 use rofd_xilem_view::print_services::NativePrintServices;
@@ -33,7 +33,10 @@ use xilem::style::{Padding, Style};
 use xilem::view::{flex_col, flex_row, sized_box, text_button, transformed, zstack, FlexExt};
 use xilem::{EventLoop, WidgetView, WindowOptions, Xilem};
 
+use rofd_sign::SignatureReport;
 use xilem_app::host;
+
+use signing::{flow as sign_flow, panel as sign_panel};
 
 const BTN_PAD: Padding = Padding::from_vh(Length::ZERO, Length::const_px(6.0));
 
@@ -44,6 +47,17 @@ const PX_PER_MM: f64 = 96.0 / 25.4;
 /// Push a host command onto the host→widget channel.
 fn push(app: &mut AppState, f: impl Fn(&mut rofd_component::OfdComponent) + Send + Sync + 'static) {
     app.commands.lock().unwrap().push(Arc::new(f));
+}
+
+/// Run every queued host command against `c`, the way the ofd view's
+/// rebuild drains them one pass later. What the tests drive the channel
+/// with.
+#[cfg(test)]
+pub(crate) fn drain_commands(app: &mut AppState, c: &mut rofd_component::OfdComponent) {
+    let commands: Vec<_> = app.commands.lock().unwrap().drain(..).collect();
+    for command in commands {
+        command(c);
+    }
 }
 
 /// Toolbar tool button: sets the component's active tool.
@@ -108,12 +122,22 @@ struct ContextMenuState {
     id: AnnotationId,
 }
 
+/// What a successful save carries back: the signatures of the file as
+/// written, and what else the save has to say (spec M14, M20), which
+/// reaches the status bar.
+#[derive(Debug, Default)]
+pub(crate) struct SaveDone {
+    pub signatures: Vec<rofd_sign::SignatureReport>,
+    pub notes: Vec<String>,
+}
+
 /// What a queued host command reports back through `save_outcome`.
 #[derive(Debug)]
-enum HostOutcome {
-    /// A save of the OFD document: success clears `modified` (and promotes
-    /// a pending Save-As path); failure keeps it set.
-    Save(Result<(), String>),
+pub(crate) enum HostOutcome {
+    /// A save of the OFD document: success carries what the file as
+    /// written carries and clears `modified` (and promotes a pending
+    /// Save-As path); failure keeps it set.
+    Save(Result<SaveDone, String>),
     /// A PDF export: never touches `modified` in either direction — an
     /// export does not persist annotations, and its failure must not
     /// dirty a clean document. Errors are logged like save errors.
@@ -122,15 +146,13 @@ enum HostOutcome {
 
 /// Combined host state — plain data. Every mutation flows through xilem
 /// (button handlers, ofd-view handlers), so no locks guard the state.
-struct AppState {
+pub(crate) struct AppState {
     /// Host→widget command channel, drained on every rebuild.
-    commands: OfdCommandQueue,
+    pub(crate) commands: OfdCommandQueue,
     /// Path of the loaded document, if any.
-    file: Option<PathBuf>,
-    /// Package skeleton for surgical save (only ever comes from parsing).
-    package: Option<PackageHandle>,
+    pub(crate) file: Option<PathBuf>,
     /// Unsaved changes mirror (on_change sets it).
-    modified: bool,
+    pub(crate) modified: bool,
     /// Body-text selection mirror; gates the markup buttons.
     has_selection: bool,
     /// Result of the latest queued file operation, written by the command
@@ -138,10 +160,31 @@ struct AppState {
     /// `Save` outcomes drive the modified mirror (never cleared until a
     /// save reports success, so a failed save cannot be mistaken for a
     /// clean document); `Export` outcomes are logged only.
-    save_outcome: Arc<Mutex<Option<HostOutcome>>>,
+    pub(crate) save_outcome: Arc<Mutex<Option<HostOutcome>>>,
     /// Save-As target waiting for its queued save result. Promoted to
     /// `file` only when the save reports success.
-    pending_save_as_path: Option<PathBuf>,
+    pub(crate) pending_save_as_path: Option<PathBuf>,
+    /// The signing line (spec 2026-11-23 §13): the dialog, the detail
+    /// panel, the certificate store, a seal placement in progress.
+    pub(crate) signing: signing::SigningState,
+    /// The signatures of the document as it was opened, last saved or
+    /// signed, with their verdicts (M12): what the status bar says, and what
+    /// a save is checked against. Never about unsaved edits.
+    pub(crate) signatures: Vec<SignatureReport>,
+    /// What the signing line last did (one line, in the status bar).
+    pub(crate) status: String,
+    /// Document page-count mirror (the host owns the document value at
+    /// every swap point; v1 never changes a page count elsewhere).
+    pub(crate) doc_pages: usize,
+    /// Filled by the queued signing command with the reports of every
+    /// signature, or why it was not made (the component is only reachable
+    /// at drain time).
+    pub(crate) sign_outcome: sign_flow::SignOutcome,
+    /// The document's seal pictures, filled by a queued command after
+    /// every document swap (the detail panel's thumbnails).
+    pub(crate) seal_pictures: sign_flow::SealPictures,
+    /// A save whose bytes wait for the user's word (M16, M17).
+    pub(crate) save_candidate: sign_flow::SaveCandidateSlot,
     /// Warnings collected from the last load/operation.
     warnings: Vec<rofd_dom::OfdWarning>,
     /// Open context-menu overlay, if any.
@@ -162,14 +205,6 @@ struct AppState {
     /// the dialog's opening preview page derive from it — never from the
     /// preview pager, which is a view control.
     current_page: usize,
-    /// Document page-count mirror for the print dialog's 0-page guard.
-    /// The component is only reachable at command-drain time, so the
-    /// synchronous guard reads this host-side copy instead; it is exact
-    /// because the host owns the document value at every swap point
-    /// (new = the empty default document, load = the parsed file) and v1
-    /// never changes a page count outside those points (body is
-    /// read-only).
-    doc_pages: usize,
     /// JobHandle write-back slot for the queued `print_direct` command:
     /// the command closure cannot reach AppState, so it stores the handle
     /// here and the next app_logic pass drains it into the dialog's live
@@ -184,11 +219,11 @@ impl HasPrintUi for AppState {
 }
 
 impl AppState {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
+        let (signing, sign_outcome, seal_pictures, save_candidate) = sign_flow::initial();
         let mut state = Self {
             commands: command_queue(),
             file: None,
-            package: None,
             modified: false,
             save_outcome: Arc::new(Mutex::new(None)),
             pending_save_as_path: None,
@@ -202,6 +237,12 @@ impl AppState {
             current_page: 1,
             doc_pages: 0,
             print_job_slot: Arc::new(Mutex::new(None)),
+            signing,
+            signatures: Vec::new(),
+            status: String::new(),
+            sign_outcome,
+            seal_pictures,
+            save_candidate,
         };
         // Default assembly (AGENTS §4.9): clock + UTC tooltip formatter,
         // zero extra host code. Empty default font: system fallback.
@@ -227,8 +268,13 @@ fn consume_save_outcome(app: &mut AppState) {
     };
     match outcome {
         HostOutcome::Save(result) => match result {
-            Ok(()) => {
+            Ok(done) => {
                 app.modified = false;
+                // What the file carries now.
+                app.signatures = done.signatures;
+                if !done.notes.is_empty() {
+                    app.status = done.notes.join("；");
+                }
                 if let Some(path) = app.pending_save_as_path.take() {
                     app.file = Some(path);
                 }
@@ -250,7 +296,6 @@ fn consume_save_outcome(app: &mut AppState) {
 fn do_new(app: &mut AppState) {
     push(app, |c| c.new_document());
     app.file = None;
-    app.package = None;
     app.modified = false;
     app.context_menu = None;
     // new_document() resets to the empty default document (0 pages) and
@@ -258,6 +303,8 @@ fn do_new(app: &mut AppState) {
     // for an empty document, so reset the mirrors here.
     app.doc_pages = 0;
     app.current_page = 1;
+    app.signatures.clear();
+    sign_flow::document_replaced(app);
 }
 
 fn do_open(app: &mut AppState) {
@@ -276,36 +323,38 @@ fn do_open(app: &mut AppState) {
             app.doc_pages = document.pages.len();
             app.current_page = 1;
             push(app, move |c| c.load_document(document.clone()));
-            app.package = loaded.package;
             app.file = Some(path);
             app.modified = false;
+            app.signatures = loaded.signatures;
             app.warnings = loaded.warnings;
             for warning in &app.warnings {
                 eprintln!("[warning] {warning:?}");
             }
+            sign_flow::document_replaced(app);
         }
         Err(e) => eprintln!("[ERROR] {e}"),
     }
 }
 
 /// Save to `path`: the snapshot must run at command time against the live
-/// component; the package rides along (Arc-backed, cheap to clone).
+/// component. An ordinary save (spec 2026-11-23 §17.11): a signature is in
+/// the package the document carries, and the preserving save takes it from
+/// there.
 ///
 /// The command reports its result through `save_outcome`; `modified` is
 /// NOT cleared here. `consume_save_outcome` (start of each `app_logic`)
 /// clears it on success and keeps it set — with a logged error — on
 /// failure.
 fn save_to(app: &mut AppState, path: PathBuf) {
-    let package = app.package.clone();
     let outcome = app.save_outcome.clone();
+    let candidate = app.save_candidate.clone();
+    let before = app.signatures.clone();
     push(app, move |c| {
         let snapshot = c.save_snapshot();
-        *outcome.lock().unwrap() = Some(HostOutcome::Save(host::document_io::save_ofd(
-            &snapshot.document,
-            package.as_ref(),
-            &snapshot.text_layout,
-            &path,
-        )));
+        let preserved = host::document_io::save_bytes(&snapshot.document, &snapshot.text_layout);
+        // The pre-save check (spec 2026-11-23 M16, M17) comes first: the
+        // command writes, or leaves the bytes for the user's word.
+        sign_flow::inspect_save(&candidate, preserved, path.clone(), &before, &outcome);
     });
 }
 
@@ -327,7 +376,7 @@ fn do_save_as(app: &mut AppState) {
     };
     save_to(app, path.clone());
     app.pending_save_as_path = Some(path);
-    // Spec §4.4: Save As does not mint a PackageHandle; saves stay
+    // Spec §4.4: Save As does not give the document a package; saves stay
     // full-write until the file is opened again. The path is promoted to
     // `file` only after the queued save reports success.
 }
@@ -603,9 +652,10 @@ fn maybe_load_cli_arg(app: &mut AppState) {
             app.doc_pages = document.pages.len();
             app.current_page = 1;
             push(app, move |c| c.load_document(document.clone()));
-            app.package = loaded.package;
             app.file = Some(path);
+            app.signatures = loaded.signatures;
             app.warnings = loaded.warnings;
+            sign_flow::document_replaced(app);
         }
         Err(e) => eprintln!("failed to load {}: {e}", args[1]),
     }
@@ -627,6 +677,8 @@ fn open_context_menu(app: &mut AppState, event: OfdContextMenu) {
 fn app_logic(app: &mut AppState) -> impl WidgetView<AppState> + use<> {
     consume_save_outcome(app);
     drain_print_dialog(app);
+    sign_flow::drain_signing(app);
+    sign_flow::drain_save_candidate(app);
     // --- file row ---
     let btn_new = text_button("新建", |app: &mut AppState| do_new(app))
         .padding(BTN_PAD)
@@ -664,6 +716,29 @@ fn app_logic(app: &mut AppState) -> impl WidgetView<AppState> + use<> {
     let btn_freehand = tool_button("手写", Tool::Create(CreateKind::Freehand));
     let btn_rect = tool_button("矩形", Tool::Create(CreateKind::Shape(ShapeKind::Rect)));
 
+    // --- signing group (spec 2026-11-23 §13) ---
+    let btn_sign = text_button("签章", |app: &mut AppState| {
+        sign_flow::open_sign_dialog(app);
+    })
+    .padding(BTN_PAD)
+    .border_width(Length::ZERO)
+    .corner_radius(Length::const_px(2.0));
+    let verify_bg = if app.signing.detail_open {
+        Color::from_rgb8(227, 240, 252)
+    } else {
+        Color::from_rgba8(0, 0, 0, 0)
+    };
+    let btn_verify = sized_box(
+        text_button("验签", |app: &mut AppState| {
+            app.signing.detail_open = !app.signing.detail_open;
+        })
+        .padding(BTN_PAD)
+        .border_width(Length::ZERO)
+        .corner_radius(Length::const_px(2.0)),
+    )
+    .background_color(verify_bg);
+    let group_sign = flex_row((btn_sign, btn_verify)).gap(Length::const_px(2.0));
+
     let tool_row = flex_row((
         group_tools,
         btn_highlight,
@@ -672,6 +747,7 @@ fn app_logic(app: &mut AppState) -> impl WidgetView<AppState> + use<> {
         btn_squiggly,
         btn_freehand,
         btn_rect,
+        group_sign,
     ))
     .gap(Length::const_px(8.0));
 
@@ -765,6 +841,10 @@ fn app_logic(app: &mut AppState) -> impl WidgetView<AppState> + use<> {
         // component), so opening isn't clobbered.
         .on_cursor_change(|app, _cursor| app.context_menu = None)
         .on_context_menu(open_context_menu)
+        // Seal placement (spec 2026-11-23 §11): the click that placed the
+        // seal signs the document; a cancelled placement is forgotten.
+        .on_seal_placed(sign_flow::on_seal_placed)
+        .on_seal_placement_cancelled(sign_flow::on_seal_placement_cancelled)
         .on_warnings(|app, warnings| {
             for warning in &warnings {
                 eprintln!("[warning] {warning:?}");
@@ -800,7 +880,11 @@ fn app_logic(app: &mut AppState) -> impl WidgetView<AppState> + use<> {
 
     let editor_area = zstack((editor, menu_overlay)).alignment(UnitPoint::TOP_LEFT);
 
-    let main_col = flex_col((menu_bar, editor_area.flex(1.0)));
+    // --- status bar (the signatures of the file, what the signing line
+    // last did); absent while there is nothing to say ---
+    let status_bar = sign_panel::status_bar(app);
+
+    let main_col = flex_col((menu_bar, editor_area.flex(1.0), status_bar));
 
     // --- print Backstage overlay (covers the whole window while open) ---
     // Same Option-overlay slot pattern as the context menu: the editor
@@ -810,7 +894,32 @@ fn app_logic(app: &mut AppState) -> impl WidgetView<AppState> + use<> {
             .background_color(Color::from_rgb8(240, 240, 240))
     });
 
-    zstack((main_col, print_overlay)).alignment(UnitPoint::TOP_LEFT)
+    // --- Signing panel, signature detail, save confirm (spec 2026-11-23
+    // §13): overlays above everything while open ---
+    let sign_overlay = app
+        .signing
+        .dialog
+        .is_some()
+        .then(|| sign_panel::sign_panel(app));
+    let pictures: Vec<Option<Arc<Vec<u8>>>> = app.seal_pictures.lock().unwrap().clone();
+    let detail_overlay = app
+        .signing
+        .detail_open
+        .then(|| sign_panel::signature_detail(app, &pictures));
+    let save_confirm_overlay = app
+        .signing
+        .save_confirm
+        .as_ref()
+        .map(sign_panel::save_confirm_panel);
+
+    zstack((
+        main_col,
+        print_overlay,
+        sign_overlay,
+        detail_overlay,
+        save_confirm_overlay,
+    ))
+    .alignment(UnitPoint::TOP_LEFT)
 }
 
 fn main() -> Result<(), xilem::winit::error::EventLoopError> {
@@ -847,10 +956,26 @@ mod tests {
     fn save_success_clears_modified() {
         let mut app = AppState::new();
         app.modified = true;
-        *app.save_outcome.lock().unwrap() = Some(HostOutcome::Save(Ok(())));
+        *app.save_outcome.lock().unwrap() = Some(HostOutcome::Save(Ok(SaveDone::default())));
         consume_save_outcome(&mut app);
         assert!(!app.modified);
         assert!(app.save_outcome.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_save_with_notes_puts_them_in_the_status_bar() {
+        // Spec M14 and M20: what the library reports about a save reaches
+        // the user (final review I5).
+        let mut app = AppState::new();
+        app.modified = true;
+        app.status = String::new();
+        *app.save_outcome.lock().unwrap() = Some(HostOutcome::Save(Ok(SaveDone {
+            signatures: Vec::new(),
+            notes: vec!["一项说明".to_owned()],
+        })));
+        consume_save_outcome(&mut app);
+        assert!(!app.modified);
+        assert!(app.status.contains("一项说明"), "{}", app.status);
     }
 
     #[test]
@@ -876,7 +1001,7 @@ mod tests {
         let mut app = AppState::new();
         app.modified = true;
         app.pending_save_as_path = Some(PathBuf::from("new-copy.ofd"));
-        *app.save_outcome.lock().unwrap() = Some(HostOutcome::Save(Ok(())));
+        *app.save_outcome.lock().unwrap() = Some(HostOutcome::Save(Ok(SaveDone::default())));
         consume_save_outcome(&mut app);
         assert_eq!(app.file, Some(PathBuf::from("new-copy.ofd")));
         assert!(app.pending_save_as_path.is_none());
@@ -1129,15 +1254,6 @@ mod tests {
         let mut c = rofd_component::OfdComponent::new_native(OfdConfig::new(Arc::new(vec![])));
         c.load_document(doc);
         c
-    }
-
-    /// Run every queued host command against `c` (what the ofd view's
-    /// rebuild does one pass later).
-    fn drain_commands(app: &mut AppState, c: &mut rofd_component::OfdComponent) {
-        let commands: Vec<_> = app.commands.lock().unwrap().drain(..).collect();
-        for command in commands {
-            command(c);
-        }
     }
 
     /// Fix 1: the paper/orientation default follows the FRESH material.

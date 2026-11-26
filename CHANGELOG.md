@@ -8,6 +8,16 @@ follow the git tags published to GitHub Releases (`vX.Y.Z`); the npm SDK
 ## Unreleased
 
 ### SDK 0.2.0
+- **签章与验签，组件和 SDK 同名对齐**（签章 spec 2026-11-23 §17.11、
+  §17.13）：实例上新增 `ofd.verifySignatures(options?)`——验当前打开的文档，
+  存没存盘都行，不用先存盘；`ofd.sign(pfx, password, options)` 给当前文档
+  签章，签名就地落进去，视图、选区、撤销历史不动，用户保存时才写盘。
+  两段式的结果 `apply()` 改为返回 `SignStep { done, next, reports }`，签名
+  落地时带回报告（原 `SignatureStep` 改名）；`PreparedSignature` 只能
+  `apply` 一次，第二次由 SDK 报错。字节版两段式的类型改名
+  `PreparedSignOfd` / `SignOfdStep`。新增纯函数 `newlyInvalidated(before,
+  after)`（存盘预检用）。wasm 导出 `signBlocked` 改名 `isSignBlocked`，
+  实例新增 `verifySignatures(optionsJson)`。
 - **CJK 切片自带 ASCII**（draft §4.7"数字变粗"修正，资产层）：本地
   `file:` 依赖刷新为 fonts 仓库 ≥`8537ced` 重切产物（common-0 预载片并入
   U+0020–007E，+3~14 KB）——中文字族声明的混排数字不再落跨族兜底（字形
@@ -25,11 +35,31 @@ follow the git tags published to GitHub Releases (`vX.Y.Z`); the npm SDK
   有别）。浏览器路径逐字节不变（e2e 零回归）。
 
 ### Breaking
+- **rofd-dom / rofd-io 的公开面**（签章 spec 2026-11-23 §17.11，经 flw
+  点头）：`OfdDocument` 新增 `package: Option<PackageHandle>`——文档自带它
+  来自的包；`PackageHandle` / `PkgEntry` / `EntryKind` 从 rofd-io 挪到
+  rofd-dom，rofd-io 原名再导出。`LoadReport` 只剩 `document` 和
+  `warnings`；`save_ofd` 改为 `save_ofd(&document, &text_layout)`，包从
+  文档里取。按字面量构造 `OfdDocument` 的代码要补 `package: None`（和
+  `signatures`）。`write_ofd` / `write_ofd_with_text_layout` 不变。
 - **裸 `Ofd.init` 零字体请求**：SDK 不再默认从 jsDelivr 拉 Noto（内置
   `DEFAULT_FONTS` 已删除）。宿主需显式传 `fontSlices`（切片按需通道）或
   `fonts`（整字体）；两者都不传则不加载任何字体，文本回退宿主环境字形。
 
 ### Added
+- **签章线**（签章 spec 2026-11-23）：打开即验签，每条签名一份报告
+  （Rust `rofd_sign::verify`；SDK `verifySignatures(bytes, options?)`）；
+  保真存盘 `saveOfd`——保留原包、只重写批注条目，`isSaveBlockedBySignature`
+  / `isSaveReserveExhausted` / `isSaveFullWriteFallback` 说出存盘做了什么；
+  点击落位（`beginSealPlacement` / `cancelSealPlacement` /
+  `setOnSealPlaced` / `setOnSealPlacementCancelled`）；用证书文件签章，
+  签名就地落进当前打开的文档，用户保存时才写盘。
+- **组件是库的一个出口**（签章 spec §17.13，feature `sign`）：
+  `OfdComponent::sign(signer, options)`、`sign_pfx(pfx, password,
+  options)`、`verify_signatures(&options)`、`sign_refusal()`、两段式
+  `prepare_sign` / `finish_sign`；签章要用的类型从
+  `rofd_component::signing` 再导出。`seal_pictures()` 不需要 feature。
+  SDK 是另一个出口，两边同名提供同样的东西。
 - **Web 字体切片按需加载**（spec 2026-10-17 font-slicing）：SDK `Ofd.init`
   新增 `fontSlices`（`FontSlicesConfig { manifests, defaultFamily?,
   includeDefaultNoto? }`；缺失目录的 manifest 静默剔除、降级不阻塞渲染）；
@@ -46,6 +76,7 @@ follow the git tags published to GitHub Releases (`vX.Y.Z`); the npm SDK
 - 组件 `needs_frame() -> FrameNeed` 调度真值；`RenderTarget::draw_scene` 返回绘制成败，失败下一 vsync 重试
 
 ### Changed
+- **状态栏说的是当前文档**（签章 spec 2026-11-23 §17.13，M12 定稿）：验签针对打开的文档，存没存盘都行；"验签"按钮不再去验盘上文件。签章落笔产生的告警经 `on_warning` / `setOnWarning` 交给宿主，不再打到控制台。
 - wasm caret blink 从 60Hz 帧累计器改为真实时钟 deadline（`web_time::Instant`）；`renderFrame()` 返回下一帧调度需求（0 / 毫秒 / -1）
 
 ## v0.1.6

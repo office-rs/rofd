@@ -10,7 +10,7 @@ rofd-gpui-view = { path = "../gpui-view" }
 # Host-side file I/O (host/document_io) + PDF export (host/export_pdf).
 rofd-io = { workspace = true }
 rofd-export = { workspace = true }
-rofd-component = { workspace = true }
+rofd-component = { workspace = true, features = ["sign"] }
 rofd-dom = { workspace = true }
 # Shared PDF page assembly (host/export_pdf -> pdf_pages, spec §8/D18):
 # platform-free convert crate, legal for hosts at the stack top.
@@ -18,6 +18,15 @@ rofd-convert = { workspace = true }
 # Print panel types (JobHandle/PrintSettings) — already in the build via
 # rofd-gpui-view/rofd-component; declared directly for the host glue.
 office-rs-print = { workspace = true }
+# Electronic-seal and signature line (spec 2026-11-23): the host signs
+# and verifies; the adapter only carries the seal placement state.
+rofd-sign = { workspace = true }
+# Seal pictures: the user's own file is read as any image and offered to
+# the kernel as PNG; the detail view's thumbnails are decoded here.
+image = { workspace = true }
+# The signing time: the HOST reads the clock and formats it for rofd-sign
+# (the library never does). `clock` is a host-only feature.
+chrono = { workspace = true, features = ["clock"] }
 # System font channel (font_index): mmap the system font dirs and extract
 # family names from the name table (same pins as the tauri host line).
 memmap2 = "0.9"
