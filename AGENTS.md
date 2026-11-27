@@ -128,7 +128,7 @@ Read the matching file BEFORE working in an area:
 | Annotation editing / flowed text layout / rich text / format panel / IME | [docs/agents/editing.md](docs/agents/editing.md) |
 | Fonts (any crate) | [docs/agents/fonts.md](docs/agents/fonts.md) |
 | Render pipeline / Scene IR / CPU fallback | [docs/agents/rendering.md](docs/agents/rendering.md) |
-| Git / commits / release lockstep / pinned versions / test conventions | [docs/agents/workflow.md](docs/agents/workflow.md) |
+| Git / commits / release lockstep / pinned versions / test conventions / CI (Linux system deps, no-GPU smoke stub) | [docs/agents/workflow.md](docs/agents/workflow.md) |
 | Full command reference / dev-machine pitfalls | [docs/agents/commands.md](docs/agents/commands.md) |
 | Rulings / doc-audit duty / known risks | [docs/agents/conventions.md](docs/agents/conventions.md) |
 | gpui Windows manual checklist | [docs/superpowers/manual/2026-11-01-gpui-app-windows-checklist.md](docs/superpowers/manual/2026-11-01-gpui-app-windows-checklist.md) |

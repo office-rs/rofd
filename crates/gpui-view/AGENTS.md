@@ -22,6 +22,11 @@ the IME bridge + the print-dialog state machine / discover-only services.
 - Pins gpui-pre `=0.3.10` / gpui-kit `=0.8.1` — **batch-bump only, never
   singly** (docs/agents/workflow.md §pinned dependencies).
 - Print manual test: `cargo run -p gpui-app --example gpui_print_to_file`.
+- Test fixtures are the tracked fonts under
+  `crates/render/tests/fixtures/fonts/` (`TestFont.ttf`, `TestFontCjk.otf`
+  = a Noto Sans CJK SC subset, `TwoFamily.ttc`). Never read
+  `crates/web-app/public/fonts/` from a test: it is gitignored, so the suite
+  fails on CI and in a fresh clone.
 - Seal placement (spec 2026-11-23 §11, docs/agents/sign.md):
   `GpuiOfdHandle::begin_seal_placement` / `cancel_seal_placement` /
   `seal_placement_active`; the click and the cancellation arrive as

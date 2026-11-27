@@ -50,6 +50,32 @@
   pooled conversion == CLI bytes (one sha256 across five runtimes is on
   record).
 
+## CI (`.github/workflows/rust.yml`)
+
+The `build` job compiles and tests the whole workspace natively on
+`ubuntu-latest`, excluding only `tauri-app`. The Windows dev machine cannot
+see Linux link dependencies, so CI is where they first fail: a crate that
+links a system library needs its `-dev` package added to that job's
+`apt-get install` line in the same change. On record: `libcups2-dev`
+(office-rs-print), `libxkbcommon-dev` + `libxkbcommon-x11-dev` (the gpui
+Linux backend — link-time `#[link]`, no dlopen).
+
+The `web-nogpu-smoke` job runs on a stub of `@office-rs/font-runtime` (the
+sibling fonts checkout is absent in CI), so a new named import of that
+package in the SDK source must be added to the stub's root export in the
+same change — a missing export is a link-time `SyntaxError` that leaves the
+page unbooted. Dev and build resolve the package from `crates/web-app`
+(`resolve.dedupe`), never from a stray `crates/web-view/sdk/node_modules`.
+
+The runner has none of the files a dev machine has lying around: gitignored
+fixtures (`crates/web-app/public/fonts/`, `test/ru-yuan-ji-lu.ofd`) and any
+CJK system font. A test that needs one of them fails there: mark it
+`#[ignore = "requires ..."]` (the io / render / xilem-app convention), read
+the tracked fixtures under `crates/render/tests/fixtures/fonts/`, or - for
+CJK text - stay inside the five ideographs `TestFontCjk.otf` covers.
+`cargo test` runs with `--no-fail-fast`, so one red run lists every failing
+suite.
+
 ## Pinned dependencies (read before touching)
 
 | crate | source | version/rev |

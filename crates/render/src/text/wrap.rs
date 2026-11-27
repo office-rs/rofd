@@ -344,12 +344,16 @@ mod tests {
     #[test]
     fn wraps_cjk_per_char() {
         // Deterministic CJK fixture: every test machine gets the same metrics
-        // (no dependency on a system CJK fallback font).
+        // (no dependency on a system CJK fallback font). The text has to stay
+        // inside the fixture's five ideographs (中 入 录 记 院): any other CJK
+        // char falls through to the system fonts, and the Linux CI runner has
+        // none for CJK - the line then shapes as TestFont's .notdef (0.6 em)
+        // and fits four per line.
         let mut s = store();
         assert!(s.register_font(Arc::new(
             include_bytes!("../../tests/fixtures/fonts/TestFontCjk.otf").to_vec()
         )));
-        let w = s.shape_wrapped(&FontId::new("F1"), "你好世界你好世界", 12.0, 30.0);
+        let w = s.shape_wrapped(&FontId::new("F1"), "入院记录入院记录", 12.0, 30.0);
         assert_eq!(w.lines.len(), 4, "8 chars / 2 per line");
         assert!(w.lines.iter().all(|l| l.char_len == 2));
         assert_eq!(w.total_chars, 8);

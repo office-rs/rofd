@@ -35,6 +35,13 @@ export default defineConfig(({ mode }) => ({
   ],
   resolve: {
     alias: { "@office-rs/rofd": sdkEntry },
+    // The alias above makes the SDK *source* an importer outside this root, so
+    // a bare import inside it (`@office-rs/font-runtime`) would be looked up
+    // from ../web-view/sdk/ upward - found only where someone ran `npm install`
+    // in the SDK directory (CI never does; the no-GPU smoke failed there with
+    // "Failed to resolve import"). `dedupe` resolves it from this root instead:
+    // one copy of the font runtime for the app and the SDK.
+    dedupe: ["@office-rs/font-runtime"],
   },
   // Keep the SDK out of dep pre-bundle: it pulls in a .wasm via
   // import.meta.url, which must be resolved by Vite's dev pipeline, not esbuild.
