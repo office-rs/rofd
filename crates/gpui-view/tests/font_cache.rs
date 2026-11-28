@@ -11,15 +11,18 @@
 //! 3. returns the cached FontId forever after (registration is
 //!    idempotent at the text-system level, but we skip the repeat cost).
 //!
-//! Fixture is the tracked Noto CJK font under crates/web-app/public/fonts.
+//! Fixture: the tracked Noto Sans CJK SC subset under
+//! crates/render/tests/fixtures/fonts (2.5 KB, present in every checkout).
+//! The full 16 MB font under crates/web-app/public/fonts is gitignored and
+//! absent in CI - reading it made this suite fail there.
 
 use gpui::TestAppContext;
 use rofd_gpui_view::font_cache::{self, FontCache};
 
-const FIXTURE_A: &str = "../web-app/public/fonts/NotoSansCJKsc-Regular.otf";
+const FIXTURE_A: &[u8] = include_bytes!("../../render/tests/fixtures/fonts/TestFontCjk.otf");
 
 fn fixture_bytes() -> Vec<u8> {
-    std::fs::read(FIXTURE_A).expect("tracked fixture NotoSansCJKsc-Regular.otf")
+    FIXTURE_A.to_vec()
 }
 
 #[test]

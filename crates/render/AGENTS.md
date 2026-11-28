@@ -16,6 +16,12 @@
   the lowest face index — **cross-process byte determinism** (fontique's
   HashMap iteration order is per-process random); convert parity depends
   on it.
+- Test fonts are the tracked files in `tests/fixtures/fonts/`:
+  `TestFont.ttf` (DejaVu Sans), `TwoFamily.ttc`, and `TestFontCjk.otf` (a
+  2.5 KB Noto Sans CJK SC subset covering exactly five ideographs,
+  中 入 录 记 院). A "deterministic CJK" test must stay inside those five:
+  any other CJK char is shaped by a system font, and the Linux CI runner
+  has no CJK font (the text then shapes as `.notdef` and wraps wrong).
 - `layers.rs` `page_body_scene`: assembles the scene per OFD layer
   semantics; equivalence is pinned by `tests/layers_equivalence.rs`. Tests
   use scene structure assertions (object counts/types), not pixels.

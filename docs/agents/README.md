@@ -8,7 +8,7 @@ routing table in the root `AGENTS.md`; subtree-specific rules live in nested
 | File | When to read |
 |---|---|
 | [commands.md](commands.md) | Before running anything beyond the core commands; full command reference + dev-machine pitfalls |
-| [workflow.md](workflow.md) | Git / commits / release lockstep / pinned versions / test conventions |
+| [workflow.md](workflow.md) | Git / commits / release lockstep / pinned versions / test conventions / CI (Linux system deps, no-GPU smoke stub) |
 | [architecture.md](architecture.md) | Changing crate boundaries, public APIs, or crossing layers; full crate map + print architecture |
 | [io.md](io.md) | io preserving save / full write / write fidelity / three-layer passthrough / ID conventions / error layering |
 | [sign.md](sign.md) | Signing: verification, creating signatures, certificate files, seal placement, the pre-save check |

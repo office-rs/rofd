@@ -1264,17 +1264,20 @@ mod tests {
 
     #[test]
     fn caret_offsets_use_chars_not_bytes_for_cjk() {
-        // Deterministic CJK fixture: no system-font fallback dependency.
+        // Deterministic CJK fixture: no system-font fallback dependency. The
+        // text stays inside the fixture's five ideographs (中 入 录 记 院) -
+        // the Linux CI runner has no CJK system font to catch the rest (see
+        // text::wrap::tests::wraps_cjk_per_char).
         let (_, mut fonts) = doc_with_font();
         assert!(fonts.register_font(Arc::new(
             include_bytes!("../tests/fixtures/fonts/TestFontCjk.otf").to_vec()
         )));
-        let w = fonts.shape_wrapped(&FontId::new("F1"), "你好世界", 12.0, 30.0);
+        let w = fonts.shape_wrapped(&FontId::new("F1"), "入院记录", 12.0, 30.0);
         assert_eq!(w.lines.len(), 2);
         assert_eq!(w.line_at_offset(2), (1, 0));
         assert_eq!(
             caret_offset_at_point(
-                "你好世界",
+                "入院记录",
                 &FontId::new("F1"),
                 12.0,
                 30.0,

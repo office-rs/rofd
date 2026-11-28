@@ -22,14 +22,23 @@ jobs:
         # libcups2-dev: rofd-component depends on office-rs-print, whose
         # native build links CUPS on Linux (print spec 2026-10-31 §4 hard
         # constraint — no cargo feature can disable the backend).
-        sudo apt-get install -y libfontconfig1-dev libfreetype6-dev libcups2-dev
+        # libxkbcommon-dev + libxkbcommon-x11-dev: the gpui line (rofd-gpui-view,
+        # gpui-app) pulls in gpui-pre-linux -> xkbcommon, whose FFI is a
+        # link-time `#[link(name = "xkbcommon")]` / `#[link(name = "xkbcommon-x11")]`
+        # (no dlopen fallback). The two packages ship libxkbcommon.so and
+        # libxkbcommon-x11.so; without them every binary and test harness that
+        # links gpui fails to link ("unable to find library -lxkbcommon[-x11]").
+        sudo apt-get install -y libfontconfig1-dev libfreetype6-dev libcups2-dev libxkbcommon-dev libxkbcommon-x11-dev
     # tauri-app 是 Windows-only 桌面宿主（AGENTS.md §4.9，macOS/Linux 受 WebKit WebGPU 限制），
     # 在 Linux 上会拉入 GTK/glib 系统库导致 glib-sys 构建失败。它不依赖任何 rofd crate，
     # 从 Linux workspace 构建/测试中排除；其构建由 release-tauri.yml 在 Windows runner 验证。
     - name: Build
       run: cargo build --workspace --exclude tauri-app --verbose
+    # --no-fail-fast: by default cargo stops at the first failing test binary,
+    # which turns a red suite into one failure per push. Every binary now runs
+    # and the step still fails if any of them does.
     - name: Run tests
-      run: cargo test --workspace --exclude tauri-app --verbose
+      run: cargo test --workspace --exclude tauri-app --no-fail-fast --verbose
 
   # 无 GPU 冒烟（spec 2026-10-15 §10）：--disable-gpu 的 headless Chrome 下
   # 打开 web-app，SDK 必须自动落入 CPU 软渲染回退并完成初始化。这条守卫
@@ -40,18 +49,38 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # web-app 的 @office-rs/font-runtime 等字体依赖是 file:../../../fonts/...
-    # （指向仓库外的 office-rs/fonts 工作区，CI 上不存在——deploy-pages.yml
-    # 同因至今失败）。冒烟只测 CPU 回退初始化、不测字体通道：给 vite 插件
-    # 入口垫一个最小桩（virtual:rword-fonts → 恒 404 的 manifestUrl），应用
-    # 按设计走字体降级路径，smoke 判据（回退标记 + 无 editor init failed）
-    # 不受影响（已本地以同桩验证 PASS）。字体依赖如何整体进 CI 是独立议题。
+    # web-app's font dependencies are `file:` links into the sibling
+    # office-rs/fonts workspace, which lives outside this repo and does not
+    # exist in CI (deploy-pages.yml fails today on the same missing checkout).
+    # The smoke checks the CPU fallback init only, not the font channel, so
+    # the one package the smoke page loads gets a minimal stub at the path
+    # web-app's `file:../../../fonts/packages/font-runtime` resolves to:
+    #   * `/vite` answers the `virtual:rword-fonts` module with a manifestUrl
+    #     that never resolves to JSON -> the SDK takes its designed degraded
+    #     path (font flow stays off, FontRuntime is never constructed);
+    #   * the root export carries every name the SDK source imports
+    #     (FontRuntime, FontLoadError): a missing named export is a module
+    #     link-time SyntaxError in the browser, which leaves the page unbooted
+    #     and fails the smoke as "no fallback marker".
+    # Verified 2026-11-27 on a CI-layout copy (this stub + web-app install
+    # only): without the two classes -> "does not provide an export named
+    # 'FontLoadError'"; with them -> smoke PASS.
+    # How the font packages enter CI as a whole is a separate topic.
     - name: Stub @office-rs/font-runtime (fonts workspace lives outside this repo)
       run: |
         stub="${{ github.workspace }}/../fonts/packages/font-runtime"
         mkdir -p "$stub/dist"
         printf '{\n  "name": "@office-rs/font-runtime",\n  "version": "0.0.0-ci-stub",\n  "type": "module",\n  "exports": { ".": "./dist/index.js", "./vite": { "types": "./vite.d.ts", "import": "./dist/vite.js" } }\n}\n' > "$stub/package.json"
-        printf 'export const manifestUrl = "/rofd-ci-stub/manifest.json";\n' > "$stub/dist/index.js"
+        cat > "$stub/dist/index.js" <<'EOF'
+        export const manifestUrl = "/rofd-ci-stub/manifest.json";
+        export class FontLoadError extends Error {}
+        export class FontRuntime {
+          constructor() {
+            // Never reached on the degraded path; fail loudly if it ever is.
+            throw new Error("CI stub: the font runtime is not available");
+          }
+        }
+        EOF
         printf 'export {};\n' > "$stub/vite.d.ts"
         cat > "$stub/dist/vite.js" <<'EOF'
         const VIRTUAL = 'virtual:rword-fonts';

@@ -22,10 +22,13 @@ fn sink<'a>(cache: &'a mut ImageDecodeCache) -> GpuiSink<'a> {
     GpuiSink::new(cache)
 }
 
+/// The render suite's tracked TrueType fixture (6253 glyphs, so the glyph
+/// ids used below stay in range). It ships with every checkout, unlike the
+/// gitignored fonts under crates/web-app/public/fonts, which are absent in CI.
+const FIXTURE_FONT: &[u8] = include_bytes!("../../render/tests/fixtures/fonts/TestFont.ttf");
+
 fn fixture_font() -> peniko::FontData {
-    let bytes =
-        std::fs::read("../web-app/public/fonts/NotoSansCJKsc-Regular.otf").expect("fixture font");
-    peniko::FontData::new(peniko::Blob::new(Arc::new(bytes)), 0)
+    peniko::FontData::new(peniko::Blob::new(Arc::new(FIXTURE_FONT.to_vec())), 0)
 }
 
 #[test]

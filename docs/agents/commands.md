@@ -167,8 +167,10 @@ The release-lockstep checklist (on `rofd-convert-v*` tags):
 - **Four worktree-session traps** (verified 2026-11-07):
   1. gitignored fixtures don't follow the worktree: copy
      `crates/web-app/public/fonts/` and `test/*.ofd` in from the main
-     checkout before running tests, or gpui-view/component tests fail
-     spuriously;
+     checkout before running tests, or component tests fail spuriously
+     (gpui-view's font tests needed `public/fonts/` until 2026-11-27; they
+     now read the tracked fixtures under
+     `crates/render/tests/fixtures/fonts/`);
   2. the SDK's `file:` relative dep sits one level deeper in a worktree —
      junction-link `D:/code/fonts` in, then `npm install`; vitest also
      needs the main checkout's `sdk/dist` copied over;
@@ -188,3 +190,8 @@ The release-lockstep checklist (on `rofd-convert-v*` tags):
   turns the log "binary" otherwise).
 - **Commit messages with backticks**: write them to a file and commit with
   `-F`; inside `-m "..."` the shell runs what the backticks enclose.
+- **Linux CI failures don't reproduce here** (verified 2026-11-27): the WSL
+  Ubuntu distro has no build libraries (`pkg-config`, the fontconfig /
+  cups / xkbcommon `-dev` packages) and `sudo` needs a password, so a
+  native Linux link cannot be run locally — verify Linux-only failures
+  with a PR-branch workflow run instead (system deps: [workflow.md](workflow.md) §CI).
