@@ -69,19 +69,16 @@ jobs:
       # `file:` links into the sibling office-rs/fonts workspace, which lives
       # outside this repo and is absent on CI. rust.yml's web-nogpu-smoke stubs
       # the runtime (it only checks the CPU fallback); a real Pages deploy needs
-      # the genuine font channel, so check the fonts repo out next to this one
-      # (so crates/web-app/../../../fonts resolves) and build font-runtime — its
+      # the genuine font channel, so clone the fonts repo next to this one (so
+      # crates/web-app/../../../fonts resolves) and build font-runtime — its
       # dist/ is gitignored (see fonts/.gitignore), while the fonts-* asset
-      # packages' dist/ is committed. Sparse-checkout `packages` only to skip
-      # ~170 MB of sources/examples/root-dist.
+      # packages' dist/ is committed. actions/checkout refuses paths outside
+      # $GITHUB_WORKSPACE, so clone directly; sparse-checkout `packages` only
+      # skips ~170 MB of sources/examples/root-dist.
       - name: Checkout sibling fonts workspace
-        uses: actions/checkout@v4
-        with:
-          repository: office-rs/fonts
-          path: ../fonts
-          fetch-depth: 1
-          sparse-checkout: packages
-          sparse-checkout-cone-mode: true
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/office-rs/fonts.git ../fonts
+          git -C ../fonts sparse-checkout set packages
 
       - name: Build @office-rs/font-runtime (dist not committed)
         working-directory: ../fonts
