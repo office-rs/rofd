@@ -84,6 +84,27 @@ jobs:
             }
           '
 
+      # tauri-app's font deps (@office-rs/font-runtime, @office-rs/fonts-*) are
+      # `file:` links into the sibling office-rs/fonts workspace, absent on CI
+      # (same root cause as deploy-pages.yml). Check it out next to this repo so
+      # crates/tauri-app/../../../fonts resolves, then build font-runtime — its
+      # dist/ is gitignored while the fonts-* asset packages' dist/ is committed.
+      # Sparse-checkout `packages` only to skip ~170 MB of sources/examples/dist.
+      - name: Checkout sibling fonts workspace
+        uses: actions/checkout@v4
+        with:
+          repository: office-rs/fonts
+          path: ../fonts
+          fetch-depth: 1
+          sparse-checkout: packages
+          sparse-checkout-cone-mode: true
+
+      - name: Build @office-rs/font-runtime (dist not committed)
+        working-directory: ../fonts
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+
       - name: Install tauri-app deps
         working-directory: crates/tauri-app
         run: npm install --no-audit --no-fund

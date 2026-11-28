@@ -65,6 +65,30 @@ jobs:
         working-directory: crates/web-view
         run: wasm-pack build --target web --out-dir sdk/dist
 
+      # web-app's font deps (@office-rs/font-runtime, @office-rs/fonts-*) are
+      # `file:` links into the sibling office-rs/fonts workspace, which lives
+      # outside this repo and is absent on CI. rust.yml's web-nogpu-smoke stubs
+      # the runtime (it only checks the CPU fallback); a real Pages deploy needs
+      # the genuine font channel, so check the fonts repo out next to this one
+      # (so crates/web-app/../../../fonts resolves) and build font-runtime — its
+      # dist/ is gitignored (see fonts/.gitignore), while the fonts-* asset
+      # packages' dist/ is committed. Sparse-checkout `packages` only to skip
+      # ~170 MB of sources/examples/root-dist.
+      - name: Checkout sibling fonts workspace
+        uses: actions/checkout@v4
+        with:
+          repository: office-rs/fonts
+          path: ../fonts
+          fetch-depth: 1
+          sparse-checkout: packages
+          sparse-checkout-cone-mode: true
+
+      - name: Build @office-rs/font-runtime (dist not committed)
+        working-directory: ../fonts
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+
       - name: Install web-app deps
         working-directory: crates/web-app
         run: npm install --no-audit --no-fund
