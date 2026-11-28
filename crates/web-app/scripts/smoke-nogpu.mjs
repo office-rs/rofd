@@ -30,6 +30,32 @@ const FAIL_MARKER = 'editor init failed';
 // 前导斜杠且反斜杠/编码处理脆弱；fileURLToPath 是唯一正确姿势。
 const root = fileURLToPath(new URL('..', import.meta.url));
 
+// Force the CPU-fallback path deterministically. `--disable-gpu` alone is
+// flaky on CI: Chrome's WebGPU `requestAdapter()` sometimes logs "No available
+// adapters." (Dawn) but never resolves or rejects its promise, so the SDK's
+// `await` hangs past the 15s virtual-time budget and the fallback marker never
+// fires (seen 2026-11-28: 13:49 PASS, 13:53 FAIL, identical code + image).
+// Inject `navigator.gpu = undefined` before any module script runs, so the SDK
+// takes its `!navigator.gpu` branch — the exact path cpu-fallback.test.ts
+// covers — guaranteeing a fallback independent of Chrome's GPU-process timing.
+function disableWebGpuPlugin() {
+  return {
+    name: "smoke-disable-webgpu",
+    transformIndexHtml() {
+      return {
+        tags: [
+          {
+            tag: "script",
+            injectTo: "head-prepend",
+            children:
+              "try{Object.defineProperty(navigator,'gpu',{get:function(){return undefined;},configurable:true});}catch(e){}",
+          },
+        ],
+      };
+    },
+  };
+}
+
 // Chrome 的 CONSOLE 日志（--enable-logging=stderr）可能把消息按 JSON
 // 转义（非 ASCII → \uXXXX）；统一反转义后再匹配，两种形态都能命中。
 function unescapeLog(text) {
@@ -43,6 +69,7 @@ async function main() {
   // 不能让 vite 悄悄挪端口（那会让 Chrome 打开一个死链接 → 假失败）。
   const server = await createServer({
     root,
+    plugins: [disableWebGpuPlugin()],
     server: { port: PORT, strictPort: true },
   });
   await server.listen();
